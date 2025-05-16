@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "livn-visualization"
+version = "0.1.0"
+description = "A Jupyter widget for visualizing neural simulation data using React Three Fiber"
+requires-python = ">=3.11"
+dependencies = ["anywidget", "jupyter"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-jupyter", "black", "isort"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["livn_visualization"]
+
+[tool.uv.sources]
+livn = { workspace = true }

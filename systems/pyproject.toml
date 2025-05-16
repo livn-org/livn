@@ -1,0 +1,22 @@
+[project]
+name = "systems"
+version = "0.1.0"
+description = "Code to generate livn systems"
+authors = [
+    { name = "Frithjof Gressmann", email = "fg14@illinois.edu" },
+    { name = "Ivan Raikov", email = "ivan.g.raikov@gmail.com" },
+]
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "miv-simulator @ git+https://github.com/GazzolaLab/MiV-Simulator.git@4030598",
+    "dmosopt @ git+https://github.com/iraikov/dmosopt.git@f034729",
+    "machinable==4.10.6",
+    "sqlean-py>=3.47.0",
+    "omegaconf==2.4.0.dev3",
+    "livn",
+    "pandas>=2.2.3",
+]
+
+[tool.uv.sources]
+livn = { workspace = true }

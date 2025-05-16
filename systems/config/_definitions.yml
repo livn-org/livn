@@ -1,0 +1,19 @@
+Synapse Mechanisms:
+  AMPA: 0
+  GABA_A: 1
+  GABA_B: 2
+  NMDA: 30
+Layers:
+  Hilus: 0
+  GCL: 1
+  IML: 2
+  MML: 3
+  OML: 4
+  SO: 5
+  SP: 6
+  SL: 7
+  SR: 8
+  SLM: 9
+Populations:
+  EXC: 100
+  INH: 101

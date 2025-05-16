@@ -1,0 +1,59 @@
+[project]
+name = "livn"
+version = "0.1.0"
+description = "A testbed for learning to interact with in vitro neural networks"
+authors = [
+    { name = "Frithjof Gressmann", email = "fg14@illinois.edu" },
+    { name = "Ivan Raikov", email = "ivan.g.raikov@gmail.com" },
+]
+dependencies = [
+    "cleosim>=0.16.0",
+    "jaxtyping>=0.2.34",
+    "huggingface-hub[cli]>=0.3.1",
+    "pydantic>=2.11.3",
+    "pyarrow>=19.0.1",
+    "pandas>=2.2.3",
+    "gymnasium>=1.1.1",
+]
+readme = "README.md"
+requires-python = ">= 3.11"
+
+[project.scripts]
+livn = "livn.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = ["pytest>=8.3.3", "pytest-mpiexec>=0.0.1a3", "ruff>=0.11.5"]
+scaling = ["neuroh5 @ git+https://github.com/iraikov/neuroh5.git@569c307"]
+# backends
+neuron = [
+    "miv-simulator @ git+https://github.com/GazzolaLab/MiV-Simulator.git@4030598",
+]
+diffrax = [
+    "jax==0.5.3",
+    "equinox>=0.11.4",
+    "optimistix>=0.0.7",
+    "jaxtyping>=0.2.28",
+    "signax>=0.2.1",
+    "optax>=0.2.2",
+    "lineax>=0.0.5",
+    "diffrax>=0.7.0",
+]
+brian2 = []
+
+[tool.uv.workspace]
+members = ["systems", "benchmarks", 'visualization']
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/livn"]
+
+[[tool.uv.dependency-metadata]]
+name = "datasets"
+version = "3.6.0"
+requires-dist = ["dill>=0.3.9"]

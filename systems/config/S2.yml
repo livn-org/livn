@@ -1,0 +1,31 @@
+Definitions: !include _definitions.yml
+Geometry:
+  Parametric Surface:
+    Layer Extents:
+      SO: [[0.0, 0.0, 0.0], [400., 400., 40.0]]
+      SP: [[0.0, 0.0, 40.0], [400., 400., 60.0]]
+      SR: [[0.0, 0.0, 60.0], [400., 400., 80.0]]
+      SLM: [[0.0, 0.0, 80.0], [400., 400., 100.0]]
+  Cell Distribution:
+    EXC:
+      SO: 0
+      SP: 80
+      SR: 0
+      SLM: 0
+    INH:
+      SO: 5
+      SP: 10
+      SR: 5
+      SLM: 0
+Connection Generator:
+  Axon Extent:
+    EXC:
+      default:
+        width: [1000.0, 1000.0]
+        offset: [0, 0]
+    INH:
+      default:
+        width: [1000.0, 1000.0]
+        offset: [0, 0]
+  Synapses: !include _synapses.yml
+Cell Types: !include _cell_types.yml
