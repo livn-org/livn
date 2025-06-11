@@ -112,15 +112,17 @@ class ReducedCalciumSomaDendrite(Model):
 
         return h.Gfluct3(section), None
 
-    def neuron_noise_configure(self, population, mechanism, state, level):
-        mechanism.on = 1 if level > 0 else 0
-
+    def neuron_noise_configure(
+        self, population, mechanism, state, exc_level, inh_level
+    ):
         if population == "EXC":
-            mechanism.std_e = 0.0030 * level
+            mechanism.on = 1 if exc_level > 0 else 0
+            mechanism.std_e = 0.0030 * exc_level
             mechanism.std_i = 0
         else:
+            mechanism.on = 1 if inh_level > 0 else 0
             mechanism.std_e = 0
-            mechanism.std_i = 0.0066 * level
+            mechanism.std_i = 0.0066 * inh_level
 
     def neuron_default_noise(self, system: str, key: int = 0):
         return {
@@ -241,12 +243,14 @@ class ReducedCalciumSomaDendriteIfluct(ReducedCalciumSomaDendrite):
 
         return fluct, noiseRandObj
 
-    def neuron_noise_configure(self, kind, mechanism, state, level):
-        if kind == "EXC":
+    def neuron_noise_configure(
+        self, population, mechanism, state, exc_level, inh_level
+    ):
+        if population == "EXC":
             mechanism.m = 0.2
-            mechanism.s = 0.1 * level
+            mechanism.s = 0.1 * exc_level
             mechanism.tau = 2.5
         else:
             mechanism.m = -0.1
-            mechanism.s = 0.08 * level
+            mechanism.s = 0.08 * inh_level
             mechanism.tau = 1.5

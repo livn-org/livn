@@ -242,7 +242,7 @@ class Env(EnvProtocol):
                 "model_config": {
                     "Random Seeds": {"Intracellular Recording Sample": self.seed}
                 },
-                "coordinates_ns": "Coordinates",
+                "coordinates_ns": "Generated Coordinates",
             }
         )
 
@@ -370,11 +370,18 @@ class Env(EnvProtocol):
                     if gid in p:
                         cell = p[gid]
                         stim.append(h.Vector(st))
+
+                        if "VecStim" in getattr(cell, "hname", lambda: "")():
+                            # artificial STIM cell
+                            cell.play(stim[-1])
+                            break
+
                         secs = []
                         if hasattr(cell, "soma_list"):
                             secs = cell.soma_list
-                        else:
+                        elif hasattr(cell, "soma"):
                             secs.append(cell.soma)
+
                         for sec in secs:
                             sec.push()
                             if h.ismembrane("extracellular"):
@@ -447,20 +454,16 @@ class Env(EnvProtocol):
         return self
 
     def set_noise(self, exc: float = 1.0, inh: float = 1.0):
-        for kind, level in [("EXC", exc), ("INH", inh)]:
-            if kind not in self.cells:
-                logger.info(
-                    f"Rank {self.rank} has no {kind} cells; try reducing the number of ranks."
-                )
-                continue
-            for gid, cell in self.cells[kind].items():
+        for population, cells in self.cells.items():
+            for gid, cell in cells.items():
                 if not (self.pc.gid_exists(gid)):
                     continue
                 secs = []
                 if hasattr(cell, "soma_list"):
                     secs = cell.soma_list
-                else:
+                elif hasattr(cell, "soma"):
                     secs.append(cell.soma)
+
                 for idx, sec in enumerate(secs):
                     sec.push()
                     fluct, state = self._flucts.get(f"{gid}-{idx}", (None, None))
@@ -468,7 +471,9 @@ class Env(EnvProtocol):
                         fluct, state = self.model.neuron_noise_mechanism(sec(0.5))
                         self._flucts[f"{gid}-{idx}"] = (fluct, state)
 
-                    self.model.neuron_noise_configure(kind, fluct, state, level)
+                    self.model.neuron_noise_configure(
+                        population, fluct, state, exc, inh
+                    )
 
                     h.pop_section()
 
@@ -491,8 +496,9 @@ class Env(EnvProtocol):
             secs = []
             if hasattr(cell, "soma_list"):
                 secs = cell.soma_list
-            else:
+            elif hasattr(cell, "soma"):
                 secs.append(cell.soma)
+
             for sec in secs:
                 self.v_recs[gid].record(sec(0.5)._ref_v, dt)
                 break
