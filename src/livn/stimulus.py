@@ -1,4 +1,4 @@
-from livn.types import Array, Float
+from livn.types import Array, Float, Int
 
 
 class Stimulus:
@@ -6,11 +6,16 @@ class Stimulus:
         self,
         array: Float[Array, "timestep n_gids"] | None = None,
         dt: float = 1.0,
+        gids: Int[Array, "n_gids"] | None = None,
         **meta_data,
     ):
         self.array = array
         self.dt = dt
+        self.gids = gids
         self.meta_data = meta_data
+
+    def __iter__(self):
+        yield from zip(self.gids, self.array.T)
 
     @classmethod
     def from_arg(cls, stimulus) -> "Stimulus":

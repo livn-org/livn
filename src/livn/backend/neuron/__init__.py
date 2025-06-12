@@ -361,20 +361,26 @@ class Env(EnvProtocol):
         if stimulus is not None:
             stimulus = Stimulus.from_arg(stimulus)
 
+            if stimulus.gids is None:
+                stimulus.gids = self.system.gids
+
             stim = []  # prevent garbage collection
-            for gid, st in zip(self.system.gids, stimulus.array.T):
+            for gid, st in stimulus:
                 if not (self.pc.gid_exists(gid)):
                     continue
 
                 for p in self.cells.values():
                     if gid in p:
                         cell = p[gid]
-                        stim.append(h.Vector(st))
 
                         if "VecStim" in getattr(cell, "hname", lambda: "")():
                             # artificial STIM cell
-                            cell.play(stim[-1])
+                            print(
+                                f"Warning: Cell {gid} is a VecStim cell; use play() to induce spikes. Skipping stimulus ..."
+                            )
                             break
+
+                        stim.append(h.Vector(st))
 
                         secs = []
                         if hasattr(cell, "soma_list"):
