@@ -11,8 +11,9 @@ from miv_simulator.optimization import update_network_params
 from miv_simulator.synapses import SynapseManager
 from miv_simulator.utils import ExprClosure, from_yaml
 from miv_simulator.utils.neuron import configure_hoc
+from miv_simulator.network import init_input_cells
 from mpi4py import MPI
-from neuroh5.io import read_projection_names
+from neuroh5.io import read_projection_names, read_cell_attribute_info
 from neuron import h
 
 from livn.stimulus import Stimulus
@@ -93,6 +94,7 @@ class Env(EnvProtocol):
         # --- State
         self.cells_meta_data = None
         self.connections_meta_data = None
+        self.input_sources = None
 
         # --- Compat
 
@@ -303,6 +305,10 @@ class Env(EnvProtocol):
         projection_dict = self.comm.bcast(projection_dict, root=0)
         comm0.Free()
 
+        self.input_sources = {
+            pop_name: set() for pop_name in self.cells_meta_data["celltypes"].keys()
+        }
+
         class _binding:
             pass
 
@@ -319,8 +325,12 @@ class Env(EnvProtocol):
                 "biophys_cells": self.biophys_cells,
                 "gidset": self.gidset,
                 "recording_sets": self.recording_sets,
-                "microcircuit_inputs": False,
-                "use_cell_attr_gen": False,  # TODO
+                "microcircuit_inputs": True,
+                "microcircuit_input_sources": self.input_sources,
+                "spike_input_attribute_info": None,
+                "cell_selection": None,
+                "netclamp_config": None,
+                "use_cell_attr_gen": False,
                 "cleanup": False,
                 "projection_dict": projection_dict,
                 "Populations": self.system.connections_config["population_definitions"],
@@ -498,6 +508,9 @@ class Env(EnvProtocol):
             if not (self.pc.gid_exists(gid)):
                 continue
 
+            if "VecStim" in getattr(cell, "hname", lambda: "")():
+                continue
+
             self.v_recs[gid] = h.Vector()
             secs = []
             if hasattr(cell, "soma_list"):
@@ -510,3 +523,60 @@ class Env(EnvProtocol):
                 break
 
         return self
+
+    def apply_stimulus_from_h5(
+        self,
+        filepath: str,
+        namespace: str,
+        attribute: str = "Spike Train",
+        onset: int = 0,
+        io_size: int = 10,
+        microcircuit_inputs: bool = True,
+    ):
+        rank = self.comm.Get_rank()
+        if rank == 0:
+            color = 1
+        else:
+            color = 0
+        comm0 = self.comm.Split(color, 0)
+
+        spike_input_attribute_info = None
+        if rank == 0:
+            spike_input_attribute_info = read_cell_attribute_info(
+                filepath,
+                sorted(self.system.connections_config["population_definitions"].keys()),
+                comm=comm0,
+            )
+
+        spike_input_attribute_info = self.comm.bcast(spike_input_attribute_info, root=0)
+
+        comm0.Free()
+
+        class _binding:
+            pass
+
+        this = _binding()
+        this.__dict__.update(
+            {
+                "pc": self.pc,
+                "comm": self.comm,
+                "node_allocation": self.node_allocation,
+                "cells": self.cells,
+                "artificial_cells": self.artificial_cells,
+                "biophys_cells": self.biophys_cells,
+                "stimulus_onset": onset,
+                "data_file_path": self.system.files["cells"],
+                "celltypes": self.cells_meta_data["celltypes"],
+                "microcircuit_inputs": microcircuit_inputs,
+                "microcircuit_input_sources": self.input_sources,
+                "cell_selection": None,
+                "spike_input_attribute_info": spike_input_attribute_info,
+                "spike_input_ns": namespace,
+                "spike_input_path": filepath,
+                "cell_attribute_info": self.system.cells_meta_data.cell_attribute_info,
+                "spike_input_attr": attribute,
+                "io_size": io_size,
+            }
+        )
+
+        init_input_cells(this)
