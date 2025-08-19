@@ -7,13 +7,12 @@ authors = [
     { name = "Ivan Raikov", email = "ivan.g.raikov@gmail.com" },
 ]
 dependencies = [
-    "cleosim>=0.16.0",
-    "jaxtyping>=0.2.34",
+    "cleosim>=0.18.1",
+    "jaxtyping>=0.3.2",
     "huggingface-hub[cli]>=0.3.1",
     "pydantic>=2.11.3",
-    "pyarrow>=19.0.1",
-    "pandas>=2.2.3",
-    "gymnasium>=1.1.1",
+    "pandas>=2.3.1",
+    "gymnasium>=1.2.0",
 ]
 readme = "README.md"
 requires-python = ">= 3.11"
@@ -27,22 +26,25 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = ["pytest>=8.3.3", "pytest-mpiexec>=0.0.1a3", "ruff>=0.11.5"]
-scaling = ["neuroh5 @ git+https://github.com/iraikov/neuroh5.git@569c307"]
+scaling = ["neuroh5 @ git+https://github.com/iraikov/neuroh5.git@0567779"]
 # backends
 neuron = [
-    "miv-simulator @ git+https://github.com/GazzolaLab/MiV-Simulator.git@4030598",
+    "miv-simulator @ git+https://github.com/GazzolaLab/MiV-Simulator.git@20e4457",
 ]
 diffrax = [
-    "jax==0.5.3",
-    "equinox>=0.11.4",
-    "optimistix>=0.0.7",
-    "jaxtyping>=0.2.28",
+    "jax>=0.7.0",
+    "equinox>=0.13.0",
+    "optimistix>=0.0.10",
+    "jaxtyping>=0.3.2",
     "signax>=0.2.1",
-    "optax>=0.2.2",
-    "lineax>=0.0.5",
+    "optax>=0.2.5",
+    "lineax>=0.0.8",
     "diffrax>=0.7.0",
 ]
 brian2 = []
+
+[tool.uv]
+override-dependencies = ["jaxtyping>=0.3.2"]
 
 [tool.uv.workspace]
 members = ["systems", "benchmarks", 'visualization']

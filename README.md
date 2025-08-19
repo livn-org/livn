@@ -173,21 +173,24 @@ rl_env = LivnGym(
 ... # use rl_env like any other gymnasium environment
 ```
 
-Checkout the full reinforcement learning examples: 
+Checkout the full [reinforcement learning examples](benchmarks/rl.py): 
 
-- [Train SAC on the simulated livn system](benchmarks/rl.py)
-- [Pretrain using the livn dataset as pre-generated replay buffer](benchmarks/dataset_replay_rl.py) 
-
+```sh
+# Train SAC on the simulated livn system
+python benchmarks/rl.py
+# Pretrain using the livn dataset as pre-generated replay buffer
+python benchmarks/rl.py --replay
+```
 
 ## Advanced usage for research and development
 
 Clone this repo and get [uv](https://docs.astral.sh/uv/) to `uv sync`.
 
-Note that this repository has different `--package` dependencies. In particular, the project's code for the hippocampal C5 and C6 systems is hosted [here](https://github.com/GazzolaLab/MiV-Simulator).
+Note that this repository has different `--package` dependencies.
 
 ### Prerequisites
 
-If you use the NEURON backend for large-scale simulation, an MPI and HDF5 installation is required.
+If you use the NEURON backend for large-scale simulation, an MPI and HDF5 installation is required. Note that most of the NEURON backend code is hosted and documented [here](https://github.com/GazzolaLab/MiV-Simulator).
 
 Linux (Debian) 🐧 | Windows (WSL2) 🪟
 ```sh

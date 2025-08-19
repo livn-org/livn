@@ -9,13 +9,13 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "miv-simulator @ git+https://github.com/GazzolaLab/MiV-Simulator.git@4030598",
+    "miv-simulator @ git+https://github.com/GazzolaLab/MiV-Simulator.git@20e4457",
     "dmosopt @ git+https://github.com/iraikov/dmosopt.git@f034729",
     "machinable==4.10.6",
     "sqlean-py>=3.47.0",
     "omegaconf==2.4.0.dev3",
     "livn",
-    "pandas>=2.2.3",
+    "pandas>=2.3.1",
 ]
 
 [tool.uv.sources]

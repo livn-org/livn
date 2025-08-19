@@ -8,14 +8,7 @@ authors = [
 ]
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = [
-    "datasets==3.6.0",
-    "multiprocess",
-    "xxhash",
-    "spike-encoder",
-    "stable-baselines3>=2.6.0",
-    "systems",
-]
+dependencies = ["datasets==3.6.0", "spike-encoder", "systems"]
 
 [tool.uv.sources]
 systems = { workspace = true }
