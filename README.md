@@ -267,5 +267,12 @@ Requires `uv sync --package benchmarks` (see [benchmarks](./benchmarks) director
 
 To install all dependencies and package, you may use:
 ```sh
-uv sync --all-packages --group diffrax
+uv sync --all-packages --all-groups --all-extras
+```
+
+**Tests**
+
+You may need the following additional dependencies to run all pytested examples:
+```sh
+uv pip install pyarrow multiprocess xxhash
 ```
