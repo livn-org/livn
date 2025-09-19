@@ -11,6 +11,8 @@ if [ $# -lt 2 ]; then
     exit 1
 fi
 
+set -x
+
 PROJECT_DIRECTORY="$1"
 SYSTEM="$2"
 
@@ -130,3 +132,5 @@ fi
 . $SCRATCH/venv/bin/activate
 
 uv sync --all-packages --all-groups --all-extras --active
+
+echo "venvs successfully created"
