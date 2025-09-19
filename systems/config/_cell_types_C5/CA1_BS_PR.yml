@@ -1,0 +1,65 @@
+template: "BistratifiedCell"
+template class: livn.models.ca1.neuron.templates.PRN_neuron.PRN
+mechanism file:
+  PinskyRinzel:
+    Ltotal: 10.553665161132812
+    V_rest: -64.0
+    V_threshold: -41.0
+    cm_ratio: 5.082561016082764
+    dend_beta_Caconc: 0.016603905707597733
+    dend_d_Caconc: 7.461632251739502
+    dend_g_pas: 0.00836558360606432
+    dend_gmax_Ca: 0.8999999761581421
+    dend_gmax_KCa: 0.7960770130157471
+    e_pas: -62
+    gc: 50.0
+    global_cm: 3.0
+    global_diam: 10.0
+    ic_constant: -0.018395932391285896
+    pp: 0.19742479920387268
+    soma_g_pas: 0.004090635105967522
+    soma_gmax_K: 0.9541566371917725
+    soma_gmax_Na: 0.2721889019012451
+synapses:
+  density:
+    ## Bistratified Cell (BS) synapse density configuration
+    ## https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6782984/
+    apical:
+      excitatory:
+        SLM:
+          mean: 1.43
+          variance: 0.1
+        SR:
+          mean: 4.16
+          variance: 0.1
+        SP:
+          mean: 2.0
+          variance: 0.1
+      inhibitory:
+        SLM:
+          mean: 0.5
+          variance: 0.1
+        SR:
+          mean: 0.5
+          variance: 0.1
+        SP:
+          mean: 0.5
+          variance: 0.1
+    basal:
+      excitatory:
+        SO:
+          mean: 3.61
+          variance: 0.1
+      inhibitory:
+        SO:
+          mean: 1.0
+          variance: 0.1
+    soma:
+      inhibitory:
+        default:
+          mean: 0.18
+          variance: 0.1
+      excitatory:
+        default:
+          mean: 0.40
+          variance: 0.1

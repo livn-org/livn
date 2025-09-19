@@ -1,0 +1,59 @@
+template: "PVBasketCell"
+template class: livn.models.ca1.neuron.templates.PRN_neuron.PRN
+mechanism file:
+  PinskyRinzel:
+    Ltotal: 46.81887435913086
+    V_rest: -60.0
+    V_threshold: -37.0
+    cm_ratio: 7.531332969665527
+    dend_beta_Caconc: 0.09934773296117783
+    dend_d_Caconc: 20.0
+    dend_g_pas: 0.00023274960403796285
+    dend_gmax_Ca: 0.6907804012298584
+    dend_gmax_KCa: 0.9000998139381409
+    e_pas: -62
+    gc: 14.589327812194824
+    global_cm: 3.0
+    global_diam: 10.0
+    ic_constant: 0.007034894544631243
+    pp: 0.15574142336845398
+    soma_g_pas: 0.0051106843166053295
+    soma_gmax_K: 0.01589667610824108
+    soma_gmax_Na: 0.5907720923423767
+synapses:
+  density:
+    ## PV Basket Cell (PVBC) synapse density configuration
+    ## https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6782984/
+    apical:
+      excitatory:
+        SLM:
+          mean: 1.43
+          variance: 0.1
+        SR:
+          mean: 4.16
+          variance: 0.1
+      inhibitory:
+        SLM:
+          mean: 1.0
+          variance: 0.1
+        SR:
+          mean: 1.0
+          variance: 0.1
+    basal:
+      excitatory:
+        SO:
+          mean: 3.61
+          variance: 0.1
+      inhibitory:
+        SO:
+          mean: 1.0
+          variance: 0.1
+    soma:
+      inhibitory:
+        default:
+          mean: 0.18
+          variance: 0.1
+      excitatory:
+        default:
+          mean: 0.40
+          variance: 0.1

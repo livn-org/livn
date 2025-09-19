@@ -1,0 +1,69 @@
+template: "SCACell"
+template class: livn.models.ca1.neuron.templates.PR_neuron.PR
+mechanism file:
+  PinskyRinzel:
+    Ltotal: 10.171636581420898
+    V_rest: -65.0
+    V_threshold: -45.0
+    cm_ratio: 27.692306518554688
+    dend_aqs_KAHP: 0.18677577376365662
+    dend_beta_Caconc: 0.054931215941905975
+    dend_bq_KAHP: 0.8228415846824646
+    dend_d_Caconc: 11.05104923248291
+    dend_g_pas: 8.040411921683699e-05
+    dend_gmax_Ca: 0.539017379283905
+    dend_gmax_KAHP: 0.6957618594169617
+    dend_gmax_KCa: 0.8945456743240356
+    e_pas: -62
+    gc: 1.2968807220458984
+    global_cm: 3.0
+    global_diam: 10.0
+    ic_constant: -0.008129703172385774
+    pp: 0.17377467453479767
+    soma_g_pas: 0.002862526336684823
+    soma_gmax_K: 0.4092639684677124
+    soma_gmax_Na: 0.6486849784851074
+synapses:
+  density:
+    ## Schafer Collateral Associated synapse density configuration
+    ## https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6782984/
+    ## Calbindin
+    apical:
+      excitatory:
+        SR:
+          mean: 0.55
+          variance: 0.1
+        SLM:
+          mean: 0.55
+          variance: 0.1
+      inhibitory:
+        SR:
+          mean: 0.38
+          variance: 0.1
+        SLM:
+          mean: 0.38
+          variance: 0.1
+    basal:
+      excitatory:
+        SR:
+          mean: 0.75
+          variance: 0.1
+        SLM:
+          mean: 0.75
+          variance: 0.1
+      inhibitory:
+        SR:
+          mean: 0.28
+          variance: 0.1
+        SLM:
+          mean: 0.75
+          variance: 0.1
+    soma:
+      inhibitory:
+        default:
+          mean: 0.18
+          variance: 0.1
+      excitatory:
+        default:
+          mean: 0.13
+          variance: 0.1

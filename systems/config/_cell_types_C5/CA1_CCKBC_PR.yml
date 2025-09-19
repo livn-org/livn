@@ -1,0 +1,60 @@
+template: "CCKBasketCell"
+template class: livn.models.ca1.neuron.templates.PRN_neuron.PRN
+mechanism file:
+  PinskyRinzel:
+    Ltotal: 10.0
+    V_rest: -60.0
+    V_threshold: -43.0
+    cm_ratio: 30.033828735351562
+    dend_beta_Caconc: 0.10000000149011612
+    dend_d_Caconc: 2.2214114665985107
+    dend_g_pas: 0.0030704904347658157
+    dend_gmax_Ca: 0.881352961063385
+    dend_gmax_KCa: 0.9146328568458557
+    e_pas: -62
+    gc: 31.347007751464844
+    global_cm: 3.0
+    global_diam: 10.0
+    ic_constant: -0.02939414605498314
+    pp: 0.6777297854423523
+    soma_g_pas: 0.0006370501942001283
+    soma_gmax_K: 0.29156768321990967
+    soma_gmax_Na: 0.3843974769115448
+synapses:
+  density:
+    ## CCKBC synapse density configuration.
+    ## https://pubmed.ncbi.nlm.nih.gov/15016082/
+    apical:
+      excitatory:
+        SLM:
+          mean: 0.89
+          variance: 0.1
+        SR:
+          mean: 0.72
+          variance: 0.1
+
+      inhibitory:
+        SLM:
+          mean: 0.61
+          variance: 0.1
+        SR:
+          mean: 0.45
+          variance: 0.1
+    basal:
+      excitatory:
+        SO:
+          mean: 0.84
+          variance: 0.1
+      inhibitory:
+        SO:
+          mean: 0.62
+          variance: 0.1
+    soma:
+      inhibitory:
+        default:
+          mean: 0.50
+          variance: 0.1
+      excitatory:
+        default:
+          mean: 0.68
+          variance: 0.1

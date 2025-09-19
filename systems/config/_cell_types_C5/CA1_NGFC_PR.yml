@@ -1,0 +1,48 @@
+template: "NGFCell"
+template class: livn.models.ca1.neuron.templates.PR_neuron.PR
+mechanism file:
+  PinskyRinzel:
+    Ltotal: 5.615379333496094
+    V_rest: -75.0
+    V_threshold: -44.0
+    cm_ratio: 20.532712936401367
+    dend_aqs_KAHP: 2.0e-05
+    dend_beta_Caconc: 0.075
+    dend_bq_KAHP: 0.001
+    dend_d_Caconc: 10.0
+    dend_g_pas: 0.004981560166925192
+    dend_gmax_Ca: 0.032290589064359665
+    dend_gmax_KAHP: 0.24445414543151855
+    dend_gmax_KCa: 0.02163669839501381
+    e_pas: -72.0
+    gc: 50.0
+    global_cm: 3.0
+    global_diam: 10.0
+    ic_constant: 0.00891246646642685
+    pp: 0.6746867895126343
+    soma_g_pas: 0.0013296796241775155
+    soma_gmax_K: 0.13620039820671082
+    soma_gmax_Na: 0.8999999761581421
+synapses:
+  density:
+    ## NGFC cell synapse density configuration
+    # number of connections obtained from conndata_211.dat
+    # dendrite length assumped to be 1000 um https://www.ncbi.nlm.nih.gov/pmc/articles/PMC2230758/
+    apical:
+      excitatory:
+        SLM:
+          mean: 1.04
+          variance: 0.1
+      inhibitory:
+        SLM:
+          mean: 0.89
+          variance: 0.1
+    basal:
+      excitatory:
+        SLM:
+          mean: 1.04
+          variance: 0.1
+      inhibitory:
+        SLM:
+          mean: 0.89
+          variance: 0.1

@@ -1,0 +1,66 @@
+template: "IvyCell"
+template class: livn.models.ca1.neuron.templates.PRN_neuron.PRN
+mechanism file:
+  PinskyRinzel:
+    Ltotal: 12.09574031829834
+    V_rest: -65.0
+    V_threshold: -42.0
+    cm_ratio: 41.65549850463867
+    dend_beta_Caconc: 0.009999999776482582
+    dend_d_Caconc: 7.725359916687012
+    dend_g_pas: 0.0
+    dend_gmax_Ca: 0.7583686113357544
+    dend_gmax_KCa: 1.0
+    e_pas: -62
+    gc: 12.292240142822266
+    global_cm: 3.0
+    global_diam: 10.0
+    ic_constant: -0.0005428391741588712
+    pp: 0.4773494005203247
+    soma_g_pas: 0.0018907585181295872
+    soma_gmax_K: 0.7310701012611389
+    soma_gmax_Na: 0.4426920711994171
+synapses:
+  density:
+    ## Ivy cell synapse density configuration
+    # Number of excitatory and inhibitory connections obtained from conndata_211.data
+    # dendritic length estimated from https://pubmed.ncbi.nlm.nih.gov/18367092/ of 1260 microns
+    apical:
+      excitatory:
+        SR:
+          mean: 3.16
+          variance: 0.1
+        SP:
+          mean: 3.16
+          variance: 0.1
+      inhibitory:
+        SR:
+          mean: 0.60
+          variance: 0.10
+        SP:
+          mean: 0.60
+          variance: 0.10
+    basal:
+      excitatory:
+        SO:
+          mean: 3.16
+          variance: 0.1
+        SP:
+          mean: 3.16
+          variance: 0.1
+      inhibitory:
+        SP:
+          mean: 0.60
+          variance: 0.1
+        SO:
+          mean: 0.60
+          variance: 0.1
+    soma:
+      excitatory:
+        default:
+          mean: 10.0
+          variance: 0.1
+      inhibitory:
+        default:
+          mean: 1.0
+          variance: 0.1

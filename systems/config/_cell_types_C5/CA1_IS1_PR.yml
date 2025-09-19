@@ -1,0 +1,70 @@
+template: "ISCell"
+template class: livn.models.ca1.neuron.templates.PR_neuron.PR
+mechanism file:
+  PinskyRinzel:
+    Ltotal: 11.10551643371582
+    V_rest: -65.0
+    V_threshold: -42.0
+    cm_ratio: 26.322179794311523
+    dend_aqs_KAHP: 2.0e-05
+    dend_beta_Caconc: 0.075
+    dend_bq_KAHP: 0.001
+    dend_d_Caconc: 13.0
+    dend_g_pas: 0.002428596606478095
+    dend_gmax_Ca: 0.05944635719060898
+    dend_gmax_KAHP: 0.1770450323820114
+    dend_gmax_KCa: 0.031563084572553635
+    e_pas: -62
+    gc: 40.024681091308594
+    global_cm: 3.0
+    global_diam: 10.0
+    ic_constant: 0.009580999666592493
+    pp: 0.8737615942955017
+    soma_g_pas: 0.0016521723009645939
+    soma_gmax_K: 0.9900915622711182
+    soma_gmax_Na: 0.7263956665992737
+synapses:
+  density:
+    ## Schafer Collateral Associated synapse density configuration
+    ## https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6782984/
+    ## Calretinin
+    basal:
+      excitatory:
+        SR:
+          mean: 0.94
+          variance: 0.1
+        SO:
+          mean: 0.94
+          variance: 0.1
+
+      inhibitory:
+        SR:
+          mean: 0.18
+          variance: 0.1
+        SO:
+          mean: 0.18
+          variance: 0.1
+    apical:
+      excitatory:
+        SO:
+          mean: 0.61
+          variance: 0.1
+        SR:
+          mean: 0.61
+          variance: 0.1
+      inhibitory:
+        SO:
+          mean: 0.20
+          variance: 0.1
+        SR:
+          mean: 0.20
+          variance: 0.1
+    soma:
+      inhibitory:
+        default:
+          mean: 0.12
+          variance: 0.1
+      excitatory:
+        default:
+          mean: 0.14
+          variance: 0.1

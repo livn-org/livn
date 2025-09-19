@@ -281,6 +281,11 @@ class Env(EnvProtocol):
         cell_filepath = self.system.files["cells"]
         io_size: int = 0
 
+        # TODO: move into livn
+        microcircuit_inputs = False
+        if self.system.name == "C5":
+            microcircuit_inputs = True
+
         if not self.cells_meta_data:
             raise RuntimeError("Please load the cells first using load_cells()")
 
@@ -325,7 +330,7 @@ class Env(EnvProtocol):
                 "biophys_cells": self.biophys_cells,
                 "gidset": self.gidset,
                 "recording_sets": self.recording_sets,
-                "microcircuit_inputs": True,
+                "microcircuit_inputs": microcircuit_inputs,
                 "microcircuit_input_sources": self.input_sources,
                 "spike_input_attribute_info": None,
                 "cell_selection": None,
@@ -339,6 +344,12 @@ class Env(EnvProtocol):
                 "connection_velocity": defaultdict(lambda: 250),
                 "SWC_Types": config.SWCTypesDef.__members__,
                 "celltypes": self.cells_meta_data["celltypes"],
+                "cells": self.cells,
+                "artificial_cells": self.artificial_cells,
+                "dt": 0.025,  # TODO: hoist into run
+                "t_vec": self.t_vec,
+                "id_vec": self.id_vec,
+                "t_rec": self.t_rec,
             }
         )
         self.synapse_manager = SynapseManager(
@@ -564,6 +575,7 @@ class Env(EnvProtocol):
                 "cells": self.cells,
                 "artificial_cells": self.artificial_cells,
                 "biophys_cells": self.biophys_cells,
+                "stimulus_config": {},
                 "stimulus_onset": onset,
                 "data_file_path": self.system.files["cells"],
                 "celltypes": self.cells_meta_data["celltypes"],
@@ -571,8 +583,9 @@ class Env(EnvProtocol):
                 "microcircuit_input_sources": self.input_sources,
                 "cell_selection": None,
                 "spike_input_attribute_info": spike_input_attribute_info,
-                "spike_input_ns": namespace,
+                "spike_input_namespaces": [namespace],
                 "spike_input_path": filepath,
+                "n_trials": 1,
                 "cell_attribute_info": self.system.cells_meta_data.cell_attribute_info,
                 "spike_input_attr": attribute,
                 "io_size": io_size,

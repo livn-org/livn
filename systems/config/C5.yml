@@ -1,0 +1,218 @@
+Definitions:
+  Synapse Mechanisms:
+    AMPA: 0
+    GABA_A: 1
+    GABA_B: 2
+    NMDA: 30
+  Layers:
+    Hilus: 0
+    GCL: 1
+    IML: 2
+    MML: 3
+    OML: 4
+    SO: 5
+    SP: 6
+    SL: 7
+    SR: 8
+    SLM: 9
+  Populations:
+    PYR: 100
+    PVBC: 101
+    AAC: 103
+    BS: 104
+    CCKBC: 105
+    IVY: 106
+    NGFC: 107
+    OLM: 108
+    SCA: 109
+    IS1: 120
+    IS2: 121
+    IS3: 122
+    CA3: 111
+    CA2: 112
+    EC: 113
+Geometry:
+  Parametric Surface:
+    Origin:
+      U: median
+      V: median
+      L: max
+    Layer Extents:
+      SO: [[0.0, 0.0, 0.0], [4000.0, 4000.0, 100.0]]
+      SP: [[0.0, 0.0, 100.0], [4000.0, 4000.0, 150.0]]
+      SR: [[0.0, 0.0, 150.0], [4000.0, 4000.0, 350.0]]
+      SLM: [[0.0, 0.0, 350.0], [4000.0, 4000.0, 450.0]]
+    Rotation: [0.0, 0.0, 0.0]
+  Cell Constraints:
+    PYR:
+      SP: [100., 150.] # Lee, ..., Soltesz. Neuron 2014
+    PVBC:
+      SR: [150., 200.0] # Booker, Vida. Cell & Tissue Research 2018
+    CCKBC:
+      SLM: [350.0, 370.0] # Vida, ..., Buhl. J. Physiology 1998
+    AAC:
+      SO: [80.0, 100.0] # Baude, ..., Klausberger Cerebral Cortex 2007
+    SCA:
+      SR: [330.0, 350.0] # Vida, ..., Buhl. J. Physiology 1998
+  Cell Distribution:
+    PYR:
+      SO: 0
+      SP: 311500
+      SR: 0
+      SLM: 0
+    PVBC: #5530
+      SO: 1320
+      SP: 3880
+      SR: 330
+      SLM: 0
+    AAC: #1380
+      SO: 350
+      SP: 1030
+      SR: 0
+      SLM: 0
+    BS: #2210
+      SO: 530
+      SP: 1550
+      SR: 130
+      SLM: 0
+    CCKBC: # 3600
+      SO: 780
+      SP: 940
+      SR: 1170
+      SLM: 710
+    IVY: # 8810
+      SO: 980
+      SP: 5410
+      SR: 2420
+      SLM: 0
+    NGFC: #3580
+      SO: 0
+      SP: 0
+      SR: 610
+      SLM: 2970
+    OLM: #1640
+      SO: 1640
+      SP: 0
+      SR: 0
+      SLM: 0
+    SCA: #400
+      SO: 0
+      SP: 0
+      SR: 400
+      SLM: 0
+    IS1: #4250
+      SO: 780
+      SP: 1800
+      SR: 780
+      SLM: 890
+    IS2: #1970
+      SO: 0
+      SP: 480
+      SR: 450
+      SLM: 890
+    IS3: #1250
+      SO: 0
+      SP: 910
+      SR: 220
+      SLM: 120
+    CA3:
+      SO: 0
+      SP: 0
+      SR: 204700
+      SLM: 0
+    CA2:
+      SO: 40000
+      SP: 0
+      SR: 0
+      SLM: 0
+    EC:
+      SO: 0
+      SP: 0
+      SR: 0
+      SLM: 250000
+Connection Generator:
+  Axon Extent:
+    # Axonal extent in um [S-T, M-L]
+    EC:
+      default:
+        width: [2000.0, 2000.0]
+        offset: [0, 0]
+    CA3:
+      default:
+        width: [2000.0, 2000.0]
+        offset: [0, 0]
+    CA2:
+      default:
+        width: [2000.0, 2000.0]
+        offset: [0, 0]
+    PYR:
+      default:
+        width: [1000.0, 1000.0]
+        offset: [0, 0]
+    PVBC: # soma in layer pyramidale, PV+
+      default:
+        width: [1185.0, 1042.0]
+        offset: [0, 0]
+    AAC: # soma in layer pyramidale, PV+
+      default:
+        width: [600.0, 850.0] # double check Li et al 1992
+        offset: [0, 0]
+    BS: # soma in layer pyramidale, PV+
+      default:
+        width: [1530.0, 1150.0]
+        offset: [0, 0]
+    CCKBC: # soma in pyramidale, CCK+
+      default:
+        width: [1000.0, 1000.0] # not well known
+        offset: [0, 0]
+    SCA: # soma in radiatum, CCK+
+      default:
+        width: [1000.0, 1000.0] # not well known
+        offset: [0, 0]
+    NGFC: # soma in layer LM, NOS, nPY
+      default:
+        width: [1200.0, 500.0]
+        offset: [0, 0]
+    IVY: # soma in layer pyramidale, NOS, nPY
+      default:
+        width: [1310.0, 750.0]
+        offset: [0, 0]
+    OLM: # soma in layer oriens, SOM+
+      default:
+        width: [840.0, 500.0]
+        offset: [0, 0]
+    IS1:
+      default:
+        width: [800.0, 150.0]
+        offset: [0, 0]
+    IS2:
+      default:
+        width: [800.0, 150.0]
+        offset: [0, 0]
+    IS3:
+      default:
+        width: [800.0, 150.0]
+        offset: [0, 0]
+  Synapses: !include _synapses_C5.yml
+Cell Types:
+  PYR: !include _cell_types_C5/CA1_PYR_PR.yml
+  PVBC: !include _cell_types_C5/CA1_PVBC_PR.yml
+  CCKBC: !include _cell_types_C5/CA1_CCKBC_PR.yml
+  AAC: !include _cell_types_C5/CA1_AAC_PR.yml
+  BS: !include _cell_types_C5/CA1_BS_PR.yml
+  IS1: !include _cell_types_C5/CA1_IS1_PR.yml
+  IS2: !include _cell_types_C5/CA1_IS2_PR.yml
+  IS3: !include _cell_types_C5/CA1_IS3_PR.yml
+  IVY: !include _cell_types_C5/CA1_IVY_PR.yml
+  NGFC: !include _cell_types_C5/CA1_NGFC_PR.yml
+  OLM: !include _cell_types_C5/CA1_OLM_PR.yml
+  SCA: !include _cell_types_C5/CA1_SCA_PR.yml
+  EC:
+    template: VecStim
+    synapses: {}
+  CA2:
+    template: VecStim
+    synapses: {}
+  CA3:
+    template: VecStim
+    synapses: {}
