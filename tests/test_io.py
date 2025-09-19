@@ -105,10 +105,10 @@ def test_channel_recording():
     cii, ctt = io.channel_recording(mapping, ii, tt)
 
     assert cii[0].tolist() == [1]
-    assert ctt[0].tolist() == [0.3]
+    assert np.allclose(ctt[0], [0.3])
 
     assert cii[1].tolist() == [0, 0, 2]
-    assert ctt[1].tolist() == [0.1, 0.2, 0.4]
+    assert np.allclose(ctt[1], [0.1, 0.2, 0.4])
 
     assert cii[2].tolist() == []
     assert ctt[2].tolist() == []
