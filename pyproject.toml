@@ -29,10 +29,11 @@ dev = ["pytest>=8.3.3", "pytest-mpiexec>=0.0.1a3", "ruff>=0.11.5"]
 scaling = ["neuroh5 @ git+https://github.com/iraikov/neuroh5.git@b9a0897"]
 # backends
 neuron = [
-    "miv-simulator @ git+https://github.com/GazzolaLab/MiV-Simulator.git@d5496e8",
+    "miv-simulator @ git+https://github.com/GazzolaLab/MiV-Simulator.git@178034e",
 ]
 diffrax = [
-    "jax>=0.7.0",
+    "jax>=0.7.2; platform_system == 'Darwin'",
+    "jax[cuda]>=0.7.2; platform_system != 'Darwin'",
     "equinox>=0.13.0",
     "optimistix>=0.0.10",
     "jaxtyping>=0.3.2",
@@ -54,8 +55,3 @@ allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/livn"]
-
-[[tool.uv.dependency-metadata]]
-name = "datasets"
-version = "3.6.0"
-requires-dist = ["dill>=0.3.9"]
