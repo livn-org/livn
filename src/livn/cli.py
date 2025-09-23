@@ -31,5 +31,17 @@ def main(args: list | None = None):
 
         return systems_cli(args)
 
+    if action == "benchmarks":
+        sys.path.insert(0, "")
+        try:
+            from benchmarks.cli import main as benchmarks_cli
+        except ModuleNotFoundError:
+            print(
+                "Module not found. Is benchmarks installed? (uv sync --package benchmarks)"
+            )
+            return 0
+
+        return benchmarks_cli(args)
+
     print("Invalid argument")
     return 128

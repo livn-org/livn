@@ -173,13 +173,13 @@ rl_env = LivnGym(
 ... # use rl_env like any other gymnasium environment
 ```
 
-Checkout the full [reinforcement learning examples](benchmarks/rl.py): 
+Checkout the full [reinforcement learning examples](examples/rl.py): 
 
 ```sh
 # Train SAC on the simulated livn system
-python benchmarks/rl.py
+python examples/rl.py
 # Pretrain using the livn dataset as pre-generated replay buffer
-python benchmarks/rl.py --replay
+python examples/rl.py --replay
 ```
 
 ## Advanced usage for research and development

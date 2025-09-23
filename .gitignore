@@ -9,6 +9,7 @@ tests/tmp
 *.pkl
 
 systems/interface/remotes
+benchmarks/interface/remotes
 
 .ruff_cache
 

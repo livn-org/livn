@@ -6,7 +6,7 @@
 #   "multiprocess",
 #   "xxhash",
 #   "stable-baselines3>=2.6.0",
-#   "datasets==3.6.0",
+#   "datasets",
 #   "machinable",
 # ]
 # ///
