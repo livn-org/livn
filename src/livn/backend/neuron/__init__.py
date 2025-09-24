@@ -128,6 +128,11 @@ class Env(EnvProtocol):
         self.v_recs = {}
         self.v_recs_dt = {}
 
+        # Membrane current recordings per gid
+        self.i_recs = {}
+        self.i_recs_dt = {}
+        self.i_area = {}  # membrane surface area (cm^2) for absolute current conversion
+
         self.t = 0
 
     def _clear(self):
@@ -136,6 +141,8 @@ class Env(EnvProtocol):
         self.t_rec.resize(0)
         for v_rec in self.v_recs.values():
             v_rec.resize(0)
+        for i_rec in self.i_recs.values():
+            i_rec.resize(0)
 
     def init(self):
         self._load_cells()
@@ -434,9 +441,7 @@ class Env(EnvProtocol):
         h.finitialize(h.v_init)
 
         if verbose:
-            logger.info(f"*** Completed finitialize")
-
-        t_start = self.t
+            logger.info("*** Completed finitialize")
 
         if verbose:
             logger.info(f"*** Simulating {duration} ms")
@@ -534,6 +539,93 @@ class Env(EnvProtocol):
                 break
 
         return self
+
+    def _record_potential(self, population: str, dt: float) -> "Env":
+        """Record transmembrane current (i_membrane) at soma midpoint for each cell"""
+        if population not in self.cells:
+            logger.info(
+                f"Rank {self.rank} has no cells; try reducing the number of ranks."
+            )
+            return
+
+        try:
+            h.cvode.use_fast_imem(1)
+        except Exception:
+            pass
+
+        self.i_recs_dt[population] = dt
+
+        for gid, cell in self.cells[population].items():
+            if not (self.pc.gid_exists(gid)):
+                continue
+
+            if "VecStim" in getattr(cell, "hname", lambda: "")():
+                continue
+
+            self.i_recs[gid] = h.Vector()
+            secs = []
+            if hasattr(cell, "soma_list"):
+                secs = cell.soma_list
+            elif hasattr(cell, "soma"):
+                secs.append(cell.soma)
+
+            for sec in secs:
+                try:
+                    self.i_recs[gid].record(sec(0.5)._ref_i_membrane, dt)
+                    try:
+                        area_um2 = h.area(0.5, sec=sec)
+                    except Exception:
+                        area_um2 = 0.0
+                    self.i_area[int(gid)] = float(area_um2) * 1e-8
+                except Exception:
+                    pass
+                break
+
+        return self
+
+    def membrane_current(self):
+        """Return recorded membrane currents as [timestep, n_neurons] array.
+
+        Neuron order corresponds to self.system.neuron_coordinates[:, 0] (gid order)
+        where cells without recordings are filled with zeros
+        """
+        if len(self.i_recs) == 0:
+            return None
+
+        coords = getattr(self.system, "neuron_coordinates", None)
+        if coords is None:
+            recs = [rec.as_numpy() for _, rec in sorted(self.i_recs.items())]
+            return np.column_stack(recs) if len(recs) else None
+
+        gids = np.asarray(coords)[:, 0].astype(np.uint32)
+        gid_to_index = {int(g): idx for idx, g in enumerate(gids)}
+
+        any_rec = next(iter(self.i_recs.values()))
+        T = len(any_rec)
+        n_neurons = len(gids)
+        currents = np.zeros((T, n_neurons), dtype=np.float32)
+
+        for gid, rec in self.i_recs.items():
+            idx = gid_to_index.get(int(gid))
+            if idx is None:
+                continue
+            arr = rec.as_numpy()
+            # Convert current density (mA/cm^2) to absolute current (μA):
+            # I_μA = (i_membrane_mA_per_cm2) * (area_cm2) * 1000
+            area_cm2 = float(self.i_area.get(int(gid), 0.0))
+            if area_cm2 > 0.0:
+                arr = arr * area_cm2 * 1000.0
+            if len(arr) != T:
+                # pad or truncate to T
+                if len(arr) < T:
+                    pad = np.zeros(T, dtype=np.float32)
+                    pad[: len(arr)] = arr
+                    arr = pad
+                else:
+                    arr = arr[:T]
+            currents[:, idx] = arr
+
+        return currents
 
     def apply_stimulus_from_h5(
         self,

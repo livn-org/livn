@@ -203,6 +203,23 @@ class Env(Protocol):
 
     def _record_voltage(self, population: str, dt: float) -> Self: ...
 
+    def record_potential(
+        self, population: str | list | tuple | None = None, dt: float = 0.1
+    ) -> Self:
+        """Enable membrane current recording for population"""
+        if population is None:
+            population = self.system.populations
+        if isinstance(population, (list, tuple)):
+            for p in population:
+                self.record_potential(p, dt=dt)
+            return self
+
+        self._record_potential(population, dt)
+
+        return self
+
+    def _record_potential(self, population: str, dt: float) -> Self: ...
+
     def run(
         self,
         duration,
@@ -217,6 +234,14 @@ class Env(Protocol):
     ]:
         """Run the simulation"""
         ...
+
+    def membrane_current(self) -> Float[Array, "timestep n_neurons"]:
+        """Return recorded membrane currents arranged by neuron id index."""
+        ...
+
+    def potential_recording(self) -> Float[Array, "timestep n_channels"]:
+        distances = self.io.distances(self.system.neuron_coordinates)
+        return self.io.potential_recording(distances, self.membrane_current())
 
     def clear(self) -> Self:
         """Discard the simulation and reset to t=0"""

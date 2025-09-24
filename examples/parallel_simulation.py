@@ -27,6 +27,7 @@ env = Env(system, model, mea).init()
 env.apply_model_defaults()
 env.record_spikes()
 env.record_voltage()
+env.record_potential()
 
 
 warmup = 0
@@ -44,6 +45,9 @@ stimulus = env.cell_stimulus(inputs)
 
 # Run with stimulation
 it, t, iv, v = env.run(t_end, stimulus=stimulus)
+
+# per-rank electrode potential, sum-reduced
+p = P.reduce_sum(env.potential_recording(), all=True)
 
 it, t = it[t >= warmup], t[t >= warmup] - warmup
 t_end = t_end - warmup
@@ -96,3 +100,15 @@ if P.is_root():
     plt.legend()
     plt.tight_layout()
     plt.savefig("traces.png")
+
+    plt.figure(figsize=(12, 6))
+    timesteps = p.shape[0]
+    for ch in range(p.shape[1]):
+        plt.plot(np.arange(timesteps), p[:, ch], label=f"Ch {ch}", alpha=0.7)
+    plt.xlabel("Time (samples)")
+    plt.ylabel("Electrode potential (µV)")
+    plt.title("Electrode Potentials per Channel")
+    if p.shape[1] <= 8:
+        plt.legend(ncol=2)
+    plt.tight_layout()
+    plt.savefig("potentials.png")

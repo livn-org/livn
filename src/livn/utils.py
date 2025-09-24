@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 def lnp() -> "np":
     from livn.backend import backend
 
-    if backend() in ["diffrax"]:
+    if "ax" in backend():
         import jax.numpy as np
     else:
         import numpy as np
@@ -26,6 +26,25 @@ def merge_array(data):
     np = lnp()
     filtered = [x for x in data if x is not None and len(x) > 0]
     return np.concatenate(filtered) if filtered else np.array([])
+
+
+def sum_array(data):
+    if data is None:
+        return None
+    np = lnp()
+    filtered = [x for x in data if x is not None and getattr(x, "size", 0) > 0]
+    if not filtered:
+        return np.array([])
+
+    try:
+        stacked = np.stack(filtered, axis=0)
+        return stacked.sum(axis=0)
+    except Exception:
+        # iterative fallback
+        result = np.array(filtered[0], copy=True)
+        for x in filtered[1:]:
+            result = result + x
+        return result
 
 
 def merge_dict(data: list[dict[int, Array]]):
@@ -45,6 +64,20 @@ def merge_dict(data: list[dict[int, Array]]):
     return merged_dict
 
 
+def sum_dict(data: list[dict[int, Array]]):
+    if isinstance(data, collections.abc.Mapping):
+        return data
+
+    reduced: dict[int, Array] = {}
+    for d in data:
+        for k, v in d.items():
+            if k in reduced:
+                reduced[k] = reduced[k] + v
+            else:
+                reduced[k] = v
+    return reduced
+
+
 def merge(*data):
     results = []
     for d in data:
@@ -54,6 +87,89 @@ def merge(*data):
             results.append(merge_dict(d if isinstance(d, list) else [d]))
         else:
             results.append(merge_array(d))
+
+    if len(data) == 1:
+        return results[0]
+
+    return tuple(results)
+
+
+def reduce_sum(
+    *data,
+    comm: Optional["MPI.Intracomm"] = None,
+    root: int = 0,
+    all: bool = False,
+):
+    try:
+        from mpi4py import MPI
+    except ImportError:
+        MPI = False
+
+    import numpy as _np
+    import builtins as _builtins
+
+    def _mpi_sum(buf):
+        if comm.Get_size() == 1:
+            return buf
+
+        flat = _np.ravel(buf)
+        recv_flat = _np.empty_like(flat) if (all or comm.Get_rank() == root) else None
+        if all:
+            comm.Allreduce(flat, recv_flat, op=MPI.SUM)
+            return recv_flat.reshape(buf.shape)
+        else:
+            comm.Reduce(flat, recv_flat, op=MPI.SUM, root=root)
+            return recv_flat.reshape(buf.shape) if comm.Get_rank() == root else None
+
+    results = []
+    for d in data:
+        if d is None:
+            results.append(None)
+            continue
+
+        # dict reduce
+        if isinstance(d, dict) or (
+            isinstance(d, list) and _builtins.all(isinstance(x, dict) for x in d)
+        ):
+            results.append(sum_dict(d if isinstance(d, list) else [d]))
+            continue
+
+        # local list reduce
+        if isinstance(d, (list, tuple)):
+            results.append(sum_array(d))
+            continue
+
+        if MPI:
+            if comm is None:
+                comm = MPI.COMM_WORLD
+
+            try:
+                # TODO: we should fall back on mpi4jax if available
+                sendbuf = _np.asarray(d)
+            except Exception:
+                # conversion failed (e.g. jax array is not numpy)
+                if comm.Get_size() > 1:
+                    # "failing" with None
+                    reduced = None if not all else None
+                else:
+                    reduced = d
+            else:
+                if isinstance(sendbuf, _np.ndarray) and sendbuf.dtype == _np.dtype("O"):
+                    try:
+                        local = _np.array(d, dtype=_np.float64)
+                    except Exception:
+                        if comm.Get_size() > 1:
+                            reduced = None if not all else None
+                        else:
+                            reduced = d
+                    else:
+                        reduced = _mpi_sum(local)
+                else:
+                    reduced = _mpi_sum(sendbuf)
+        else:
+            reduced = d
+
+        results.append(reduced)
 
     if len(data) == 1:
         return results[0]
@@ -148,6 +264,15 @@ class P:
     @staticmethod
     def merge(*data):
         return merge(*data)
+
+    @staticmethod
+    def reduce_sum(
+        *data,
+        comm: Optional["MPI.Intracomm"] = None,
+        root: int = 0,
+        all: bool = False,
+    ):
+        return reduce_sum(*data, comm=comm, root=root, all=all)
 
 
 def serialize(obj):

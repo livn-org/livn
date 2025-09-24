@@ -145,3 +145,86 @@ def test_utils_P_parallel(mpiexec_n):
     bb, ba = P.broadcast(b, a)
     assert bb == {"X": [0]}
     assert ba == [0]
+
+
+def test_utils_reduce_sum_no_mpi(monkeypatch):
+    im = __import__
+
+    def mock_import(*args, **kwargs):
+        if args[0] == "mpi4py":
+            raise ImportError("No module named 'mpi4py'")
+        return im(*args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", mock_import)
+
+    # without MPI, reduce_sum should behave locally
+    arr = np.array([1, 2, 3])
+    assert np.array_equal(P.reduce_sum(arr), arr)
+
+    # local list reduce sums along axis 0
+    assert np.array_equal(
+        P.reduce_sum([np.array([1, 2]), np.array([3, 4])]), np.array([4, 6])
+    )
+
+    # dicts are summed locally
+    d = {1: np.array([1, 2])}
+    rd_local = P.reduce_sum(d)
+    assert set(rd_local.keys()) == {1}
+    assert np.array_equal(rd_local[1], np.array([1, 2]))
+
+    # multiple inputs return a tuple
+    ra, rd = P.reduce_sum(arr, d)
+    assert np.array_equal(ra, arr)
+    assert set(rd.keys()) == {1}
+    assert np.array_equal(rd[1], np.array([1, 2]))
+
+
+@pytest.mark.mpiexec(timeout=10)
+@pytest.mark.parametrize(
+    "mpiexec_n",
+    [
+        1,
+        2,
+        4,
+    ],
+)
+def test_utils_reduce_sum_parallel(mpiexec_n):
+    rank = MPI.COMM_WORLD.Get_rank()
+
+    # arrays: root-only reduction
+    arr = np.array([rank, 1], dtype=np.int64)
+    reduced_root = P.reduce_sum(arr)
+    if P.is_root():
+        expected = np.array([sum(range(mpiexec_n)), mpiexec_n])
+        assert np.array_equal(reduced_root, expected)
+    else:
+        assert reduced_root is None
+
+    # arrays: all-reduce on all ranks
+    reduced_all = P.reduce_sum(arr, all=True)
+    expected = np.array([sum(range(mpiexec_n)), mpiexec_n])
+    assert np.array_equal(reduced_all, expected)
+
+    # scalars: all-reduce returns the sum of ranks
+    scalar_all = P.reduce_sum(rank, all=True)
+    assert np.asarray(scalar_all).item() == sum(range(mpiexec_n))
+
+    # scalars: root-only reduction
+    scalar_root = P.reduce_sum(rank)
+    if P.is_root():
+        assert np.asarray(scalar_root).item() == sum(range(mpiexec_n))
+    else:
+        assert scalar_root is None
+
+    # multiple inputs
+    vec_all, one_all = P.reduce_sum(arr, 1, all=True)
+    assert np.array_equal(vec_all, expected)
+    assert np.asarray(one_all).item() == mpiexec_n
+
+    # non-numpy objects
+    obj = np.array([float(rank), 2.0], dtype=object)
+    obj_all = P.reduce_sum(obj, all=True)
+    assert np.allclose(
+        np.asarray(obj_all, dtype=float),
+        np.array([sum(range(mpiexec_n)), 2.0 * mpiexec_n]),
+    )

@@ -76,6 +76,20 @@ class IO(Jsonable):
         """Transforms neural recordings identified by their gids into per channel recordings"""
         raise NotImplementedError
 
+    def potential_recording(
+        self,
+        distances: Float[Array, "n_distances cip=3"],
+        membrane_currents: Float[Array, "timestep n_neurons"],
+    ) -> Float[Array, "timestep n_channels"]:
+        """Estimate the voltage recorded from the channels
+
+        Parameters
+        - distances: triplets [channel_id, gid, distance_um] as returned by `self.distances(...)`.
+        - membrane_currents: current per neuron index (aligned with the coordinate order
+            used to compute `distances`). Shape must be (timestep, n_neurons).
+        """
+        raise NotImplementedError
+
 
 class MEA(IO):
     """
@@ -168,6 +182,42 @@ class MEA(IO):
 
         return channel_recording(self.cell_measurement, ii, *recordings)
 
+    def potential_recording(
+        self,
+        distances: Float[Array, "n_distances cip=3"],
+        membrane_currents: Float[Array, "timestep n_neurons"],
+    ) -> Float[Array, "timestep n_channels"]:
+        """
+        Estimate electrode potentials from membrane currents using
+        the point-source volume conductor formula:
+
+            V [uV] = (1 / (4*pi*sigma_S_per_mm)) * sum_i( I_i[uA] / r_i[mm] )
+
+        Only neurons within output_radius contribute.
+
+        Arguments
+        - distances: as returned by `MEA.distances(neuron_coordinates)`
+        - membrane_currents: in uA
+
+        Returns: microvolts array (uV)
+        """
+        n_electrodes = int(self.num_channels)
+        n_neurons_count = int(membrane_currents.shape[-1])
+
+        d = distances[:, -1]
+        if d.size != n_electrodes * n_neurons_count:
+            raise ValueError(
+                f"distances size mismatch: got {d.size}, expected {n_electrodes * n_neurons_count}"
+            )
+        d = d.reshape(n_electrodes, n_neurons_count)
+
+        weights = electrode_potential_point_source_weights(d)
+        mask = d <= float(self.output_radius)
+        weights = np.where(mask, weights, 0.0)
+
+        # compute potentials [t,E] = [t,I] @ [I,E]
+        return np.matmul(membrane_currents, weights.T)
+
     def distances(
         self, neuron_coordinates: Float[Array, "n_coords ixyz=4"]
     ) -> Float[Array, "n_sources*n_coords cip=3"]:
@@ -248,6 +298,21 @@ def electrode_array_coordinates(
     )
 
     return coordinates
+
+
+def electrode_potential_point_source_weights(
+    distances_um: Float[Array, "E I"],
+    *,
+    sigma_S_per_mm: float = 0.0003,
+    min_distance_um: float = 5.0,
+) -> Float[Array, "E I"]:
+    """
+    Pre-scale weights for electrode potential accumulation.
+    Returns: (1 / (4*pi*sigma_S_per_mm)) * (1 / r_mm)
+    """
+    r_mm = (np.asarray(distances_um) + float(min_distance_um)) / 1000.0
+    factor = 1.0 / (4.0 * np.pi * float(sigma_S_per_mm))
+    return factor * (1.0 / r_mm)
 
 
 if _USES_JAX:

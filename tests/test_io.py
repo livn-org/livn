@@ -121,6 +121,39 @@ def test_mea():
     assert clone.input_radius == mea.input_radius
 
 
+def test_potential_recording():
+    e_coords = np.array([[0, 0.0, 0.0, 0.0]])
+    n_coords = np.array([[0, 0.0, 0.0, 0.0], [1, 1000.0, 0.0, 0.0]])
+
+    mea = io.MEA(e_coords, input_radius=250, output_radius=2000)
+
+    sigma = 0.0003  # S/mm
+    min_du = 5.0  # um
+    r0 = (0.0 + min_du) / 1000.0
+    r1 = (1000.0 + min_du) / 1000.0
+    factor = 1.0 / (4.0 * np.pi * sigma)
+    expected = factor * (1.0 / r0 + 1.0 / r1)
+
+    d = mea.distances(n_coords)
+
+    # 2D currents (timestep, n_neurons) -> returns (timestep, n_channels)
+    i2d = np.array(
+        [
+            [1.0, 1.0],
+            [2.0, 2.0],
+        ]
+    )
+    v2 = mea.potential_recording(d, i2d)
+    assert v2.shape == (2, 1)
+    assert np.allclose(v2[:, 0], np.array([expected, 2.0 * expected]), rtol=1e-6)
+
+    # Masking: only the neuron at origin contributes (tight radius)
+    mea_masked = io.MEA(e_coords, input_radius=250, output_radius=10)
+    expected_masked = factor * (1.0 / r0)
+    v_masked = mea_masked.potential_recording(d, i2d[:1])
+    assert np.allclose(v_masked[0], np.array([expected_masked]), rtol=1e-6)
+
+
 @pytest.mark.skipif(
     "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
 )
