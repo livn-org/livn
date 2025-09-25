@@ -392,6 +392,7 @@ class System:
         self.synapses_config = next(iter(self._graph.synapses.values())).config
         self.files = self._graph.files()
         self._neuron_coordinates = None
+        self._num_neurons = None
 
     def default_io(self) -> "IO":
         from livn.io import MEA
@@ -401,6 +402,18 @@ class System:
     @property
     def name(self):
         return self.uri.split("/")[-1]
+
+    @property
+    def num_neurons(self):
+        if self._num_neurons is None:
+            self._num_neurons = sum(
+                [
+                    self.cells_meta_data.population_count(population)
+                    for population in self.populations
+                ]
+            )
+
+        return self._num_neurons
 
     @property
     def cells_meta_data(self):

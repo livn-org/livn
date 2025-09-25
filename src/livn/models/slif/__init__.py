@@ -7,7 +7,9 @@ from livn.types import Model
 
 
 class SLIF(Model):
-    def diffrax_module(self, connectivity, key):
+    def diffrax_module(self, system, key):
+        connectivity = system.connectivity_matrix()
+
         tau_s = 1
         beta = 5
         v_th = 1
@@ -27,7 +29,7 @@ class SLIF(Model):
             intensity_fn=intensity_fn,
             v_reset=v_reset,
             alpha=alpha,
-            network=jnp.array(connectivity == 0.0),  # mask for weight update
+            network=connectivity,  # mask for weight update
             read_out_neurons=None,  # all neurons participate
             mu=mu,
             diffusion=diffusion,

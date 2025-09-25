@@ -325,7 +325,7 @@ class SpikingNeuralNet(eqx.Module):
     """A class representing a generic stochastic spiking neural network."""
 
     num_neurons: Int
-    network: Bool[ArrayLike, "neurons neurons"] = eqx.field(static=True)
+    network: Float[ArrayLike, "neurons neurons"] = eqx.field(static=True)
     read_out_neurons: Sequence[Int]
     v_reset: Float
     v_rest: Float
@@ -454,7 +454,7 @@ class SpikingNeuralNet(eqx.Module):
         num_samples: Int,
         *,
         key,
-        w: Float[Array, "neurons neurons"],
+        w: Optional[Float[Array, "neurons neurons"]] = None,
         input_spikes: Optional[Float[Array, "samples input_neurons"]] = None,
         input_weights: Optional[Float[Array, "neurons input_neruons"]] = None,
         v0: Optional[Float[Array, "samples neurons"]] = None,
@@ -543,7 +543,10 @@ class SpikingNeuralNet(eqx.Module):
         root_finder = optx.Newton(1e-2, 1e-2, optx.rms_norm)
         event = diffrax.Event(self.cond_fn, root_finder)
         solver = diffrax.Euler()
-        w_update = w.at[self.network].set(0.0)
+        if w is None:
+            w_update = self.network
+        else:
+            w_update = w.at[self.network].set(0.0)
         # bm_key is not updated in body_fun since we want to make sure that the same Brownian path
         # is used for before and after each spike.
         bm_key = jr.split(bm_key, num_samples)
@@ -721,9 +724,64 @@ class SpikingNeuralNet(eqx.Module):
         )
         return sol
 
-    def run(self, *args, **kwargs):
-        sol = self.__call__(*args, **kwargs)
-        return sol, plottable_paths(sol)
+    def run(
+        self, input_current, t0, t1, dt, v0=None, dt_solver=0.01, key=None, **kwargs
+    ):
+        num_samples = 1  # batch processing currently not supported
+        if v0 is None:
+            v0 = jnp.full((num_samples, self.num_neurons), 0)
+        i0 = jnp.full((num_samples, self.num_neurons), 0)
+
+        duration = t1 - t0
+        max_steps = int(duration / dt_solver)
+
+        sol = self.__call__(
+            input_current,
+            t0,
+            t1,
+            num_samples,
+            dt=dt,
+            dt0=dt_solver,
+            i0=i0,
+            max_steps=max_steps,
+            key=key,
+        )
+
+        ts, ys = plottable_paths(sol)
+
+        v_end = ys[0, :, -1, 0]
+        i_end = ys[0, :, -1, 1]
+
+        v = ys[0, :, :, 0]
+        assert v.shape[1] == int(duration / dt)
+
+        gids = jnp.arange(self.num_neurons)
+
+        # spikes
+        if kwargs.get("unroll", None) == "marcus":
+
+            @jax.vmap
+            def get_marcus_lifts(spike_times, spike_marks):
+                return marcus_lift(self.t - duration, self.t, spike_times, spike_marks)
+
+            spike_train = get_marcus_lifts(sol.spike_times, sol.spike_marks)
+
+            return spike_train, None, gids, v
+
+        diff_values = jnp.abs(jnp.diff(v, axis=1))
+        mask = diff_values > 0.5
+        mask = jnp.concatenate(
+            [mask, jnp.zeros((mask.shape[0], 1), dtype=bool)], axis=1
+        )
+
+        if kwargs.get("unroll", None) == "mask":
+            return mask, None, gids, v
+
+        indices = jnp.nonzero(mask)
+        it = indices[0]
+        tt = indices[1] * dt
+
+        return it, tt, gids, v
 
 
 def _build_forward_network(in_size, out_size, width_size, depth):

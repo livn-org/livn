@@ -53,13 +53,10 @@ class Env(EnvProtocol):
 
         self.t = 0.0
         self.v0 = None
-        self.i0 = None
 
     def init(self):
         self.module = self.model.diffrax_module(
-            connectivity=self.system.connectivity_matrix(
-                reduced=getattr(self.model, "reduced", False)
-            ),
+            self.system,
             key=self.init_key,
         )
         return self
@@ -114,73 +111,21 @@ class Env(EnvProtocol):
             def input_current(t):
                 return jnp.zeros([self.system.cells_meta_data.cell_count()])
 
-        num_samples = 1  # batch processing currently not supported
-        if self.v0 is None:
-            v0 = jnp.full((num_samples, self.module.num_neurons), 0)
-        if self.i0 is None:
-            i0 = jnp.full((num_samples, self.module.num_neurons), 0)
-
-        w = jnp.asarray(
-            self.system.connectivity_matrix(
-                self._weights, reduced=getattr(self.model, "reduced", False)
-            )
-        )
-
-        dt0 = kwargs.get("dt_solver", 0.01)
-        sol, (ts, ys) = self.module.run(
+        it, tt, iv, v = self.module.run(
             input_current=input_current,
-            w=w,
             t0=self.t,
             t1=self.t + duration,
-            # max_spikes=max_spikes,
-            num_samples=num_samples,
             dt=dt,
-            v0=v0,
-            i0=i0,
-            # num_save=num_save,
+            v0=self.v0,
+            dt_solver=kwargs.get("dt_solver", 0.01),
             key=self.run_key,
-            dt0=dt0,
-            max_steps=int(duration / dt0),
+            **kwargs,
         )
 
         self.t += duration
+        self.v0 = v[:, -1]
 
-        # save last value for each neuron to keep track of state
-        # TODO: handle inf
-        self.v0 = ys[0, :, -1, 0]
-        self.i0 = ys[0, :, -1, 1]
-
-        # voltages
-        gids = jnp.arange(self.module.num_neurons)
-        v = ys[0, :, :, 0]
-        assert v.shape[1] == int(duration / dt)
-
-        # spikes
-        if kwargs.get("unroll", None) == "marcus":
-            from livn.models.slif.snn import marcus_lift
-
-            @jax.vmap
-            def get_marcus_lifts(spike_times, spike_marks):
-                return marcus_lift(self.t - duration, self.t, spike_times, spike_marks)
-
-            spike_train = get_marcus_lifts(sol.spike_times, sol.spike_marks)
-
-            return spike_train, None, gids, v
-
-        diff_values = jnp.abs(jnp.diff(v, axis=1))
-        mask = diff_values > 0.5
-        mask = jnp.concatenate(
-            [mask, jnp.zeros((mask.shape[0], 1), dtype=bool)], axis=1
-        )
-
-        if kwargs.get("unroll", None) == "mask":
-            return mask, None, gids, v
-
-        indices = jnp.nonzero(mask)
-        it = indices[0]
-        tt = indices[1] * dt
-
-        return it, tt, gids, v
+        return it, tt, iv, v
 
     def clear(self):
         self.t = 0
