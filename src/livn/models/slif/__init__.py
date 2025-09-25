@@ -7,8 +7,8 @@ from livn.types import Model
 
 
 class SLIF(Model):
-    def diffrax_module(self, system, key):
-        connectivity = system.connectivity_matrix()
+    def diffrax_module(self, env, key):
+        connectivity = env.system.connectivity_matrix()
 
         tau_s = 1
         beta = 5

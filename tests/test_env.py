@@ -64,7 +64,7 @@ def test_env(mpiexec_n, subworld):
     stimulus = env.cell_stimulus(inputs)
     assert np.any(stimulus > 0)
 
-    it, t, iv, v = env.run(t_end, stimulus=stimulus)
+    it, t, *_ = env.run(t_end, stimulus=stimulus)
 
     cit, ct = env.channel_recording(it, t)
 

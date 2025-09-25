@@ -37,7 +37,7 @@ class Run(Component):
         if self.config.inputs is not None:
             env.apply_stimulus_from_h5(self.config.inputs, self.config.inputs_namespace)
 
-        it, t, iv, v = env.run(self.config.duration)
+        it, t, *_ = env.run(self.config.duration)
 
         it, t = P.gather(it, t)
 

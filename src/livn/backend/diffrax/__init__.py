@@ -56,7 +56,7 @@ class Env(EnvProtocol):
 
     def init(self):
         self.module = self.model.diffrax_module(
-            self.system,
+            self,
             key=self.init_key,
         )
         return self
@@ -111,7 +111,7 @@ class Env(EnvProtocol):
             def input_current(t):
                 return jnp.zeros([self.system.cells_meta_data.cell_count()])
 
-        it, tt, iv, v = self.module.run(
+        it, tt, iv, v, im, m = self.module.run(
             input_current=input_current,
             t0=self.t,
             t1=self.t + duration,
@@ -125,11 +125,10 @@ class Env(EnvProtocol):
         self.t += duration
         self.v0 = v[:, -1]
 
-        return it, tt, iv, v
+        return it, tt, iv, v, im, m
 
     def clear(self):
         self.t = 0
-        self.i0 = None
         self.v0 = None
 
         return self

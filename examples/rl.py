@@ -260,10 +260,12 @@ class FirstSpikeDecoder(Decoding):
     def __call__(
         self,
         duration: float,
-        it: Int[Array, "n_spiking_neuron_ids"],
-        tt: Float[Array, "n_spiking_neuron_times"],
-        iv: Int[Array, "n_voltage_neuron_ids"],
-        vv: Float[Array, "neuron_ids voltages"],
+        it: Int[Array, "n_spiking_neuron_ids"] | None,
+        tt: Float[Array, "n_spiking_neuron_times"] | None,
+        iv: Int[Array, "n_voltage_neuron_ids"] | None,
+        vv: Float[Array, "neuron_ids voltages"] | None,
+        im: Int[Array, "n_membrane_current_neuron_ids"] | None,
+        m: Float[Array, "neuron_ids membrane_currents"] | None,
     ):
         if len(it) == 0 or len(tt) == 0:
             return np.array([0.0])

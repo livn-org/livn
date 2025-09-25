@@ -254,7 +254,7 @@ def obj_fun(x, env, stimulate, trials):
 
             stimulus = env.cell_stimulus(inputs)
 
-            _it, _t, iv, v = env.run(t_end, stimulus=stimulus, root_only=False)
+            _it, _t, *_ = env.run(t_end, stimulus=stimulus, root_only=False)
 
             for ii in _it[_t >= warmup]:
                 it.append(ii)
@@ -273,7 +273,7 @@ def obj_fun(x, env, stimulate, trials):
 
     trial_length = 500
     t_end = warmup + trial_length * trials
-    it, t, iv, v = env.run(t_end, stimulus=None, root_only=False)
+    it, t, *_ = env.run(t_end, stimulus=None, root_only=False)
 
     it, t = it[t >= warmup], t[t >= warmup] - warmup
     t_end = t_end - warmup

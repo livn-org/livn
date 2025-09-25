@@ -25,7 +25,7 @@ from livn.system import predefined
 def systempass(inputs, env, t_end, targets, key):
     # pass through IO and system
     stimulus = env.cell_stimulus(inputs)
-    mask, _, gids, v = env.run(t_end, stimulus, unroll="mask")
+    mask, _, gids, v, *_ = env.run(t_end, stimulus, unroll="mask")
 
     return -jnp.mean(v)  # dummy loss: maximize action potentials
 

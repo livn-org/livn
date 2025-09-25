@@ -13,6 +13,6 @@ env.apply_model_defaults()
 env.record_spikes()
 env.record_voltage()
 
-it, t, iv, v = env.run(100)
+it, t, iv, v, *_ = env.run(100)
 
 print("Initial voltages: ", v[:, 0])

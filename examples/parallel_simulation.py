@@ -27,7 +27,7 @@ env = Env(system, model, mea).init()
 env.apply_model_defaults()
 env.record_spikes()
 env.record_voltage()
-env.record_potential()
+env.record_membrane_current()
 
 
 warmup = 0
@@ -44,10 +44,10 @@ for r in range(20):
 stimulus = env.cell_stimulus(inputs)
 
 # Run with stimulation
-it, t, iv, v = env.run(t_end, stimulus=stimulus)
+it, t, iv, v, im, m = env.run(t_end, stimulus=stimulus)
 
 # per-rank electrode potential, sum-reduced
-p = P.reduce_sum(env.potential_recording(), all=True)
+p = P.reduce_sum(env.potential_recording(m), all=True)
 
 it, t = it[t >= warmup], t[t >= warmup] - warmup
 t_end = t_end - warmup

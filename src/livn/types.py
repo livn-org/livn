@@ -203,7 +203,7 @@ class Env(Protocol):
 
     def _record_voltage(self, population: str, dt: float) -> Self: ...
 
-    def record_potential(
+    def record_membrane_current(
         self, population: str | list | tuple | None = None, dt: float = 0.1
     ) -> Self:
         """Enable membrane current recording for population"""
@@ -211,14 +211,14 @@ class Env(Protocol):
             population = self.system.populations
         if isinstance(population, (list, tuple)):
             for p in population:
-                self.record_potential(p, dt=dt)
+                self.record_membrane_current(p, dt=dt)
             return self
 
-        self._record_potential(population, dt)
+        self._record_membrane_current(population, dt)
 
         return self
 
-    def _record_potential(self, population: str, dt: float) -> Self: ...
+    def _record_membrane_current(self, population: str, dt: float) -> Self: ...
 
     def run(
         self,
@@ -227,21 +227,21 @@ class Env(Protocol):
         dt: float = 0.025,
         **kwargs,
     ) -> Tuple[
-        Int[Array, "n_spiking_neuron_ids"],
-        Float[Array, "n_spiking_neuron_times"],
-        Int[Array, "n_voltage_neuron_ids"],
-        Float[Array, "neuron_ids voltages"],
+        Int[Array, "n_spiking_neuron_ids"] | None,
+        Float[Array, "n_spiking_neuron_times"] | None,
+        Int[Array, "n_voltage_neuron_ids"] | None,
+        Float[Array, "neuron_ids voltages"] | None,
+        Int[Array, "n_membrane_current_neuron_ids"] | None,
+        Float[Array, "neuron_ids membrane_currents"] | None,
     ]:
         """Run the simulation"""
         ...
 
-    def membrane_current(self) -> Float[Array, "timestep n_neurons"]:
-        """Return recorded membrane currents arranged by neuron id index."""
-        ...
-
-    def potential_recording(self) -> Float[Array, "timestep n_channels"]:
+    def potential_recording(
+        self, membrane_currents: Float[Array, "timestep n_neurons"] | None
+    ) -> Float[Array, "timestep n_channels"]:
         distances = self.io.distances(self.system.neuron_coordinates)
-        return self.io.potential_recording(distances, self.membrane_current())
+        return self.io.potential_recording(distances, membrane_currents)
 
     def clear(self) -> Self:
         """Discard the simulation and reset to t=0"""
@@ -309,10 +309,12 @@ class Decoding(Protocol):
     def __call__(
         self,
         duration: float,
-        it: Int[Array, "n_spiking_neuron_ids"],
-        tt: Float[Array, "n_spiking_neuron_times"],
-        iv: Int[Array, "n_voltage_neuron_ids"],
-        vv: Float[Array, "neuron_ids voltages"],
+        it: Int[Array, "n_spiking_neuron_ids"] | None,
+        tt: Float[Array, "n_spiking_neuron_times"] | None,
+        iv: Int[Array, "n_voltage_neuron_ids"] | None,
+        vv: Float[Array, "neuron_ids voltages"] | None,
+        im: Int[Array, "n_membrane_current_neuron_ids"] | None,
+        m: Float[Array, "neuron_ids membrane_currents"] | None,
     ) -> Any: ...
 
     @property

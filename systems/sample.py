@@ -100,7 +100,7 @@ def obj_fun(x, env, encoder, trials):
 
     stimulus = env.cell_stimulus(inputs)
 
-    it, t, iv, v = env.run(t_end, stimulus, root_only=False)
+    it, t, *_ = env.run(t_end, stimulus, root_only=False)
 
     # discard warmup
     it, t = it[t >= warmup], t[t >= warmup] - warmup

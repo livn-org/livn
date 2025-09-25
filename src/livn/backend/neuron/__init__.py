@@ -462,6 +462,7 @@ class Env(EnvProtocol):
         if len(self.v_recs) == 0:
             return ii, tt, None, None
 
+        # collect voltages
         iv = []
         v = []
         for gid, rec in self.v_recs.items():
@@ -470,7 +471,44 @@ class Env(EnvProtocol):
         iv = np.asarray(iv, dtype=np.uint32)
         v = np.array(v, dtype=np.float32)
 
-        return ii, tt, iv, v
+        # collect membrane currents
+        if len(self.i_recs) == 0:
+            return ii, tt, iv, v, None, None
+
+        coords = getattr(self.system, "neuron_coordinates", None)
+        if coords is None:
+            recs = [rec.as_numpy() for _, rec in sorted(self.i_recs.items())]
+            return np.column_stack(recs) if len(recs) else None
+
+        gids = np.asarray(coords)[:, 0].astype(np.uint32)
+        gid_to_index = {int(g): idx for idx, g in enumerate(gids)}
+
+        any_rec = next(iter(self.i_recs.values()))
+        T = len(any_rec)
+        n_neurons = len(gids)
+        currents = np.zeros((T, n_neurons), dtype=np.float32)
+
+        for gid, rec in self.i_recs.items():
+            idx = gid_to_index.get(int(gid))
+            if idx is None:
+                continue
+            arr = rec.as_numpy()
+            # Convert current density (mA/cm^2) to absolute current (μA):
+            # I_μA = (i_membrane_mA_per_cm2) * (area_cm2) * 1000
+            area_cm2 = float(self.i_area.get(int(gid), 0.0))
+            if area_cm2 > 0.0:
+                arr = arr * area_cm2 * 1000.0
+            if len(arr) != T:
+                # pad or truncate to T
+                if len(arr) < T:
+                    pad = np.zeros(T, dtype=np.float32)
+                    pad[: len(arr)] = arr
+                    arr = pad
+                else:
+                    arr = arr[:T]
+            currents[:, idx] = arr
+
+        return ii, tt, iv, v, gids, currents
 
     def set_weights(self, weights):
         params = []
@@ -540,7 +578,7 @@ class Env(EnvProtocol):
 
         return self
 
-    def _record_potential(self, population: str, dt: float) -> "Env":
+    def _record_membrane_current(self, population: str, dt: float) -> "Env":
         """Record transmembrane current (i_membrane) at soma midpoint for each cell"""
         if population not in self.cells:
             logger.info(
@@ -582,50 +620,6 @@ class Env(EnvProtocol):
                 break
 
         return self
-
-    def membrane_current(self):
-        """Return recorded membrane currents as [timestep, n_neurons] array.
-
-        Neuron order corresponds to self.system.neuron_coordinates[:, 0] (gid order)
-        where cells without recordings are filled with zeros
-        """
-        if len(self.i_recs) == 0:
-            return None
-
-        coords = getattr(self.system, "neuron_coordinates", None)
-        if coords is None:
-            recs = [rec.as_numpy() for _, rec in sorted(self.i_recs.items())]
-            return np.column_stack(recs) if len(recs) else None
-
-        gids = np.asarray(coords)[:, 0].astype(np.uint32)
-        gid_to_index = {int(g): idx for idx, g in enumerate(gids)}
-
-        any_rec = next(iter(self.i_recs.values()))
-        T = len(any_rec)
-        n_neurons = len(gids)
-        currents = np.zeros((T, n_neurons), dtype=np.float32)
-
-        for gid, rec in self.i_recs.items():
-            idx = gid_to_index.get(int(gid))
-            if idx is None:
-                continue
-            arr = rec.as_numpy()
-            # Convert current density (mA/cm^2) to absolute current (μA):
-            # I_μA = (i_membrane_mA_per_cm2) * (area_cm2) * 1000
-            area_cm2 = float(self.i_area.get(int(gid), 0.0))
-            if area_cm2 > 0.0:
-                arr = arr * area_cm2 * 1000.0
-            if len(arr) != T:
-                # pad or truncate to T
-                if len(arr) < T:
-                    pad = np.zeros(T, dtype=np.float32)
-                    pad[: len(arr)] = arr
-                    arr = pad
-                else:
-                    arr = arr[:T]
-            currents[:, idx] = arr
-
-        return currents
 
     def apply_stimulus_from_h5(
         self,

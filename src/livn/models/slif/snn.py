@@ -766,7 +766,7 @@ class SpikingNeuralNet(eqx.Module):
 
             spike_train = get_marcus_lifts(sol.spike_times, sol.spike_marks)
 
-            return spike_train, None, gids, v
+            return spike_train, None, gids, v, None, None
 
         diff_values = jnp.abs(jnp.diff(v, axis=1))
         mask = diff_values > 0.5
@@ -775,13 +775,13 @@ class SpikingNeuralNet(eqx.Module):
         )
 
         if kwargs.get("unroll", None) == "mask":
-            return mask, None, gids, v
+            return mask, None, gids, v, None, None
 
         indices = jnp.nonzero(mask)
         it = indices[0]
         tt = indices[1] * dt
 
-        return it, tt, gids, v
+        return it, tt, gids, v, None, None
 
 
 def _build_forward_network(in_size, out_size, width_size, depth):

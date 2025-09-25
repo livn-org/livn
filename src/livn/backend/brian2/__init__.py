@@ -55,6 +55,8 @@ class Env(EnvProtocol):
         self._spike_monitors = {}
         self._voltage_monitors = {}
         self._voltage_monitors_dt = {}
+        self._membrane_monitors = {}
+        self._membrane_monitors_dt = {}
         self._noise_ops = set()
         self._network = b2.Network()
 
@@ -247,6 +249,23 @@ class Env(EnvProtocol):
 
         return self
 
+    def _record_membrane_current(self, population: str, dt: float) -> "Env":
+        """Record synaptic/input current I for each neuron of the population"""
+        if population not in self._populations:
+            return self
+
+        monitor = b2.StateMonitor(
+            self._populations[population],
+            "I",
+            record=True,
+            dt=dt * b2.ms,
+        )
+        self._membrane_monitors[population] = monitor
+        self._membrane_monitors_dt[population] = dt
+        self._network.add(monitor)
+
+        return self
+
     def run(
         self,
         duration,
@@ -325,7 +344,58 @@ class Env(EnvProtocol):
             ii.append(monitor.i[ts >= t_start] + monitor.source.gid_offset)
             tt.append(ts[ts >= t_start] - t_start)
 
-        return concat(ii), concat(tt), concat(gids), concat(vv)
+        # membrane currents (in uA) aligned to global gid order if enabled
+        if len(self._membrane_monitors) == 0:
+            return concat(ii), concat(tt), concat(gids), concat(vv), None, None
+
+        # [T, n_neurons] matrix aligned to system.neuron_coordinates
+        coords = getattr(self.system, "neuron_coordinates", None)
+        if coords is None or len(coords) == 0:
+            return concat(ii), concat(tt), concat(gids), concat(vv), None, None
+
+        all_gids = np.asarray(coords)[:, 0].astype(np.uint32)
+        gid_to_index = {int(g): idx for idx, g in enumerate(all_gids)}
+
+        # determine maximum T across monitors after slicing
+        lengths = []
+        per_pop_data = {}
+        for population, monitor in self._membrane_monitors.items():
+            start_idx = int(
+                t_start / max(self._membrane_monitors_dt.get(population, 0.1), 1e-9)
+            )
+            data = (monitor.I / b2.uA)[:, start_idx:]
+            per_pop_data[population] = data
+            lengths.append(data.shape[1] if data.ndim == 2 else 0)
+
+        T = int(max(lengths) if lengths else 0)
+        if T == 0:
+            return concat(ii), concat(tt), concat(gids), concat(vv), None, None
+
+        n_neurons = int(len(all_gids))
+        currents = np.zeros((T, n_neurons), dtype=np.float32)
+
+        for population, data in per_pop_data.items():
+            if data.size == 0:
+                continue
+            base = int(self._populations[population].gid_offset)
+            n_pop = data.shape[0]
+            # data shape: [n_pop_neurons, t]
+            for k in range(n_pop):
+                gid = base + k
+                idx = gid_to_index.get(int(gid))
+                if idx is None:
+                    continue
+                series = np.array(data[k], dtype=np.float32)
+                # pad/truncate to T
+                if series.shape[0] < T:
+                    pad = np.zeros(T, dtype=np.float32)
+                    pad[: series.shape[0]] = series
+                    series = pad
+                elif series.shape[0] > T:
+                    series = series[:T]
+                currents[:, idx] = series
+
+        return concat(ii), concat(tt), concat(gids), concat(vv), all_gids, currents
 
     def clear(self):
         self.t = 0
@@ -336,9 +406,11 @@ class Env(EnvProtocol):
     def clear_monitors(self):
         spms = list(self._spike_monitors.keys())
         vms = list(self._voltage_monitors.keys())
+        mms = list(self._membrane_monitors.keys())
 
         self._spike_monitors = {}
         self._voltage_monitors = {}
+        self._membrane_monitors = {}
 
         gc.collect()
 
@@ -347,6 +419,9 @@ class Env(EnvProtocol):
 
         for p in vms:
             self.record_voltage(p, dt=self._voltage_monitors_dt.get(p, 0.1))
+
+        for p in mms:
+            self._record_membrane_current(p, dt=self._membrane_monitors_dt.get(p, 0.1))
 
     def reinit(self):
         self.clear()
