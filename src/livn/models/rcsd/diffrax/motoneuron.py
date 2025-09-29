@@ -2,6 +2,7 @@ import math
 
 import diffrax
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 from jaxtyping import Array
 from typing import Any, Mapping, Sequence, Optional, Tuple
@@ -264,10 +265,9 @@ class BoothRinzelKiehn(eqx.Module):
         if kca_val is not None:
             self.kca = float(kca_val)
 
-    def __init__(self, params: Optional[Any] = None):
-        if params is None:
-            self.set_default_parameters()
-        else:
+    def __init__(self, params: Optional[Any] = None, key=None):
+        self.set_default_parameters()
+        if params is not None:
             if isinstance(params, Mapping) and "BoothRinzelKiehn" in params:
                 params = params["BoothRinzelKiehn"]
 
@@ -324,7 +324,7 @@ class BoothRinzelKiehn(eqx.Module):
         Args:
             t: time
             y: state vector
-            args: optional tuple containing (I_amp, t_on, t_off) for stimulus
+            args: (I_stim_array, t_array) for array stimulus
         """
         # area_s, area_d, g_c_s, g_c_d = self._geometry()
 
@@ -377,17 +377,28 @@ class BoothRinzelKiehn(eqx.Module):
         Args:
             t: time
             y: state vector
-            args: (I_amp, t_on, t_off) for stimulus
+            args: (I_stim_array, t_array) for array stimulus
         """
 
         area_s, area_d, g_c_s, g_c_d = self._geometry()
 
         Vs, Vd, h, n, mnS, hnS, mnD, hnD, ml, CaS, CaD = y
 
-        I_amp, t_on, t_off = args
+        I_stim_array, t_array = args
 
-        Iapp_density = I_amp * 1e-6 / area_s
-        Iapp = jnp.where((t >= t_on) & (t <= t_off), Iapp_density, 0.0)
+        # 1D (soma only) and 2D (soma + dendrite)
+        if I_stim_array.ndim == 1:
+            I_amp = jnp.interp(t, t_array, I_stim_array)
+            Iapp_density_soma = I_amp * 1e-6 / area_s
+            Iapp_density_dend = 0.0
+        else:
+            I_amp_soma = jnp.interp(t, t_array, I_stim_array[:, 0])
+            I_amp_dend = jnp.interp(t, t_array, I_stim_array[:, 1])
+            Iapp_density_soma = I_amp_soma * 1e-6 / area_s
+            Iapp_density_dend = I_amp_dend * 1e-6 / area_d
+
+        Isoma = Iapp_density_soma
+        Idend = Iapp_density_dend
 
         Tauh = 30.0 / (jnp.exp((Vs + 50.0) / 15.0) + jnp.exp(-(Vs + 50.0) / 16.0))
         Taun = 7.0 / (jnp.exp((Vs + 40.0) / 40.0) + jnp.exp(-(Vs + 40.0) / 50.0))
@@ -433,8 +444,8 @@ class BoothRinzelKiehn(eqx.Module):
         IcouplingD = g_c_d * (Vd - Vs)
 
         scale = 1000.0 / self.C
-        dVs = scale * (Iapp - INaS - IKS - ICaS - IleakS - IcouplingS)
-        dVd = scale * (-IKD - ICaD_N - ICaD_L - IleakD - IcouplingD)
+        dVs = scale * (Isoma - INaS - IKS - ICaS - IleakS - IcouplingS)
+        dVd = scale * (Idend - IKD - ICaD_N - ICaD_L - IleakD - IcouplingD)
 
         dh = (hinf - h) / Tauh
         dn = (ninf - n) / Taun
@@ -458,9 +469,7 @@ class BoothRinzelKiehn(eqx.Module):
         self,
         t_dur: float,
         *,
-        I_stim_nA: float = 0.0,
-        stim_start: float = 0.0,
-        stim_end: float = 0.0,
+        I_stim_array: Array,
         dt: float = 0.025,
     ):
         """
@@ -470,12 +479,11 @@ class BoothRinzelKiehn(eqx.Module):
         -----------
         t_dur : float
             Simulation duration in ms
-        I_stim_nA : float
-            Stimulus current amplitude in nA
-        stim_start : float
-            Stimulus start time in ms
-        stim_end : float
-            Stimulus end time in ms
+        I_stim_array : Array
+            Stimulus current values in nA. Can be either:
+            - 1D array with shape [n_time_points] for soma-only stimulation
+            - 2D array with shape [n_time_points, 2] for soma (column 0) and dendrite (column 1) stimulation
+            where n_time_points = t_dur/dt + 1
         dt : float
             Time step in ms
 
@@ -512,7 +520,10 @@ class BoothRinzelKiehn(eqx.Module):
         solver = diffrax.Kvaerno3()
 
         n_points = int(t_dur / dt) + 1
-        saveat = diffrax.SaveAt(ts=jnp.linspace(0.0, t_dur, n_points))
+        t_array = jnp.linspace(0.0, t_dur, n_points)
+        stimulus_args = (I_stim_array, t_array)
+
+        saveat = diffrax.SaveAt(ts=t_array)
         stepsize_controller = diffrax.PIDController(rtol=1e-6, atol=1e-8)
 
         solution = diffrax.diffeqsolve(
@@ -522,28 +533,21 @@ class BoothRinzelKiehn(eqx.Module):
             t1=t_dur,
             dt0=dt,
             y0=y0,
-            args=(I_stim_nA, stim_start, stim_end),
+            args=stimulus_args,
             saveat=saveat,
             stepsize_controller=stepsize_controller,
-            max_steps=200_000,
+            max_steps=500_000,
         )
 
         t_arr = solution.ts
         v_soma = solution.ys[:, 0]
         v_dend = solution.ys[:, 1]
 
-        # Calculate membrane currents
-        i_mem_soma_arr = []
-        i_mem_dend_arr = []
+        def calculate_currents_at_time(t, y):
+            return self._calculate_membrane_currents(t, y, stimulus_args)
 
-        for i in range(len(t_arr)):
-            i_mem_s, i_mem_d = self._calculate_membrane_currents(
-                t_arr[i], solution.ys[i], (I_stim_nA, stim_start, stim_end)
-            )
-            i_mem_soma_arr.append(i_mem_s)
-            i_mem_dend_arr.append(i_mem_d)
-
-        i_mem_soma = jnp.array(i_mem_soma_arr)
-        i_mem_dend = jnp.array(i_mem_dend_arr)
+        i_mem_soma, i_mem_dend = jax.vmap(calculate_currents_at_time)(
+            t_arr, solution.ys
+        )
 
         return t_arr, v_soma, v_dend, i_mem_soma, i_mem_dend

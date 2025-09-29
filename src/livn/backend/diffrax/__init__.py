@@ -98,21 +98,12 @@ class Env(EnvProtocol):
             # converting the mV potential into nA current via Ohm's law,
             # assuming a membrane resistance of 400 MΩ
             stimulus_array = stimulus_array / 400
-
-            def input_current(t):
-                idx = jnp.minimum(
-                    jnp.floor(t / stimulus.dt).astype(jnp.int32),
-                    stimulus_array.shape[0] - 1,
-                )
-                return jnp.asarray(stimulus_array)[idx]
-
         else:
-
-            def input_current(t):
-                return jnp.zeros([self.system.cells_meta_data.cell_count()])
+            n_time_points = int(duration / dt) + 1
+            stimulus_array = jnp.zeros([n_time_points, self.system.num_neurons])
 
         it, tt, iv, v, im, m = self.module.run(
-            input_current=input_current,
+            input_current=stimulus_array,
             t0=self.t,
             t1=self.t + duration,
             dt=dt,

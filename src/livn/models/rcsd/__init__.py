@@ -229,6 +229,17 @@ class ReducedCalciumSomaDendrite(Model):
             },
         }[system]
 
+    # diffrax
+    
+    def diffrax_module(self, env, key):
+        from livn.models.rcsd.diffrax.culture import MotoneuronCulture
+
+        return MotoneuronCulture(
+            num_neurons=env.system.num_neurons,
+            params=self.params("BoothRinzelKiehn-MN"),
+            key=key,
+        )
+
 
 class ReducedCalciumSomaDendriteIfluct(ReducedCalciumSomaDendrite):
     def neuron_noise_mechanism(self, section):

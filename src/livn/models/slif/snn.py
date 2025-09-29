@@ -735,8 +735,15 @@ class SpikingNeuralNet(eqx.Module):
         duration = t1 - t0
         max_steps = int(duration / dt_solver)
 
+        def stim(t):
+            idx = jnp.minimum(
+                jnp.floor(t / dt).astype(jnp.int32),
+                input_current.shape[0] - 1,
+            )
+            return jnp.asarray(input_current)[idx]
+
         sol = self.__call__(
-            input_current,
+            stim,
             t0,
             t1,
             num_samples,
