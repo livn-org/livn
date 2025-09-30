@@ -393,38 +393,28 @@ class Env(EnvProtocol):
                 stimulus.gids = self.system.gids
 
             stim = []  # prevent garbage collection
-            for gid, st in stimulus:
+            sections_per_neuron = len(stimulus) // self.system.num_neurons
+            for count, (gid, st) in enumerate(stimulus):
                 if not (self.pc.gid_exists(gid)):
                     continue
 
-                for p in self.cells.values():
-                    if gid in p:
-                        cell = p[gid]
+                section_id = count % sections_per_neuron
 
-                        if "VecStim" in getattr(cell, "hname", lambda: "")():
-                            # artificial STIM cell
-                            print(
-                                f"Warning: Cell {gid} is a VecStim cell; use play() to induce spikes. Skipping stimulus ..."
-                            )
-                            break
+                cell = self.pc.gid2cell(gid)
+                if "VecStim" in getattr(cell, "hname", lambda: "")():
+                    # artificial STIM cell
+                    print(
+                        f"Warning: Cell {gid} is a VecStim cell; use play() to induce spikes. Skipping stimulus ..."
+                    )
+                    continue
 
-                        stim.append(h.Vector(st))
+                stim.append(h.Vector(st))
 
-                        secs = []
-                        if hasattr(cell, "soma_list"):
-                            secs = cell.soma_list
-                        elif hasattr(cell, "soma"):
-                            secs.append(cell.soma)
-
-                        for sec in secs:
-                            sec.push()
-                            if h.ismembrane("extracellular"):
-                                stim[-1].play(
-                                    sec(0.5)._ref_e_extracellular, stimulus.dt
-                                )
-                            h.pop_section()
-
-                        break
+                sec = cell.sections[section_id]
+                sec.push()
+                if h.ismembrane("extracellular"):
+                    stim[-1].play(sec(0.5)._ref_e_extracellular, stimulus.dt)
+                h.pop_section()
 
         verbose = self.rank == 0 and kwargs.get("verbose", True)
 
@@ -465,7 +455,7 @@ class Env(EnvProtocol):
         # collect voltages
         iv = []
         v = []
-        for gid, rec in self.v_recs.items():
+        for (gid, sec_id), rec in self.v_recs.items():
             iv.append(gid)
             v.append(rec.as_numpy())
         iv = np.asarray(iv, dtype=np.uint32)
@@ -485,17 +475,16 @@ class Env(EnvProtocol):
 
         any_rec = next(iter(self.i_recs.values()))
         T = len(any_rec)
-        n_neurons = len(gids)
-        currents = np.zeros((T, n_neurons), dtype=np.float32)
+        currents = np.zeros((len(self.i_recs), T), dtype=np.float32)
 
-        for gid, rec in self.i_recs.items():
+        for (gid, sec_id), rec in self.i_recs.items():
             idx = gid_to_index.get(int(gid))
             if idx is None:
                 continue
             arr = rec.as_numpy()
             # Convert current density (mA/cm^2) to absolute current (μA):
             # I_μA = (i_membrane_mA_per_cm2) * (area_cm2) * 1000
-            area_cm2 = float(self.i_area.get(int(gid), 0.0))
+            area_cm2 = float(self.i_area.get((int(gid), sec_id), 0.0))
             if area_cm2 > 0.0:
                 arr = arr * area_cm2 * 1000.0
             if len(arr) != T:
@@ -506,7 +495,7 @@ class Env(EnvProtocol):
                     arr = pad
                 else:
                     arr = arr[:T]
-            currents[:, idx] = arr
+            currents[idx + sec_id, :] = arr
 
         return ii, tt, iv, v, gids, currents
 
@@ -565,16 +554,9 @@ class Env(EnvProtocol):
             if "VecStim" in getattr(cell, "hname", lambda: "")():
                 continue
 
-            self.v_recs[gid] = h.Vector()
-            secs = []
-            if hasattr(cell, "soma_list"):
-                secs = cell.soma_list
-            elif hasattr(cell, "soma"):
-                secs.append(cell.soma)
-
-            for sec in secs:
-                self.v_recs[gid].record(sec(0.5)._ref_v, dt)
-                break
+            for sec_id, sec in enumerate(cell.sections):
+                self.v_recs[(int(gid), sec_id)] = h.Vector()
+                self.v_recs[(int(gid), sec_id)].record(sec(0.5)._ref_v, dt)
 
         return self
 
@@ -600,24 +582,11 @@ class Env(EnvProtocol):
             if "VecStim" in getattr(cell, "hname", lambda: "")():
                 continue
 
-            self.i_recs[gid] = h.Vector()
-            secs = []
-            if hasattr(cell, "soma_list"):
-                secs = cell.soma_list
-            elif hasattr(cell, "soma"):
-                secs.append(cell.soma)
-
-            for sec in secs:
-                try:
-                    self.i_recs[gid].record(sec(0.5)._ref_i_membrane, dt)
-                    try:
-                        area_um2 = h.area(0.5, sec=sec)
-                    except Exception:
-                        area_um2 = 0.0
-                    self.i_area[int(gid)] = float(area_um2) * 1e-8
-                except Exception:
-                    pass
-                break
+            for sec_id, sec in enumerate(cell.sections):
+                self.i_recs[(int(gid), sec_id)] = h.Vector()
+                self.i_recs[(int(gid), sec_id)].record(sec(0.5)._ref_i_membrane, dt)
+                area_um2 = h.area(0.5, sec=sec)
+                self.i_area[(int(gid), sec_id)] = float(area_um2) * 1e-8
 
         return self
 

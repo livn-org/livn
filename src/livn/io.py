@@ -202,7 +202,7 @@ class MEA(IO):
         Returns: microvolts array (uV)
         """
         n_electrodes = int(self.num_channels)
-        n_neurons_count = int(membrane_currents.shape[-1])
+        n_neurons_count = int(membrane_currents.shape[0])
 
         d = distances[:, -1]
         if d.size != n_electrodes * n_neurons_count:
@@ -216,7 +216,7 @@ class MEA(IO):
         weights = np.where(mask, weights, 0.0)
 
         # compute potentials [t,E] = [t,I] @ [I,E]
-        return np.matmul(membrane_currents, weights.T)
+        return np.matmul(membrane_currents.T, weights.T)
 
     def distances(
         self, neuron_coordinates: Float[Array, "n_coords ixyz=4"]

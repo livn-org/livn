@@ -1,9 +1,57 @@
 import os
 
 from livn.types import Model
+from livn import types
+from livn.backend import backend
+
+_USES_JAX = False
+
+if "ax" in backend():
+    import jax.numpy as np
+
+    _USES_JAX = True
+else:
+    import numpy as np
 
 
 class ReducedCalciumSomaDendrite(Model):
+    def stimulus_coordinates(
+        self,
+        neuron_coordinates: types.Float[types.Array, "n_coords ixyz=4"],
+    ) -> types.Float[types.Array, "n_stim_coords ixyz=4"]:
+        """
+        Transform neuron coordinates for two-compartment model stimulation
+
+            gid, x, y, z -> gid, x + pp * L, y, z
+
+        Returns:
+            [2*n_neurons, 4] with interleaved soma/dendrite coordinates
+            soma0, dend0, soma1, dend1, ...
+        """
+        L = 120.0  # 37.6
+        dx = 0.9 * L
+
+        n_neurons = neuron_coordinates.shape[0]
+        coords_float = np.array(neuron_coordinates, dtype=np.float64)
+
+        dend_coords = coords_float.copy()
+        if _USES_JAX:
+            dend_coords = dend_coords.at[:, 1].add(dx)
+        else:
+            dend_coords[:, 1] += dx
+
+        # interleave soma0, dend0, soma1, dend1, ...
+        stacked = np.stack([coords_float, dend_coords], axis=1)  # [n, 2, 4]
+        interleaved_coords = stacked.reshape(2 * n_neurons, 4)
+
+        return interleaved_coords
+
+    def recording_coordinates(
+        self,
+        neuron_coordinates: types.Float[types.Array, "n_coords ixyz=4"],
+    ) -> types.Float[types.Array, "n_stim_coords ixyz=4"]:
+        return self.stimulus_coordinates(neuron_coordinates)
+
     # neuron
 
     def params(self, name: str):
@@ -230,7 +278,7 @@ class ReducedCalciumSomaDendrite(Model):
         }[system]
 
     # diffrax
-    
+
     def diffrax_module(self, env, key):
         from livn.models.rcsd.diffrax.culture import MotoneuronCulture
 

@@ -144,7 +144,10 @@ class Env(Protocol):
         channel_inputs: Float[Array, "batch timestep n_channels"],
     ) -> Float[Array, "batch timestep n_gids"]:
         """Transforms channel inputs into neural inputs"""
-        return self.io.cell_stimulus(self.system.neuron_coordinates, channel_inputs)
+        return self.io.cell_stimulus(
+            self.model.stimulus_coordinates(self.system.neuron_coordinates),
+            channel_inputs,
+        )
 
     def channel_recording(
         self,
@@ -240,7 +243,9 @@ class Env(Protocol):
     def potential_recording(
         self, membrane_currents: Float[Array, "timestep n_neurons"] | None
     ) -> Float[Array, "timestep n_channels"]:
-        distances = self.io.distances(self.system.neuron_coordinates)
+        distances = self.io.distances(
+            self.model.recording_coordinates(self.system.neuron_coordinates),
+        )
         return self.io.potential_recording(distances, membrane_currents)
 
     def clear(self) -> Self:
@@ -253,6 +258,18 @@ class Env(Protocol):
 @runtime_checkable
 class Model(Protocol):
     """Protocol defining the interface for livn models"""
+
+    def stimulus_coordinates(
+        self,
+        neuron_coordinates: Float[Array, "n_coords ixyz=4"],
+    ) -> Float[Array, "n_stim_coords ixyz=4"]:
+        return neuron_coordinates
+
+    def recording_coordinates(
+        self,
+        neuron_coordinates: Float[Array, "n_coords ixyz=4"],
+    ) -> Float[Array, "n_stim_coords ixyz=4"]:
+        return neuron_coordinates
 
     def apply_defaults(self, env, weights: bool = True, noise: bool = True):
         if weights:

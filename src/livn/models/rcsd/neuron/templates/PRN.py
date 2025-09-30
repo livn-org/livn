@@ -137,6 +137,7 @@ class PRN:
         self.soma.insert("K_PR")
         self.soma.insert("Na_conc_PR")
         self.soma.insert("K_conc_PR")
+        self.soma.insert("extracellular")
 
         self.soma.gmax_Na_PR = self.soma_gmax_Na
         self.soma.gmax_K_PR = self.soma_gmax_K
@@ -149,6 +150,7 @@ class PRN:
         self.dend.insert("KCa_PR")
         self.dend.insert("Ca_conc_PR")
         self.dend.insert("K_conc_PR")
+        self.dend.insert("extracellular")
 
         self.dend.d_Ca_conc_PR = self.dend_d_Caconc
         self.dend.beta_Ca_conc_PR = self.dend_beta_Caconc

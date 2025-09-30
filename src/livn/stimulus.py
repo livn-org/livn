@@ -17,6 +17,9 @@ class Stimulus:
     def __iter__(self):
         yield from zip(self.gids, self.array.T)
 
+    def __len__(self):
+        return self.array.shape[-1]
+
     @classmethod
     def from_arg(cls, stimulus) -> "Stimulus":
         if isinstance(stimulus, cls):

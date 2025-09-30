@@ -181,6 +181,7 @@ class BRK:
         self.dend.insert("KCa")
         self.dend.insert("Ca_conc")
         self.dend.insert("K_conc")
+        self.dend.insert("extracellular")  # For stimulation
 
         self.dend.f_Ca_conc = self.dend_f_Caconc
         self.dend.alpha_Ca_conc = self.dend_alpha_Caconc
