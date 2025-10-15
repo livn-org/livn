@@ -1,3 +1,5 @@
+import sys
+import importlib
 import collections
 import json
 from typing import TYPE_CHECKING, Any, Optional, Union
@@ -7,6 +9,15 @@ from livn.types import Array
 if TYPE_CHECKING:
     import numpy as np
     from mpi4py import MPI
+
+
+def import_object_by_path(path):
+    module_path, _, obj_name = path.rpartition(".")
+    if module_path == "__main__" or module_path == "":
+        module = sys.modules["__main__"]
+    else:
+        module = importlib.import_module(module_path)
+    return getattr(module, obj_name)
 
 
 def lnp() -> "np":
