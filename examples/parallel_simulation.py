@@ -9,20 +9,16 @@ import numpy as np
 
 from livn.backend import backend
 from livn.env import Env
-from livn.io import MEA
 from livn.models.lif import LIF
-from livn.system import make
 from livn.utils import P
+from livn.system import predefined
 
 system_name = "S1"
 
 # pick a model
 model = LIF() if backend() == "brian2" else None
 
-system = make(system_name)
-mea = MEA.from_directory(system.uri)
-
-env = Env(system, model, mea).init()
+env = Env(predefined(system_name), model).init()
 
 env.apply_model_defaults()
 env.record_spikes()

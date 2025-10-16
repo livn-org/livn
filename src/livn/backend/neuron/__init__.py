@@ -393,7 +393,7 @@ class Env(EnvProtocol):
                 stimulus.gids = self.system.gids
 
             stim = []  # prevent garbage collection
-            sections_per_neuron = len(stimulus) // self.system.num_neurons
+            sections_per_neuron = len(stimulus) // len(self.system.neuron_coordinates)
             for count, (gid, st) in enumerate(stimulus):
                 if not (self.pc.gid_exists(gid)):
                     continue
@@ -450,32 +450,29 @@ class Env(EnvProtocol):
         ii = np.asarray(self.id_vec.as_numpy(), dtype=np.uint32)
 
         if len(self.v_recs) == 0:
-            return ii, tt, None, None
-
-        # collect voltages
-        iv = []
-        v = []
-        for (gid, sec_id), rec in self.v_recs.items():
-            iv.append(gid)
-            v.append(rec.as_numpy())
-        iv = np.asarray(iv, dtype=np.uint32)
-        v = np.array(v, dtype=np.float32)
+            # collect voltages
+            iv = []
+            v = []
+            for (gid, sec_id), rec in self.v_recs.items():
+                iv.append(gid)
+                v.append(rec.as_numpy())
+            iv = np.asarray(iv, dtype=np.uint32)
+            v = np.array(v, dtype=np.float32)
+        else:
+            iv = None
+            v = None
 
         # collect membrane currents
         if len(self.i_recs) == 0:
             return ii, tt, iv, v, None, None
 
-        coords = getattr(self.system, "neuron_coordinates", None)
-        if coords is None:
-            recs = [rec.as_numpy() for _, rec in sorted(self.i_recs.items())]
-            return np.column_stack(recs) if len(recs) else None
-
-        gids = np.asarray(coords)[:, 0].astype(np.uint32)
+        gids = self.system.gids
+        sections_per_neuron = len(self.i_recs) // len(gids)
         gid_to_index = {int(g): idx for idx, g in enumerate(gids)}
-
         any_rec = next(iter(self.i_recs.values()))
         T = len(any_rec)
         currents = np.zeros((len(self.i_recs), T), dtype=np.float32)
+        im = np.ones([len(self.i_recs)], dtype=np.int32) * -1
 
         for (gid, sec_id), rec in self.i_recs.items():
             idx = gid_to_index.get(int(gid))
@@ -495,9 +492,10 @@ class Env(EnvProtocol):
                     arr = pad
                 else:
                     arr = arr[:T]
-            currents[idx + sec_id, :] = arr
+            currents[idx * sections_per_neuron + sec_id, :] = arr
+            im[idx * sections_per_neuron + sec_id] = gid
 
-        return ii, tt, iv, v, gids, currents
+        return ii, tt, iv, v, im, currents
 
     def set_weights(self, weights):
         params = []

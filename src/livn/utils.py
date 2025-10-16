@@ -214,14 +214,18 @@ class P:
             return 1
 
     @staticmethod
-    def is_root(comm: Optional["MPI.Intracomm"] = None):
+    def is_root(root: int = 0, comm: Optional["MPI.Intracomm"] = None):
+        root = int(root)
+        if root < 0:
+            root = max(P.size(comm=comm) + root, 0)
+
         try:
             from mpi4py import MPI
 
             if comm is None:
                 comm = MPI.COMM_WORLD
 
-            return comm.Get_rank() == 0
+            return comm.Get_rank() == root
         except ImportError:
             return True
 

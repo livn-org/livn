@@ -50,6 +50,10 @@ class IO(Jsonable):
     def num_channels(self) -> int:
         raise NotImplementedError
 
+    @property
+    def channel_ids(self) -> int:
+        raise NotImplementedError
+
     def _get_input_space(self) -> gymnasium.Space:
         return gymnasium.spaces.Box(low=0.0, high=1.0, shape=(self.num_channels,))
 
@@ -135,6 +139,10 @@ class MEA(IO):
     @property
     def num_channels(self) -> int:
         return len(self.electrode_coordinates)
+
+    @property
+    def channel_ids(self) -> int:
+        return self.electrode_coordinates[:, 0]
 
     def serialize(self) -> dict:
         return {

@@ -59,6 +59,9 @@ PopulationName = str
 PostSynapticPopulationName = PopulationName
 PreSynapticPopulationName = PopulationName
 
+# list | dict | tuple | Stimulus | Float[Array, "batch timestep n_channels"] | None
+StimulusLike = Any
+
 
 class SynapticParam(BaseModel):
     population: Optional[str] = None
@@ -240,6 +243,32 @@ class Env(Protocol):
         """Run the simulation"""
         ...
 
+    def __call__(
+        self,
+        decoding: Union["Decoding", int],
+        inputs: StimulusLike = None,
+        encoding: Optional["Encoding"] = None,
+        **kwargs,
+    ) -> Any:
+        if isinstance(decoding, int):
+            duration = decoding
+        else:
+            duration = decoding.duration
+
+        if duration <= 0:
+            raise ValueError(f"Encoding duration must be > 0, not {duration}.")
+
+        stimulus = inputs
+        if encoding is not None:
+            stimulus = encoding(self, duration, inputs)
+
+        response = self.run(duration, stimulus, **kwargs)
+
+        if isinstance(decoding, int):
+            return response
+
+        return decoding(self, *response)
+
     def potential_recording(
         self, membrane_currents: Float[Array, "timestep n_neurons"] | None
     ) -> Float[Array, "timestep n_channels"]:
@@ -305,34 +334,35 @@ class Model(Protocol):
             return default
 
 
-@runtime_checkable
-class Encoding(Protocol):
-    def __call__(
-        self, features: Any, *args, **kwargs
-    ) -> Tuple[Float[Array, "batch timestep n_channels"], float]: ...
+class Encoding(BaseModel):
+    def __call__(self, env: "Env", t_end: int, features: Any) -> StimulusLike: ...
 
     @property
-    def feature_space(self) -> gymnasium.Space:
-        if not hasattr(self, "_feature_space"):
-            self._feature_space = self._get_feature_space()
-        return getattr(self, "_feature_space")
-
-    def _get_feature_space(self) -> gymnasium.Space:
+    def input_space(self) -> gymnasium.Space:
         raise NotImplementedError
 
 
-@runtime_checkable
-class Decoding(Protocol):
+class Decoding(BaseModel):
+    duration: int
+
+    @field_validator("duration")
+    @classmethod
+    def validate_duration(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError(f"duration must be > 0, not {v}.")
+        return v
+
     def __call__(
         self,
-        duration: float,
+        env: "Env",
         it: Int[Array, "n_spiking_neuron_ids"] | None,
         tt: Float[Array, "n_spiking_neuron_times"] | None,
         iv: Int[Array, "n_voltage_neuron_ids"] | None,
         vv: Float[Array, "neuron_ids voltages"] | None,
         im: Int[Array, "n_membrane_current_neuron_ids"] | None,
         m: Float[Array, "neuron_ids membrane_currents"] | None,
-    ) -> Any: ...
+    ) -> Any: 
+        return it, tt, iv, vv, im, m
 
     @property
     def output_space(self) -> gymnasium.Space:
