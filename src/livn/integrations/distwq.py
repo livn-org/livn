@@ -1,3 +1,4 @@
+import os
 from typing import Optional, Self, Tuple
 
 import distwq
@@ -6,6 +7,7 @@ from mpi4py import MPI
 from livn.env import Env
 from livn.types import Env as EnvProtocol, Model, Float, Array, Int
 from livn.io import IO
+from livn.utils import P
 
 state = {}
 
@@ -84,6 +86,9 @@ class DistributedEnv(EnvProtocol):
         self.seed = seed
         self.comm = comm
         self.subworld_size = subworld_size
+
+    def is_root(self):
+        return P.is_root(os.getenv("DISTWQ_CONTROLLER_RANK", 0))
 
     def init(self):
         # MPI boot so that user can __call__ from controller
