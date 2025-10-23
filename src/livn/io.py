@@ -33,13 +33,6 @@ class IO(Jsonable):
 
     partial-like utility to maintain state
     associated with an IO transformation
-
-    # Arguments / Attributes
-
-    neuron_coordinates
-        Array of shape (n_coords, 4) containing the coordinates of neurons.
-        Each row represents [id, x, y, z] for a neuron.
-    **kwargs
     """
 
     @classmethod
@@ -48,11 +41,11 @@ class IO(Jsonable):
 
     @property
     def num_channels(self) -> int:
-        raise NotImplementedError
+        raise NotImplementedError("Please specify an IO")
 
     @property
     def channel_ids(self) -> int:
-        raise NotImplementedError
+        raise NotImplementedError("Please specify an IO")
 
     def _get_input_space(self) -> gymnasium.Space:
         return gymnasium.spaces.Box(low=0.0, high=1.0, shape=(self.num_channels,))
@@ -69,7 +62,7 @@ class IO(Jsonable):
         channel_inputs: Float[Array, "batch timestep n_channels"],
     ) -> Float[Array, "batch timestep n_gids"]:
         """Transforms channel inputs into neural inputs"""
-        raise NotImplementedError
+        raise NotImplementedError("Please specify an IO")
 
     def channel_recording(
         self,
@@ -78,7 +71,7 @@ class IO(Jsonable):
         *recordings: Float[Array, "_"],
     ) -> tuple[dict[int, Array], ...]:
         """Transforms neural recordings identified by their gids into per channel recordings"""
-        raise NotImplementedError
+        raise NotImplementedError("Please specify an IO")
 
     def potential_recording(
         self,
@@ -92,7 +85,7 @@ class IO(Jsonable):
         - membrane_currents: current per neuron index (aligned with the coordinate order
             used to compute `distances`). Shape must be (timestep, n_neurons).
         """
-        raise NotImplementedError
+        raise NotImplementedError("Please specify an IO")
 
 
 class MEA(IO):
@@ -210,14 +203,15 @@ class MEA(IO):
         Returns: microvolts array (uV)
         """
         n_electrodes = int(self.num_channels)
-        n_neurons_count = int(membrane_currents.shape[0])
-
         d = distances[:, -1]
-        if d.size != n_electrodes * n_neurons_count:
+        if d.size % n_electrodes != 0:
             raise ValueError(
-                f"distances size mismatch: got {d.size}, expected {n_electrodes * n_neurons_count}"
+                f"distances size mismatch: expected a multiple of {n_electrodes}, got {d.size}"
             )
-        d = d.reshape(n_electrodes, n_neurons_count)
+
+        n_neurons_expected = d.size // n_electrodes
+
+        d = d.reshape(n_electrodes, n_neurons_expected)
 
         weights = electrode_potential_point_source_weights(d)
         mask = d <= float(self.output_radius)

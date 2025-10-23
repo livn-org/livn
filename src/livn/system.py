@@ -395,9 +395,12 @@ class System:
         self._num_neurons = None
 
     def default_io(self) -> "IO":
-        from livn.io import MEA
+        from livn.io import MEA, IO
 
-        return MEA.from_directory(self.uri)
+        try:
+            return MEA.from_directory(self.uri)
+        except FileNotFoundError:
+            return IO()
 
     @property
     def name(self):
