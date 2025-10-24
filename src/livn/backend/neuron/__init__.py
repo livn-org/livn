@@ -12,6 +12,7 @@ from miv_simulator.synapses import SynapseManager
 from miv_simulator.utils import ExprClosure, from_yaml
 from miv_simulator.utils.neuron import configure_hoc
 from miv_simulator.network import init_input_cells
+from miv_simulator import cells
 from mpi4py import MPI
 from neuroh5.io import read_projection_names, read_cell_attribute_info
 from neuron import h
@@ -19,7 +20,7 @@ from neuron import h
 from livn.stimulus import Stimulus
 from livn.types import Env as EnvProtocol
 from livn.types import SynapticParam
-from livn.utils import DotDict
+from livn.utils import DotDict, import_object_by_path
 
 if TYPE_CHECKING:
     from livn.io import IO
@@ -254,6 +255,31 @@ class Env(EnvProtocol):
                 "coordinates_ns": "Generated Coordinates",
             }
         )
+
+        class _Cell(cells.BiophysCell):
+            def position(self, x: float, y: float, z: float) -> None:
+                target = self.hoc_cell if self.hoc_cell is not None else self.cell_obj
+                if target is None or not hasattr(target, "position"):
+                    raise RuntimeError("cell has no position()")
+                target.position(x, y, z)
+
+        def make_cell(target):
+            if not target.startswith("@"):
+                return None
+
+            def _cell(gid, pop_name, env, mech_dict):
+                cell = env.biophys_cells[pop_name][gid] = _Cell(
+                    gid=gid,
+                    population_name=pop_name,
+                    cell_obj=import_object_by_path(target[1:])(),
+                    mech_dict=mech_dict,
+                    env=env,
+                )
+                return cell
+
+            return _cell
+
+        cells.get_reduced_cell_constructor = make_cell
 
         make_cells(this)
 

@@ -113,11 +113,13 @@ class ReducedCalciumSomaDendrite(Model):
 
     def neuron_celltypes(self, celltypes):
         celltypes["EXC"]["template class"] = "livn.models.rcsd.neuron.templates.BRK.BRK"
+        celltypes["EXC"]["template"] = "@" + celltypes["EXC"]["template class"]
         celltypes["EXC"]["mechanism"] = {
             "BoothRinzelKiehn": self.params("BoothRinzelKiehn-MN")
         }
 
         celltypes["INH"]["template class"] = "livn.models.rcsd.neuron.templates.PRN.PRN"
+        celltypes["INH"]["template"] = "@" + celltypes["INH"]["template class"]
         celltypes["INH"]["mechanism"] = {
             "PinskyRinzel": self.params("PinskyRinzel-PVBC")
         }
