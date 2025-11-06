@@ -9,10 +9,10 @@ from typing import (
     runtime_checkable,
 )
 
-import gymnasium
 from pydantic import BaseModel, field_validator
 
 if TYPE_CHECKING:
+    import gymnasium
     from jaxtyping import Array as JaxArray
     from mpi4py import MPI
     from numpy import ndarray
@@ -254,6 +254,7 @@ class Env(Protocol):
             duration = decoding
         else:
             duration = decoding.duration
+            decoding.setup(self)
 
         if duration <= 0:
             raise ValueError(f"Encoding duration must be > 0, not {duration}.")
@@ -338,7 +339,7 @@ class Encoding(BaseModel):
     def __call__(self, env: "Env", t_end: int, features: Any) -> StimulusLike: ...
 
     @property
-    def input_space(self) -> gymnasium.Space:
+    def input_space(self) -> "gymnasium.Space":
         raise NotImplementedError
 
 
@@ -352,6 +353,9 @@ class Decoding(BaseModel):
             raise ValueError(f"duration must be > 0, not {v}.")
         return v
 
+    def setup(self, env: "Env"):
+        """Optional setup"""
+
     def __call__(
         self,
         env: "Env",
@@ -361,9 +365,9 @@ class Decoding(BaseModel):
         vv: Float[Array, "neuron_ids voltages"] | None,
         im: Int[Array, "n_membrane_current_neuron_ids"] | None,
         m: Float[Array, "neuron_ids membrane_currents"] | None,
-    ) -> Any: 
+    ) -> Any:
         return it, tt, iv, vv, im, m
 
     @property
-    def output_space(self) -> gymnasium.Space:
+    def output_space(self) -> "gymnasium.Space":
         raise NotImplementedError
