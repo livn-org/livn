@@ -311,11 +311,24 @@ class Jsonable:
     ):
         if isinstance(serialized, str):
             if serialized.endswith(".json"):
+                load_error = None
+                data = None
                 if comm is False or P.is_root(comm=comm):
-                    with open(serialized, "r") as f:
-                        serialized = json.load(f)
+                    try:
+                        with open(serialized, "r") as f:
+                            data = json.load(f)
+                    except Exception as e:
+                        load_error = e
+
                 if comm is not False:
-                    serialized = P.broadcast(serialized, comm=comm)
+                    load_error = P.broadcast(load_error, comm=comm)
+                    if load_error is not None:
+                        raise load_error
+                    serialized = P.broadcast(data, comm=comm)
+                else:
+                    if load_error is not None:
+                        raise load_error
+                    serialized = data
             else:
                 serialized = json.loads(serialized, **loads_kwargs)
         return cls.unserialize(serialized)
