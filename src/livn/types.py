@@ -26,32 +26,9 @@ if TYPE_CHECKING:
 
     Array = Union[TorchTensor, ndarray, JaxArray, TfTensor]
 else:
-    arrays = []
-    try:
-        from torch import Tensor as TorchTensor
-    except Exception:
-        pass
-    else:
-        arrays.append(TorchTensor)
-    try:
-        from numpy import ndarray
-    except Exception:
-        pass
-    else:
-        arrays.append(ndarray)
-    try:
-        from jaxtyping import Array as JaxArray
-    except Exception:
-        pass
-    else:
-        arrays.append(JaxArray)
-    try:
-        from tensorflow import Tensor as TfTensor
-    except Exception:
-        pass
-    else:
-        arrays.append(TfTensor)
-    Array = Union[tuple(arrays)]
+    from numpy import ndarray
+
+    Array = ndarray
 
 from jaxtyping import Float, Int
 
