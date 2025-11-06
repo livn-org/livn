@@ -114,8 +114,6 @@ class Env(EnvProtocol):
         self.pc = h.pc
         self.rank = int(self.pc.id())
 
-        self.pc.set_maxstep(10)
-
         if self.subworld_size is not None:
             self.pc.subworlds(subworld_size)
 
@@ -155,6 +153,8 @@ class Env(EnvProtocol):
         self.biophys_cells = dict(self.biophys_cells)
         self.edge_count = dict(self.edge_count)
         self.syns_set = dict(self.syns_set)
+
+        self.pc.set_maxstep(10)
 
         return self
 
