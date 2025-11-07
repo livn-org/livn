@@ -195,18 +195,18 @@ Connection Generator:
         offset: [0, 0]
   Synapses: !include _synapses_C5.yml
 Cell Types:
-  PYR: !include _cell_types_C5/CA1_PYR_PR.yml
-  PVBC: !include _cell_types_C5/CA1_PVBC_PR.yml
-  CCKBC: !include _cell_types_C5/CA1_CCKBC_PR.yml
-  AAC: !include _cell_types_C5/CA1_AAC_PR.yml
-  BS: !include _cell_types_C5/CA1_BS_PR.yml
-  IS1: !include _cell_types_C5/CA1_IS1_PR.yml
-  IS2: !include _cell_types_C5/CA1_IS2_PR.yml
-  IS3: !include _cell_types_C5/CA1_IS3_PR.yml
-  IVY: !include _cell_types_C5/CA1_IVY_PR.yml
-  NGFC: !include _cell_types_C5/CA1_NGFC_PR.yml
-  OLM: !include _cell_types_C5/CA1_OLM_PR.yml
-  SCA: !include _cell_types_C5/CA1_SCA_PR.yml
+  PYR: !include _cell_types_CA1/PYR_PR.yml
+  PVBC: !include _cell_types_CA1/PVBC_PR.yml
+  CCKBC: !include _cell_types_CA1/CCKBC_PR.yml
+  AAC: !include _cell_types_CA1/AAC_PR.yml
+  BS: !include _cell_types_CA1/BS_PR.yml
+  IS1: !include _cell_types_CA1/IS1_PR.yml
+  IS2: !include _cell_types_CA1/IS2_PR.yml
+  IS3: !include _cell_types_CA1/IS3_PR.yml
+  IVY: !include _cell_types_CA1/IVY_PR.yml
+  NGFC: !include _cell_types_CA1/NGFC_PR.yml
+  OLM: !include _cell_types_CA1/OLM_PR.yml
+  SCA: !include _cell_types_CA1/SCA_PR.yml
   EC:
     template: VecStim
     synapses: {}
