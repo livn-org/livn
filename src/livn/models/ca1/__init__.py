@@ -57,17 +57,6 @@ class PinskyRinzel(Model):
             },
         }
 
-    def neuron_noise_mechanism(self, section):
-        pass
-
-    def neuron_noise_configure(
-        self, population, mechanism, state, exc_level, inh_level
-    ):
-        pass
-
-    def neuron_default_noise(self, system: str, key: int = 0):
-        return {}
-
     def neuron_microcircuit_inputs(self):
         return True
 

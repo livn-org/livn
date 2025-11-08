@@ -535,8 +535,12 @@ class Env(EnvProtocol):
         return self
 
     def set_noise(self, exc: float = 1.0, inh: float = 1.0):
-        for population, cells in self.cells.items():
-            for gid, cell in cells.items():
+        if not hasattr(self.model, "neuron_noise_mechanism"):
+            print(f"Model {self.model} does not support noise setter")
+            return self
+
+        for population, pop_cells in self.cells.items():
+            for gid, cell in pop_cells.items():
                 if not (self.pc.gid_exists(gid)):
                     continue
                 secs = []
