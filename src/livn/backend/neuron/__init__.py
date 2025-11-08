@@ -444,6 +444,9 @@ class Env(EnvProtocol):
 
         if verbose:
             logger.info("*** finitialize")
+
+        self.t_rec.record(h._ref_t)
+
         self._clear()
         h.v_init = -65
         h.stdinit()
@@ -536,7 +539,8 @@ class Env(EnvProtocol):
 
     def set_noise(self, exc: float = 1.0, inh: float = 1.0):
         if not hasattr(self.model, "neuron_noise_mechanism"):
-            print(f"Model {self.model} does not support noise setter")
+            if self.rank == 0:
+                print(f"Model {self.model} does not support noise setter")
             return self
 
         for population, pop_cells in self.cells.items():
