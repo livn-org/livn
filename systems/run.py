@@ -1,11 +1,8 @@
-from livn.io import MEA
 from machinable import Component
 from pydantic import BaseModel, ConfigDict
 
-from livn.system import System
-from livn.utils import P
+from livn.utils import P, import_object_by_path
 from livn.env import Env
-from dmosopt.config import import_object_by_path
 
 
 class Run(Component):
@@ -14,40 +11,31 @@ class Run(Component):
 
         system: str = "systems/data/S1"
         model: str | None = None
-        duration: float = 100
-        inputs: str | None = None
-        inputs_namespace: str = ""
-        noise: bool = False
-        save: bool = False
+        decoding: str = "livn.types.Decoding"
+        decoding_kwargs: dict = {"duration": 100}
+        encoding: str | None = None
+        encoding_kwargs: dict = {}
 
     def __call__(self):
         model = self.config.model
         if model is not None:
             model = import_object_by_path(model)()
 
-        system = System(self.config.system)
+        env = Env(self.config.system, model).init()
+        env.apply_model_defaults()
 
-        mea = MEA.from_directory(system.uri)
+        decoding = import_object_by_path(self.config.decoding)(
+            **self.config.decoding_kwargs
+        )
+        encoding = self.config.encoding
+        if encoding is not None:
+            encoding = import_object_by_path(self.config.encoding)(
+                **self.config.encoding_kwargs
+            )
 
-        env = Env(system, model, mea).init()
-
-        env.apply_model_defaults(noise=self.config.noise)
-        env.record_spikes()
-
-        if self.config.inputs is not None:
-            env.apply_stimulus_from_h5(self.config.inputs, self.config.inputs_namespace)
-
-        it, t, *_ = env.run(self.config.duration)
-
-        it, t = P.gather(it, t)
-
-        if P.is_root():
-            it, t = P.merge(it, t)
-
-            if self.config.save:
-                self.save_file("results.p", {"it": it, "t": t})
-
-            print("Simulation finished: ", it[:3], t[:3], flush=True)
+        response = env(decoding=decoding, encoding=encoding)
+        if response is not None:
+            self.save_file(f"response_{P.rank()}.p", response)
 
     def on_write_meta_data(self):
         return P.rank() == 0
