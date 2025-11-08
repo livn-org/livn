@@ -314,11 +314,9 @@ class Env(EnvProtocol):
         cell_filepath = self.system.files["cells"]
         io_size: int = 0
 
-        # TODO: move into livn
         microcircuit_inputs = False
-        if self.system.name == "C5":
-            microcircuit_inputs = True
-
+        if hasattr(self.model, "neuron_microcircuit_inputs"):
+            microcircuit_inputs = self.model.neuron_microcircuit_inputs()
         if not self.cells_meta_data:
             raise RuntimeError("Please load the cells first using load_cells()")
 
@@ -642,6 +640,29 @@ class Env(EnvProtocol):
 
         comm0.Free()
 
+        celltypes = self.cells_meta_data["celltypes"]
+        vecstim_pops: list[str] = []
+        for pop_name, pop_config in celltypes.items():
+            if pop_config.get("template") != "VecStim":
+                continue
+
+            vecstim_pops.append(pop_name)
+            spike_cfg = pop_config.setdefault("spike train", {})
+            if spike_cfg.get("namespace") != namespace:
+                spike_cfg["namespace"] = namespace
+            if spike_cfg.get("attribute") != attribute:
+                spike_cfg["attribute"] = attribute
+
+        if self.input_sources is None:
+            self.input_sources = {}
+        else:
+            for pop_name in vecstim_pops:
+                self.input_sources.pop(pop_name, None)
+
+        has_micro_inputs = any(bool(gid_set) for gid_set in self.input_sources.values())
+        has_micro_inputs = self.comm.allreduce(has_micro_inputs, op=MPI.LOR)
+        microcircuit_inputs = microcircuit_inputs and has_micro_inputs
+
         class _binding:
             pass
 
@@ -657,7 +678,7 @@ class Env(EnvProtocol):
                 "stimulus_config": {},
                 "stimulus_onset": onset,
                 "data_file_path": self.system.files["cells"],
-                "celltypes": self.cells_meta_data["celltypes"],
+                "celltypes": celltypes,
                 "microcircuit_inputs": microcircuit_inputs,
                 "microcircuit_input_sources": self.input_sources,
                 "cell_selection": None,
