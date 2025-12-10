@@ -81,7 +81,7 @@ def predefined(name: str = "S1", download_directory: str = ".", force: bool = Fa
 
     from huggingface_hub import snapshot_download
 
-    available = [f"S{s + 1}" for s in range(4)] + ["C5"]
+    available = [f"S{s + 1}" for s in range(4)] + ["CA1"]
 
     if name not in available:
         raise ValueError(f"'{name}' is invalid, pick one of ", available)

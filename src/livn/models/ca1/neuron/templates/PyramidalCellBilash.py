@@ -1051,7 +1051,7 @@ class PyramidalCell:
 
     def position(self, x, y, z):
         xx = yy = zz = 0
-        for sec in [self.soma, self.dend]:
+        for sec in [self.soma]:  # , self.dend]:
             for i in range(sec.n3d()):
                 pt3d = h.pt3dchange(
                     i,
