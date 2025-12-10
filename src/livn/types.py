@@ -313,7 +313,7 @@ class Model(Protocol):
 
 
 class Encoding(BaseModel):
-    def __call__(self, env: "Env", t_end: int, features: Any) -> StimulusLike: ...
+    def __call__(self, env: "Env", t_end: int, inputs: Any) -> StimulusLike: ...
 
     @property
     def input_space(self) -> "gymnasium.Space":

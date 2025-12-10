@@ -9,36 +9,25 @@
 mpirun -n {subworld_size * num_workers + 1} python examples/distributed_workers.py
 """
 
+import os
+
+import numpy as np
+
 from livn.integrations.distwq import DistributedEnv
 from livn.utils import P
-import numpy as np
-from livn.types import Decoding, Encoding
-import os
+from livn.types import Encoding
+from livn.decoding import ChannelRecording
 
 
 class Constant(Encoding):
-    def __call__(self, env, t_end, features):
-        t_stim = features
+    def __call__(self, env, t_end, inputs):
+        t_stim = inputs
         # Set up a 20ms stimulus in channel 1 and 4
-        inputs = np.zeros([t_end, 16])
+        channel_inputs = np.zeros([t_end, 16])
         for r in range(20):
             for c in [1, 4]:
-                inputs[t_stim + r, c] = 750
-        return env.cell_stimulus(inputs)
-
-
-class Outread(Decoding):
-    def __call__(self, env, it, tt, iv, vv, im, m):
-        # per-rank electrode potential, sum-reduced for each channel [T, #channels]
-        p = P.reduce_sum(env.potential_recording(m), all=True, comm=env.comm)
-
-        cit, ct = env.channel_recording(it, tt)
-
-        cit, ct, iv, vv = P.gather(cit, ct, iv, vv, comm=env.comm)
-
-        if P.is_root(comm=env.comm):
-            cit, ct, iv, vv = P.merge(cit, ct, iv, vv)
-            return cit, ct, iv, vv, env.io.channel_ids, p
+                channel_inputs[t_stim + r, c] = 750
+        return env.cell_stimulus(channel_inputs)
 
 
 env = DistributedEnv(
@@ -54,7 +43,7 @@ env.apply_model_defaults()
 
 if P.is_root(os.getenv("DISTWQ_CONTROLLER_RANK", 0)):
     responses = env(
-        Outread(duration=100),
+        ChannelRecording(duration=100),
         # different features to be processed by different workers
         inputs=[10, 20],
         encoding=Constant(),
