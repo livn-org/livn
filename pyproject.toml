@@ -29,16 +29,16 @@ dev = ["pytest>=8.3.3", "pytest-mpiexec>=0.0.1a3", "ruff>=0.11.5"]
 scaling = ["neuroh5 @ git+https://github.com/iraikov/neuroh5.git@b9a0897"]
 # backends
 neuron = [
-    "miv-simulator @ git+https://github.com/GazzolaLab/MiV-Simulator.git@178034e",
+    "miv-simulator @ git+https://github.com/GazzolaLab/MiV-Simulator.git@7b1c8cd",
 ]
 diffrax = [
-    "jax>=0.7.2; platform_system == 'Darwin'",
-    "jax[cuda]>=0.7.2; platform_system != 'Darwin'",
-    "equinox>=0.13.0",
-    "optimistix>=0.0.10",
-    "jaxtyping>=0.3.2",
+    "jax>=0.8.1; platform_system == 'Darwin'",
+    "jax[cuda]>=0.8.1; platform_system != 'Darwin'",
+    "equinox>=0.13.2",
+    "optimistix>=0.0.11",
+    "jaxtyping>=0.3.4",
     "signax>=0.2.1",
-    "optax>=0.2.5",
+    "optax>=0.2.6",
     "lineax>=0.0.8",
     "diffrax>=0.7.0",
 ]
