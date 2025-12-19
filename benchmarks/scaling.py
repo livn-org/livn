@@ -41,7 +41,7 @@ if len(sys.argv) > 1 and sys.argv[1] == "slurm":
 assert backend() == "neuron"
 
 t_end = 5_000
-system = "systems/data/" + sys.argv[1]
+system = "systems/graphs/" + sys.argv[1]
 
 system_name = os.path.basename(system)
 

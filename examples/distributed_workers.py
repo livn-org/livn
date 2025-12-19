@@ -31,7 +31,7 @@ class Constant(Encoding):
 
 
 env = DistributedEnv(
-    "./systems/data/S1",
+    "./systems/graphs/S1",
     subworld_size=3,  # processors per workers
 )
 

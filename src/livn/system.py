@@ -86,7 +86,7 @@ def predefined(name: str = "S1", download_directory: str = ".", force: bool = Fa
     if name not in available:
         raise ValueError(f"'{name}' is invalid, pick one of ", available)
 
-    path = os.path.join("systems/data", name)
+    path = os.path.join("systems/graphs", name)
     target = os.path.join(download_directory, path)
 
     if force or not os.path.isdir(target):

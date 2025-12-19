@@ -9,7 +9,7 @@ class Run(Component):
     class Config(BaseModel):
         model_config = ConfigDict(extra="forbid")
 
-        system: str = "systems/data/S1"
+        system: str = "systems/graphs/S1"
         model: str | None = None
         decoding: str = "livn.types.Decoding"
         decoding_kwargs: dict = {"duration": 100}
