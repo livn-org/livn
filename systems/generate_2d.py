@@ -1,6 +1,7 @@
 import math
 import os
 import uuid
+import json
 
 from machinable import Component
 from machinable.utils import save_file
@@ -11,6 +12,7 @@ from miv_simulator.utils.io import create_neural_h5
 from miv_simulator.config import SWCTypesDef
 from neuroh5.io import read_population_ranges, write_cell_attributes, write_graph
 from mpi4py import MPI
+from livn.io import electrode_array_coordinates_for_area
 
 
 _SYN_TYPE_LOOKUP = {"excitatory": 0, "inhibitory": 1}
@@ -132,6 +134,26 @@ class Generate2DSystem(Component):
         if self.config.output_directory is not None:
             return os.path.join(self.config.output_directory, "graph.json")
         return self.local_directory("graph.json")
+
+    def mea(self, pitch:float=500, overwrite:bool=False):
+        fn = os.path.join(self.config.output_directory, "mea.json")
+        if not overwrite and os.path.isfile(fn):
+            raise FileExistsError("mea.json already exists.")
+        z_min, z_max = self.config.z_range
+        coords = electrode_array_coordinates_for_area(
+            pitch=pitch, area=self.config.area, z=z_min + (z_max - z_min) / 2
+        )
+
+        data = {
+            "electrode_coordinates": coords.tolist(),
+            "input_radius": 250,
+            "output_radius": 250,
+        }
+
+        with open(fn, "w") as f:
+            json.dump(data, f)
+
+        return data
 
     def __call__(self):
         counts: Dict[str, int] = {}

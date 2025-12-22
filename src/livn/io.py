@@ -282,14 +282,14 @@ def channel_recording(
 
 
 def electrode_array_coordinates(
-    pitch: float = 1000, xs: int = 4, ys: int = 4, xoffset=500, yoffset=500
+    pitch: float = 1000, xs: int = 4, ys: int = 4, xoffset=500, yoffset=500, z=350 / 2
 ) -> Float[Array, "n_electrodes ixyz=4"]:
     """
     Generate regular electrode array coordinates.
     """
     coordinates = np.array(
         [
-            [xoffset + x * pitch, yoffset + y * pitch, 350 / 2]
+            [xoffset + x * pitch, yoffset + y * pitch, z]
             for y in range(ys)
             for x in range(xs)
         ]
@@ -300,6 +300,41 @@ def electrode_array_coordinates(
     )
 
     return coordinates
+
+
+def electrode_array_coordinates_for_area(
+    pitch: float, area: tuple[tuple[float, float], tuple[float, float]], z=0
+) -> Float[Array, "n_electrodes ixyz=4"]:
+    """
+    Generate electrode array coordinates that fit within a given area
+
+    The number of electrodes in each dimension is the largest centered power-of-2
+    that fits within the area given the pitch
+
+    Arguments:
+        pitch: spacing between electrodes
+        area: ((x_min, y_min), (x_max, y_max))
+        z: z coordinate for all electrodes
+    """
+    (x_min, y_min), (x_max, y_max) = area
+    width = x_max - x_min
+    height = y_max - y_min
+
+    max_xs = int(width // pitch) + 1
+    max_ys = int(height // pitch) + 1
+
+    xs = 1 << (max_xs.bit_length() - 1) if max_xs >= 1 else 1
+    ys = 1 << (max_ys.bit_length() - 1) if max_ys >= 1 else 1
+
+    grid_width = (xs - 1) * pitch if xs > 1 else 0
+    grid_height = (ys - 1) * pitch if ys > 1 else 0
+
+    xoffset = x_min + (width - grid_width) / 2
+    yoffset = y_min + (height - grid_height) / 2
+
+    return electrode_array_coordinates(
+        pitch=pitch, xs=xs, ys=ys, xoffset=xoffset, yoffset=yoffset, z=z
+    )
 
 
 def electrode_potential_point_source_weights(
