@@ -131,7 +131,7 @@ class Env(Protocol):
 
     def channel_recording(
         self,
-        ii: Float[Array, "i"],
+        ii: Float[Array, "i"] | None,
         *recordings: Float[Array, "_"],
     ) -> tuple[dict[int, Array], ...]:
         """Transforms neural recordings identified by their gids into per channel recordings"""

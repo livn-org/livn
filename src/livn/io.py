@@ -170,10 +170,13 @@ class MEA(IO):
 
     def channel_recording(
         self,
-        neuron_coordinates: Float[Array, "n_coords ixyz=4"],
+        neuron_coordinates: Float[Array, "n_coords ixyz=4"] | None,
         ii: Float[Array, "i"],
         *recordings: Float[Array, "_"],
     ) -> tuple[dict[int, Array], ...]:
+        if ii is None:
+            ii = np.unique(neuron_coordinates[:, 0])
+
         if self.cell_measurement is None:
             self.cell_measurement = relative_distance(
                 self.distances(neuron_coordinates),
