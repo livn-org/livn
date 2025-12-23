@@ -485,8 +485,8 @@ class Env(EnvProtocol):
         tt = self.t_vec.as_numpy()
         ii = np.asarray(self.id_vec.as_numpy(), dtype=np.uint32)
 
-        if len(self.v_recs) == 0:
-            # collect voltages
+        # collect voltages
+        if len(self.v_recs) > 0:
             iv = []
             v = []
             for (gid, sec_id), rec in self.v_recs.items():
