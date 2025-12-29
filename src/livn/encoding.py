@@ -25,4 +25,3 @@ class H5Inputs(Encoding):
             self.n_trials,
             self.equilibration_duration,
         )
-

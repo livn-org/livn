@@ -57,7 +57,7 @@ class Env(EnvProtocol):
         self.comm = comm
         self.subworld_size = subworld_size
 
-        self._noise = {"exc": 0.0, "inh": 0.0}
+        self._noise = {}
         self._weights = None
         self.module = None
         self.seed = seed
@@ -78,9 +78,9 @@ class Env(EnvProtocol):
         self._weights = weights
         return self
 
-    def set_noise(self, exc: float = 1.0, inh: float = 1.0):
+    def set_noise(self, **params):
         # noise will be handled later during run
-        self._noise = dict(exc=exc, inh=inh)
+        self._noise = dict(params)
         return self
 
     def run(
@@ -117,6 +117,7 @@ class Env(EnvProtocol):
 
         it, tt, iv, v, im, m = self.module.run(
             input_current=stimulus_array,
+            noise=self._noise,
             t0=self.t,
             t1=self.t + duration,
             dt=dt,

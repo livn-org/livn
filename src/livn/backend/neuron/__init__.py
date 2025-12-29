@@ -507,7 +507,7 @@ class Env(EnvProtocol):
         gid_to_index = {int(g): idx for idx, g in enumerate(gids)}
         any_rec = next(iter(self.i_recs.values()))
         T = len(any_rec)
-        currents = np.zeros((len(self.i_recs), T), dtype=np.float32)
+        currents = np.zeros((T, len(self.i_recs)), dtype=np.float32)
         im = np.ones([len(self.i_recs)], dtype=np.int32) * -1
 
         for (gid, sec_id), rec in self.i_recs.items():
@@ -528,7 +528,7 @@ class Env(EnvProtocol):
                     arr = pad
                 else:
                     arr = arr[:T]
-            currents[idx * sections_per_neuron + sec_id, :] = arr
+            currents[:, idx * sections_per_neuron + sec_id] = arr
             im[idx * sections_per_neuron + sec_id] = gid
 
         return ii, tt, iv, v, im, currents
@@ -546,7 +546,7 @@ class Env(EnvProtocol):
 
         return self
 
-    def set_noise(self, exc: float = 1.0, inh: float = 1.0):
+    def set_noise(self, **params):
         if not hasattr(self.model, "neuron_noise_mechanism"):
             if self.rank == 0:
                 print(f"Model {self.model} does not support noise setter")
@@ -570,7 +570,7 @@ class Env(EnvProtocol):
                         self._flucts[f"{gid}-{idx}"] = (fluct, state)
 
                     self.model.neuron_noise_configure(
-                        population, fluct, state, exc, inh
+                        population, fluct, state, **params
                     )
 
                     h.pop_section()

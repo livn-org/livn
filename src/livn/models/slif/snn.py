@@ -725,7 +725,16 @@ class SpikingNeuralNet(eqx.Module):
         return sol
 
     def run(
-        self, input_current, t0, t1, dt, v0=None, dt_solver=0.01, key=None, **kwargs
+        self,
+        input_current,
+        noise,
+        t0,
+        t1,
+        dt,
+        v0=None,
+        dt_solver=0.01,
+        key=None,
+        **kwargs,
     ):
         num_samples = 1  # batch processing currently not supported
         if v0 is None:

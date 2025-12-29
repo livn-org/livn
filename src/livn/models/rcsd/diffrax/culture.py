@@ -19,7 +19,16 @@ class MotoneuronCulture(eqx.Module):
         self.neurons = BoothRinzelKiehn(params)
 
     def run(
-        self, input_current, t0, t1, dt, v0=None, dt_solver=0.01, key=None, **kwargs
+        self,
+        input_current,
+        noise,
+        t0,
+        t1,
+        dt,
+        v0=None,
+        dt_solver=0.01,
+        key=None,
+        **kwargs,
     ):
         @jax.vmap
         def solve_many(I_stim):

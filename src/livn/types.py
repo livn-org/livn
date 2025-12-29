@@ -149,7 +149,7 @@ class Env(Protocol):
         ...
         return self
 
-    def set_noise(self, exc: float = 1.0, inh: float = 1.0) -> Self:
+    def set_noise(self, **params) -> Self:
         """Set noise"""
         ...
         return self

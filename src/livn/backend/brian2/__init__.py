@@ -71,7 +71,7 @@ class Env(EnvProtocol):
         self._load_connections()
         self._set_delays()
 
-        self.set_noise(0, 0)  # force noise op init
+        self.set_noise()  # force noise op init
 
         return self
 
@@ -200,15 +200,13 @@ class Env(EnvProtocol):
 
         return self
 
-    def set_noise(self, exc: float = 1.0, inh: float = 1.0):
+    def set_noise(self, **params):
         if not self._noise_ops:
             for population in self._populations.values():
                 self._noise_ops.add(self.model.brian2_noise_op(population, self.prng))
 
         for population in self._populations.values():
-            self.model.brian2_noise_configure(
-                population, level=exc if population.kind == "excitatory" else inh
-            )
+            self.model.brian2_noise_configure(population, **params)
 
         return self
 

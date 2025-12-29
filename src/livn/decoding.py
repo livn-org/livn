@@ -2,7 +2,6 @@ from livn.types import Decoding
 from livn.utils import P
 
 
-
 class ChannelRecording(Decoding):
     def setup(self, env):
         env.record_spikes()

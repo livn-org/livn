@@ -221,7 +221,7 @@ class MEA(IO):
         weights = np.where(mask, weights, 0.0)
 
         # compute potentials [t,E] = [t,I] @ [I,E]
-        return np.matmul(membrane_currents.T, weights.T)
+        return np.matmul(membrane_currents, weights.T)
 
     def distances(
         self, neuron_coordinates: Float[Array, "n_coords ixyz=4"]
