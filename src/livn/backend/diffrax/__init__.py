@@ -1,9 +1,7 @@
 from typing import TYPE_CHECKING, Optional, Union
 
-import jax
 import jax.numpy as jnp
 import jax.random as jr
-import numpy as np
 
 from livn.stimulus import Stimulus
 from livn.types import Env as EnvProtocol
@@ -17,26 +15,41 @@ if TYPE_CHECKING:
     from livn.types import Model
 
 
+class _ParallelSystem:
+    """System to simulate a number of neurons independently in parallel"""
+
+    def __init__(self, num_neurons: int):
+        self.num_neurons = num_neurons
+        self.name = "ParallelSystem"
+        self.populations = ["parallelized"]
+
+    def default_io(self):
+        return None
+
+
 class Env(EnvProtocol):
     def __init__(
         self,
-        system: Union["System", str],
+        system: Union["System", str, int],
         model: Union["Model", None] = None,
         io: Union["IO"] = None,
         seed: int | None = 123,
         comm: Optional["MPI.Intracomm"] = None,
         subworld_size: int | None = None,
     ):
-        from livn.system import CachedSystem
+        if isinstance(system, int):
+            system = _ParallelSystem(system)
+        elif isinstance(system, str):
+            from livn.system import CachedSystem
+
+            system = CachedSystem(system, comm=comm)
 
         if model is None:
             from livn.models.slif import SLIF
 
             model = SLIF()
 
-        self.system = (
-            system if not isinstance(system, str) else CachedSystem(system, comm=comm)
-        )
+        self.system = system
         if io is None:
             io = self.system.default_io()
         self.model = model
