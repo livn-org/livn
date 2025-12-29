@@ -32,16 +32,15 @@ class ReducedCalciumSomaDendrite(Model):
         dx = 0.9 * L
 
         n_neurons = neuron_coordinates.shape[0]
-        coords_float = np.array(neuron_coordinates, dtype=np.float64)
 
-        dend_coords = coords_float.copy()
+        dend_coords = neuron_coordinates.copy()
         if _USES_JAX:
             dend_coords = dend_coords.at[:, 1].add(dx)
         else:
             dend_coords[:, 1] += dx
 
         # interleave soma0, dend0, soma1, dend1, ...
-        stacked = np.stack([coords_float, dend_coords], axis=1)  # [n, 2, 4]
+        stacked = np.stack([neuron_coordinates, dend_coords], axis=1)  # [n, 2, 4]
         interleaved_coords = stacked.reshape(2 * n_neurons, 4)
 
         return interleaved_coords

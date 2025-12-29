@@ -36,21 +36,42 @@ class MotoneuronCulture(eqx.Module):
                 t_dur=t1 - t0, I_stim_array=I_stim, dt=dt
             )
 
-            # stack so that after vmap we have shape (num_neurons, 2, T)
             v_both = jax.numpy.stack((v_soma, v_dend), axis=0)
             i_mem_both = jax.numpy.stack((i_mem_soma, i_mem_dend), axis=0)
             return t_arr, v_both, i_mem_both
 
-        # map over neuron dimension -> [num_neurons, 2, T + 1]
-        t_arr, v_soma_dend, i_mem_soma_dend = solve_many(input_current.T)
+        if input_current is None:
+            input_current = jax.numpy.zeros(
+                [int((t1 - t0) / dt) + 1, self.num_neurons * 2]
+            )
+
+        if input_current.ndim == 1:
+            input_current = input_current[:, None]
+
+        if input_current.ndim != 2:
+            raise ValueError("Expected stimulus array with shape [time, neurons]")
+
+        expected_channels = self.num_neurons * 2
+        if input_current.shape[1] != expected_channels:
+            raise ValueError(
+                "Stimulus channels must provide soma and dendrite currents"
+            )
+
+        # group soma and dendrite columns per neuron before vmapping
+        per_neuron_stimulus = input_current.reshape(
+            input_current.shape[0], self.num_neurons, 2
+        )
+        per_neuron_stimulus = jax.numpy.swapaxes(per_neuron_stimulus, 0, 1)
+
+        t_arr_batched, v_soma_dend, i_mem_soma_dend = solve_many(per_neuron_stimulus)
 
         # No spike detection
-        it = None
-        tt = None
+        it = jax.numpy.empty((0,), dtype=jax.numpy.int32)
+        tt = jax.numpy.empty((0,), dtype=jax.numpy.float32)
         # interleave treating compartments as neurons (soma0,dend0,soma1,dend1,...)
         iv = jax.numpy.repeat(jax.numpy.arange(self.num_neurons), 2)
         v = v_soma_dend.reshape(self.num_neurons * 2, -1)
         im = iv
-        m = i_mem_soma_dend.reshape(self.num_neurons * 2, -1)
+        m = i_mem_soma_dend.reshape(self.num_neurons * 2, -1).T
 
         return it, tt, iv, v, im, m

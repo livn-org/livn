@@ -1,5 +1,6 @@
 from typing import TYPE_CHECKING, Optional, Union
 
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 
@@ -45,9 +46,9 @@ class Env(EnvProtocol):
             system = CachedSystem(system, comm=comm)
 
         if model is None:
-            from livn.models.slif import SLIF
+            from livn.models.rcsd import ReducedCalciumSomaDendrite
 
-            model = SLIF()
+            model = ReducedCalciumSomaDendrite()
 
         self.system = system
         if io is None:
@@ -99,7 +100,7 @@ class Env(EnvProtocol):
         stimulus = Stimulus.from_arg(stimulus)
 
         if stimulus.array is not None:
-            stimulus_array = jnp.array(stimulus.array)
+            stimulus.array = jnp.array(stimulus.array)
 
             # adjust timesteps if necessary
             if dt > stimulus.dt:
@@ -110,13 +111,44 @@ class Env(EnvProtocol):
 
             # converting the mV potential into nA current via Ohm's law,
             # assuming a membrane resistance of 400 MΩ
-            stimulus_array = stimulus_array / 400
-        else:
-            n_time_points = int(duration / dt) + 1
-            stimulus_array = jnp.zeros([n_time_points, self.system.num_neurons])
+            stimulus.array = stimulus.array / 400
+
+            expected_steps = int(duration / dt) + 1
+            original_ndim = stimulus.array.ndim
+            if original_ndim == 1:
+                stimulus.array = stimulus.array[:, None]
+
+            if stimulus.array.shape[0] != expected_steps or stimulus.dt != dt:
+                time_src = jnp.arange(
+                    stimulus.array.shape[0], dtype=stimulus.array.dtype
+                )
+                time_src = time_src * stimulus.dt
+                time_target = jnp.linspace(
+                    0.0, duration, expected_steps, dtype=stimulus.array.dtype
+                )
+
+                def _interp_column(column):
+                    return jnp.interp(time_target, time_src, column)
+
+                stimulus.array = jax.vmap(_interp_column, in_axes=1, out_axes=1)(
+                    stimulus.array
+                )
+
+            current_steps = stimulus.array.shape[0]
+            if current_steps < expected_steps:
+                pad_rows = expected_steps - current_steps
+                pad = jnp.zeros(
+                    (pad_rows, stimulus.array.shape[1]), dtype=stimulus.array.dtype
+                )
+                stimulus.array = jnp.concatenate([stimulus.array, pad], axis=0)
+            elif current_steps > expected_steps:
+                stimulus.array = stimulus.array[:expected_steps]
+
+            if original_ndim == 1:
+                stimulus.array = stimulus.array[:, 0]
 
         it, tt, iv, v, im, m = self.module.run(
-            input_current=stimulus_array,
+            input_current=stimulus.array,
             noise=self._noise,
             t0=self.t,
             t1=self.t + duration,
