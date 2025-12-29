@@ -1,8 +1,25 @@
 import numpy as np
 import pytest
-from mpi4py import MPI
 
 from livn.utils import P, merge, merge_array, merge_dict
+from livn.backend import backend
+
+
+def _get_rank():
+    if backend() == "neuron":
+        # use neuron-compatible MPI
+
+        from livn.env import Env
+
+        env = Env(None)
+        rank = env.rank
+        env.close()
+
+        return rank
+
+    from mpi4py import MPI
+
+    return MPI.COMM_WORLD.Get_rank()
 
 
 def test_utils_merge_dict():
@@ -104,7 +121,7 @@ def test_utils_P(monkeypatch):
     ],
 )
 def test_utils_P_parallel(mpiexec_n):
-    rank = MPI.COMM_WORLD.Get_rank()
+    rank = _get_rank()
 
     assert P.is_root() is not bool(rank)
 
@@ -189,7 +206,7 @@ def test_utils_reduce_sum_no_mpi(monkeypatch):
     ],
 )
 def test_utils_reduce_sum_parallel(mpiexec_n):
-    rank = MPI.COMM_WORLD.Get_rank()
+    rank = _get_rank()
 
     # arrays: root-only reduction
     arr = np.array([rank, 1], dtype=np.int64)

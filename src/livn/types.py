@@ -261,6 +261,10 @@ class Env(Protocol):
 
         return self
 
+    def close(self) -> Self:
+        """Deconstructor to clean up resources"""
+        return self
+
 
 @runtime_checkable
 class Model(Protocol):

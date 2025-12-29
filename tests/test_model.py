@@ -1,5 +1,5 @@
-from livn.types import Model
+from livn.models.rcsd import ReducedCalciumSomaDendrite
 
 
 def test_model():
-    Model()
+    ReducedCalciumSomaDendrite()

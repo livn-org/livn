@@ -13,9 +13,13 @@ def test_using_the_dataset():
 def test_run_a_simulation():
     from examples import run_a_simulation
 
+    run_a_simulation.env.close()
+
 
 def test_parallel_simulation():
     from examples import parallel_simulation
+
+    parallel_simulation.env.close()
 
 
 @pytest.mark.skipif(os.getenv("LIVN_BACKEND") != "diffrax", reason="diffrax only")

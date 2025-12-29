@@ -64,10 +64,15 @@ class Env(EnvProtocol):
         self.system = (
             system if not isinstance(system, str) else System(system, comm=comm)
         )
-        if io is None:
+        if io is None and self.system is not None:
             io = self.system.default_io()
         self.model = model
         self.io = io
+
+        self._original_get_reduced_cell_constructor = getattr(
+            cells, "get_reduced_cell_constructor", None
+        )
+        self._closed = False
 
         if comm is None:
             comm = MPI.COMM_WORLD
@@ -170,6 +175,13 @@ class Env(EnvProtocol):
         if self.rank == 0:
             logger.info("*** Creating cells...")
         st = time.time()
+
+        try:
+            self.pc.gid_clear()
+        except Exception:
+            logger.debug(
+                "ParallelContext gid_clear before cell load failed", exc_info=True
+            )
 
         rank = self.comm.Get_rank()
 
@@ -1052,3 +1064,133 @@ class Env(EnvProtocol):
         this.__dict__.update(attrs)
 
         return this
+
+    def _release_cell_container(self, container):
+        if not container:
+            return
+        for pop_name, gid_map in list(container.items()):
+            for gid, cell in list(gid_map.items()):
+                try:
+                    if hasattr(cell, "spike_detector"):
+                        cell.spike_detector = None
+                    if hasattr(cell, "hoc_cell"):
+                        cell.hoc_cell = None
+                    if hasattr(cell, "cell_obj"):
+                        cell.cell_obj = None
+                    if hasattr(cell, "sections"):
+                        cell.sections = None
+                except Exception:
+                    logger.debug(
+                        "Failed to release NEURON references for %s gid %s",
+                        pop_name,
+                        gid,
+                        exc_info=True,
+                    )
+            gid_map.clear()
+        container.clear()
+
+    def close(self):
+        if getattr(self, "_closed", False):
+            return
+
+        self._closed = True
+
+        try:
+            syn_manager = getattr(self, "synapse_manager", None)
+            if syn_manager is not None and hasattr(syn_manager, "clear"):
+                try:
+                    syn_manager.clear()
+                except Exception:
+                    logger.debug("Failed to clear synapse manager", exc_info=True)
+            self.synapse_manager = None
+
+            self._release_cell_container(getattr(self, "cells", None))
+            self._release_cell_container(getattr(self, "biophys_cells", None))
+            self._release_cell_container(getattr(self, "artificial_cells", None))
+
+            for attr_name in (
+                "syns_set",
+                "edge_count",
+                "recording_sets",
+                "v_recs",
+                "v_recs_dt",
+                "i_recs",
+                "i_recs_dt",
+                "i_area",
+            ):
+                mapping = getattr(self, attr_name, None)
+                if mapping is not None:
+                    mapping.clear()
+
+            gidset = getattr(self, "gidset", None)
+            if gidset is not None:
+                gidset.clear()
+            flucts = getattr(self, "_flucts", None)
+            if flucts is not None:
+                flucts.clear()
+            template_dict = getattr(self, "template_dict", None)
+            if template_dict is not None:
+                template_dict.clear()
+
+            for vec_name in ("t_vec", "id_vec", "t_rec"):
+                vec = getattr(self, vec_name, None)
+                if vec is not None:
+                    try:
+                        vec.resize(0)
+                    except Exception:
+                        logger.debug("Failed to resize %s", vec_name, exc_info=True)
+
+            if hasattr(self, "cells_meta_data"):
+                self.cells_meta_data = None
+            if hasattr(self, "connections_meta_data"):
+                self.connections_meta_data = None
+            if hasattr(self, "input_sources"):
+                self.input_sources = None
+            if hasattr(self, "this"):
+                self.this = None
+            if hasattr(self, "node_allocation"):
+                self.node_allocation = None
+
+            pc = getattr(self, "pc", None)
+            if pc is not None:
+                try:
+                    pc.gid_clear()
+                except Exception:
+                    logger.debug("ParallelContext gid_clear failure", exc_info=True)
+            self.pc = None
+
+            try:
+                secs = list(h.allsec())
+            except Exception:
+                secs = []
+            for sec in reversed(secs):
+                try:
+                    h.delete_section(sec=sec)
+                except Exception:
+                    sec_name = "<unknown>"
+                    try:
+                        sec_name = sec.hname()
+                    except Exception:
+                        pass
+                    logger.debug(
+                        "Unable to delete section %s during teardown",
+                        sec_name,
+                        exc_info=True,
+                    )
+
+            gc.collect()
+        finally:
+            original_ctor = getattr(
+                self, "_original_get_reduced_cell_constructor", None
+            )
+            if original_ctor is not None:
+                cells.get_reduced_cell_constructor = original_ctor
+                self._original_get_reduced_cell_constructor = None
+
+        return self
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass

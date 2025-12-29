@@ -2127,7 +2127,7 @@ requires-dist = [
 brian2 = []
 dev = [
     { name = "pytest", specifier = ">=8.3.3" },
-    { name = "pytest-mpiexec", specifier = ">=0.0.1a3" },
+    { name = "pytest-mpiexec", git = "https://github.com/frthjf/pytest-mpiexec.git" },
     { name = "ruff", specifier = ">=0.11.5" },
 ]
 diffrax = [
@@ -2141,7 +2141,7 @@ diffrax = [
     { name = "optimistix", specifier = ">=0.0.11" },
     { name = "signax", specifier = ">=0.2.1" },
 ]
-neuron = [{ name = "miv-simulator", git = "https://github.com/GazzolaLab/MiV-Simulator.git?rev=7b1c8cd" }]
+neuron = [{ name = "miv-simulator", git = "https://github.com/GazzolaLab/MiV-Simulator.git?rev=edfd2ef" }]
 scaling = [{ name = "neuroh5", git = "https://github.com/iraikov/neuroh5.git?rev=b9a0897" }]
 
 [[package]]
@@ -2374,7 +2374,7 @@ wheels = [
 [[package]]
 name = "miv-simulator"
 version = "0.2.1"
-source = { git = "https://github.com/GazzolaLab/MiV-Simulator.git?rev=7b1c8cd#7b1c8cdb798a4f01cb977754cbab0fb619a4edf2" }
+source = { git = "https://github.com/GazzolaLab/MiV-Simulator.git?rev=edfd2ef#edfd2ef7731f0362cf3bc463fe6ebc36e4455bff" }
 dependencies = [
     { name = "machinable" },
     { name = "matplotlib" },
@@ -3842,15 +3842,11 @@ wheels = [
 [[package]]
 name = "pytest-mpiexec"
 version = "0.0.1a3"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/frthjf/pytest-mpiexec.git#4e5b66e5ef9ca3c439279588c8d0507e2f125761" }
 dependencies = [
     { name = "mpi4py" },
     { name = "pytest" },
     { name = "pytest-reportlog" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/0d/b5/fa5ce1a16e7b58264fce3c4669f1366e6b84cc4e62c61c9a1b19097b45dd/pytest_mpiexec-0.0.1a3.tar.gz", hash = "sha256:c8a6f816bbc442edd6753dadbd1ff3624665c8fc07c4410589510c28bde030e1", size = 8986 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/57/b5/1e46ebf58f279d8a8b4d18e9654ed0f86a727c9e68ee1121d99aabefe58c/pytest_mpiexec-0.0.1a3-py3-none-any.whl", hash = "sha256:81a724c91576a4321735a32dbe64d1b2a0556218ec175319e4692e6566c4dc10", size = 7312 },
 ]
 
 [[package]]
@@ -4632,7 +4628,7 @@ requires-dist = [
     { name = "dmosopt", git = "https://github.com/iraikov/dmosopt.git?rev=f034729" },
     { name = "livn", editable = "." },
     { name = "machinable", specifier = "==4.10.6" },
-    { name = "miv-simulator", git = "https://github.com/GazzolaLab/MiV-Simulator.git?rev=7b1c8cd" },
+    { name = "miv-simulator", git = "https://github.com/GazzolaLab/MiV-Simulator.git?rev=edfd2ef" },
     { name = "omegaconf", specifier = "==2.4.0.dev3" },
     { name = "pandas", specifier = ">=2.3.1" },
     { name = "sqlean-py", specifier = ">=3.47.0" },

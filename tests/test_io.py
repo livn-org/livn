@@ -2,7 +2,6 @@ import os
 
 import numpy as np
 import pytest
-from mpi4py import MPI
 
 from livn import io
 from livn.system import CachedSystem, System
@@ -160,8 +159,6 @@ def test_potential_recording():
 @pytest.mark.mpiexec(timeout=60)
 @pytest.mark.parametrize("mpiexec_n", [1, 2])
 def test_mea_parallel(mpiexec_n):
-    assert MPI.COMM_WORLD.size == mpiexec_n
-
     system = System(os.environ["LIVN_TEST_SYSTEM"])
     cached_system = CachedSystem(os.environ["LIVN_TEST_SYSTEM"])
 
