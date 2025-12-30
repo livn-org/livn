@@ -135,21 +135,21 @@ def test_potential_recording():
 
     d = mea.distances(n_coords)
 
-    # 2D currents (timestep, n_neurons) -> returns (timestep, n_channels)
+    # 2D currents (n_neurons, timestep) -> returns (n_channels, timestep)
     i2d = np.array(
         [
-            [1.0, 1.0],
-            [2.0, 2.0],
+            [1.0, 2.0],
+            [1.0, 2.0],
         ]
     )
     v2 = mea.potential_recording(d, i2d)
-    assert v2.shape == (2, 1)
-    assert np.allclose(v2[:, 0], np.array([expected, 2.0 * expected]), rtol=1e-6)
+    assert v2.shape == (1, 2)
+    assert np.allclose(v2[0, :], np.array([expected, 2.0 * expected]), rtol=1e-6)
 
     # Masking: only the neuron at origin contributes (tight radius)
     mea_masked = io.MEA(e_coords, input_radius=250, output_radius=10)
     expected_masked = factor * (1.0 / r0)
-    v_masked = mea_masked.potential_recording(d, i2d[:1])
+    v_masked = mea_masked.potential_recording(d, i2d[:, :1])
     assert np.allclose(v_masked[0], np.array([expected_masked]), rtol=1e-6)
 
 

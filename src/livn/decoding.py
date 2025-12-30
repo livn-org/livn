@@ -30,12 +30,12 @@ class Slice(Decoding):
             stop_idx = int(stop / v_dt)
             vv = vv[:, start_idx:stop_idx]
 
-        # membrane currents [T, n_neurons]
+        # membrane currents [n_neurons, T]
         if im is not None and m is not None:
             m_dt = env.membrane_current_recording_dt
             start_idx = int(self.start / m_dt)
             stop_idx = int(stop / m_dt)
-            m = m[start_idx:stop_idx, :]
+            m = m[:, start_idx:stop_idx]
 
         return it, tt, iv, vv, im, m
 

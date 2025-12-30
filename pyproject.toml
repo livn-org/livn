@@ -58,3 +58,6 @@ allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/livn"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

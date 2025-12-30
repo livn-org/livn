@@ -231,11 +231,21 @@ class Env(Protocol):
         Int[Array, "n_spiking_neuron_ids"] | None,
         Float[Array, "n_spiking_neuron_times"] | None,
         Int[Array, "n_voltage_neuron_ids"] | None,
-        Float[Array, "neuron_ids voltages"] | None,
+        Float[Array, "n_neurons timestep"] | None,
         Int[Array, "n_membrane_current_neuron_ids"] | None,
-        Float[Array, "neuron_ids membrane_currents"] | None,
+        Float[Array, "n_neurons timestep"] | None,
     ]:
-        """Run the simulation"""
+        """Run the simulation
+
+        Returns:
+            Tuple of:
+            - Spiking neuron ids
+            - Spike times
+            - Voltage recording neuron ids
+            - Voltage traces with shape [n_neurons, timestep]
+            - Membrane current recording neuron ids
+            - Membrane current traces with shape [n_neurons, timestep]
+        """
         ...
 
     def __call__(
@@ -276,8 +286,8 @@ class Env(Protocol):
         return 0.1
 
     def potential_recording(
-        self, membrane_currents: Float[Array, "timestep n_neurons"] | None
-    ) -> Float[Array, "timestep n_channels"]:
+        self, membrane_currents: Float[Array, "n_neurons timestep"] | None
+    ) -> Float[Array, "n_channels timestep"]:
         distances = self.io.distances(
             self.model.recording_coordinates(self.system.neuron_coordinates),
         )

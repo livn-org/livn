@@ -189,8 +189,8 @@ class MEA(IO):
     def potential_recording(
         self,
         distances: Float[Array, "n_distances cip=3"],
-        membrane_currents: Float[Array, "timestep n_neurons"],
-    ) -> Float[Array, "timestep n_channels"]:
+        membrane_currents: Float[Array, "n_neurons timestep"],
+    ) -> Float[Array, "n_channels timestep"]:
         """
         Estimate electrode potentials from membrane currents using
         the point-source volume conductor formula:
@@ -201,9 +201,9 @@ class MEA(IO):
 
         Arguments
         - distances: as returned by `MEA.distances(neuron_coordinates)`
-        - membrane_currents: in uA
+        - membrane_currents: in uA, shape [n_neurons, timestep]
 
-        Returns: microvolts array (uV)
+        Returns: microvolts array (uV), shape [n_channels, timestep]
         """
         n_electrodes = int(self.num_channels)
         d = distances[:, -1]
@@ -220,8 +220,8 @@ class MEA(IO):
         mask = d <= float(self.output_radius)
         weights = np.where(mask, weights, 0.0)
 
-        # compute potentials [t,E] = [t,I] @ [I,E]
-        return np.matmul(membrane_currents, weights.T)
+        # compute potentials [E, t] = [E, I] @ [I, t]
+        return np.matmul(weights, membrane_currents)
 
     def distances(
         self, neuron_coordinates: Float[Array, "n_coords ixyz=4"]

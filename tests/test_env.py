@@ -56,9 +56,9 @@ def test_env(mpiexec_n, subworld):
     env.record_voltage()
 
     t_end = 250
-    inputs = np.zeros([t_end, 16])
+    inputs = np.zeros([t_end, env.io.num_channels])
     for r in range(20):
-        for c in [1, 2, 3, 4]:
+        for c in range(env.io.num_channels):
             inputs[50 + r, c] = 750
 
     stimulus = env.cell_stimulus(inputs)

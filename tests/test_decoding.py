@@ -5,6 +5,7 @@ import pytest
 
 from livn.env import Env
 from livn.decoding import Slice
+from livn.backend import backend
 
 
 @pytest.fixture
@@ -37,7 +38,8 @@ def env_response(request):
 )
 def test_slice_decoding(env_response):
     env = Env(os.environ["LIVN_TEST_SYSTEM"])
-    env.init()
+    if backend() == "brian2":
+        env.init()
     env.record_spikes()
     env.record_voltage()
     env.record_membrane_current()
@@ -53,11 +55,9 @@ def test_slice_decoding(env_response):
     assert tt[tt < start].shape[0] == 0
     assert tt[tt >= start + duration].shape[0] == 0
 
-    #  [n_neurons, T]
     expected_time_steps = int(duration / recording_dt)
     assert v.shape[0] == orig_v.shape[0]
     assert v.shape[1] == expected_time_steps
 
-    # [T, n_neurons]
-    assert m.shape[0] == expected_time_steps
-    assert m.shape[1] == orig_m.shape[1]
+    assert m.shape[0] == orig_m.shape[0]
+    assert m.shape[1] == expected_time_steps

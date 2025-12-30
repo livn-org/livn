@@ -383,7 +383,7 @@ class Env(EnvProtocol):
             return concat(ii), concat(tt), concat(gids), concat(vv), None, None
 
         n_neurons = int(len(all_gids))
-        currents = np.zeros((T, n_neurons), dtype=np.float32)
+        currents = np.zeros((n_neurons, T), dtype=np.float32)
 
         for population, data in per_pop_data.items():
             if data.size == 0:
@@ -404,7 +404,7 @@ class Env(EnvProtocol):
                     series = pad
                 elif series.shape[0] > T:
                     series = series[:T]
-                currents[:, idx] = series
+                currents[idx, :] = series
 
         return concat(ii), concat(tt), concat(gids), concat(vv), all_gids, currents
 
