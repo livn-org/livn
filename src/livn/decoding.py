@@ -1,11 +1,12 @@
 from livn.types import Decoding
 from livn.utils import P
+from pydantic import Field
 
 
 class Slice(Decoding):
     """Slice decoding
 
-    Slices the system response into a given time window (start, stop)
+    Slices the system response into [start -> stop]
 
     Args:
         start: Start time in ms
@@ -13,15 +14,16 @@ class Slice(Decoding):
     """
 
     start: int = 0
+    duration: int = Field(validation_alias="stop")
 
     def __call__(self, env, it, tt, iv, vv, im, m):
-        stop = self.start + self.duration
+        stop = self.duration
 
         # spikes
         if it is not None and tt is not None:
             mask = (tt >= self.start) & (tt < stop)
             it = it[mask]
-            tt = tt[mask]
+            tt = tt[mask] - self.start
 
         # voltage [n_neurons, T]
         if iv is not None and vv is not None:

@@ -48,7 +48,7 @@ def test_slice_decoding(env_response):
     duration = 50
     recording_dt = 0.1
 
-    ii, tt, iv, v, im, m = Slice(start=start, duration=duration)(env, *env_response)
+    ii, tt, iv, v, im, m = Slice(start=start, stop=start + duration)(env, *env_response)
     orig_ii, orig_tt, orig_iv, orig_v, orig_im, orig_m = env_response
 
     # spike times

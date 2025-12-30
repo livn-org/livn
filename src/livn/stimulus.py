@@ -10,6 +10,8 @@ class Stimulus:
         **meta_data,
     ):
         self.array = array
+        if dt <= 0:
+            raise ValueError("Stimulus dt must be positive")
         self.dt = dt
         self.gids = gids
         self.meta_data = meta_data

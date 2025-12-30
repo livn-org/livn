@@ -1,5 +1,6 @@
 import gc
 import logging
+import math
 import time
 from collections import defaultdict
 from typing import TYPE_CHECKING, Union
@@ -143,6 +144,10 @@ class Env(EnvProtocol):
         self.i_area = {}  # membrane surface area (cm^2) for absolute current conversion
 
         self.t = 0
+        self._dt: float | None = None
+        self._stimulus_vectors: dict[tuple[int, int], dict] = {}
+        self._stimulus_callback_registered = False
+        self._stimulus_step_index = 0
 
     @property
     def voltage_recording_dt(self) -> float:
@@ -156,15 +161,6 @@ class Env(EnvProtocol):
         if self.i_recs_dt:
             return next(iter(self.i_recs_dt.values()))
         return super().membrane_current_recording_dt
-
-    def _clear(self):
-        self.t_vec.resize(0)
-        self.id_vec.resize(0)
-        self.t_rec.resize(0)
-        for v_rec in self.v_recs.values():
-            v_rec.resize(0)
-        for i_rec in self.i_recs.values():
-            i_rec.resize(0)
 
     def init(self):
         self._load_cells()
@@ -441,17 +437,26 @@ class Env(EnvProtocol):
         self,
         duration,
         stimulus: Stimulus | None = None,
-        dt: float = 0.025,
+        dt: float | None = None,
         **kwargs,
     ):
+        current_time = self.t
         if stimulus is not None:
             stimulus = Stimulus.from_arg(stimulus)
 
             if stimulus.gids is None:
                 stimulus.gids = self.system.gids
 
-            stim = []  # prevent garbage collection
             sections_per_neuron = len(stimulus) // len(self.system.neuron_coordinates)
+
+            start_step = int(round(current_time / stimulus.dt))
+            if not math.isclose(
+                start_step * stimulus.dt, current_time, rel_tol=0.0, abs_tol=1e-9
+            ):
+                raise ValueError(
+                    "Stimulus duration must align with dt when continuing runs"
+                )
+
             for count, (gid, st) in enumerate(stimulus):
                 if not (self.pc.gid_exists(gid)):
                     continue
@@ -466,48 +471,117 @@ class Env(EnvProtocol):
                     )
                     continue
 
-                stim.append(h.Vector(st))
-
                 sec = cell.sections[section_id]
                 sec.push()
-                if h.ismembrane("extracellular"):
-                    stim[-1].play(sec(0.5)._ref_e_extracellular, stimulus.dt)
+                has_extracellular = h.ismembrane("extracellular")
                 h.pop_section()
+
+                if not has_extracellular:
+                    continue
+
+                key = (int(gid), section_id)
+                state = self._stimulus_vectors.get(key)
+                target = sec(0.5)
+
+                if state is None:
+                    state = {
+                        "segment": target,
+                        "dt": stimulus.dt,
+                        "buffer": np.zeros(0, dtype=np.float64),
+                        "length": 0,
+                    }
+                    self._stimulus_vectors[key] = state
+                else:
+                    if not math.isclose(
+                        state["dt"], stimulus.dt, rel_tol=0.0, abs_tol=1e-12
+                    ):
+                        raise ValueError(
+                            f"Stimulus dt mismatch for gid {gid}; call clear() before rerunning"
+                        )
+
+                scheduled = state["length"]
+                if start_step < scheduled:
+                    raise ValueError(
+                        f"Stimulus for gid {gid} overlaps existing schedule; call clear() first"
+                    )
+
+                if start_step > scheduled:
+                    self._ensure_stimulus_buffer(state, start_step)
+                    state["length"] = start_step
+
+                if len(st) > 0:
+                    values = np.asarray(st, dtype=np.float64)
+                    end_step = start_step + len(values)
+                    self._ensure_stimulus_buffer(state, end_step)
+                    state["buffer"][start_step:end_step] = values
+                    state["length"] = end_step
+        if stimulus is not None and self._stimulus_vectors:
+            self._ensure_stimulus_callback()
+
+        first_run = self.t == 0
+
+        stored_dt = self._dt
+        requested_dt = dt if dt is not None else stored_dt
+        if requested_dt is None:
+            requested_dt = 0.025
+
+        if not first_run and stored_dt is not None:
+            if abs(requested_dt - stored_dt) > 1e-12:
+                raise ValueError(
+                    "Cannot change dt during a running simulation; call clear() first."
+                )
+            requested_dt = stored_dt
+
+        if first_run:
+            self._dt = requested_dt
+
+        if self._dt is not None:
+            self._stimulus_step_index = int(round(current_time / self._dt))
 
         verbose = self.rank == 0 and kwargs.get("verbose", True)
 
         if verbose:
-            logger.info("*** finitialize")
+            if first_run:
+                logger.info("*** finitialize")
+            else:
+                logger.info(f"*** Continuing run from t={self.t:.2f} ms")
 
         self.t_rec.record(h._ref_t)
 
-        self._clear()
-        h.v_init = -75.0
-        h.stdinit()
-        h.secondorder = 2  # crank-nicholson
-        h.dt = dt
-        self.pc.timeout(600.0)
+        self._free()
 
-        h.finitialize(h.v_init)
-        h.finitialize(h.v_init)
+        if first_run:
+            h.v_init = -75.0
+            h.stdinit()
+            h.secondorder = 2  # crank-nicholson
+            h.dt = requested_dt
+            self.pc.timeout(600.0)
+            h.finitialize(h.v_init)
+            h.finitialize(h.v_init)
+            if verbose:
+                logger.info("*** Completed finitialize")
+        else:
+            self.pc.timeout(600.0)
+
+        target_time = self.t + duration
 
         if verbose:
-            logger.info("*** Completed finitialize")
-
-        if verbose:
-            logger.info(f"*** Simulating {duration} ms")
+            logger.info(f"*** Simulating {duration} ms (target t={target_time:.2f} ms)")
 
         q = time.time()
-        self.pc.psolve(duration)
+        self.pc.psolve(target_time)
         self.psolvetime = time.time() - q
 
-        self.t += duration
+        self.t = target_time
 
         if verbose:
             logger.info(f"*** Done simulating within {self.psolvetime:.2f} s")
 
         # collect spikes
-        tt = self.t_vec.as_numpy()
+        tt = np.array(self.t_vec.as_numpy(), copy=True)
+        if current_time != 0.0 and tt.size > 0:
+            tt -= current_time
+            tt[tt < 0.0] = 0.0
         ii = np.asarray(self.id_vec.as_numpy(), dtype=np.uint32)
 
         # collect voltages
@@ -557,6 +631,70 @@ class Env(EnvProtocol):
             im[idx * sections_per_neuron + sec_id] = gid
 
         return ii, tt, iv, v, im, currents
+
+    def _ensure_stimulus_buffer(self, state: dict, target_length: int) -> None:
+        current_length = len(state.get("buffer", []))
+        if target_length <= current_length:
+            return
+
+        extra = target_length - current_length
+        if current_length == 0:
+            state["buffer"] = np.zeros(target_length, dtype=np.float64)
+        else:
+            pad = np.zeros(extra, dtype=np.float64)
+            state["buffer"] = np.concatenate([state["buffer"], pad])
+
+    def _ensure_stimulus_callback(self) -> None:
+        if self._stimulus_callback_registered:
+            return
+
+        cvode = h.CVode()
+        cvode.extra_scatter_gather(0, self._update_stimulus_values)
+        self._stimulus_callback_registered = True
+
+    def _update_stimulus_values(self) -> None:
+        if not self._stimulus_vectors:
+            return
+
+        if self._dt is not None:
+            current_time = self._stimulus_step_index * self._dt
+        else:
+            current_time = float(h.t)
+        for state in self._stimulus_vectors.values():
+            buffer = state["buffer"]
+            if buffer.size == 0:
+                value = 0.0
+            else:
+                dt = state["dt"]
+                if dt <= 0:
+                    value = buffer[-1]
+                else:
+                    idx = int(current_time / dt)
+                    if idx < buffer.size:
+                        value = buffer[idx]
+                    else:
+                        value = buffer[-1]
+            state["segment"].e_extracellular = float(value)
+        if self._dt is not None:
+            self._stimulus_step_index += 1
+
+    def _free(self):
+        self.t_vec.resize(0)
+        self.id_vec.resize(0)
+        self.t_rec.resize(0)
+        for v_rec in self.v_recs.values():
+            v_rec.resize(0)
+        for i_rec in self.i_recs.values():
+            i_rec.resize(0)
+
+    def clear(self):
+        self._free()
+        self.t = 0
+        self._dt = None
+        self._stimulus_step_index = 0
+        self._stimulus_vectors.clear()
+
+        return self
 
     def set_weights(self, weights):
         params = []
@@ -1132,6 +1270,10 @@ class Env(EnvProtocol):
                 mapping = getattr(self, attr_name, None)
                 if mapping is not None:
                     mapping.clear()
+
+            stim_vectors = getattr(self, "_stimulus_vectors", None)
+            if stim_vectors is not None:
+                stim_vectors.clear()
 
             gidset = getattr(self, "gidset", None)
             if gidset is not None:
