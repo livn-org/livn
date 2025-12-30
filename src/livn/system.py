@@ -393,6 +393,7 @@ class System:
         self.files = self._graph.files()
         self._neuron_coordinates = None
         self._num_neurons = None
+        self._bounding_box = None
 
     def default_io(self) -> "IO":
         from livn.io import MEA, IO
@@ -401,6 +402,27 @@ class System:
             return MEA.from_directory(self.uri)
         except FileNotFoundError:
             return IO()
+
+    @property
+    def bounding_box(self) -> types.Float[types.Array, "2 xyz=3"]:
+        if self._bounding_box is None:
+            min_box = [1e10, 1e10, 1e10]
+            max_box = [0.0, 0.0, 0.0]
+            for box in self._graph.architecture.config["layer_extents"].values():
+                for i in range(3):
+                    if box[0][i] < min_box[i]:
+                        min_box[i] = box[0][i]
+                    if box[1][i] > max_box[i]:
+                        max_box[i] = box[1][i]
+
+            self._bounding_box = np.array([min_box, max_box])
+
+        return self._bounding_box
+
+    @property
+    def center_point(self) -> types.Float[types.Array, "xyz=3"]:
+        bb = self.bounding_box
+        return np.array([(bb[1][i] - bb[0][i]) / 2.0 for i in range(3)])
 
     @property
     def name(self):

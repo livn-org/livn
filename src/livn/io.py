@@ -14,7 +14,7 @@ from collections import defaultdict
 import gymnasium
 
 from livn.backend import backend
-from livn.types import Array, Float
+from livn.types import Array, Float, Int
 from livn.utils import Jsonable
 
 _USES_JAX = False
@@ -44,7 +44,7 @@ class IO(Jsonable):
         raise NotImplementedError("Please specify an IO")
 
     @property
-    def channel_ids(self) -> int:
+    def channel_ids(self) -> Int[Array, "n_channel_ids"]:
         raise NotImplementedError("Please specify an IO")
 
     def _get_input_space(self) -> gymnasium.Space:
@@ -134,8 +134,8 @@ class MEA(IO):
         return len(self.electrode_coordinates)
 
     @property
-    def channel_ids(self) -> int:
-        return self.electrode_coordinates[:, 0]
+    def channel_ids(self) -> Int[Array, "n_channel_ids"]:
+        return self.electrode_coordinates[:, 0].astype(np.int32)
 
     def serialize(self) -> dict:
         return {
