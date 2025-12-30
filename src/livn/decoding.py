@@ -2,6 +2,44 @@ from livn.types import Decoding
 from livn.utils import P
 
 
+class Slice(Decoding):
+    """Slice decoding
+
+    Slices the system response into a given time window (start, stop)
+
+    Args:
+        start: Start time in ms
+        duration: Duration of the slice in ms
+    """
+
+    start: int = 0
+
+    def __call__(self, env, it, tt, iv, vv, im, m):
+        stop = self.start + self.duration
+
+        # spikes
+        if it is not None and tt is not None:
+            mask = (tt >= self.start) & (tt < stop)
+            it = it[mask]
+            tt = tt[mask]
+
+        # voltage [n_neurons, T]
+        if iv is not None and vv is not None:
+            v_dt = env.voltage_recording_dt
+            start_idx = int(self.start / v_dt)
+            stop_idx = int(stop / v_dt)
+            vv = vv[:, start_idx:stop_idx]
+
+        # membrane currents [T, n_neurons]
+        if im is not None and m is not None:
+            m_dt = env.membrane_current_recording_dt
+            start_idx = int(self.start / m_dt)
+            stop_idx = int(stop / m_dt)
+            m = m[start_idx:stop_idx, :]
+
+        return it, tt, iv, vv, im, m
+
+
 class ChannelRecording(Decoding):
     def setup(self, env):
         env.record_spikes()

@@ -144,6 +144,19 @@ class Env(EnvProtocol):
 
         self.t = 0
 
+    @property
+    def voltage_recording_dt(self) -> float:
+        if self.v_recs_dt:
+            return next(iter(self.v_recs_dt.values()))
+        return super().voltage_recording_dt
+
+    @property
+    def membrane_current_recording_dt(self) -> float:
+        """Recording time step for membrane current traces in ms"""
+        if self.i_recs_dt:
+            return next(iter(self.i_recs_dt.values()))
+        return super().membrane_current_recording_dt
+
     def _clear(self):
         self.t_vec.resize(0)
         self.id_vec.resize(0)
@@ -581,9 +594,7 @@ class Env(EnvProtocol):
                         fluct, state = self.model.neuron_noise_mechanism(sec(0.5))
                         self._flucts[f"{gid}-{idx}"] = (fluct, state)
 
-                    self.model.neuron_noise_configure(
-                        population, fluct, state, **noise
-                    )
+                    self.model.neuron_noise_configure(population, fluct, state, **noise)
 
                     h.pop_section()
 

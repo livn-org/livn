@@ -265,6 +265,16 @@ class Env(Protocol):
 
         return decoding(self, *response)
 
+    @property
+    def voltage_recording_dt(self) -> float:
+        """Recording time step for voltage traces in ms"""
+        return 0.1
+
+    @property
+    def membrane_current_recording_dt(self) -> float:
+        """Recording time step for membrane current traces in ms"""
+        return 0.1
+
     def potential_recording(
         self, membrane_currents: Float[Array, "timestep n_neurons"] | None
     ) -> Float[Array, "timestep n_channels"]:

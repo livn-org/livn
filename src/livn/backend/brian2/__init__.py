@@ -63,6 +63,18 @@ class Env(EnvProtocol):
         self.t = 0
 
     @property
+    def voltage_recording_dt(self) -> float:
+        if self._voltage_monitors_dt:
+            return next(iter(self._voltage_monitors_dt.values()))
+        return super().voltage_recording_dt
+
+    @property
+    def membrane_current_recording_dt(self) -> float:
+        if self._membrane_monitors_dt:
+            return next(iter(self._membrane_monitors_dt.values()))
+        return super().membrane_current_recording_dt
+
+    @property
     def population_ranges(self):
         return self.system.cells_meta_data.population_ranges
 
@@ -71,7 +83,7 @@ class Env(EnvProtocol):
         self._load_connections()
         self._set_delays()
 
-        self.set_noise()  # force noise op init
+        self.set_noise({})  # force noise op init
 
         return self
 
@@ -205,8 +217,9 @@ class Env(EnvProtocol):
             for population in self._populations.values():
                 self._noise_ops.add(self.model.brian2_noise_op(population, self.prng))
 
-        for population in self._populations.values():
-            self.model.brian2_noise_configure(population, **noise)
+        if noise:
+            for population in self._populations.values():
+                self.model.brian2_noise_configure(population, **noise)
 
         return self
 

@@ -67,7 +67,7 @@ class Izhikevich(Model):
             "I_noise = noise_amplitude*randn()*pA", dt=1 * b2.ms
         )
 
-    def brian2_noise_configure(self, population_group, level):
+    def brian2_noise_configure(self, population_group, level=1.0):
         population_group.noise_amplitude = (
             5 * level if population_group.name == "EXC" else 2 * level
         )
