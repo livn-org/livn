@@ -149,9 +149,27 @@ class Env(Protocol):
         ...
         return self
 
-    def set_noise(self, **params) -> Self:
+    def set_noise(self, noise: dict) -> Self:
         """Set noise"""
         ...
+        return self
+
+    def set_params(self, params: dict) -> Self:
+        """Set parameters"""
+        weights = {}
+        noise = {}
+
+        for k, v in params.items():
+            if k.startswith("noise-"):
+                noise[k.replace("noise-")] = v
+            elif k.startswith("weight-"):
+                weights[k.replace("weight-")] = v
+            else:
+                weights[k] = v
+
+        self.set_weights(weights)
+        self.set_noise(noise)
+
         return self
 
     def record_spikes(self, population: str | list | tuple | None = None) -> Self:
@@ -287,7 +305,7 @@ class Model(Protocol):
             env.set_weights(self.default_weights(env.system.name, default={}))
 
         if noise:
-            env.set_noise(**self.default_noise(env.system.name, default={}))
+            env.set_noise(self.default_noise(env.system.name, default={}))
 
     def default_noise(self, system: str, backend: str | None = None, default=None):
         from livn.backend import backend as current_backend

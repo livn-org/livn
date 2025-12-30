@@ -558,7 +558,7 @@ class Env(EnvProtocol):
 
         return self
 
-    def set_noise(self, **params):
+    def set_noise(self, noise: dict):
         if not hasattr(self.model, "neuron_noise_mechanism"):
             if self.rank == 0:
                 print(f"Model {self.model} does not support noise setter")
@@ -582,7 +582,7 @@ class Env(EnvProtocol):
                         self._flucts[f"{gid}-{idx}"] = (fluct, state)
 
                     self.model.neuron_noise_configure(
-                        population, fluct, state, **params
+                        population, fluct, state, **noise
                     )
 
                     h.pop_section()

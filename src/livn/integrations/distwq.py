@@ -138,8 +138,8 @@ class DistributedEnv(EnvProtocol):
         self._broadcast_to_workers("set_weights", (weights,))
         return self
 
-    def set_noise(self, exc: float = 1.0, inh: float = 1.0) -> Self:
-        self._broadcast_to_workers("set_noise", (exc, inh))
+    def set_noise(self, noise: dict) -> Self:
+        self._broadcast_to_workers("set_noise", (noise,))
         return self
 
     def record_spikes(self, population: str | list | tuple | None = None) -> Self:

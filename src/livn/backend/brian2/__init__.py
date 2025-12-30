@@ -200,13 +200,13 @@ class Env(EnvProtocol):
 
         return self
 
-    def set_noise(self, **params):
+    def set_noise(self, noise: dict):
         if not self._noise_ops:
             for population in self._populations.values():
                 self._noise_ops.add(self.model.brian2_noise_op(population, self.prng))
 
         for population in self._populations.values():
-            self.model.brian2_noise_configure(population, **params)
+            self.model.brian2_noise_configure(population, **noise)
 
         return self
 

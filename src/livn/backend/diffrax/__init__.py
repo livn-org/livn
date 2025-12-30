@@ -79,9 +79,9 @@ class Env(EnvProtocol):
         self._weights = weights
         return self
 
-    def set_noise(self, **params):
+    def set_noise(self, noise: dict):
         # noise will be handled later during run
-        self._noise = dict(params)
+        self._noise = dict(noise)
         return self
 
     def run(
