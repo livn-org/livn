@@ -429,6 +429,25 @@ class System:
         return self.uri.split("/")[-1]
 
     @property
+    def weight_names(self) -> list[str]:
+        weight_names = []
+
+        for post_pop, pre_connections in self.connections_config["synapses"].items():
+            for pre_pop, synapse_config in pre_connections.items():
+                if backend() != "neuron":
+                    weight_names.append(f"{pre_pop}_{post_pop}")
+                else:
+                    sections = synapse_config.get("sections", [])
+                    mechanisms = synapse_config.get("mechanisms", {}).get("default", {})
+                    for section in sections:
+                        for mech_name in mechanisms.keys():
+                            weight_names.append(
+                                f"{pre_pop}_{post_pop}-{section}-{mech_name}-weight"
+                            )
+
+        return weight_names
+
+    @property
     def num_neurons(self):
         if self._num_neurons is None:
             self._num_neurons = sum(
