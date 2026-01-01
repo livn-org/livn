@@ -230,7 +230,9 @@ class P:
             return True
 
     @staticmethod
-    def gather(*data, comm: Optional["MPI.Intracomm"] = None, all: bool = False):
+    def gather(
+        *data, comm: Optional["MPI.Intracomm"] = None, all: bool = False, root: int = 0
+    ):
         try:
             from mpi4py import MPI
         except ImportError:
@@ -241,11 +243,71 @@ class P:
         if comm is None:
             comm = MPI.COMM_WORLD
 
-        op = comm.allgather if all is True else comm.gather
+        # we explicitly convert into plain python/numpy to prevent
+        #  lowering into MPI_Gather which requires every rank
+        #  to use the same element count; by handling things
+        #  manually we stay in pickle-land to support
+        #  arbitrary buffer sizes
 
-        gathered = tuple(
-            [op(dict(d) if isinstance(d, collections.abc.Mapping) else d) for d in data]
-        )
+        import numpy as _np
+
+        def _materialize(value):
+            if isinstance(value, collections.defaultdict):
+                value = dict(value)
+            if isinstance(value, collections.abc.Mapping):
+                return {k: _materialize(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple)):
+                converted = [_materialize(v) for v in value]
+                return tuple(converted) if isinstance(value, tuple) else converted
+            if hasattr(value, "__array__"):
+                try:
+                    return _np.asarray(value)
+                except Exception:
+                    return value
+            return value
+
+        prepared = [_materialize(d) for d in data]
+
+        rank = comm.Get_rank()
+        size = comm.Get_size()
+
+        if size == 1:
+            single = tuple([[d] for d in prepared])
+            return single[0] if len(data) == 1 else single
+
+        def _collect_to_root():
+            tag = 0xCAFE
+
+            if rank == root:
+                buffers = [[None] * size for _ in prepared]
+                for idx, item in enumerate(prepared):
+                    buffers[idx][root] = item
+                for src in range(size):
+                    if src == root:
+                        continue
+                    recv_payload = comm.recv(source=src, tag=tag)
+                    if not isinstance(recv_payload, (list, tuple)):
+                        raise RuntimeError("P.gather received invalid payload")
+                    if len(recv_payload) != len(prepared):
+                        raise RuntimeError("P.gather payload length mismatch")
+                    for idx, item in enumerate(recv_payload):
+                        buffers[idx][src] = item
+                return tuple(buffers)
+            else:
+                comm.send(list(prepared), dest=root, tag=tag)
+                return tuple([None] * len(prepared))
+
+        if all:
+            collected = _collect_to_root()
+            results = []
+            for idx in range(len(prepared)):
+                value = collected[idx] if rank == root else None
+                results.append(comm.bcast(value, root=root))
+            gathered = tuple(results)
+        else:
+            gathered = _collect_to_root()
+            if rank != root:
+                gathered = tuple([None] * len(prepared))
 
         if len(data) == 1:
             return gathered[0]
