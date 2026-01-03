@@ -27,6 +27,10 @@ else:
     import numpy as np
 
 
+def _empty_array():
+    return np.array([])
+
+
 class IO(Jsonable):
     """
     IO
@@ -149,15 +153,19 @@ class MEA(IO):
         neuron_coordinates: Float[Array, "n_coords ixyz=4"],
         channel_inputs: Float[Array, "batch timestep n_channels"],
     ) -> Float[Array, "batch timestep n_gids"]:
+        """Map per-channel current commands (µA) to extracellular voltages (mV)."""
         autobatch = False
         if len(channel_inputs.shape) == 2:
             autobatch = True
             channel_inputs = channel_inputs[np.newaxis, ...]
 
         if self.cell_induction is None:
-            self.cell_induction = self.amplitude_from_distance(
-                self.distances(neuron_coordinates)
-            )
+            distances = self.distances(neuron_coordinates)
+
+            if not _USES_JAX:
+                distances = distances[distances[:, -1] <= self.input_radius]
+
+            self.cell_induction = self.amplitude_from_distance(distances)
 
         stimulus = calculate_cell_stimulus(
             channel_inputs, self.cell_induction, n_gids=len(neuron_coordinates)
@@ -237,7 +245,7 @@ class MEA(IO):
         self,
         distances: Float[Array, "n_distances cip=3"],
     ) -> Float[Array, "n_amplitudes cip=3"]:
-        return point_source_model(distances)
+        return disk_electrode_model(distances)
 
 
 def calculate_distances(
@@ -269,7 +277,7 @@ def channel_recording(
     ci: Float[Array, "n ci_"], ii: Float[Array, "i"], *recordings: Float[Array, "_"]
 ) -> tuple[dict[int, Array], ...]:
     """Given channel-neuron mapping, converts recording into per-channel recording"""
-    r = tuple(defaultdict(lambda: np.array([])) for _ in range(len(recordings) + 1))
+    r = tuple(defaultdict(_empty_array) for _ in range(len(recordings) + 1))
     ii = np.array(ii)
     for channel in np.unique(ci[:, 0]):
         gids = ci[ci[:, 0] == channel, 1].astype(int)
@@ -279,9 +287,9 @@ def channel_recording(
             r[q + 1][int(channel)] = np.array(recordings[q])[channel_mask]
 
     if len(recordings) == 0:
-        return r[0]
+        return dict(r[0])
 
-    return r
+    return tuple(dict(x) for x in r)
 
 
 def electrode_array_coordinates(
@@ -375,16 +383,44 @@ if _USES_JAX:
     def point_source_model(
         distances: Float[Array, "n_distances cip=3"],
         tissue_resistivity_ohm_m: float = 3.5,
-        electrode_impedance_ohm: float = 500000,
+        per_unit_current_uA: float = 1.0,
+        min_distance_um: float = 5.0,
     ) -> Float[Array, "n_amplitudes cip=3"]:
         """
-        Compute the amplitude using a point charge model V ~ (pI)/(4πr)
+        Compute the per-microamp amplitude using V = (pI)/(4πr).
         """
-        current_A = 1e-3 / electrode_impedance_ohm
+        current_A = per_unit_current_uA * 1e-6
         r_values = distances[:, -1]
-        r = (r_values + 5) * 1e-6  # cap below 5um distance
+        r = (r_values + min_distance_um) * 1e-6  # cap small distances
         eV = (tissue_resistivity_ohm_m * current_A) / (4 * np.pi * r)
-        amplitudes = distances.at[:, -1].set(eV * 1000)  # mV
+        amplitudes = distances.at[:, -1].set(eV * 1000)  # mV per uA
+
+        return amplitudes
+
+    def disk_electrode_model(
+        distances: Float[Array, "n_distances cip=3"],
+        tissue_resistivity_ohm_m: float = 3.5,
+        per_unit_current_uA: float = 1.0,
+        electrode_radius_um: float = 15.0,
+        culture_height_um: float = 50.0,
+    ) -> Float[Array, "n_amplitudes cip=3"]:
+        """
+        Compute extracellular potential for in vitro planar MEA setup
+
+        V ~ (pI)/(4π) * 1/sqrt(r^2 + h^2)
+
+        where h is an effective height parameter that accounts for
+        the disk electrode geometry and finite medium
+        """
+        current_A = per_unit_current_uA * 1e-6
+
+        # effective distance
+        r_um = distances[:, -1]
+        h_eff_um = np.sqrt(electrode_radius_um**2 + culture_height_um**2)
+        r_eff = np.sqrt(r_um**2 + h_eff_um**2) * 1e-6  # meters
+
+        eV = (tissue_resistivity_ohm_m * current_A) / (4 * np.pi * r_eff)
+        amplitudes = distances.at[:, -1].set(eV * 1000)  # mV per uA
 
         return amplitudes
 
@@ -439,16 +475,45 @@ else:
 
     def point_source_model(
         distances: Float[Array, "n_distances cip=3"],
-        tissue_resistivity_ohm_m: float = 10.0,
-        electrode_impedance_ohm: float = 100000,
+        tissue_resistivity_ohm_m: float = 3.5,
+        per_unit_current_uA: float = 1.0,
+        min_distance_um: float = 5.0,
     ) -> Float[Array, "n_amplitudes cip=3"]:
         """
-        Compute the amplitude using a point charge model V ~ (pI)/(4πr)
+        Compute the per-microamp amplitude using V = (pI)/(4πr).
         """
-        current_A = 1e-3 / electrode_impedance_ohm
-        r = (distances[:, -1] + 5) * 1e-6  # cap below 5um distance
+        distances = np.asarray(distances)
+        current_A = per_unit_current_uA * 1e-6
+        r = (distances[:, -1] + min_distance_um) * 1e-6
         eV = (tissue_resistivity_ohm_m * current_A) / (4 * np.pi * r)
-        distances[:, -1] = eV * 1000  # mV
+        distances[:, -1] = eV * 1000  # mV per uA
+
+        return distances
+
+    def disk_electrode_model(
+        distances: Float[Array, "n_distances cip=3"],
+        tissue_resistivity_ohm_m: float = 3.5,
+        per_unit_current_uA: float = 1.0,
+        electrode_radius_um: float = 15.0,
+        culture_height_um: float = 50.0,
+    ) -> Float[Array, "n_amplitudes cip=3"]:
+        """
+        Compute extracellular potential for in vitro planar MEA setup
+
+        V ~ (pI)/(4π) * 1/sqrt(r^2 + h^2)
+
+        where h is an effective height parameter that accounts for
+        the disk electrode geometry and finite medium
+        """
+        current_A = per_unit_current_uA * 1e-6
+
+        # effective distance
+        r_um = distances[:, -1]
+        h_eff_um = np.sqrt(electrode_radius_um**2 + culture_height_um**2)
+        r_eff = np.sqrt(r_um**2 + h_eff_um**2) * 1e-6  # meters
+
+        eV = (tissue_resistivity_ohm_m * current_A) / (4 * np.pi * r_eff)
+        distances[:, -1] = eV * 1000  # mV per uA
 
         return distances
 
