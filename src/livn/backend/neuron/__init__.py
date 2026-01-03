@@ -720,11 +720,8 @@ class Env(EnvProtocol):
                 if not (self.pc.gid_exists(gid)):
                     continue
                 secs = []
-                if hasattr(cell, "soma_list"):
-                    secs = cell.soma_list
-                elif hasattr(cell, "soma"):
-                    secs.append(cell.soma)
-
+                if hasattr(cell, "sections"):
+                    secs = cell.sections
                 for idx, sec in enumerate(secs):
                     sec.push()
                     fluct, state = self._flucts.get(f"{gid}-{idx}", (None, None))

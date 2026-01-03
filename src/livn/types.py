@@ -161,9 +161,9 @@ class Env(Protocol):
 
         for k, v in params.items():
             if k.startswith("noise-"):
-                noise[k.replace("noise-")] = v
+                noise[k.replace("noise-", "")] = v
             elif k.startswith("weight-"):
-                weights[k.replace("weight-")] = v
+                weights[k.replace("weight-", "")] = v
             else:
                 weights[k] = v
 

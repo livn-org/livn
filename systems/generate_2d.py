@@ -83,10 +83,11 @@ class Generate2DSystem(Component):
         z_range: tuple[float, float] = Field(default=(0.0, 10.0))
         total_cells: Optional[int] = Field(default=None, ge=1)
         populations: Dict[str, PopulationConfig] = Field(
-            default={
-                "EXC": {"ratio": 0.8, "synapse_type": "excitatory"},
-                "INH": {"ratio": 0.2, "synapse_type": "inhibitory"},
-            }
+            default={"EXC": {"ratio": 1.0, "synapse_type": "excitatory"}}
+            # default={
+            #     "EXC": {"ratio": 0.8, "synapse_type": "excitatory"},
+            #     "INH": {"ratio": 0.2, "synapse_type": "inhibitory"},
+            # }
         )
         connectivity: ConnectivityConfig = Field(
             default={
@@ -96,7 +97,9 @@ class Generate2DSystem(Component):
                 "allow_self_connections": False,
             }
         )
-        population_definitions: Dict[str, int] = Field(default={"EXC": 10, "INH": 11})
+        population_definitions: Dict[str, int] = Field(
+            default={"EXC": 10}
+        )  # , "INH": 11})
         random_seed: int = 123
         output_directory: str | None = None
 
@@ -135,7 +138,7 @@ class Generate2DSystem(Component):
             return os.path.join(self.config.output_directory, "graph.json")
         return self.local_directory("graph.json")
 
-    def mea(self, pitch:float=500, overwrite:bool=False):
+    def mea(self, pitch: float = 500, overwrite: bool = False):
         fn = os.path.join(self.config.output_directory, "mea.json")
         if not overwrite and os.path.isfile(fn):
             raise FileExistsError("mea.json already exists.")
@@ -146,8 +149,8 @@ class Generate2DSystem(Component):
 
         data = {
             "electrode_coordinates": coords.tolist(),
-            "input_radius": 250,
-            "output_radius": 250,
+            "input_radius": 200,
+            "output_radius": 100,
         }
 
         with open(fn, "w") as f:
@@ -310,7 +313,9 @@ class Generate2DSystem(Component):
                     kernel["cutoff"] = float(self.config.connectivity.cutoff)
 
                 syn_type = self.config.populations[pre].synapse_type
+                target_sections = ["soma"]
                 if syn_type == "excitatory":
+                    target_sections = ["dend"]
                     mechanisms = {
                         "AMPA": {
                             "e": 0,
@@ -326,7 +331,7 @@ class Generate2DSystem(Component):
                                 "NMDA": {
                                     "e": 0,
                                     "g_unit": 0.0005,
-                                    "tau_decay": 5.0,
+                                    "tau_decay": 80.0,
                                     "tau_rise": 0.5,
                                     "weight": 1.0,
                                 }
@@ -347,7 +352,7 @@ class Generate2DSystem(Component):
                     "type": self.config.populations[pre].synapse_type,
                     "contacts": 1,
                     "layers": ["2d"],
-                    "sections": ["soma"],
+                    "sections": target_sections,
                     "proportions": [1.0],
                     "mechanisms": {"default": mechanisms},
                     "kernel": kernel,
@@ -458,6 +463,11 @@ class Generate2DSystem(Component):
                     syn_secs = np.zeros_like(syn_ids, dtype=np.int16)
                     syn_layers = np.full(syn_ids.shape, layer_index, dtype=np.uint8)
                     swc_types = np.full(syn_ids.shape, swc_type_value, dtype=np.uint8)
+
+                    # map excitatory synapses (type 0) to dendrite (section 1, swc type 4)
+                    is_exc = syn_types == 0
+                    syn_secs[is_exc] = 1
+                    swc_types[is_exc] = np.uint8(SWCTypesDef.apical)
                 else:
                     syn_ids = np.zeros(0, dtype=np.uint32)
                     syn_types = np.zeros(0, dtype=np.uint8)
