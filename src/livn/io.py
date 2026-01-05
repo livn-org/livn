@@ -162,9 +162,6 @@ class MEA(IO):
         if self.cell_induction is None:
             distances = self.distances(neuron_coordinates)
 
-            if not _USES_JAX:
-                distances = distances[distances[:, -1] <= self.input_radius]
-
             self.cell_induction = self.amplitude_from_distance(distances)
 
         stimulus = calculate_cell_stimulus(
