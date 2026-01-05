@@ -2,6 +2,8 @@ import math
 import os
 import uuid
 import json
+from collections import defaultdict
+from pathlib import Path
 
 from machinable import Component
 from machinable.utils import save_file
@@ -10,9 +12,19 @@ from typing import Dict, Optional
 import numpy as np
 from miv_simulator.utils.io import create_neural_h5
 from miv_simulator.config import SWCTypesDef
-from neuroh5.io import read_population_ranges, write_cell_attributes, write_graph
+from neuroh5.io import (
+    NeuroH5ProjectionGen,
+    read_cell_attributes,
+    read_population_names,
+    read_population_ranges,
+    write_cell_attributes,
+    write_graph,
+)
 from mpi4py import MPI
 from livn.io import electrode_array_coordinates_for_area
+import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
+from matplotlib.colors import to_rgba
 
 
 _SYN_TYPE_LOOKUP = {"excitatory": 0, "inhibitory": 1}
@@ -83,23 +95,20 @@ class Generate2DSystem(Component):
         z_range: tuple[float, float] = Field(default=(0.0, 10.0))
         total_cells: Optional[int] = Field(default=None, ge=1)
         populations: Dict[str, PopulationConfig] = Field(
-            default={"EXC": {"ratio": 1.0, "synapse_type": "excitatory"}}
-            # default={
-            #     "EXC": {"ratio": 0.8, "synapse_type": "excitatory"},
-            #     "INH": {"ratio": 0.2, "synapse_type": "inhibitory"},
-            # }
+            default={
+                "EXC": {"ratio": 0.8, "synapse_type": "excitatory"},
+                "INH": {"ratio": 0.2, "synapse_type": "inhibitory"},
+            }
         )
         connectivity: ConnectivityConfig = Field(
             default={
-                "sigma": 100,
+                "sigma": 200,
                 "amplitude": {"default": 0.8, "INH->EXC": 0.9},
                 "cutoff": 0.1,
                 "allow_self_connections": False,
             }
         )
-        population_definitions: Dict[str, int] = Field(
-            default={"EXC": 10}
-        )  # , "INH": 11})
+        population_definitions: Dict[str, int] = Field(default={"EXC": 10, "INH": 11})
         random_seed: int = 123
         output_directory: str | None = None
 
@@ -138,7 +147,7 @@ class Generate2DSystem(Component):
             return os.path.join(self.config.output_directory, "graph.json")
         return self.local_directory("graph.json")
 
-    def mea(self, pitch: float = 500, overwrite: bool = False):
+    def mea(self, pitch: float = 200, overwrite: bool = False):
         fn = os.path.join(self.config.output_directory, "mea.json")
         if not overwrite and os.path.isfile(fn):
             raise FileExistsError("mea.json already exists.")
@@ -149,7 +158,7 @@ class Generate2DSystem(Component):
 
         data = {
             "electrode_coordinates": coords.tolist(),
-            "input_radius": 200,
+            "input_radius": 150,
             "output_radius": 100,
         }
 
@@ -323,20 +332,15 @@ class Generate2DSystem(Component):
                             "tau_decay": 3.0,
                             "tau_rise": 0.5,
                             "weight": 1.0,
-                        }
+                        },
+                        "NMDA": {
+                            "e": 0,
+                            "g_unit": 0.0005,
+                            "tau_decay": 80.0,
+                            "tau_rise": 0.5,
+                            "weight": 1.0,
+                        },
                     }
-                    if pre == post:
-                        mechanisms.update(
-                            {
-                                "NMDA": {
-                                    "e": 0,
-                                    "g_unit": 0.0005,
-                                    "tau_decay": 80.0,
-                                    "tau_rise": 0.5,
-                                    "weight": 1.0,
-                                }
-                            }
-                        )
                 elif syn_type == "inhibitory":
                     mechanisms = {
                         "GABA_A": {
@@ -565,3 +569,189 @@ class Generate2DSystem(Component):
                 },
             },
         )
+
+    def plot(
+        self,
+        sample: int | None = None,
+        max_edges: int | None = 2500,
+        edge_alpha: float = 0.08,
+        edge_width: float = 0.3,
+        figsize: tuple[float, float] = (7.0, 7.0),
+        mea: bool = True,
+        filename: str | Path = "system.png",
+        show: bool = False,
+    ) -> str:
+        cells_path = Path(self.cells_filepath)
+        connections_path = Path(self.connections_filepath)
+
+        populations = sorted(str(pop) for pop in read_population_names(str(cells_path)))
+        sample_limit = None if sample is None or sample <= 0 else sample
+        max_edges_limit = None if max_edges is None or max_edges <= 0 else max_edges
+
+        scatter_coords = {}
+        population_sizes = {}
+        gid_to_xy = {}
+
+        for population in populations:
+            xs_plot: list[float] = []
+            ys_plot: list[float] = []
+            count = 0
+            for gid, attrs in read_cell_attributes(
+                str(cells_path), population, namespace="Generated Coordinates"
+            ):
+                gid_int = int(gid)
+                x_coord = float(attrs["X Coordinate"][0])
+                y_coord = float(attrs["Y Coordinate"][0])
+                gid_to_xy[gid_int] = (x_coord, y_coord)
+                if sample_limit is None or count < sample_limit:
+                    xs_plot.append(x_coord)
+                    ys_plot.append(y_coord)
+                count += 1
+
+            scatter_coords[population] = (xs_plot, ys_plot)
+            population_sizes[population] = count
+
+        segments_by_source = defaultdict(list)
+        drawn_edges = 0
+        total_edges = 0
+
+        if connections_path.exists():
+            for source_population in populations:
+                for target_population in populations:
+                    try:
+                        generator = NeuroH5ProjectionGen(
+                            str(connections_path),
+                            source_population,
+                            target_population,
+                            cache_size=32,
+                        )
+                    except (KeyError, RuntimeError):
+                        continue
+
+                    try:
+                        for target_gid, payload in generator:
+                            if payload is None:
+                                continue
+                            source_gids, _ = payload
+                            target_xy = gid_to_xy.get(int(target_gid))
+                            if target_xy is None:
+                                continue
+                            for source_gid in source_gids:
+                                source_xy = gid_to_xy.get(int(source_gid))
+                                if source_xy is None:
+                                    continue
+                                total_edges += 1
+                                if not bool(
+                                    max_edges_limit is None
+                                    or drawn_edges < max_edges_limit
+                                ):
+                                    continue
+                                segments_by_source[source_population].append(
+                                    (source_xy, target_xy)
+                                )
+                                drawn_edges += 1
+                    finally:
+                        close_fn = getattr(generator, "close", None)
+                        if callable(close_fn):
+                            close_fn()
+        else:
+            connections_path = None
+
+        fig, ax = plt.subplots(figsize=figsize)
+        cmap = plt.get_cmap("tab10")
+        population_colors = {
+            pop: cmap(idx % cmap.N) for idx, pop in enumerate(populations)
+        }
+
+        for source_population, segments in segments_by_source.items():
+            if not segments:
+                continue
+            color = population_colors.get(source_population, cmap(0))
+            edge_color = to_rgba(color, edge_alpha)
+            collection = LineCollection(
+                segments,
+                colors=[edge_color],
+                linewidths=edge_width,
+                zorder=1,
+            )
+            ax.add_collection(collection)
+
+        for population in populations:
+            color = population_colors[population]
+            xs, ys = scatter_coords.get(population, ([], []))
+            total_cells = population_sizes.get(population, len(xs))
+            label = f"{population} ({total_cells} neurons)"
+            if sample_limit is not None and len(xs) < total_cells:
+                label = f"{population} ({total_cells} neurons, showing {len(xs)})"
+            if xs and ys:
+                ax.scatter(
+                    xs,
+                    ys,
+                    s=5,
+                    alpha=0.7,
+                    label=label,
+                    color=color,
+                    zorder=2,
+                )
+
+        ax.set_xlabel("X coordinate (um)")
+        ax.set_ylabel("Y coordinate (um)")
+        subtitle = ""
+        if total_edges:
+            if max_edges_limit is not None and drawn_edges < total_edges:
+                subtitle = f" ({total_edges} connections, showing {drawn_edges})"
+            else:
+                subtitle = f" ({total_edges} connections)"
+        ax.set_title(
+            f"{Path(self.config.output_directory or cells_path.parent).name}{subtitle}"
+        )
+        ax.set_aspect("equal", adjustable="box")
+        ax.legend(loc="upper right", fontsize="small")
+        ax.grid(False)
+
+        if mea:
+            mea_path = cells_path.parent / "mea.json"
+            if mea_path.exists():
+                with open(mea_path, "r") as f:
+                    mea = json.load(f)
+                coords = np.asarray(mea.get("electrode_coordinates", []), dtype=float)
+                if coords.size:
+                    ax.scatter(
+                        coords[:, 1],
+                        coords[:, 2],
+                        s=1,
+                        c="tab:blue",
+                        edgecolors="black",
+                        linewidths=0.4,
+                        zorder=3,
+                    )
+                    for electrode_id, x, y, _ in coords:
+                        ax.annotate(
+                            str(int(electrode_id)),
+                            (x, y),
+                            textcoords="offset points",
+                            xytext=(4, 4),
+                            fontsize=6,
+                        )
+                        ax.add_patch(
+                            plt.Circle(
+                                (x, y),
+                                mea.get("output_radius", 100),
+                                fill=False,
+                                edgecolor="black",
+                                linewidth=0.4,
+                                zorder=3,
+                            )
+                        )
+
+        output_dir = cells_path.parent
+        save_path = output_dir / Path(filename)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+
+        if show:
+            plt.show()
+        else:
+            plt.close(fig)
+
+        return str(save_path)
