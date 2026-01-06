@@ -38,6 +38,7 @@ class TACC(Execution):
         confirm: bool = True
         copy_project_source: bool = False
         resume_failed: Union[bool, Literal["new", "skip"]] = False
+        periodic_sync: bool = True
         dry: bool = False
 
     def on_before_dispatch(self):
@@ -160,23 +161,20 @@ class TACC(Execution):
 
             local_directory = os.path.abspath(executable.local_directory())
 
-            # copy local
-            if resources.get("--partition", "development") != "development":
-                script += "sleep $((RANDOM % 300))\n"  # sync-hit prevention
-
             script += "export I_MPI_EXTRA_FILESYSTEM_FORCE=ufs\n"
-            script += "module load cdtools\n"
+            # script += "export I_MPI_FABRICS=shm\n"
+            # script += "export FI_PROVIDER=shm\n"
+            script += "module load cdtools\nmodule unload phdf5\nmodule load phdf5\n"
 
             script += f"distribute.bash {local_directory}\n"
             # script += f"distribute.bash {os.path.abspath(source_code)}\n"
 
-            # script += "distribute.bash ${SCRATCH}/venvs/.venv\n"
-            script += "distribute.bash ${SCRATCH}/venvs/venv.tar\n"
+            script += "distribute.bash ${SCRATCH}/venvs/livn-venv.tar\n"
             env_script = chmodx(
                 self.save_file(
                     [executable.id, "env_setup.sh"],
                     "#!/usr/bin/env bash\ncd /tmp\n"
-                    + "tar -xf venv.tar\n"
+                    + "tar -xf livn-venv.tar\n"
                     + (
                         " ".join(
                             [
@@ -193,7 +191,8 @@ class TACC(Execution):
                             ]
                         )
                     )
-                    + "\n",
+                    + "\n. /tmp/.venv/bin/activate\n",
+                    # + "uv pip install --no-deps -e ...\n", # venv updates
                 )
             )
             script += (
@@ -216,22 +215,56 @@ class TACC(Execution):
                     mpi += " "
                 python = mpi + python
 
-            with Index("/tmp"):
-                script += executable.dispatch_code(python=python)
+            if self.config.periodic_sync:
+                periodic_sync_file = chmodx(
+                    self.save_file(
+                        [executable.id, "periodic_sync.py"], periodic_sync_script
+                    )
+                )
 
-            # copy back
+                ranks_per_node = int(resources.get("--ntasks-per-node", 56))
+                nodes_requested = int(resources.get("--nodes", 1))
+                controller_rank = getattr(distwq, "controller_rank", 0)
+                controller_rank_env = os.getenv("DISTWQ_CONTROLLER_RANK")
+                if controller_rank_env == "-1":
+                    controller_rank = max(nodes_requested - 1, 0) * ranks_per_node
+                elif controller_rank_env not in [None, ""]:
+                    controller_rank = int(controller_rank_env)
+
+                mpi_prefix = mpi if mpi else ""
+
+                script += (
+                    f"{mpi_prefix}/tmp/.venv/bin/python3 {periodic_sync_file} "
+                    + f'--source "/tmp/{executable.uuid}/" '
+                    + f'--dest "{local_directory}/" '
+                    + "--interval 30 "
+                    + f"--controller-rank {controller_rank} "
+                    + f'--script-path "{periodic_sync_file}"\n'
+                )
+
+            with Index("/tmp"):
+                script += executable.dispatch_code(
+                    python=python, project_directory="/tmp/source_code"
+                )
+
             controller_rank = getattr(distwq, "controller_rank")
             if os.getenv("DISTWQ_CONTROLLER_RANK", 0) == "-1":
-                controller_rank = int(resources.get("--nodes", 0)) - 1 
-            script += "\n\nrm -rf ${SCRATCH}/tmp/" + f"{executable.uuid}_{controller_rank}\n"
-            script += f"\ncollect.bash /tmp/{executable.uuid}" + " ${SCRATCH}/tmp\n"
+                controller_rank = int(resources.get("--nodes", 0)) - 1
             script += (
-                "rsync -a ${SCRATCH}/tmp/"
-                + executable.uuid
-                + f"_{controller_rank}/ "
-                + local_directory + '/'
-                + "\n"
+                "\n\nrm -rf ${SCRATCH}/tmp/" + f"{executable.uuid}_{controller_rank}\n"
             )
+            script += f"\ncollect.bash /tmp/{executable.uuid}" + " ${SCRATCH}/tmp\n"
+
+            sync_source = "${SCRATCH}/tmp/" + executable.uuid + f"_{controller_rank}"
+            script += f"""
+for i in $(seq 1 60); do
+    if [ -d "{sync_source}" ]; then
+        break
+    fi
+    sleep 1
+done
+"""
+            script += f"rsync -a {sync_source}/ " + local_directory + "/" + "\n"
             script += "rm -rf ${SCRATCH}/tmp/" + executable.uuid + "\n"
 
             print(f"Submitting job {executable} with resources: ")
@@ -442,3 +475,72 @@ class Job:
         cmd = ["scancel", str(self.job_id)]
         result = subprocess.run(cmd, capture_output=True)
         return result.returncode == 0
+
+
+periodic_sync_script = """#!/usr/bin/env python3
+import argparse
+import os
+import subprocess
+import sys
+import time
+
+
+def rsync_loop(source: str, dest: str, interval: int) -> None:
+    expanded_source = os.path.expandvars(source)
+    
+    while True:
+        if os.path.exists(expanded_source):
+            cmd = ["rsync", "-a", "--update", expanded_source, dest]
+            try:
+                result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+                if result.returncode != 0:
+                    sys.exit(1)
+            except Exception:
+                sys.exit(1)
+        time.sleep(interval)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--source", required=True)
+    parser.add_argument("--dest", required=True)
+    parser.add_argument("--interval", type=int, default=30)
+    parser.add_argument("--controller-rank", type=int, default=0)
+    parser.add_argument("--daemon", action="store_true")
+    parser.add_argument("--script-path", required=False)
+    args = parser.parse_args()
+
+    if args.daemon:
+        rsync_loop(args.source, args.dest, args.interval)
+        return
+
+    from mpi4py import MPI
+
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+
+    if rank == args.controller_rank:
+        script_path = args.script_path if args.script_path else __file__
+        
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                script_path,
+                "--daemon",
+                "--source",
+                args.source,
+                "--dest",
+                args.dest,
+                "--interval",
+                str(args.interval),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    comm.Barrier()
+
+
+if __name__ == "__main__":
+    main()
+"""
