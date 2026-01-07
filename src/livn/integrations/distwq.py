@@ -116,6 +116,8 @@ class DistributedEnv(EnvProtocol):
                 broker_is_worker=True,
             )
 
+        return self
+
     def _broadcast_to_workers(self, method_name: str, args: tuple) -> None:
         if self.controller is None:
             return
@@ -199,11 +201,13 @@ class DistributedEnv(EnvProtocol):
             inputs = [None]
 
         # evaluates the simulator using the MPI workers (only available on controller)
-        for i in range(0, len(inputs)):
-            self.submit_call(decoding, inputs[i], encoding, **kwargs)
+        num_inputs = 0
+        for i in inputs:
+            self.submit_call(decoding, i, encoding, **kwargs)
+            num_inputs += 1
 
         recordings = []
-        for i in range(0, len(inputs)):
+        for _ in range(num_inputs):
             response = self.receive_response()
 
             if len(response) == 1:
