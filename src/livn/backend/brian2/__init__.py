@@ -48,6 +48,9 @@ class Env(EnvProtocol):
         self.comm = comm
         self.subworld_size = subworld_size
 
+        self.encoding = None
+        self.decoding = None
+
         self.prng = RandomState(seed)
 
         self._populations = {}

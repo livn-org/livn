@@ -255,6 +255,9 @@ class Env(Protocol):
         encoding: Optional["Encoding"] = None,
         **kwargs,
     ) -> Any:
+        self.encoding = encoding
+        self.decoding = decoding
+
         if isinstance(decoding, int):
             duration = decoding
         else:
@@ -383,9 +386,9 @@ class Decoding(BaseModel):
         iv: Int[Array, "n_voltage_neuron_ids"] | None,
         vv: Float[Array, "neuron_ids voltages"] | None,
         im: Int[Array, "n_membrane_current_neuron_ids"] | None,
-        m: Float[Array, "neuron_ids membrane_currents"] | None,
+        mp: Float[Array, "neuron_ids membrane_currents"] | None,
     ) -> Any:
-        return it, tt, iv, vv, im, m
+        return it, tt, iv, vv, im, mp
 
     @property
     def output_space(self) -> "gymnasium.Space":

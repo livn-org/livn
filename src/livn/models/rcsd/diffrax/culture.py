@@ -72,6 +72,6 @@ class MotoneuronCulture(eqx.Module):
         iv = jax.numpy.repeat(jax.numpy.arange(self.num_neurons), 2)
         v = v_soma_dend.reshape(self.num_neurons * 2, -1)
         im = iv
-        m = i_mem_soma_dend.reshape(self.num_neurons * 2, -1)
+        mp = i_mem_soma_dend.reshape(self.num_neurons * 2, -1)
 
-        return it, tt, iv, v, im, m
+        return it, tt, iv, v, im, mp

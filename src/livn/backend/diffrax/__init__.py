@@ -58,6 +58,9 @@ class Env(EnvProtocol):
         self.comm = comm
         self.subworld_size = subworld_size
 
+        self.encoding = None
+        self.decoding = None
+
         self._noise = {}
         self._weights = None
         self.module = None
@@ -147,7 +150,7 @@ class Env(EnvProtocol):
             if original_ndim == 1:
                 stimulus.array = stimulus.array[:, 0]
 
-        it, tt, iv, v, im, m = self.module.run(
+        it, tt, iv, v, im, mp = self.module.run(
             input_current=stimulus.array,
             noise=self._noise,
             t0=self.t,
@@ -162,7 +165,7 @@ class Env(EnvProtocol):
         self.t += duration
         self.v0 = v[:, -1]
 
-        return it, tt, iv, v, im, m
+        return it, tt, iv, v, im, mp
 
     def clear(self):
         self.t = 0
