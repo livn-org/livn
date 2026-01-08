@@ -58,12 +58,9 @@ class ConnectivityConfig(BaseModel):
     sigma: float = Field(
         ..., gt=0.0, description="Gaussian width parameter (space units)"
     )
-    amplitude: Dict[str, float] = Field(
-        default_factory=dict,
-        description=(
-            "Map of connection probability amplitudes. Keys can be 'default' or "
-            "population-specific pairs in the form 'PRE->POST'"
-        ),
+    mean_degree: float | Dict[str, float] = Field(
+        default=100.0,
+        description="Target average number of incoming connections per neuron",
     )
     cutoff: Optional[float] = Field(
         default=None,
@@ -102,8 +99,8 @@ class Generate2DSystem(Component):
         )
         connectivity: ConnectivityConfig = Field(
             default={
-                "sigma": 200,
-                "amplitude": {"default": 0.8, "INH->EXC": 0.9},
+                "sigma": 200.0,
+                "mean_degree": 100.0,
                 "cutoff": 0.1,
                 "allow_self_connections": False,
             }
@@ -147,7 +144,7 @@ class Generate2DSystem(Component):
             return os.path.join(self.config.output_directory, "graph.json")
         return self.local_directory("graph.json")
 
-    def mea(self, pitch: float = 200, overwrite: bool = False):
+    def mea(self, pitch: float = 100, overwrite: bool = False):
         fn = os.path.join(self.config.output_directory, "mea.json")
         if not overwrite and os.path.isfile(fn):
             raise FileExistsError("mea.json already exists.")
@@ -158,8 +155,8 @@ class Generate2DSystem(Component):
 
         data = {
             "electrode_coordinates": coords.tolist(),
-            "input_radius": 150,
-            "output_radius": 100,
+            "input_radius": 100,
+            "output_radius": 50,
         }
 
         with open(fn, "w") as f:
@@ -216,21 +213,23 @@ class Generate2DSystem(Component):
         populations = list(self.config.populations.keys())
         cell_distributions = {pop: {"2d": counts[pop]} for pop in populations}
         synapse_flags: Dict[str, Dict[str, bool]] = {post: {} for post in populations}
-        amplitudes = {}
+        target_degrees = {}
         for post in populations:
             for pre in populations:
                 key = f"{pre}->{post}"
-                amplitude = 0.0
-                if key in self.config.connectivity.amplitude:
-                    amplitude = max(
-                        0.0, min(1.0, self.config.connectivity.amplitude[key])
-                    )
-                elif "default" in self.config.connectivity.amplitude:
-                    amplitude = max(
-                        0.0, min(1.0, self.config.connectivity.amplitude["default"])
-                    )
-                synapse_flags[post][pre] = amplitude > 0.0
-                amplitudes[(pre, post)] = amplitude
+                degree = 0.0
+
+                mean_degree_cfg = self.config.connectivity.mean_degree
+                if isinstance(mean_degree_cfg, dict):
+                    if key in mean_degree_cfg:
+                        degree = float(mean_degree_cfg[key])
+                    elif "default" in mean_degree_cfg:
+                        degree = float(mean_degree_cfg["default"])
+                else:
+                    degree = float(mean_degree_cfg)
+
+                synapse_flags[post][pre] = degree > 0.0
+                target_degrees[(pre, post)] = degree
 
         create_neural_h5(
             self.cells_filepath,
@@ -307,9 +306,37 @@ class Generate2DSystem(Component):
         for post in populations:
             synapse_config[post] = {}
             for pre in populations:
-                amp = amplitudes[(pre, post)]
-                if amp <= 0.0:
+                target_degree = target_degrees[(pre, post)]
+                if target_degree <= 0.0:
                     continue
+
+                pre_info = coords[pre]
+                post_info = coords[post]
+                pre_gids = pre_info["gids"]
+                post_gids = post_info["gids"]
+
+                if pre_gids.size == 0 or post_gids.size == 0:
+                    continue
+
+                diffs = pre_info["xy"][:, None, :] - post_info["xy"][None, :, :]
+                distances = np.linalg.norm(diffs, axis=2).astype(np.float32)
+
+                sigma_sq = self.config.connectivity.sigma**2
+                raw_weights = np.exp(-(distances**2) / (2.0 * sigma_sq))
+
+                # amplitude from target degree
+                if not self.config.connectivity.allow_self_connections and pre == post:
+                    diag_mask = ~np.eye(
+                        raw_weights.shape[0], raw_weights.shape[1], dtype=bool
+                    )
+                    weight_sum = np.sum(raw_weights[diag_mask])
+                else:
+                    weight_sum = np.sum(raw_weights)
+
+                if weight_sum > 0:
+                    amp = (target_degree * len(post_gids)) / weight_sum
+                else:
+                    amp = 0.0
 
                 kernel = {
                     "amplitude": float(amp),
@@ -362,19 +389,7 @@ class Generate2DSystem(Component):
                     "kernel": kernel,
                 }
 
-                pre_info = coords[pre]
-                post_info = coords[post]
-                pre_gids = pre_info["gids"]
-                post_gids = post_info["gids"]
-
-                if pre_gids.size == 0 or post_gids.size == 0:
-                    continue
-
-                diffs = pre_info["xy"][:, None, :] - post_info["xy"][None, :, :]
-                distances = np.linalg.norm(diffs, axis=2).astype(np.float32)
-
-                sigma_sq = self.config.connectivity.sigma**2
-                raw_probs = amp * np.exp(-(distances**2) / (2.0 * sigma_sq))
+                raw_probs = amp * raw_weights
                 probs = raw_probs.copy()
 
                 if self.config.connectivity.cutoff is not None:
