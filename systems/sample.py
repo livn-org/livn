@@ -1,229 +1,105 @@
 import glob
-import importlib
 import os
-from functools import partial
 
-import numpy as np
 import pandas as pd
-from dmosopt import config
 from huggingface_hub import HfApi
-from machinable import Interface, get
-from machinable.utils import find_subclass_in_module, load_file, object_hash, save_file
+from machinable import Component
+from machinable.utils import load_file, save_file, random_str
 from pydantic import BaseModel, ConfigDict
-
-from livn import io
-from livn.env import Env
-from livn.types import Model
-
-
-def _concat(a):
-    if len(a) == 1:
-        return a[0]
-
-    if len(a) > 1:
-        return np.concatenate(a)
-
-    return []
+from livn.utils import import_object_by_path, P
+from livn.integrations.distwq import DistributedEnv
+from livn.decoding import GatherAndMerge
+from livn.types import Encoding
 
 
-def get_model(model):
-    return find_subclass_in_module(importlib.import_module(model), base_class=Model)()
+class Raw(GatherAndMerge):
+    def __call__(self, env, it, tt, iv, vv, im, mp):
+        data = super().__call__(env, it, tt, iv, vv, im, mp)
+        if data is None:
+            return
+
+        env.clear()
+
+        it, tt, iv, vv, im, mp = data
+        return {
+            "duration": self.duration,
+            "it": it,
+            "tt": tt,
+            "iv": iv,
+            "vv": vv,
+            "im": im,
+            "mp": mp,
+        }
 
 
-live_envs = []
+class WithouInput(Encoding):
+    def __call__(self, env, t_end, inputs):
+        return None
 
 
-def make_env(system, model, subworld_size, comm=None):
-    env = Env(
-        system,
-        model=get_model(model),
-        io=io.MEA.from_json(os.path.join(system, "mea.json"), comm=False),
-        comm=comm,
-        subworld_size=subworld_size,
-    )
-
-    env.init()
-
-    env.record_spikes()
-
-    return env
-
-
-def obj_fun_init(system, model, encoding, noise, subworld_size, trials=1, worker=None):
-    env = make_env(
-        system,
-        model,
-        subworld_size,
-        worker.merged_comm,
-    )
-
-    env.apply_model_defaults(noise=noise)
-
-    live_envs.append(env)
-
-    encoder = config.import_object_by_path(encoding)(env)
-
-    return partial(obj_fun, env=env, encoder=encoder, trials=trials)
-
-
-def controller_init(system, model, encoding, subworld_size):
-    env = Env(
-        system,
-        model=get_model(model),
-        io=io.MEA.from_json(os.path.join(system, "mea.json"), comm=False),
-        subworld_size=subworld_size,
-    )
-
-    config.import_object_by_path(encoding)(env)
-
-    live_envs.append(env)
-
-
-def obj_fun(x, env, encoder, trials):
-    env.clear()
-
-    # sample from feature space and encode
-    seed = int(x["seed"])
-
-    encoder.feature_space.seed(seed)
-    features = encoder.feature_space.sample()
-
-    trial_inputs, trial_length = encoder(features)
-
-    # construct trialed inputs
-    warmup = 250
-    t_end = warmup + trial_length * trials
-    inputs = np.zeros([t_end, trial_inputs.shape[-1]])
-    for trial in range(trials):
-        pt = warmup + trial * trial_length
-        inputs[pt : pt + trial_inputs.shape[0], :] = trial_inputs
-
-    stimulus = env.cell_stimulus(inputs)
-
-    it, t, *_ = env.run(t_end, stimulus, root_only=False)
-
-    # discard warmup
-    it, t = it[t >= warmup], t[t >= warmup] - warmup
-    t_end = t_end - warmup
-
-    return {
-        "seed": seed,
-        "features": features,
-        "it": it,
-        "t": t,
-        "t_end": t_end,
-        "trials": trials,
-        "trial_inputs": trial_inputs,
-    }
-
-
-def obj_reduce(payload, output_directory):
-    it = []
-    t = []
-    t_end = 0
-    trials = None
-    trial_inputs = None
-    seed = None
-    features = None
-    for result in payload:
-        if features is None:
-            features = result[0]["features"]
-        else:
-            np.testing.assert_equal(features, result[0]["features"])
-        it.append(result[0]["it"])
-        t.append(result[0]["t"])
-        t_end = max(t_end, result[0]["t_end"])
-        trials = result[0]["trials"]
-        trial_inputs = result[0]["trial_inputs"]
-        seed = result[0]["seed"]
-
-    it, t = _concat(it), _concat(t)
-
-    trial_length = t_end // trials
-    trial_it = []
-    trial_t = []
-    for i in range(trials):
-        trial_start = i * trial_length
-        trial_end = (i + 1) * trial_length
-
-        mask = (t >= trial_start) & (t < trial_end)
-
-        trial_it.append(it[mask])
-        trial_t.append(t[mask] - trial_start)
-
-    payload = {"seed": seed, "trials": trials, "t_end": t_end}
-    name = object_hash(payload)
-    payload.update({"features": features, "trial_it": trial_it, "trial_t": trial_t})
-
-    save_file([output_directory, f"{name[:8]}.p"], payload)
-
-    return {0: np.array([0.0])}
-
-
-def seed_generator(n, s, local_random, maxiter=0):
-    n_initial = n // s
-    return np.random.randint(0, 2**16, size=(n, 1))
-
-
-class Sample(Interface):
+class Sample(Component):
     class Config(BaseModel):
         model_config = ConfigDict(extra="forbid")
 
-        stimulate: int = 1
-        trials: int = 1
+        duration: int = 31000
         samples: int | tuple[int, int] = 100
         noise: bool = True
 
-        system: str = "./systems/data/S1"
-        model: str = "livn.models.rcsd"
-        encoding: str = "livn.integrations.gym.PulseEncoding"
-        output_directory: str = "???"
+        system: str = "./systems/graphs/EI3"
+        model: str | None = None
+        encoding: str | None = "systems.sample.WithouInput"
+        encoding_kwargs: dict = {}
+        decoding: str = "systems.sample.Raw"
+        decoding_kwargs: dict = {}
 
+        output_directory: str = "???"
         nprocs_per_worker: int = 1
 
-    def launch(self):
-        get(
-            "interface.dmosopt",
-            {
-                "dopt_params": {
-                    "opt_id": "default",
-                    "obj_fun_init_name": "systems.sample.obj_fun_init",
-                    "obj_fun_init_args": {
-                        "system": self.config.system,
-                        "model": self.config.model,
-                        "encoding": self.config.encoding,
-                        "noise": self.config.noise,
-                        "trials": self.config.trials,
-                        "subworld_size": "${...nprocs_per_worker}",
-                    },
-                    "space": {"seed": [0, int(2**16)]},
-                    "objective_names": ["dummy"],
-                    "controller_init_fun_name": "systems.sample.controller_init",
-                    "controller_init_fun_args": {
-                        "system": "${..obj_fun_init_args.system}",
-                        "model": "${..obj_fun_init_args.model}",
-                        "encoding": "${..obj_fun_init_args.encoding}",
-                        "subworld_size": "${...nprocs_per_worker}",
-                    },
-                    "reduce_fun_name": "systems.sample.obj_reduce",
-                    "reduce_fun_args": (self.config.output_directory,),
-                    "problem_parameters": {},
-                    "initial_method": "systems.sample.seed_generator",
-                    "n_initial": self.config.samples,
-                    "initial_maxiter": 0,
-                    "n_epochs": 0,
-                    "surrogate_method_name": None,
-                    "surrogate_method_kwargs": {},
-                    "feasibility_method_name": None,
-                    "feasibility_method_kwargs": {},
-                    "save": True,
-                },
-                "nprocs_per_worker": self.config.nprocs_per_worker,
-                "ranks": -1,
-            },
-        ).launch()
+    def __call__(self):
+        model = self.config.model
+        if model is not None:
+            model = import_object_by_path(model)()
 
-        return self
+        env = DistributedEnv(
+            self.config.system,
+            model=model,
+            subworld_size=self.config.nprocs_per_worker,
+        )
+
+        env.init()
+        env.apply_model_defaults(noise=self.config.noise)
+
+        if env.is_root():
+            encoding = self.config.encoding
+            if encoding is not None:
+                encoding = import_object_by_path(self.config.encoding)(
+                    **self.config.encoding_kwargs
+                )
+            decoding = import_object_by_path(self.config.decoding)(
+                duration=self.config.duration, **self.config.decoding_kwargs
+            )
+
+            batch_size = max(1, (P.size() - 1) // self.config.nprocs_per_worker)
+            num_batches = (self.config.samples + batch_size - 1) // batch_size
+
+            for batch_id in range(num_batches):
+                batch_start = batch_id * batch_size
+                batch_end = min(batch_start + batch_size, self.config.samples)
+
+                for i in range(batch_start, batch_end):
+                    env.submit_call(decoding, batch_start + i, encoding)
+
+                for _ in range(batch_start, batch_end):
+                    response = env.receive_response()
+                    # we assume that the reduction happens
+                    # through decoding on subworld root 0
+                    payload = response[0]
+
+                    save_file(
+                        [self.config.output_directory, random_str(8) + ".p"], payload
+                    )
+
+        env.shutdown()
 
     def merge(self):
         samples = {"train": {}, "test": {}}
@@ -241,7 +117,6 @@ class Sample(Interface):
                 if i >= train + test:
                     continue
             samples[split][fn] = load_file(file_path)
-            samples[split][fn]["features"] = samples[split][fn]["features"].tolist()
 
         for split in ["train", "test"]:
             samples_df = pd.DataFrame.from_dict(samples[split], orient="index")
