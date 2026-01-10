@@ -186,33 +186,71 @@ class ReducedCalciumSomaDendrite(Model):
         E_e=0,
         E_i=-75,
     ):
-        mechanism.on = 1 if (std_e > 0 or std_i > 0) else 0
-        mechanism.std_e = std_e
-        mechanism.std_i = std_i
-
-        mechanism.g_e0 = g_e0
-        mechanism.g_i0 = g_i0
+        sec_name = mechanism.get_segment().sec.name()
+        is_soma = "soma" in sec_name
 
         mechanism.tau_e = tau_e
         mechanism.tau_i = tau_i
-
         mechanism.E_e = E_e
         mechanism.E_i = E_i
 
-    def neuron_default_noise(self, system: str, key: int = 0):
+        if is_soma:
+            # inhibition only
+            mechanism.std_e = 0
+            mechanism.g_e0 = 0
+            mechanism.std_i = std_i
+            mechanism.g_i0 = g_i0
+        else:
+            # excitation only
+            mechanism.std_e = std_e
+            mechanism.g_e0 = g_e0
+            mechanism.std_i = 0
+            mechanism.g_i0 = 0
+
+        mechanism.on = 1 if (mechanism.std_e > 0 or mechanism.std_i > 0) else 0
+
+    def neuron_default_noise(self, system: str):
         return {
-            "S1": [{}],
-            "S2": [{}],
-            "S3": [{}],
-            "S4": [{}],
-        }[system][key]
+            "EI1": {
+                "g_e0": 1.0,
+                "g_i0": 1.2172681093215942,
+                "std_e": 0.3290764391422272,
+                "std_i": 0.35633188486099243,
+                "tau_e": 33.00786209106445,
+                "tau_i": 28.50772476196289,
+            },
+            "EI2": {
+                "g_e0": 1.4662606716156006,
+                "g_i0": 0.9061993360519409,
+                "std_e": 0.47152602672576904,
+                "std_i": 0.1969195306301117,
+                "tau_e": 17.493135452270508,
+                "tau_i": 7.105101585388184,
+            },
+            "EI3": {},
+            "EI4": {},
+        }[system]
 
     def neuron_default_weights(self, system: str):
         return {
-            "S1": {},
-            "S2": {},
-            "S3": {},
-            "S4": {},
+            "EI1": {
+                "EXC_EXC-hillock-AMPA-weight": 0.0010000000254350994,
+                "EXC_EXC-hillock-NMDA-weight": 0.37764625228307414,
+                "EXC_INH-hillock-AMPA-weight": 2.9091933347646908,
+                "EXC_INH-hillock-NMDA-weight": 0.0010000000254350994,
+                "INH_EXC-soma-GABA_A-weight": 9.406616405134113,
+                "INH_INH-soma-GABA_A-weight": 8.710510071227473,
+            },
+            "EI2": {
+                "EXC_EXC-hillock-AMPA-weight": 0.0010000000254350994,
+                "EXC_EXC-hillock-NMDA-weight": 0.00398131980116756,
+                "EXC_INH-hillock-AMPA-weight": 12.114758587424397,
+                "EXC_INH-hillock-NMDA-weight": 0.31300935167465127,
+                "INH_EXC-soma-GABA_A-weight": 0.5000229360632054,
+                "INH_INH-soma-GABA_A-weight": 5.83084802642212,
+            },
+            "EI3": {},
+            "EI4": {},
         }[system]
 
     # diffrax
