@@ -834,3 +834,173 @@ class CachedSystem(System):
             [npn.array(m, dtype=npn.float32) for m in matrix],
             dtype=npn.float32,
         )
+
+
+class TrainableSystem:
+    """System with trainable neuron positions parameterized by relative distances
+
+    Arguments:
+        n_neurons: Number of neurons per population
+        n_populations: Number of populations
+        relative_distances:
+            Initial relative distances [n_populations, n_neurons], e.g.
+             distances[c, 0] = distance from origin to neuron 0 in channel c
+             distances[c, 1] = distance from neuron 0 to neuron 1 in channel c, etc.
+            If None, initialized uniformly in range [10, 100] um
+        origins: Reference origins [n_populations, xyz=3] for neuron locations;
+            defaults to vec{0} for all populations
+
+    Note: Relative distance parameterization maintains permutation invariance in downstream
+       potential calculations. The field is rotation invariant, so neurons are
+       placed along the x-axis without loss of generality
+    """
+
+    def __init__(
+        self,
+        n_neurons: int,
+        n_populations: int = 1,
+        params: types.Float[types.Array, "n_populations n_neurons"] | None = None,
+        origins: types.Float[types.Array, "n_populations xyz=3"] | None = None,
+        uri: str | None = None,
+    ):
+        self.n_neurons = n_neurons
+        self.n_populations = n_populations
+        self.name = "TrainableSystem"
+        self.populations = [str(i) for i in range(n_populations)]
+
+        if origins is None:
+            origins = np.tile(np.array([0.0, 0.0, 0.0]), (n_populations, 1))
+        self.origins = np.array(origins)
+        self.uri = uri
+
+        self.set_params(params)
+
+    def set_params(
+        self,
+        params: types.Float[types.Array, "n_populations n_neurons"] | None = None,
+    ):
+        if params is None:
+            if _USES_JAX:
+                import jax.random as random
+
+                key = random.PRNGKey(0)
+                params = random.uniform(
+                    key, (self.n_populations, self.n_neurons), minval=10.0, maxval=100.0
+                )
+            else:
+                params = np.random.uniform(
+                    10.0, 100.0, (self.n_populations, self.n_neurons)
+                )
+
+        self.params = np.array(params)
+
+        return params
+
+    def set_params_from_coordinates(
+        self,
+        neuron_coordinates: types.Float[types.Array, "n_coords ixyz=4"],
+    ):
+        coords = np.array(neuron_coordinates)
+
+        x_positions = coords[:, 1]
+        y_positions = coords[:, 2]
+        z_positions = coords[:, 3]
+
+        total_neurons = len(coords)
+        n_neurons_per_population = total_neurons // self.n_populations
+
+        if total_neurons % self.n_populations != 0:
+            total_neurons = n_neurons_per_population * self.n_populations
+            x_positions = x_positions[:total_neurons]
+            y_positions = y_positions[:total_neurons]
+            z_positions = z_positions[:total_neurons]
+
+        self.n_neurons = n_neurons_per_population
+
+        origins = []
+        relative_distances = []
+        for pop_idx in range(self.n_populations):
+            start_idx = pop_idx * n_neurons_per_population
+            end_idx = start_idx + n_neurons_per_population
+
+            pop_x_positions = x_positions[start_idx:end_idx]
+            pop_y_positions = y_positions[start_idx:end_idx]
+            pop_z_positions = z_positions[start_idx:end_idx]
+
+            channel_origin = np.array(
+                [
+                    float(pop_x_positions.mean()),
+                    float(pop_y_positions.mean()),
+                    float(pop_z_positions.mean()),
+                ]
+            )
+            origins.append(channel_origin)
+            channel_relative = [float(pop_x_positions[0] - channel_origin[0])]
+
+            # relative followers
+            for i in range(1, len(pop_x_positions)):
+                dist = float(pop_x_positions[i] - pop_x_positions[i - 1])
+                channel_relative.append(dist)
+
+            relative_distances.append(channel_relative)
+
+        self.origins = np.array(origins)
+
+        return self.set_params(np.array(relative_distances))
+
+    def default_io(self) -> "IO":
+        from livn.io import MEA
+
+        if hasattr(self, "uri") and self.uri is not None:
+            try:
+                return MEA.from_directory(self.uri)
+            except (FileNotFoundError, AttributeError):
+                pass
+
+        return MEA()
+
+    @property
+    def num_neurons(self):
+        return self.n_populations * self.n_neurons
+
+    @property
+    def neuron_coordinates(self) -> types.Float[types.Array, "n_total_neurons ixyz=4"]:
+        """Convert relative distances to absolute neuron coordinates"""
+
+        absolute_distances = np.cumsum(self.params, axis=1)
+
+        all_coords = []
+        gid = 0
+
+        for channel_idx in range(self.n_populations):
+            channel_distances = absolute_distances[channel_idx]  # [n_neurons]
+            channel_origin = self.origins[channel_idx]  # [3]
+            for neuron_idx in range(self.n_neurons):
+                x = channel_origin[0] + channel_distances[neuron_idx]
+                y = channel_origin[1]
+                z = channel_origin[2]
+                all_coords.append([float(gid), x, y, z])
+                gid += 1
+
+        return np.array(all_coords)
+
+    @property
+    def gids(self) -> types.Int[types.Array, "n_total_neurons"]:
+        return np.arange(self.n_populations * self.n_neurons, dtype=np.int32)
+
+    @property
+    def bounding_box(self) -> types.Float[types.Array, "2 xyz=3"]:
+        coords = self.neuron_coordinates[:, 1:4]
+        min_coords = coords.min(axis=0)
+        max_coords = coords.max(axis=0)
+
+        padding = 100.0
+        min_coords = min_coords - padding
+        max_coords = max_coords + padding
+
+        return np.stack([min_coords, max_coords])
+
+    @property
+    def center_point(self) -> types.Float[types.Array, "xyz=3"]:
+        bb = self.bounding_box
+        return (bb[0] + bb[1]) / 2.0
