@@ -18,6 +18,10 @@ class MotoneuronCulture(eqx.Module):
         #  of individual neurons via vmap
         self.neurons = BoothRinzelKiehn(params)
 
+    @property
+    def input_mode(self):
+        return self.neurons.input_mode
+
     def run(
         self,
         input_current,

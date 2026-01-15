@@ -5,7 +5,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array
-from typing import Any, Mapping, Sequence, Optional, Tuple
+from typing import Any, Mapping, Sequence, Optional, Tuple, Union
 
 
 def array_to_dict(params: Sequence) -> Mapping[str, float]:
@@ -103,6 +103,14 @@ class BoothRinzelKiehn(eqx.Module):
     T_kelvin: float
     F_const: float
 
+    solver: Union[diffrax.AbstractSolver, str] = eqx.field(static=True)
+    max_steps: int = eqx.field(static=True)
+
+    E_syn_exc: float
+    E_syn_inh: float
+
+    input_mode: str = eqx.field(static=True)
+
     def set_default_parameters(self) -> None:
         # Conductances (mho/cm^2)
         self.GNa = 0.00030  # soma_gmax_Na
@@ -179,6 +187,16 @@ class BoothRinzelKiehn(eqx.Module):
         self.R_const = 8.31441  # V*C / (Mol*K)
         self.T_kelvin = 309.15  # K (36 C)
         self.F_const = 96485.309  # Coulombs/mol
+
+        # Solver (explicit 2nd order Heun for pmap compatibility with stiff systems)
+        self.solver = "Heun"
+        self.max_steps = 2_000_000  # per 1000 ms
+
+        # Synaptic reversal potentials (mV)
+        self.E_syn_exc = 0.0  # Excitatory (AMPA/NMDA)
+        self.E_syn_inh = -75.0  # Inhibitory (GABA_A)
+
+        self.input_mode = "conductance"
 
     def set_parameters(self, params: Mapping[str, Any]) -> None:
         """
@@ -264,6 +282,27 @@ class BoothRinzelKiehn(eqx.Module):
         kca_val = get("soma_kCa_Caconc", get("dend_kCa_Caconc"))
         if kca_val is not None:
             self.kca = float(kca_val)
+
+        # Solver
+        if get("solver") is not None:
+            self.solver = get("solver")
+        if get("max_steps") is not None:
+            self.max_steps = int(get("max_steps"))
+
+        # Synaptic reversal potentials
+        if get("E_syn_exc") is not None:
+            self.E_syn_exc = float(get("E_syn_exc"))
+        if get("E_syn_inh") is not None:
+            self.E_syn_inh = float(get("E_syn_inh"))
+
+        # Input mode
+        if get("input_mode") is not None:
+            mode = get("input_mode")
+            if mode not in ("current_density", "conductance", "current"):
+                raise ValueError(
+                    f"input_mode must be 'current_density', 'conductance', or 'current', got {mode}"
+                )
+            self.input_mode = mode
 
     def __init__(self, params: Optional[Any] = None, key=None):
         self.set_default_parameters()
@@ -386,16 +425,57 @@ class BoothRinzelKiehn(eqx.Module):
 
         I_stim_array, t_array = args
 
-        # 1D (soma only) and 2D (soma + dendrite)
-        if I_stim_array.ndim == 1:
-            I_amp = jnp.interp(t, t_array, I_stim_array)
-            Iapp_density_soma = I_amp * 1e-6 / area_s
-            Iapp_density_dend = 0.0
+        if self.input_mode == "current_density":
+            # direct current density in mA/cm2
+            if I_stim_array.ndim == 1:
+                Iapp_density_soma = jnp.interp(t, t_array, I_stim_array)
+                Iapp_density_dend = 0.0
+            else:
+                Iapp_density_soma = jnp.interp(t, t_array, I_stim_array[:, 0])
+                Iapp_density_dend = jnp.interp(t, t_array, I_stim_array[:, 1])
+
+        elif self.input_mode == "conductance":
+            # synaptic conductance in uS (positive = excitatory, negative = inhibitory)
+            if I_stim_array.ndim == 1:
+                g_input = jnp.interp(t, t_array, I_stim_array)
+
+                g_exc_soma = jnp.maximum(0.0, g_input)
+                g_inh_soma = jnp.maximum(0.0, -g_input)
+
+                I_exc_nA = g_exc_soma * (Vs - self.E_syn_exc) / 1000.0
+                I_inh_nA = g_inh_soma * (Vs - self.E_syn_inh) / 1000.0
+                Iapp_density_soma = -(I_exc_nA + I_inh_nA) * 1e-6 / area_s
+                Iapp_density_dend = 0.0
+            else:
+                g_soma = jnp.interp(t, t_array, I_stim_array[:, 0])
+                g_dend = jnp.interp(t, t_array, I_stim_array[:, 1])
+
+                g_exc_soma = jnp.maximum(0.0, g_soma)
+                g_inh_soma = jnp.maximum(0.0, -g_soma)
+                g_exc_dend = jnp.maximum(0.0, g_dend)
+                g_inh_dend = jnp.maximum(0.0, -g_dend)
+
+                I_exc_soma_nA = g_exc_soma * (Vs - self.E_syn_exc) / 1000.0
+                I_inh_soma_nA = g_inh_soma * (Vs - self.E_syn_inh) / 1000.0
+                I_exc_dend_nA = g_exc_dend * (Vd - self.E_syn_exc) / 1000.0
+                I_inh_dend_nA = g_inh_dend * (Vd - self.E_syn_inh) / 1000.0
+
+                Iapp_density_soma = -(I_exc_soma_nA + I_inh_soma_nA) * 1e-6 / area_s
+                Iapp_density_dend = -(I_exc_dend_nA + I_inh_dend_nA) * 1e-6 / area_d
+
+        elif self.input_mode == "current":
+            # direct current in nA
+            if I_stim_array.ndim == 1:
+                I_nA = jnp.interp(t, t_array, I_stim_array)
+                Iapp_density_soma = I_nA * 1e-6 / area_s
+                Iapp_density_dend = 0.0
+            else:
+                I_soma_nA = jnp.interp(t, t_array, I_stim_array[:, 0])
+                I_dend_nA = jnp.interp(t, t_array, I_stim_array[:, 1])
+                Iapp_density_soma = I_soma_nA * 1e-6 / area_s
+                Iapp_density_dend = I_dend_nA * 1e-6 / area_d
         else:
-            I_amp_soma = jnp.interp(t, t_array, I_stim_array[:, 0])
-            I_amp_dend = jnp.interp(t, t_array, I_stim_array[:, 1])
-            Iapp_density_soma = I_amp_soma * 1e-6 / area_s
-            Iapp_density_dend = I_amp_dend * 1e-6 / area_d
+            raise ValueError(f"Unknown input_mode: {self.input_mode}")
 
         Isoma = Iapp_density_soma
         Idend = Iapp_density_dend
@@ -480,9 +560,17 @@ class BoothRinzelKiehn(eqx.Module):
         t_dur : float
             Simulation duration in ms
         I_stim_array : Array
-            Stimulus current values in nA. Can be either:
-            - 1D array with shape [n_time_points] for soma-only stimulation
-            - 2D array with shape [n_time_points, 2] for soma (column 0) and dendrite (column 1) stimulation
+            Input stimulus array. Interpretation depends on input_mode:
+
+            - "current_density" (default): Current density in mA/cm2. Direct application to compartments.
+            - "conductance": Synaptic conductance in microsiemens
+                    Positive values = excitatory (→ E_syn_exc = 0 mV)
+                    Negative values = inhibitory (→ E_syn_inh = -75 mV)
+            - "current": Direct current injection in nA
+
+            Shape can be either:
+            - 1D array [n_time_points] for soma-only stimulation
+            - 2D array [n_time_points, 2] for soma (column 0) and dendrite (column 1)
             where n_time_points = t_dur/dt + 1
         dt : float
             Time step in ms
@@ -517,14 +605,38 @@ class BoothRinzelKiehn(eqx.Module):
         )
 
         term = diffrax.ODETerm(self)
-        solver = diffrax.Kvaerno3()
+
+        if isinstance(self.solver, str):
+            solver_map = {
+                "Euler": diffrax.Euler,
+                "Heun": diffrax.Heun,
+                "Midpoint": diffrax.Midpoint,
+                "Ralston": diffrax.Ralston,
+                "Bosh3": diffrax.Bosh3,
+                "Tsit5": diffrax.Tsit5,
+                "Dopri5": diffrax.Dopri5,
+                "Dopri8": diffrax.Dopri8,
+                "Kvaerno3": diffrax.Kvaerno3,
+                "Kvaerno4": diffrax.Kvaerno4,
+                "Kvaerno5": diffrax.Kvaerno5,
+                "ImplicitEuler": diffrax.ImplicitEuler,
+            }
+            solver_cls = solver_map.get(self.solver, diffrax.Kvaerno5)
+            solver = solver_cls()
+        else:
+            solver = self.solver
 
         n_points = int(t_dur / dt) + 1
         t_array = jnp.linspace(0.0, t_dur, n_points)
         stimulus_args = (I_stim_array, t_array)
 
         saveat = diffrax.SaveAt(ts=t_array)
-        stepsize_controller = diffrax.PIDController(rtol=1e-6, atol=1e-8)
+
+        # use constant step size for pmap compatibility
+        stepsize_controller = diffrax.ConstantStepSize()
+
+        scaled_max_steps = int(self.max_steps * (t_dur / 1000.0))
+        scaled_max_steps = max(scaled_max_steps, 10000)
 
         solution = diffrax.diffeqsolve(
             term,
@@ -536,7 +648,7 @@ class BoothRinzelKiehn(eqx.Module):
             args=stimulus_args,
             saveat=saveat,
             stepsize_controller=stepsize_controller,
-            max_steps=500_000,
+            max_steps=scaled_max_steps,
         )
 
         t_arr = solution.ts

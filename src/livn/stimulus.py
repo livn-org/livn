@@ -116,3 +116,63 @@ class Stimulus:
             channels=channels.tolist(),
             cathodic_first=cathodic_first,
         )
+
+    @classmethod
+    def from_conductance(
+        cls,
+        conductance: Float[Array, "timestep n_gids"],
+        dt: float = 0.1,
+        gids: Int[Array, "n_gids"] | None = None,
+        **meta_data,
+    ) -> "Stimulus":
+        """Create stimulus from synaptic conductance values
+
+        Args:
+            conductance: in uS
+            dt: Time step in ms
+            gids: Neuron GIDs
+            **meta_data: Additional metadata
+        """
+        meta_data["input_mode"] = "conductance"
+        meta_data["units"] = "uS"
+        return cls(array=conductance, dt=dt, gids=gids, **meta_data)
+
+    @classmethod
+    def from_current(
+        cls,
+        current: Float[Array, "timestep n_gids"],
+        dt: float = 0.1,
+        gids: Int[Array, "n_gids"] | None = None,
+        **meta_data,
+    ) -> "Stimulus":
+        """Create stimulus from direct current injection
+
+        Args:
+            current: Current values in nA
+            dt: Time step in ms
+            gids: Neuron GIDs
+            **meta_data: Additional metadata
+        """
+        meta_data["input_mode"] = "current"
+        meta_data["units"] = "nA"
+        return cls(array=current, dt=dt, gids=gids, **meta_data)
+
+    @classmethod
+    def from_current_density(
+        cls,
+        current_density: Float[Array, "timestep n_gids"],
+        dt: float = 0.1,
+        gids: Int[Array, "n_gids"] | None = None,
+        **meta_data,
+    ) -> "Stimulus":
+        """Create stimulus from current density
+
+        Args:
+            current_density: Current density values in mA/cm2
+            dt: Time step in ms
+            gids: Neuron GIDs
+            **meta_data: Additional metadata
+        """
+        meta_data["input_mode"] = "current_density"
+        meta_data["units"] = "mA/cm2"
+        return cls(array=current_density, dt=dt, gids=gids, **meta_data)

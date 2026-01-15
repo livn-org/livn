@@ -3,10 +3,10 @@ from typing import TYPE_CHECKING, Optional, Union
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import equinox as eqx
 
 from livn.stimulus import Stimulus
 from livn.types import Env as EnvProtocol
-from livn.utils import P
 
 if TYPE_CHECKING:
     from mpi4py import MPI
@@ -94,12 +94,6 @@ class Env(EnvProtocol):
         dt: float = 0.1,
         **kwargs,
     ):
-        if kwargs.get("root_only", True):
-            if not P.is_root():
-                raise NotImplementedError(
-                    "The diffrax backend does not yet support MPI distributed solving."
-                )
-
         stimulus = Stimulus.from_arg(stimulus)
 
         if stimulus.array is not None:
@@ -112,9 +106,18 @@ class Env(EnvProtocol):
             if int(stimulus.dt / dt) != stimulus.dt / dt:
                 raise ValueError("stimulus_dt must be a multiple of dt")
 
-            # converting the mV potential into nA current via Ohm's law,
-            # assuming a membrane resistance of 400 MΩ
-            stimulus.array = stimulus.array / 400
+            model_input_mode = getattr(self.module, "input_mode", "conductance")
+            stimulus_input_mode = stimulus.meta_data.get("input_mode", "conductance")
+
+            if model_input_mode != stimulus_input_mode:
+                raise ValueError(
+                    f"Stimulus input_mode '{stimulus_input_mode}' does not match "
+                    f"model input_mode '{model_input_mode}'. "
+                    f"Create stimulus with correct mode:\n"
+                    f"  - Stimulus.from_conductance() for ±uS\n"
+                    f"  - Stimulus.from_current_density() for mA/cm2\n"
+                    f"  - Stimulus.from_current() for nA"
+                )
 
             expected_steps = int(duration / dt) + 1
             original_ndim = stimulus.array.ndim
@@ -172,3 +175,71 @@ class Env(EnvProtocol):
         self.v0 = None
 
         return self
+
+
+def _env_tree_flatten(env):
+    if env.module is not None:
+        module_params, module_static = eqx.partition(env.module, eqx.is_array)
+    else:
+        module_params, module_static = None, None
+
+    children = (module_params, env.key, env._noise)
+    aux = (
+        module_static,
+        env.t,
+        env.v0,
+        env._weights,
+        env.system,
+        env.model,
+        env.io,
+        env.comm,
+        env.subworld_size,
+        env.seed,
+        env.init_key,
+        env.run_key,
+        env.encoding,
+        env.decoding,
+    )
+    return children, aux
+
+
+def _env_tree_unflatten(aux, children):
+    module_params, key, noise = children
+    (
+        module_static,
+        t,
+        v0,
+        weights,
+        system,
+        model,
+        io,
+        comm,
+        subworld_size,
+        seed,
+        init_key,
+        run_key,
+        encoding,
+        decoding,
+    ) = aux
+
+    if module_params is not None and module_static is not None:
+        module = eqx.combine(module_params, module_static)
+    else:
+        module = None
+
+    env = Env(system, model, io, seed, comm, subworld_size)
+    env.module = module
+    env.v0 = v0
+    env.t = t
+    env.key = key
+    env._noise = noise
+    env._weights = weights
+
+    env.init_key = init_key
+    env.run_key = run_key
+    env.encoding = encoding
+    env.decoding = decoding
+    return env
+
+
+jax.tree_util.register_pytree_node(Env, _env_tree_flatten, _env_tree_unflatten)
