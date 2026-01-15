@@ -12,3 +12,6 @@ dependencies = ["datasets>=4.1.1", "gymnax>=0.0.9", "systems", "distrax>=0.1.7"]
 
 [tool.uv.sources]
 systems = { workspace = true }
+
+[tool.setuptools]
+py-modules = []
