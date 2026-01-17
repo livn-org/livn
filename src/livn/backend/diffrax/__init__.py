@@ -153,6 +153,7 @@ class Env(EnvProtocol):
             if original_ndim == 1:
                 stimulus.array = stimulus.array[:, 0]
 
+        dt_solver = kwargs.pop("dt_solver", 0.01)
         it, tt, iv, v, im, mp = self.module.run(
             input_current=stimulus.array,
             noise=self._noise,
@@ -160,7 +161,7 @@ class Env(EnvProtocol):
             t1=self.t + duration,
             dt=dt,
             v0=self.v0,
-            dt_solver=kwargs.get("dt_solver", 0.01),
+            dt_solver=dt_solver,
             key=self.run_key,
             **kwargs,
         )
