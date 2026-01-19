@@ -13,12 +13,12 @@ class Slice(Decoding):
     Slices the system response into [start -> stop]
 
     Args:
-        start: Start time in ms
-        duration: Duration of the slice in ms
+        start: Start time in ms (float or int)
+        duration: Duration of the slice in ms (float or int)
     """
 
-    start: int = 0
-    duration: int = Field(validation_alias="stop")
+    start: float = 0.0
+    duration: float = Field(validation_alias="stop")
 
     def __call__(self, env, it, tt, iv, vv, im, mp):
         stop = self.duration
@@ -32,6 +32,9 @@ class Slice(Decoding):
         # voltage [n_neurons, T]
         if iv is not None and vv is not None:
             v_dt = env.voltage_recording_dt
+            self._validate_no_information_loss(self.start, v_dt, "start", "voltage")
+            self._validate_no_information_loss(stop, v_dt, "duration", "voltage")
+
             start_idx = int(self.start / v_dt)
             stop_idx = int(stop / v_dt)
             vv = vv[:, start_idx:stop_idx]
@@ -39,11 +42,32 @@ class Slice(Decoding):
         # membrane currents [n_neurons, T]
         if im is not None and mp is not None:
             m_dt = env.membrane_current_recording_dt
+            self._validate_no_information_loss(
+                self.start, m_dt, "start", "membrane current"
+            )
+            self._validate_no_information_loss(
+                stop, m_dt, "duration", "membrane current"
+            )
+
             start_idx = int(self.start / m_dt)
             stop_idx = int(stop / m_dt)
             mp = mp[:, start_idx:stop_idx]
 
         return it, tt, iv, vv, im, mp
+
+    def _validate_no_information_loss(
+        self, time_ms: float, dt: float, param_name: str, data_type: str
+    ) -> None:
+        index = time_ms / dt
+        if not self._is_integer(index):
+            raise ValueError(
+                f"{param_name}={time_ms} ms does not align with {data_type} recording dt={dt} ms"
+                f" yielding a fractional index {index}"
+            )
+
+    @staticmethod
+    def _is_integer(value: float, tol: float = 1e-9) -> bool:
+        return abs(value - round(value)) < tol
 
 
 class ChannelRecording(Decoding):

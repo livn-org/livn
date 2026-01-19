@@ -76,6 +76,49 @@ def test_slice_decoding(env_response):
     assert mp.shape[1] == expected_time_steps
 
 
+@pytest.mark.skipif(
+    "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
+)
+def test_slice_float_valid(env_response):
+    env = Env(os.environ["LIVN_TEST_SYSTEM"])
+    if backend() == "brian2":
+        env.init()
+    env.record_spikes()
+    env.record_voltage()
+    env.record_membrane_current()
+
+    recording_dt = 0.1
+    start = 10.0
+    duration = 5.0
+
+    ii, tt, iv, v, im, mp = Slice(start=start, stop=start + duration)(
+        env, *env_response
+    )
+
+    # spike times should be correctly offset
+    if len(tt) > 0:
+        assert np.all(tt >= 0)
+        assert np.all(tt < duration)
+
+    expected_time_steps = int(duration / recording_dt)
+    assert v.shape[1] == expected_time_steps
+    assert mp.shape[1] == expected_time_steps
+
+    # 0.025 is not a multiple of 0.1
+    start = 0.025
+    duration = 10.0
+
+    with pytest.raises(ValueError, match="does not align with.*recording dt"):
+        Slice(start=start, stop=start + duration)(env, *env_response)
+
+    # duration 10.025 with dt=0.1 -> fractional end index
+    start = 10.0
+    duration = 0.025
+
+    with pytest.raises(ValueError, match="does not align with.*recording dt"):
+        Slice(start=start, stop=start + duration)(env, *env_response)
+
+
 class MockEnv:
     def __init__(self, n_units=100, n_channels=16):
         self.n_units = n_units
@@ -141,6 +184,7 @@ class TestMeanFiringRate:
         assert result is not None
         assert result["total_spikes"] == 0
         assert result["rate_hz"] < 1e-6
+
 
 class TestActiveFraction:
     def test_full_activation(self):
