@@ -29,20 +29,31 @@ class MotoneuronCulture(eqx.Module):
         t0,
         t1,
         dt,
-        v0=None,
+        y0=None,
         dt_solver=0.01,
         key=None,
         **kwargs,
     ):
-        @jax.vmap
-        def solve_many(I_stim):
-            t_arr, v_soma, v_dend, i_mem_soma, i_mem_dend = self.neurons.solve(
-                t_dur=t1 - t0, I_stim_array=I_stim, dt=dt
+        def solve_single(I_stim, init_state):
+            t_arr, v_soma, v_dend, i_mem_soma, i_mem_dend, final_state = (
+                self.neurons.solve(
+                    t_dur=t1 - t0,
+                    I_stim_array=I_stim,
+                    dt=dt,
+                    dt_solver=dt_solver,
+                    y0=init_state,
+                )
             )
-
             v_both = jax.numpy.stack((v_soma, v_dend), axis=0)
             i_mem_both = jax.numpy.stack((i_mem_soma, i_mem_dend), axis=0)
-            return t_arr, v_both, i_mem_both
+            return t_arr, v_both, i_mem_both, final_state
+
+        if y0 is None:
+            solve_many = jax.vmap(solve_single, in_axes=(0, None))
+            y0_arg = None
+        else:
+            solve_many = jax.vmap(solve_single, in_axes=(0, 0))
+            y0_arg = y0
 
         if input_current is None:
             input_current = jax.numpy.zeros(
@@ -67,15 +78,18 @@ class MotoneuronCulture(eqx.Module):
         )
         per_neuron_stimulus = jax.numpy.swapaxes(per_neuron_stimulus, 0, 1)
 
-        t_arr_batched, v_soma_dend, i_mem_soma_dend = solve_many(per_neuron_stimulus)
+        t_arr_batched, v_soma_dend, i_mem_soma_dend, yT = solve_many(
+            per_neuron_stimulus, y0_arg
+        )
 
-        # No spike detection
+        # no spike detection
         it = jax.numpy.empty((0,), dtype=jax.numpy.int32)
         tt = jax.numpy.empty((0,), dtype=jax.numpy.float32)
+
         # interleave treating compartments as neurons (soma0,dend0,soma1,dend1,...)
         iv = jax.numpy.repeat(jax.numpy.arange(self.num_neurons), 2)
         v = v_soma_dend.reshape(self.num_neurons * 2, -1)
         im = iv
         mp = i_mem_soma_dend.reshape(self.num_neurons * 2, -1)
 
-        return it, tt, iv, v, im, mp
+        return it, tt, iv, v, im, mp, yT

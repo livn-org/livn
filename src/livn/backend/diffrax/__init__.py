@@ -69,7 +69,7 @@ class Env(EnvProtocol):
         self.key, self.init_key, self.run_key = jr.split(self.key, 3)
 
         self.t = 0.0
-        self.v0 = None
+        self.y0 = None
 
     def init(self):
         self.module = self.model.diffrax_module(
@@ -154,26 +154,26 @@ class Env(EnvProtocol):
                 stimulus.array = stimulus.array[:, 0]
 
         dt_solver = kwargs.pop("dt_solver", 0.01)
-        it, tt, iv, v, im, mp = self.module.run(
+        it, tt, iv, v, im, mp, yT = self.module.run(
             input_current=stimulus.array,
             noise=self._noise,
             t0=self.t,
             t1=self.t + duration,
             dt=dt,
-            v0=self.v0,
+            y0=self.y0,
             dt_solver=dt_solver,
             key=self.run_key,
             **kwargs,
         )
 
         self.t += duration
-        self.v0 = v[:, -1]
+        self.y0 = yT
 
         return it, tt, iv, v, im, mp
 
     def clear(self):
         self.t = 0
-        self.v0 = None
+        self.y0 = None
 
         return self
 
@@ -188,7 +188,7 @@ def _env_tree_flatten(env):
     aux = (
         module_static,
         env.t,
-        env.v0,
+        env.y0,
         env._weights,
         env.system,
         env.model,
@@ -209,7 +209,7 @@ def _env_tree_unflatten(aux, children):
     (
         module_static,
         t,
-        v0,
+        y0,
         weights,
         system,
         model,
@@ -230,7 +230,7 @@ def _env_tree_unflatten(aux, children):
 
     env = Env(system, model, io, seed, comm, subworld_size)
     env.module = module
-    env.v0 = v0
+    env.y0 = y0
     env.t = t
     env.key = key
     env._noise = noise

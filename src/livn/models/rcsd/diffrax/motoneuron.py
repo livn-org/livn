@@ -550,7 +550,9 @@ class BoothRinzelKiehn(eqx.Module):
         t_dur: float,
         *,
         I_stim_array: Array,
+        y0: Optional[Array] = None,
         dt: float = 0.025,
+        dt_solver: Optional[float] = None,
     ):
         """
         Solve the Booth-Rinzel-Kiehn model using diffrax
@@ -572,59 +574,51 @@ class BoothRinzelKiehn(eqx.Module):
             - 1D array [n_time_points] for soma-only stimulation
             - 2D array [n_time_points, 2] for soma (column 0) and dendrite (column 1)
             where n_time_points = t_dur/dt + 1
+        y0 : Array, optional
+             Initial state vector; if None, defaults to resting state
         dt : float
             Time step in ms
+        dt_solver : float, optional
+             Internal time step for the solver; if None, defaults to dt
 
         Returns:
         --------
-        (time_array, soma_voltage, dendrite_voltage, soma_membrane_current, dendrite_membrane_current)
+        (time_array, soma_voltage, dendrite_voltage, soma_membrane_current, dendrite_membrane_current, yT)
         """
-        v_init = -60.0
-        cai0 = 1e-5
+        if dt_solver is None:
+            dt_solver = dt
 
-        hinf_init = 1.0 / (1.0 + jnp.exp((v_init + 55.0) / 7.0))
-        ninf_init = 1.0 / (1.0 + jnp.exp(-(v_init + 28.0) / 15.0))
-        mn_init = 1.0 / (1.0 + jnp.exp((v_init + 30.0) / -5.0))
-        hn_init = 1.0 / (1.0 + jnp.exp((v_init + 45.0) / 5.0))
-        ml_init = 1.0 / (1.0 + jnp.exp((v_init + 40.0) / -7.0))
+        if y0 is None:
+            v_init = -60.0
+            cai0 = 1e-5
 
-        y0 = jnp.array(
-            [
-                v_init,
-                v_init,
-                hinf_init,
-                ninf_init,
-                mn_init,
-                hn_init,
-                mn_init,
-                hn_init,
-                ml_init,
-                cai0,
-                cai0,
-            ]
-        )
+            hinf_init = 1.0 / (1.0 + jnp.exp((v_init + 55.0) / 7.0))
+            ninf_init = 1.0 / (1.0 + jnp.exp(-(v_init + 28.0) / 15.0))
+            mn_init = 1.0 / (1.0 + jnp.exp((v_init + 30.0) / -5.0))
+            hn_init = 1.0 / (1.0 + jnp.exp((v_init + 45.0) / 5.0))
+            ml_init = 1.0 / (1.0 + jnp.exp((v_init + 40.0) / -7.0))
+
+            y0 = jnp.array(
+                [
+                    v_init,
+                    v_init,
+                    hinf_init,
+                    ninf_init,
+                    mn_init,
+                    hn_init,
+                    mn_init,
+                    hn_init,
+                    ml_init,
+                    cai0,
+                    cai0,
+                ]
+            )
 
         term = diffrax.ODETerm(self)
 
-        if isinstance(self.solver, str):
-            solver_map = {
-                "Euler": diffrax.Euler,
-                "Heun": diffrax.Heun,
-                "Midpoint": diffrax.Midpoint,
-                "Ralston": diffrax.Ralston,
-                "Bosh3": diffrax.Bosh3,
-                "Tsit5": diffrax.Tsit5,
-                "Dopri5": diffrax.Dopri5,
-                "Dopri8": diffrax.Dopri8,
-                "Kvaerno3": diffrax.Kvaerno3,
-                "Kvaerno4": diffrax.Kvaerno4,
-                "Kvaerno5": diffrax.Kvaerno5,
-                "ImplicitEuler": diffrax.ImplicitEuler,
-            }
-            solver_cls = solver_map.get(self.solver, diffrax.Kvaerno5)
-            solver = solver_cls()
-        else:
-            solver = self.solver
+        solver = self.solver
+        if isinstance(solver, str):
+            solver = getattr(diffrax, solver)()
 
         n_points = int(t_dur / dt) + 1
         t_array = jnp.linspace(0.0, t_dur, n_points)
@@ -643,7 +637,7 @@ class BoothRinzelKiehn(eqx.Module):
             solver,
             t0=0.0,
             t1=t_dur,
-            dt0=dt,
+            dt0=dt_solver,
             y0=y0,
             args=stimulus_args,
             saveat=saveat,
@@ -662,4 +656,4 @@ class BoothRinzelKiehn(eqx.Module):
             t_arr, solution.ys
         )
 
-        return t_arr, v_soma, v_dend, i_mem_soma, i_mem_dend
+        return t_arr, v_soma, v_dend, i_mem_soma, i_mem_dend, solution.ys[-1]
