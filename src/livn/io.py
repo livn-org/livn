@@ -231,9 +231,7 @@ class MEA(IO):
     def distances(
         self, neuron_coordinates: Float[Array, "n_coords ixyz=4"]
     ) -> Float[Array, "n_sources*n_coords cip=3"]:
-        return np.copy(
-            calculate_distances(self.electrode_coordinates, neuron_coordinates)
-        )
+        return calculate_distances(self.electrode_coordinates, neuron_coordinates)
 
     def default_electrode_coordinates(self):
         return electrode_array_coordinates()
@@ -252,8 +250,8 @@ def calculate_distances(
     """
     Calculate the Euclidean distances between each electrode and each coordinate.
     """
-    source = np.array(source)
-    coords = np.array(coords)
+    source = np.asarray(source)
+    coords = np.asarray(coords)
 
     ex, ey, ez = source[:, 1], source[:, 2], source[:, 3]
     cx, cy, cz = coords[:, 1], coords[:, 2], coords[:, 3]

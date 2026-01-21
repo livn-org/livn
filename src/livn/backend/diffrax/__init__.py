@@ -184,13 +184,12 @@ def _env_tree_flatten(env):
     else:
         module_params, module_static = None, None
 
-    children = (module_params, env.key, env._noise)
+    children = (module_params, env.key, env._noise, env.system)
     aux = (
         module_static,
         env.t,
         env.y0,
         env._weights,
-        env.system,
         env.model,
         env.io,
         env.comm,
@@ -205,13 +204,12 @@ def _env_tree_flatten(env):
 
 
 def _env_tree_unflatten(aux, children):
-    module_params, key, noise = children
+    module_params, key, noise, system = children
     (
         module_static,
         t,
         y0,
         weights,
-        system,
         model,
         io,
         comm,

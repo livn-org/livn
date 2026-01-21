@@ -988,17 +988,14 @@ class TrainableSystem:
     def neuron_coordinates(self) -> types.Float[types.Array, "n_total_neurons ixyz=4"]:
         absolute_coords = self.init_coords + self.params  # [n_pop, n_neurons, 3]
 
+        xyz_flat = absolute_coords.reshape(-1, 3)  # [n_total_neurons, 3]
+
+        # [n_total_neurons, 1]
+        n_total = self.n_populations * self.n_neurons
+        gids = np.arange(n_total, dtype=xyz_flat.dtype).reshape(-1, 1)
+
         # [n_total_neurons, ixyz=4]
-        all_coords = []
-        gid = 0
-
-        for pop_idx in range(self.n_populations):
-            for neuron_idx in range(self.n_neurons):
-                xyz = absolute_coords[pop_idx, neuron_idx]
-                all_coords.append([float(gid), xyz[0], xyz[1], xyz[2]])
-                gid += 1
-
-        return np.array(all_coords)
+        return np.concatenate([gids, xyz_flat], axis=1)
 
     @property
     def gids(self) -> types.Int[types.Array, "n_total_neurons"]:
@@ -1020,3 +1017,37 @@ class TrainableSystem:
     def center_point(self) -> types.Float[types.Array, "xyz=3"]:
         bb = self.bounding_box
         return (bb[0] + bb[1]) / 2.0
+
+
+if _USES_JAX:
+    import jax
+
+    def _trainable_system_flatten(system):
+        children = (system.params, system.init_coords, system.origins)
+        aux = (
+            system.n_neurons,
+            system.n_populations,
+            system.name,
+            tuple(system.populations),
+            system.uri,
+        )
+        return children, aux
+
+    def _trainable_system_unflatten(aux, children):
+        params, init_coords, origins = children
+        n_neurons, n_populations, name, populations, uri = aux
+
+        system = object.__new__(TrainableSystem)
+        system.n_neurons = n_neurons
+        system.n_populations = n_populations
+        system.origins = origins
+        system.name = name
+        system.populations = list(populations)  # Convert back to list
+        system.uri = uri
+        system.init_coords = init_coords
+        system.params = params
+        return system
+
+    jax.tree_util.register_pytree_node(
+        TrainableSystem, _trainable_system_flatten, _trainable_system_unflatten
+    )
