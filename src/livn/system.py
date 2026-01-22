@@ -848,9 +848,9 @@ class TrainableSystem:
             If None, initialized to vec{0}
         origins: Reference origins [n_populations, xyz=3] for electrode locations;
             defaults to vec{0} for all populations
-        init_coords: Initial neuron coordinates [n_populations, n_neurons, xyz=3].
+        params: Learnable offsets from electrode origins [n_populations, n_neurons, xyz=3].
             If None, initialized using physics-informed radial distribution around
-            each electrode (Gaussian with sigma=75μm, typical MEA recording radius).
+            each electrode
         uri: Optional URI for loading IO configuration
         seed:
     """
@@ -861,9 +861,6 @@ class TrainableSystem:
         n_populations: int = 1,
         params: types.Float[types.Array, "n_populations n_neurons xyz=3"] | None = None,
         origins: types.Float[types.Array, "n_populations xyz=3"] | None = None,
-        init_coords: (
-            types.Float[types.Array, "n_populations n_neurons xyz=3"] | None
-        ) = None,
         uri: str | None = None,
         seed: int | None = None,
     ):
@@ -877,21 +874,18 @@ class TrainableSystem:
             origins = np.tile(np.array([0.0, 0.0, 0.0]), (n_populations, 1))
         self.origins = np.array(origins)
 
-        # base coordinates (frozen during training)
-        if init_coords is None:
-            init_coords = self._init_radial_coords(seed=seed)
-        self.init_coords = np.array(init_coords)
-
+        if params is None:
+            params = self._init_radial_offsets(seed=seed)
         self.set_params(params)
 
-    def _init_radial_coords(
+    def _init_radial_offsets(
         self,
         seed: int | None = None,
         sigma: float = 75.0,
         min_dist: float = 10.0,
         max_dist: float = 100.0,
     ) -> types.Float[types.Array, "n_populations n_neurons xyz=3"]:
-        """Initialize neuron coordinates with radial distribution
+        """Initialize neuron offsets with radial distribution from electrode origins.
 
         Neurons are placed around each electrode origin using a truncated Gaussian
         distribution, reflecting the typical recording radius of MEA electrodes
@@ -904,11 +898,9 @@ class TrainableSystem:
         """
         rng = numpy.random.default_rng(seed)
 
-        coords = numpy.zeros((self.n_populations, self.n_neurons, 3))
+        offsets = numpy.zeros((self.n_populations, self.n_neurons, 3))
 
         for pop_idx in range(self.n_populations):
-            origin = self.origins[pop_idx]
-
             for neuron_idx in range(self.n_neurons):
                 while True:
                     r = abs(rng.normal(0, sigma))
@@ -922,11 +914,9 @@ class TrainableSystem:
                 y = r * numpy.sin(phi) * numpy.sin(theta)
                 z = r * numpy.cos(phi)
 
-                coords[pop_idx, neuron_idx] = numpy.asarray(origin) + numpy.array(
-                    [x, y, z]
-                )
+                offsets[pop_idx, neuron_idx] = numpy.array([x, y, z])
 
-        return coords
+        return offsets
 
     def set_params(
         self,
@@ -957,17 +947,12 @@ class TrainableSystem:
 
         # [n_populations, n_neurons, xyz=3]
         xyz = coords[:, 1:4]  # drop gids
-        init_coords = xyz.reshape(self.n_populations, n_neurons_per_population, 3)
+        absolute_coords = xyz.reshape(self.n_populations, n_neurons_per_population, 3)
 
-        input_centroids = init_coords.mean(axis=1)  # [n_populations, xyz=3]
+        # params = absolute_coords - origins (offsets from electrode)
+        offsets = absolute_coords - self.origins[:, None, :]
 
-        # shift each population so its centroid aligns with self.origins
-        init_coords = (
-            init_coords - input_centroids[:, None, :] + self.origins[:, None, :]
-        )
-
-        self.init_coords = init_coords
-        return self.set_params(None)
+        return self.set_params(offsets)
 
     def default_io(self) -> "IO":
         from livn.io import MEA
@@ -986,7 +971,9 @@ class TrainableSystem:
 
     @property
     def neuron_coordinates(self) -> types.Float[types.Array, "n_total_neurons ixyz=4"]:
-        absolute_coords = self.init_coords + self.params  # [n_pop, n_neurons, 3]
+        absolute_coords = (
+            self.origins[:, None, :] + self.params
+        )  # [n_pop, n_neurons, 3]
 
         xyz_flat = absolute_coords.reshape(-1, 3)  # [n_total_neurons, 3]
 
@@ -1023,7 +1010,7 @@ if _USES_JAX:
     import jax
 
     def _trainable_system_flatten(system):
-        children = (system.params, system.init_coords, system.origins)
+        children = (system.params, system.origins)
         aux = (
             system.n_neurons,
             system.n_populations,
@@ -1034,7 +1021,7 @@ if _USES_JAX:
         return children, aux
 
     def _trainable_system_unflatten(aux, children):
-        params, init_coords, origins = children
+        params, origins = children
         n_neurons, n_populations, name, populations, uri = aux
 
         system = object.__new__(TrainableSystem)
@@ -1044,7 +1031,6 @@ if _USES_JAX:
         system.name = name
         system.populations = list(populations)  # Convert back to list
         system.uri = uri
-        system.init_coords = init_coords
         system.params = params
         return system
 
