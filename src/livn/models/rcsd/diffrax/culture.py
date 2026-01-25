@@ -42,6 +42,7 @@ class MotoneuronCulture(eqx.Module):
                     dt=dt,
                     dt_solver=dt_solver,
                     y0=init_state,
+                    **kwargs,
                 )
             )
             v_both = jax.numpy.stack((v_soma, v_dend), axis=0)

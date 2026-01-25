@@ -553,6 +553,7 @@ class BoothRinzelKiehn(eqx.Module):
         y0: Optional[Array] = None,
         dt: float = 0.025,
         dt_solver: Optional[float] = None,
+        **kwargs,
     ):
         """
         Solve the Booth-Rinzel-Kiehn model using diffrax
@@ -643,6 +644,7 @@ class BoothRinzelKiehn(eqx.Module):
             saveat=saveat,
             stepsize_controller=stepsize_controller,
             max_steps=scaled_max_steps,
+            **kwargs,
         )
 
         t_arr = solution.ts
