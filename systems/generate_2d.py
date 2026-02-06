@@ -22,12 +22,55 @@ from neuroh5.io import (
 )
 from mpi4py import MPI
 from livn.io import electrode_array_coordinates_for_area
+from livn.utils import import_object_by_path
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 from matplotlib.colors import to_rgba
 
 
 _SYN_TYPE_LOOKUP = {"excitatory": 0, "inhibitory": 1}
+
+
+def bounding_box(xs, ys) -> tuple:  # ((xmin, ymin), (xmax, ymax))
+    return (
+        (float(np.min(xs)), float(np.min(ys))),
+        (float(np.max(xs)), float(np.max(ys))),
+    )
+
+
+def rectangle(
+    count: int,
+    rng: np.random.Generator,
+    *,
+    x_range: tuple[float, float] = (0.0, 4000.0),
+    y_range: tuple[float, float] = (0.0, 4000.0),
+) -> tuple[np.ndarray, np.ndarray]:
+    xmin, xmax = float(x_range[0]), float(x_range[1])
+    ymin, ymax = float(y_range[0]), float(y_range[1])
+
+    xs = rng.uniform(xmin, xmax, size=count).astype(np.float32)
+    ys = rng.uniform(ymin, ymax, size=count).astype(np.float32)
+    return xs, ys
+
+
+def disk(
+    count: int,
+    rng: np.random.Generator,
+    *,
+    center: tuple[float, float] = (0.0, 0.0),
+    radius: float = 500.0,
+    inner_radius: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    cx, cy = float(center[0]), float(center[1])
+    r_in, r_out = float(inner_radius), float(radius)
+
+    u = rng.random(size=count)
+    r = np.sqrt(u * (r_out**2 - r_in**2) + r_in**2)
+    theta = rng.uniform(0, 2 * np.pi, size=count)
+    return (
+        (cx + r * np.cos(theta)).astype(np.float32),
+        (cy + r * np.sin(theta)).astype(np.float32),
+    )
 
 
 class PopulationConfig(BaseModel):
@@ -86,9 +129,8 @@ class SynapseRecord(BaseModel):
 
 class Generate2DSystem(Component):
     class Config(BaseModel):
-        area: tuple[tuple[float, float], tuple[float, float]] = Field(
-            default=((0.0, 0.0), (4000.0, 4000.0))
-        )
+        area: str = Field(default="systems.generate_2d.rectangle")
+        area_kwargs: dict = Field(default_factory=dict)
         z_range: tuple[float, float] = Field(default=(0.0, 10.0))
         total_cells: Optional[int] = Field(default=None, ge=1)
         populations: Dict[str, PopulationConfig] = Field(
@@ -118,9 +160,6 @@ class Generate2DSystem(Component):
                     raise ValueError(
                         f"Population '{pop}' is not declared in population_definitions"
                     )
-            (xmin, ymin), (xmax, ymax) = self.area
-            if xmin >= xmax or ymin >= ymax:
-                raise ValueError("Culture area must define a valid rectangle")
             zmin, zmax = self.z_range
             if zmin > zmax:
                 raise ValueError("z_range must satisfy zmin <= zmax")
@@ -149,8 +188,18 @@ class Generate2DSystem(Component):
         if not overwrite and os.path.isfile(fn):
             raise FileExistsError("mea.json already exists.")
         z_min, z_max = self.config.z_range
+        rng = np.random.default_rng(self.config.random_seed)
+        bounds = bounding_box(
+            *(
+                import_object_by_path(self.config.area)(
+                    10_000,
+                    rng,
+                    **self.config.area_kwargs,
+                )
+            )
+        )
         coords = electrode_array_coordinates_for_area(
-            pitch=pitch, area=self.config.area, z=z_min + (z_max - z_min) / 2
+            pitch=pitch, area=bounds, z=z_min + (z_max - z_min) / 2
         )
 
         data = {
@@ -248,22 +297,19 @@ class Generate2DSystem(Component):
         rng = np.random.default_rng(self.config.random_seed)
 
         # generate coordinates
-        (xmin, ymin), (xmax, ymax) = self.config.area
+        area_fn = import_object_by_path(self.config.area)
         zmin, zmax = self.config.z_range
-        layer_extents = {
-            "2D": [
-                [float(xmin), float(ymin), float(zmin)],
-                [float(xmax), float(ymax), float(zmax)],
-            ]
-        }
 
-        coords: dict[str, dict[str, np.ndarray]] = {}
+        coords = {}
+        all_xs = []
+        all_ys = []
 
         for pop in populations:
             start, count = population_ranges[pop]
             gids = np.arange(start, start + count, dtype=np.uint32)
-            xs = rng.uniform(xmin, xmax, size=count).astype(np.float32)
-            ys = rng.uniform(ymin, ymax, size=count).astype(np.float32)
+            xs, ys = area_fn(count, rng, **self.config.area_kwargs)
+            all_xs.append(xs)
+            all_ys.append(ys)
             if zmax > zmin:
                 zs = rng.uniform(zmin, zmax, size=count).astype(np.float32)
             else:
@@ -293,6 +339,15 @@ class Generate2DSystem(Component):
                 "gids": gids,
                 "xy": np.column_stack((xs, ys)),
             }
+
+        area_bounds = bounding_box(np.concatenate(all_xs), np.concatenate(all_ys))
+        (xmin, ymin), (xmax, ymax) = area_bounds
+        layer_extents = {
+            "2D": [
+                [float(xmin), float(ymin), float(zmin)],
+                [float(xmax), float(ymax), float(zmax)],
+            ]
+        }
 
         # generate synapses
         synapses: dict[str, dict[int, SynapseRecord]] = {}
@@ -520,7 +575,7 @@ class Generate2DSystem(Component):
                     "uuid": str(uuid.uuid4()),
                     "config": {
                         "coordinate_namespace": "Generated Coordinates",
-                        "area": self.config.area,
+                        "area": list(area_bounds),
                         "z_range": self.config.z_range,
                         "cell_distributions": {
                             pop: dict(distribution)
