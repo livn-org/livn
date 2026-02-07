@@ -111,14 +111,8 @@ def predefined(name: str = "S1", download_directory: str = ".", force: bool = Fa
     if name not in available:
         raise ValueError(f"'{name}' is invalid, pick one of ", available)
 
-    # register HF fspec
-    from huggingface_hub import HfFileSystem
-
-    HfFileSystem()
-
-    source = f"hf://datasets/livn-org/livn/systems/data/{name}"
     return fetch(
-        source=source,
+        source=f"hf://datasets/livn-org/livn/systems/data/{name}",
         directory=download_directory,
         name=name,
         force=force,
