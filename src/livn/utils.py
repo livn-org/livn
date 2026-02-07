@@ -1,7 +1,9 @@
-import sys
-import importlib
 import collections
+import importlib
 import json
+import os
+import shutil
+import sys
 from typing import TYPE_CHECKING, Any, Optional, Union
 
 from livn.types import Array
@@ -350,6 +352,31 @@ class P:
         all: bool = False,
     ):
         return reduce_sum(*data, comm=comm, root=root, all=all)
+
+
+def download_directory(source: str, target: str, force: bool = False) -> None:
+    import fsspec
+
+    fs, fs_path = fsspec.core.url_to_fs(source)
+
+    if not fs.exists(fs_path):
+        raise FileNotFoundError(f"Source does not exist: {source}")
+
+    if fs.isdir(fs_path) is False:
+        raise ValueError(f"Source must be a directory: {source}")
+
+    if force and os.path.isdir(target):
+        shutil.rmtree(target)
+
+    os.makedirs(target, exist_ok=True)
+
+    for remote_file in fs.find(fs_path):
+        if fs.isdir(remote_file):
+            continue
+        rel_path = os.path.relpath(remote_file, fs_path)
+        local_file = os.path.join(target, rel_path)
+        os.makedirs(os.path.dirname(local_file), exist_ok=True)
+        fs.get(remote_file, local_file)
 
 
 def serialize(obj):

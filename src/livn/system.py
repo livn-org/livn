@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from livn import types
 from livn.backend import backend
+from livn.utils import download_directory
 
 if TYPE_CHECKING:
     from mpi4py import MPI
@@ -66,42 +67,62 @@ class Element(BaseModel):
     lineage: tuple[str, ...] = ()
 
 
-def predefined(name: str = "S1", download_directory: str = ".", force: bool = False):
+def fetch(
+    source: str,
+    directory: str = ".",
+    name: str | None = None,
+    force: bool = False,
+    comm: Optional["MPI.Intracomm"] = None,
+):
     target = None
-    comm = None
-    try:
-        from mpi4py import MPI
+    if comm is None:
+        try:
+            from mpi4py import MPI
 
-        comm = MPI.COMM_WORLD
+            comm = MPI.COMM_WORLD
+        except ImportError:
+            comm = None
+    if comm is not None and comm.Get_rank() != 0:
+        # await download on 0
+        return comm.bcast(target)
 
-        if comm.Get_rank() != 0:
-            # await download on 0
-            return comm.bcast(target)
-    except ImportError:
-        pass
+    if name is None:
+        import fsspec
 
-    from huggingface_hub import snapshot_download
+        parsed = fsspec.utils.infer_storage_options(source).get("path", "")
+        name = os.path.basename(parsed.rstrip("/"))
+        if not name:
+            raise ValueError("Could not infer system name from source")
 
-    available = [f"S{s + 1}" for s in range(4)] + ["CA1"]
-
-    if name not in available:
-        raise ValueError(f"'{name}' is invalid, pick one of ", available)
-
-    path = os.path.join("systems/graphs", name)
-    target = os.path.join(download_directory, path)
+    target = os.path.join(directory, "systems", "graphs", name)
 
     if force or not os.path.isdir(target):
-        snapshot_download(
-            "livn-org/livn",
-            repo_type="dataset",
-            allow_patterns=os.path.join(path, "*"),
-            local_dir=download_directory,
-        )
+        download_directory(source, target, force=force)
 
     if comm is not None:
         comm.bcast(target)
 
     return target
+
+
+def predefined(name: str = "S1", download_directory: str = ".", force: bool = False):
+    available = [f"S{s + 1}" for s in range(4)] + ["CA1"]
+
+    if name not in available:
+        raise ValueError(f"'{name}' is invalid, pick one of ", available)
+
+    # register HF fspec
+    from huggingface_hub import HfFileSystem
+
+    HfFileSystem()
+
+    source = f"hf://datasets/livn-org/livn/systems/data/{name}"
+    return fetch(
+        source=source,
+        directory=download_directory,
+        name=name,
+        force=force,
+    )
 
 
 def make(name: str = "S1", cached: bool = True) -> "System":
