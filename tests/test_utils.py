@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import pytest
 
@@ -11,7 +13,7 @@ def _get_rank():
 
         from livn.env import Env
 
-        env = Env(None)
+        env = Env(os.environ["LIVN_TEST_SYSTEM"])
         rank = env.rank
         env.close()
 
@@ -111,6 +113,9 @@ def test_utils_P(monkeypatch):
     assert P.broadcast(b, a) == (b, a)
 
 
+@pytest.mark.skipif(
+    "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
+)
 @pytest.mark.mpiexec(timeout=10)
 @pytest.mark.parametrize(
     "mpiexec_n",
@@ -196,6 +201,9 @@ def test_utils_reduce_sum_no_mpi(monkeypatch):
     assert np.array_equal(rd[1], np.array([1, 2]))
 
 
+@pytest.mark.skipif(
+    "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
+)
 @pytest.mark.mpiexec(timeout=10)
 @pytest.mark.parametrize(
     "mpiexec_n",

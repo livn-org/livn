@@ -32,17 +32,14 @@ class Env(EnvProtocol):
     ):
         from livn.system import CachedSystem
 
-        if model is None:
-            from livn.models.izhikevich import Izhikevich
-
-            model = Izhikevich()
-
         self.system = (
             system if not isinstance(system, str) else CachedSystem(system, comm=comm)
         )
+        if model is None:
+            model = self.system.default_model()
+        self.model = model
         if io is None:
             io = self.system.default_io()
-        self.model = model
         self.io = io
 
         self.comm = comm

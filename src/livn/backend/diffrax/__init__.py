@@ -44,16 +44,12 @@ class Env(EnvProtocol):
             from livn.system import CachedSystem
 
             system = CachedSystem(system, comm=comm)
-
-        if model is None:
-            from livn.models.rcsd import ReducedCalciumSomaDendrite
-
-            model = ReducedCalciumSomaDendrite()
-
         self.system = system
+        if model is None:
+            model = system.default_model()
+        self.model = model
         if io is None:
             io = self.system.default_io()
-        self.model = model
         self.io = io
         self.comm = comm
         self.subworld_size = subworld_size

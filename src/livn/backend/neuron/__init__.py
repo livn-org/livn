@@ -55,19 +55,16 @@ class Env(EnvProtocol):
     ):
         from livn.system import System
 
-        if model is None:
-            from livn.models.rcsd import ReducedCalciumSomaDendrite
-
-            model = ReducedCalciumSomaDendrite()
-
         self.seed = seed
 
         self.system = (
             system if not isinstance(system, str) else System(system, comm=comm)
         )
-        if io is None and self.system is not None:
-            io = self.system.default_io()
+        if model is None:
+            model = self.system.default_model()
         self.model = model
+        if io is None:
+            io = self.system.default_io()
         self.io = io
 
         self._original_get_reduced_cell_constructor = getattr(

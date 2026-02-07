@@ -7,21 +7,15 @@ from mpi4py import MPI
 
 from livn.backend import backend
 from livn.env import Env
-from livn.io import MEA
-from livn.models.izhikevich import Izhikevich
-from livn.models.rcsd import ReducedCalciumSomaDendrite
 from livn.stimulus import Stimulus
 from livn.utils import P
 
 
 def _create_env(comm, subworld):
     system = os.environ["LIVN_TEST_SYSTEM"]
-    io = MEA.from_json(os.path.join(system, "mea.json"))
 
     env = Env(
         system,
-        model=ReducedCalciumSomaDendrite() if backend() == "neuron" else Izhikevich(),
-        io=io,
         comm=comm,
         subworld_size=2 if subworld else None,
     )
@@ -397,5 +391,57 @@ def test_env_continued_runs_stimulus_dt_mismatch(mpiexec_n):
                 rtol=1e-5,
                 atol=1e-5,
             )
+
+    env.close()
+
+
+@pytest.mark.skipif(
+    "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
+)
+@pytest.mark.mpiexec(timeout=60)
+@pytest.mark.parametrize("mpiexec_n", [1, 2])
+def test_env_noise(mpiexec_n):
+    if backend() != "neuron":
+        return
+
+    assert MPI.COMM_WORLD.size == mpiexec_n
+    comm = MPI.COMM_WORLD
+
+    env = _create_env(comm, subworld=False)
+
+    noise_params = {
+        "std_e": 0.005,
+        "std_i": 0.005,
+        "g_e0": 0.01,
+        "g_i0": 0.05,
+    }
+
+    env.set_noise(noise_params)
+
+    # get first cell
+    pop_name = list(env.cells.keys())[0]
+    gid = list(env.cells[pop_name].keys())[0]
+    soma_key = f"{gid}-0"
+    dend_key = f"{gid}-1"
+
+    if soma_key in env._flucts:
+        mech_soma, _ = env._flucts[soma_key]
+        assert mech_soma.g_e0 == 0
+        assert mech_soma.std_e == 0
+        assert mech_soma.g_i0 == noise_params["g_i0"]
+        assert mech_soma.std_i == noise_params["std_i"]
+        assert mech_soma.on == 1
+
+    if dend_key in env._flucts:
+        mech_dend, _ = env._flucts[dend_key]
+        assert mech_dend.g_e0 == noise_params["g_e0"]
+        assert mech_dend.std_e == noise_params["std_e"]
+        assert mech_dend.g_i0 == 0
+        assert mech_dend.std_i == 0
+        assert mech_dend.on == 1
+
+    env.run(50)
+    v_soma = env.v_recs[(gid, 0)].as_numpy()
+    assert np.std(v_soma) > 1e-3
 
     env.close()

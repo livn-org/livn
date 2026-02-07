@@ -5,12 +5,15 @@ import os
 import shutil
 import sys
 from typing import TYPE_CHECKING, Any, Optional, Union
+import pickle
 
 from livn.types import Array
 
 if TYPE_CHECKING:
     import numpy as np
     from mpi4py import MPI
+
+sentinel = object()
 
 
 def import_object_by_path(path):
@@ -188,6 +191,61 @@ def reduce_sum(
         return results[0]
 
     return tuple(results)
+
+
+def decode_file(filepath: str, **kwargs):
+    _, ext = os.path.splitext(filepath)
+    mode = kwargs.pop("mode", "r")
+
+    if ext == ".p":
+        if "b" not in mode:
+            mode = mode + "b"
+        with open(filepath, mode, **kwargs) as f:
+            return pickle.load(f)
+    if ext == ".json":
+        with open(filepath, mode, **kwargs) as f:
+            return json.load(f)
+    if ext == ".npy":
+        import numpy as np
+
+        if "b" not in mode:
+            mode = mode + "b"
+        with open(filepath, mode, **kwargs) as f:
+            return np.load(f, allow_pickle=True)
+    with open(filepath, mode, **kwargs) as f:
+        return f.read()
+
+
+def load_file(
+    filepath: str | list[str],
+    default: Any = sentinel,
+    comm: Union["MPI.Intracomm", bool, None] = None,
+    **kwargs,
+) -> Any:
+    if not isinstance(filepath, str):
+        filepath = os.path.join(*[str(p) for p in filepath if p is not None])
+
+    try:
+        if comm is False:
+            data = decode_file(filepath, **kwargs)
+        else:
+            load_error = None
+            data = None
+            if P.is_root(comm=comm):
+                try:
+                    data = decode_file(filepath, **kwargs)
+                except Exception as e:
+                    load_error = e
+
+            load_error = P.broadcast(load_error, comm=comm)
+            if load_error is not None:
+                raise load_error
+            data = P.broadcast(data, comm=comm)
+        return data
+    except (FileNotFoundError, Exception) as _ex:
+        if default is not sentinel:
+            return default
+        raise _ex
 
 
 class P:
@@ -400,24 +458,7 @@ class Jsonable:
     ):
         if isinstance(serialized, str):
             if serialized.endswith(".json"):
-                load_error = None
-                data = None
-                if comm is False or P.is_root(comm=comm):
-                    try:
-                        with open(serialized, "r") as f:
-                            data = json.load(f)
-                    except Exception as e:
-                        load_error = e
-
-                if comm is not False:
-                    load_error = P.broadcast(load_error, comm=comm)
-                    if load_error is not None:
-                        raise load_error
-                    serialized = P.broadcast(data, comm=comm)
-                else:
-                    if load_error is not None:
-                        raise load_error
-                    serialized = data
+                serialized = load_file(serialized, comm=comm)
             else:
                 serialized = json.loads(serialized, **loads_kwargs)
         return cls.unserialize(serialized)

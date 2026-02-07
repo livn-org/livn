@@ -4,19 +4,20 @@ import os
 import random
 import numpy
 from functools import cached_property
-from typing import TYPE_CHECKING, Iterator, Optional
+from typing import TYPE_CHECKING, Iterator, Optional, Any
 
 import pandas as pd
 from pydantic import BaseModel
 
 from livn import types
 from livn.backend import backend
-from livn.utils import download_directory
+from livn.utils import download_directory, sentinel, load_file, import_object_by_path
 
 if TYPE_CHECKING:
     from mpi4py import MPI
 
     from livn.io import IO
+    from livn.types import Model
 
 _USES_JAX = False
 
@@ -418,6 +419,37 @@ class System:
             return MEA.from_directory(self.uri)
         except FileNotFoundError:
             return IO()
+
+    def default_model(self) -> "Model":
+        model = self.load_file("model.json", None)
+        if model is not None:
+            model = import_object_by_path(model["cls"])(**model["kwargs"])
+        else:
+            if backend() == "brian2":
+                from livn.models.izhikevich import Izhikevich
+
+                model = Izhikevich()
+            else:
+                from livn.models.rcsd import ReducedCalciumSomaDendrite
+
+                model = ReducedCalciumSomaDendrite()
+
+        return model
+
+    def default_params(self) -> dict | None:
+        return self.load_file("params.json", None)
+
+    def load_file(
+        self,
+        filepath: str | list[str],
+        default: Any = sentinel,
+        **kwargs,
+    ):
+        if isinstance(filepath, str):
+            filepath = [filepath]
+        return load_file(
+            [self._graph.local_directory()] + list(filepath), default, **kwargs
+        )
 
     @property
     def bounding_box(self) -> types.Float[types.Array, "2 xyz=3"]:
