@@ -131,9 +131,9 @@ class ReducedCalciumSomaDendrite(Model):
 
     def neuron_synapse_mechanisms(self):
         return {
-            "AMPA": "LinExp2Syn",
-            "NMDA": "LinExp2SynNMDA",
-            "GABA_A": "LinExp2Syn",
+            "AMPA": "StdpLinExp2Syn",
+            "NMDA": "StdpLinExp2SynNMDA",
+            "GABA_A": "StdpLinExp2SynInh",
             "GABA_B": "LinExp2Syn",
         }
 
@@ -165,6 +165,96 @@ class ReducedCalciumSomaDendrite(Model):
                 "netcon_params": {"weight": 0, "g_unit": 1},
                 "netcon_state": {},
             },
+            "StdpLinExp2Syn": {
+                "mech_file": "stdp_lin_exp2syn.mod",
+                "mech_params": ["tau_rise", "tau_decay", "e"],
+                "netcon_params": {
+                    "weight": 0,
+                    "g_unit": 1,
+                    "w_plastic": 2,
+                    "last_int": 3,
+                },
+                "netcon_state": {},
+            },
+            "StdpLinExp2SynNMDA": {
+                "mech_file": "stdp_lin_exp2synNMDA.mod",
+                "mech_params": [
+                    "tau_rise",
+                    "tau_decay",
+                    "e",
+                    "mg",
+                    "Kd",
+                    "gamma",
+                    "vshift",
+                ],
+                "netcon_params": {
+                    "weight": 0,
+                    "g_unit": 1,
+                    "w_plastic": 2,
+                    "last_int": 3,
+                },
+                "netcon_state": {},
+            },
+            "StdpLinExp2SynInh": {
+                "mech_file": "stdp_lin_exp2syn_inh.mod",
+                "mech_params": ["tau_rise", "tau_decay", "e"],
+                "netcon_params": {
+                    "weight": 0,
+                    "g_unit": 1,
+                    "w_plastic": 2,
+                    "last_int": 3,
+                },
+                "netcon_state": {},
+            },
+        }
+
+    def neuron_plasticity_defaults(self):
+        """Default plasticity parameters by population
+
+        Returns a nested dict ``{population_name: {param: value}}`` that will be applied
+        to matching point processes when ``enable_plasticity()`` is called.
+
+        Populations are mapped to mechanism types via ``neuron_plasticity_mechanism_groups()``
+
+        Default values are taken from the Sigma3Exp2Syn mechanisms in neuronpp
+        (https://github.com/ziemowit-s/neuronpp).
+        """
+        return {
+            "EXC": {
+                "A_ltp": 1.0,
+                "A_ltd": 1.0,
+                "theta_ltp": -45.0,
+                "theta_ltd": -60.0,
+                "ltp_sigmoid_half": -40.0,
+                "ltd_sigmoid_half": -55.0,
+                "learning_slope": 1.3,
+                "learning_tau": 20.0,
+                "w_max": 5.0,
+                "w_min": 0.0001,
+            },
+            "INH": {
+                "A_ltp": 1.0,
+                "A_ltd": 1.0,
+                "theta_ltp": -77.0,
+                "theta_ltd": -70.0,
+                "ltp_sigmoid_half": -80.0,
+                "ltd_sigmoid_half": -73.0,
+                "learning_slope": 1.2,
+                "learning_tau": 20.0,
+                "w_max": 5.0,
+                "w_min": 0.0001,
+            },
+        }
+
+    def neuron_plasticity_mechanism_groups(self):
+        """Maps population/group names to sets of STDP mechanism class names.
+
+        Used by ``enable_plasticity()`` to decide which parameter config
+        to apply to each point process based on its mechanism type.
+        """
+        return {
+            "EXC": {"StdpLinExp2Syn", "StdpLinExp2SynNMDA"},
+            "INH": {"StdpLinExp2SynInh"},
         }
 
     def neuron_noise_mechanism(self, section):
@@ -186,6 +276,8 @@ class ReducedCalciumSomaDendrite(Model):
         E_e=0,
         E_i=-75,
     ):
+        import math
+
         sec_name = mechanism.get_segment().sec.name()
         is_soma = "soma" in sec_name
 
@@ -208,6 +300,30 @@ class ReducedCalciumSomaDendrite(Model):
             mechanism.g_i0 = 0
 
         mechanism.on = 1 if (mechanism.std_e > 0 or mechanism.std_i > 0) else 0
+
+        # recompute INITIAL variables manually to ensure changes propagate mid-simulation
+        h_val = mechanism.h
+        if mechanism.tau_e > 0:
+            mechanism.D_e = 2 * mechanism.std_e**2 / mechanism.tau_e
+            mechanism.exp_e = math.exp(-h_val / mechanism.tau_e)
+            mechanism.amp_e = mechanism.std_e * math.sqrt(
+                max(0.0, 1.0 - math.exp(-2 * h_val / mechanism.tau_e))
+            )
+        else:
+            mechanism.D_e = 0.0
+            mechanism.exp_e = 0.0
+            mechanism.amp_e = 0.0
+
+        if mechanism.tau_i > 0:
+            mechanism.D_i = 2 * mechanism.std_i**2 / mechanism.tau_i
+            mechanism.exp_i = math.exp(-h_val / mechanism.tau_i)
+            mechanism.amp_i = mechanism.std_i * math.sqrt(
+                max(0.0, 1.0 - math.exp(-2 * h_val / mechanism.tau_i))
+            )
+        else:
+            mechanism.D_i = 0.0
+            mechanism.exp_i = 0.0
+            mechanism.amp_i = 0.0
 
     def neuron_default_noise(self, system: str):
         return {

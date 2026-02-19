@@ -154,6 +154,30 @@ class Env(Protocol):
         ...
         return self
 
+    def enable_plasticity(self, config: dict | None = None) -> Self:
+        """Enable plasticity"""
+        ...
+        return self
+
+    def disable_plasticity(self) -> Self:
+        """Freeze synaptic weights"""
+        ...
+        return self
+
+    def get_weights(self) -> dict:
+        """Return current synaptic weights of all plastic synapses"""
+        ...
+
+    def normalize_weights(self, target: float | None = None) -> Self:
+        """Normalize incoming excitatory weights per neuron"""
+        ...
+        return self
+
+    def record_weights(self, dt: float = 0.1) -> Self:
+        """Enable recording of weight evolution for plastic synapses"""
+        ...
+        return self
+
     def set_params(self, params: dict) -> Self:
         """Set parameters"""
         weights = {}

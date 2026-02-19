@@ -36,13 +36,14 @@ export default defineConfig({
                 {
                     text: "Concepts",
                     items: [
-                        { text: "Simulation environment", link: "/guide/concepts/env" },
+                        { text: "Environment", link: "/guide/concepts/env" },
                         { text: "Systems", link: "/guide/concepts/system" },
                         { text: "Models", link: "/guide/concepts/model" },
                         { text: "IO", link: "/guide/concepts/io" },
                         { text: "Decoding", link: "/guide/concepts/decoding" },
                         { text: "Stimulus", link: "/guide/concepts/stimulus" },
                         { text: "Encoding", link: "/guide/concepts/encoding" },
+                        { text: "Plasticity", link: "/guide/concepts/plasticity" },
                     ],
                 },
                 {

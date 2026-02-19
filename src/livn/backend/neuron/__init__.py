@@ -3,7 +3,7 @@ import logging
 import math
 import time
 from collections import defaultdict
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Union, Self
 
 import numpy as np
 from machinable.config import to_dict
@@ -142,6 +142,15 @@ class Env(EnvProtocol):
         self.i_recs = {}
         self.i_recs_dt = {}
         self.i_area = {}  # membrane surface area (cm^2) for absolute current conversion
+
+        # Synaptic weight recordings (STDP)
+        self.w_recs = {}  # (gid, syn_id, mech_name) -> h.Vector
+        self.w_recs_dt = {}  # population -> dt
+        self._plasticity_enabled = False
+        self._weight_rec_dt = 0.1  # default recording dt
+        self._weight_nc_refs = {}  # (gid, syn_id, mech_name) -> NetCon
+        self._weight_recording_active = False
+        self._w_rec_times = None  # h.Vector of timestamps
 
         self.t = 0
         self._dt: float | None = None
@@ -569,7 +578,16 @@ class Env(EnvProtocol):
             logger.info(f"*** Simulating {duration} ms (target t={target_time:.2f} ms)")
 
         q = time.time()
-        self.pc.psolve(target_time)
+        if self._weight_recording_active and self._weight_nc_refs:
+            w_dt = self._weight_rec_dt
+            while h.t < target_time - w_dt / 2:
+                next_t = min(h.t + w_dt, target_time)
+                self.pc.psolve(next_t)
+                self._sample_weights()
+            if h.t < target_time - 1e-6:
+                self.pc.psolve(target_time)
+        else:
+            self.pc.psolve(target_time)
         self.psolvetime = time.time() - q
 
         self.t = target_time
@@ -686,9 +704,14 @@ class Env(EnvProtocol):
             v_rec.resize(0)
         for i_rec in self.i_recs.values():
             i_rec.resize(0)
+        # w_recs need to accumulate across consecutive run() calls so they are only freed in clear()
 
     def clear(self):
         self._free()
+        for w_rec in self.w_recs.values():
+            w_rec.resize(0)
+        if self._w_rec_times is not None:
+            self._w_rec_times.resize(0)
         self.t = 0
         self._dt = None
         self._stimulus_step_index = 0
@@ -734,6 +757,189 @@ class Env(EnvProtocol):
                     h.pop_section()
 
         return self
+
+    def _iter_stdp_point_processes(self):  # -> (gid, syn_id, mech_name, point_process)
+        """Iterates over all StdpLinExp2Syn/StdpLinExp2SynNMDA point processes"""
+        if self.synapse_manager is None:
+            return
+
+        for gid, syn_dict in self.synapse_manager.pps_dict.items():
+            for syn_id, pps in syn_dict.items():
+                for mech_key, pp in pps.mech.items():
+                    if pp is not None and hasattr(pp, "plasticity_on"):
+                        try:
+                            name = pp.hname().split("[")[0]
+                        except Exception:
+                            name = str(mech_key)
+                        yield gid, syn_id, name, pp
+
+    def _iter_stdp_connections(
+        self,
+    ):  # ->  (gid, syn_id, mech_name, point_process, netcon)
+        """Iterates over every STDP connection in the network"""
+        if self.synapse_manager is None:
+            return
+        for gid, syn_dict in self.synapse_manager.pps_dict.items():
+            for syn_id, pps in syn_dict.items():
+                for mech_key, pp in pps.mech.items():
+                    if pp is not None and hasattr(pp, "plasticity_on"):
+                        nc = pps.netcon.get(mech_key)
+                        if nc is not None:
+                            try:
+                                name = pp.hname().split("[")[0]
+                            except Exception:
+                                name = str(mech_key)
+                            yield gid, syn_id, name, pp, nc
+
+    def enable_plasticity(self, config=None) -> Self:
+        """Enable spike-timing dependent plasticity on synapses
+
+        Parameters
+        ----------
+        config : dict, optional
+            Either a flat ``{param: value}`` dict applied to all synapses, 
+            or a nested ``{population_name: {param: value}}`` dict where 
+            each group targets specific mechanism types defined by
+            ``model.neuron_plasticity_mechanism_groups()``
+
+            When None, uses ``neuron_plasticity_defaults()``
+        """
+        if config is None:
+            if hasattr(self.model, "neuron_plasticity_defaults"):
+                config = self.model.neuron_plasticity_defaults()
+            else:
+                config = {}
+
+        per_population = config and isinstance(next(iter(config.values())), dict)
+
+        mech_to_group = {}
+        if per_population and hasattr(self.model, "neuron_plasticity_mechanism_groups"):
+            for group, mechs in self.model.neuron_plasticity_mechanism_groups().items():
+                for m in mechs:
+                    mech_to_group[m] = group
+
+        count = 0
+        for gid, syn_id, mech_name, pp in self._iter_stdp_point_processes():
+            if per_population:
+                group = mech_to_group.get(mech_name)
+                group_config = config.get(group, {}) if group else {}
+            else:
+                group_config = config
+
+            for param, value in group_config.items():
+                if hasattr(pp, param):
+                    setattr(pp, param, value)
+            pp.plasticity_on = 1
+            count += 1
+
+        self._plasticity_enabled = True
+
+        if self.rank == 0:
+            logger.info(f"*** Enabled STDP on {count} synapses")
+
+        return self
+
+    def disable_plasticity(self):
+        """Disable STDP on synapses / freeze weights"""
+        for gid, syn_id, mech_name, pp in self._iter_stdp_point_processes():
+            pp.plasticity_on = 0
+
+        self._plasticity_enabled = False
+
+        if self.rank == 0:
+            logger.info("*** Disabled STDP (weights frozen)")
+
+        return self
+
+    def get_weights(self) -> dict[tuple, float]:  # gid, syn_id, mech_name -> weight
+        """Returns current synaptic weights of all plastic synapses"""
+        weights = {}
+        for gid, syn_id, mech_name, pp, nc in self._iter_stdp_connections():
+            weights[(int(gid), int(syn_id), mech_name)] = float(nc.weight[2])
+        return weights
+
+    def normalize_weights(self, target: float | None = None) -> Self:
+        """Synaptic scaling to normalize incoming weights per neuron (Turrigiano, 2008)
+
+        Parameters
+        ----------
+        target : float, optional
+            Desired sum of incoming weights for each neuron. When ``None``, the target
+            is set to the number of incoming STDP connections for that neuron 
+            (i.e. the sum that would result if every weight were 1.0)
+        """
+        per_neuron: dict[int, list] = defaultdict(list)  # (nc, w_min, w_max)
+        for gid, syn_id, mech_name, pp, nc in self._iter_stdp_connections():
+            per_neuron[int(gid)].append((nc, float(pp.w_min), float(pp.w_max)))
+
+        scaled_neurons = 0
+        for gid, conns in per_neuron.items():
+            t = target if target is not None else float(len(conns))
+
+            # Iterative normalization where clamped weights are fixed,
+            # and the remaining budget is redistributed among free
+            free = list(conns)
+            clamped_sum = 0.0
+            for _ in range(20):  # should converge quickly
+                free_sum = sum(nc.weight[2] for nc, _, _ in free)
+                remaining = t - clamped_sum
+                if free_sum <= 0 or abs(free_sum - remaining) < 1e-12:
+                    break
+                scale = remaining / free_sum
+                next_free = []
+                for nc, w_min, w_max in free:
+                    new_w = nc.weight[2] * scale
+                    if new_w >= w_max:
+                        nc.weight[2] = w_max
+                        clamped_sum += w_max
+                    elif new_w <= w_min:
+                        nc.weight[2] = w_min
+                        clamped_sum += w_min
+                    else:
+                        nc.weight[2] = new_w
+                        next_free.append((nc, w_min, w_max))
+                if len(next_free) == len(free):
+                    break
+                free = next_free
+            scaled_neurons += 1
+
+        if self.rank == 0:
+            logger.info(
+                f"*** Synaptic scaling applied to {scaled_neurons} neurons "
+                f"({sum(len(v) for v in per_neuron.values())} connections)"
+            )
+
+        return self
+
+    def record_weights(self, dt: float = 0.1) -> Self:
+        """Record weight evolution of all plastic connections."""
+        self._weight_rec_dt = dt
+        self._weight_nc_refs = {}
+
+        for gid, syn_id, mech_name, pp, nc in self._iter_stdp_connections():
+            key = (int(gid), int(syn_id), mech_name)
+            self._weight_nc_refs[key] = nc
+            if key not in self.w_recs:
+                self.w_recs[key] = h.Vector()
+
+        if self._w_rec_times is None:
+            self._w_rec_times = h.Vector()
+
+        self._weight_recording_active = True
+
+        if self.rank == 0:
+            logger.info(
+                f"*** Recording weights for {len(self._weight_nc_refs)} STDP connections (dt={dt} ms)"
+            )
+
+        return self
+
+    def _sample_weights(self):
+        t = float(h.t)
+        if self._w_rec_times is not None:
+            self._w_rec_times.append(t)
+        for key, nc in self._weight_nc_refs.items():
+            self.w_recs[key].append(float(nc.weight[2]))
 
     def _record_voltage(self, population: str, dt: float) -> "Env":
         if population not in self.cells:
