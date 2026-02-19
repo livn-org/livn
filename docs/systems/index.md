@@ -102,8 +102,10 @@ Under the hood, the CLI is powered by [machinable](https://machinable.org), a fr
 
 ## What's next
 
+- [Download datasets](/systems/datasets) - download datasets of the standard systems
+
 If the predefined systems don't match your experimental setup, you can:
 
-- [Generate systems](/guide/systems/generate) - generate cultures with custom populations and connectivity
-- [Tune systems](/guide/systems/tuning) - optimize synaptic parameters for target dynamics
-- [Generate datasets](/guide/systems/sampling) - produce simulation datasets at scale
+- [Generate systems](/systems/generate) - generate cultures with custom populations and connectivity
+- [Tune systems](/systems/tuning) - optimize synaptic parameters for target dynamics
+- [Generate datasets](/systems/sampling) - produce simulation datasets at scale

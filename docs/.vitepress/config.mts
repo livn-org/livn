@@ -18,9 +18,10 @@ export default defineConfig({
 
     themeConfig: {
         nav: [
-            { text: "Guide", link: "/guide/getting-started" },
-            { text: "Examples", link: "/examples/" },
             { text: "Installation", link: "/installation/" },
+            { text: "Guide", link: "/guide/getting-started" },
+            { text: "Systems", link: "/systems/" },
+            { text: "Examples", link: "/examples/" },
         ],
 
         sidebar: {
@@ -30,8 +31,7 @@ export default defineConfig({
                     items: [
                         { text: "Getting Started", link: "/guide/getting-started" },
                         { text: "Backends", link: "/guide/backends" },
-                        { text: "Datasets", link: "/guide/datasets" },
-                    ],
+                    ]
                 },
                 {
                     text: "Concepts",
@@ -43,16 +43,24 @@ export default defineConfig({
                         { text: "Decoding", link: "/guide/concepts/decoding" },
                         { text: "Stimulus", link: "/guide/concepts/stimulus" },
                         { text: "Encoding", link: "/guide/concepts/encoding" },
-                        { text: "Plasticity", link: "/guide/concepts/plasticity" },
                     ],
                 },
                 {
+                    text: "Advanced",
+                    items: [
+                        { text: "Plasticity", link: "/guide/plasticity" },
+                    ],
+                },
+            ],
+            "/systems/": [
+                {
                     text: "Systems",
                     items: [
-                        { text: "Standard systems", link: "/guide/systems/" },
-                        { text: "Generating systems", link: "/guide/systems/generate" },
-                        { text: "Tuning systems", link: "/guide/systems/tuning" },
-                        { text: "Generating datasets", link: "/guide/systems/sampling" },
+                        { text: "livn systems", link: "/systems/" },
+                        { text: "Datasets", link: "/systems/datasets" },
+                        { text: "Generating systems", link: "/systems/generate" },
+                        { text: "Tuning systems", link: "/systems/tuning" },
+                        { text: "Generating datasets", link: "/systems/sampling" },
                     ],
                 },
             ],
@@ -70,6 +78,10 @@ export default defineConfig({
                         {
                             text: "Reinforcement Learning",
                             link: "/examples/reinforcement-learning",
+                        },
+                        {
+                            text: "STDP Training",
+                            link: "/examples/stdp-training",
                         },
                     ],
                 },
