@@ -46,4 +46,4 @@ See the [Using the Dataset](/examples/dataset) example for a complete walkthroug
 
 ## Generating your own datasets
 
-For advanced users who want to generate datasets with custom systems, models, or stimulation protocols, see the [Generating Datasets](/guide/systems/sampling) guide.
+For advanced users who want to generate datasets with custom systems, models, or stimulation protocols, see the [Generating Datasets](/systems/sampling) guide.

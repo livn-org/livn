@@ -1,6 +1,6 @@
 # Tuning Systems
 
-After [generating](/guide/systems/generate) a system, the synaptic weights and noise parameters need to be tuned so that the network produces biologically realistic dynamics. livn provides a surrogate-assisted optimization pipeline that automatically searches for parameters that match target neural activity metrics.
+After [generating](/systems/generate) a system, the synaptic weights and noise parameters need to be tuned so that the network produces biologically realistic dynamics. livn provides a surrogate-assisted optimization pipeline that automatically searches for parameters that match target neural activity metrics.
 
 ::: tip Prerequisites
 This section requires the `systems/` subpackage and its dependencies (`uv sync --package systems`). Familiarity with [Models](/guide/concepts/model) (especially synaptic weights and noise parameters) is assumed.

@@ -1,6 +1,6 @@
 # Generating Datasets
 
-Once you have a [generated](/guide/systems/generate) and [tuned](/guide/systems/tuning) system, you can produce datasets of simulation recordings at scale. These datasets capture the stimulus-response dynamics of your system and can serve as training data for machine learning models.
+Once you have a [generated](/systems/generate) and [tuned](/systems/tuning) system, you can produce datasets of simulation recordings at scale. These datasets capture the stimulus-response dynamics of your system and can serve as training data for machine learning models.
 
 ::: tip Prerequisites
 This section requires the `systems/` subpackage and its dependencies (`uv sync --package systems`). Familiarity with [Encoding](/guide/concepts/encoding), [Decoding](/guide/concepts/decoding), and [Stimulus](/guide/concepts/stimulus) is assumed.
@@ -187,4 +187,4 @@ See the [Reinforcement Learning](/examples/reinforcement-learning) example for d
 
 ## Predefined datasets
 
-livn publishes datasets for all standard systems on [Hugging Face](https://huggingface.co/datasets/livn-org/livn). See [Datasets](/guide/datasets) for the full listing.
+livn publishes datasets for all standard systems on [Hugging Face](https://huggingface.co/datasets/livn-org/livn). See [Datasets](/systems/datasets) for the full listing.

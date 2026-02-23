@@ -25,7 +25,7 @@ Each EI system is a 2D flat culture generated with distance-dependent Gaussian c
 - **Inhibitory (INH)** neurons make up the remaining 20%
 - Connection probability decays with distance (sigma = 200 µm)
 
-See [Generating 2D systems](/guide/systems/generate) for how to create custom 2D cultures.
+See [Generating 2D systems](/systems/generate) for how to create custom 2D cultures.
 
 ### Tuned parameters
 
@@ -34,7 +34,7 @@ The synaptic parameters can be tuned (via surrogate-assisted optimization) to pr
 - Stimulated mean firing rates around **12 Hz**
 - Branching ratio near **1.0** (critical dynamics)
 
-See [Tuning](/guide/systems/tuning) for details.
+See [Tuning](/systems/tuning) for details.
 
 ```python
 from livn import make

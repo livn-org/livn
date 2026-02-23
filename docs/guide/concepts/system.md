@@ -117,4 +117,4 @@ These are used automatically by `livn.make()`.
 
 ## Custom systems
 
-For generating your own systems - including 2D flat cultures and 3D morphological networks - see the [Systems](/guide/systems/) guide.
+For generating your own systems - including 2D flat cultures and 3D morphological networks - see the [Systems](/systems/) guide.

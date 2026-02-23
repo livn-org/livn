@@ -64,7 +64,7 @@ for (gid, syn_id, mech), w in list(weights.items())[:5]:
     print(f"  gid={gid} syn={syn_id} ({mech}): w={w:.4f}")
 ```
 
-For a complete training example with plotting, see the [STDP Training example](../../examples/stdp-training.md).
+For a complete training example with plotting, see the [STDP Training example](../examples/stdp-training.md).
 
 ## Tuning tips
 

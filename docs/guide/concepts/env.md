@@ -122,7 +122,7 @@ This is equivalent to:
 2. `env.run(duration, stimulus)` → raw recordings
 3. `decoding(env, *recordings)` → processed output
 
-This pattern is used extensively in [dataset generation](/guide/systems/sampling) and the Gymnasium RL integration.
+This pattern is used extensively in [dataset generation](/systems/sampling) and the Gymnasium RL integration.
 
 ## Configuration
 
