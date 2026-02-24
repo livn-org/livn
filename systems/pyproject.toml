@@ -16,6 +16,7 @@ dependencies = [
     "omegaconf==2.4.0.dev3",
     "livn",
     "pandas>=2.3.1",
+    "keras==3.13.0",
 ]
 
 [tool.uv.sources]

@@ -1,6 +1,7 @@
 import gc
 import logging
 import math
+import os
 import time
 from collections import defaultdict
 from typing import TYPE_CHECKING, Union, Self
@@ -40,7 +41,10 @@ if hasattr(h, "nrnmpi_init"):
 
 logger = logging.getLogger(__name__)
 
-logging.basicConfig(level=logging.INFO)
+logger.setLevel(os.getenv("LIVN_NEURON_LOGGING", "WARNING"))
+logging.getLogger("miv_simulator").setLevel(
+    os.getenv("LIVN_MIV_SIMULATOR_LOGGING", "WARNING")
+)
 
 
 class Env(EnvProtocol):

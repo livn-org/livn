@@ -52,6 +52,7 @@ members = ["systems", "benchmarks", 'visualization']
 
 [tool.uv.sources]
 pytest-mpiexec = { git = "https://github.com/frthjf/pytest-mpiexec.git" }
+distwq = { git = "https://github.com/frthjf/distwq.git" }
 
 [tool.hatch.metadata]
 allow-direct-references = true

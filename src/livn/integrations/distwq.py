@@ -1,9 +1,10 @@
 import os
-from typing import Optional, Self, Tuple
+import logging
+from typing import Optional, Self
 
 import distwq
-
 from mpi4py import MPI
+
 from livn.env import Env
 from livn.types import Env as EnvProtocol, Model, Float, Array, Int
 from livn.io import IO
@@ -16,7 +17,9 @@ def envcall(decoding, inputs, encoding, kwargs):
     if kwargs is None:
         kwargs = {}
 
-    return state["env"](decoding, inputs, encoding, **kwargs)
+    result = state["env"](decoding, inputs, encoding, **kwargs)
+    state["env"].clear()
+    return result
 
 
 def env_config_call(method_name, args):
@@ -60,8 +63,6 @@ def controller_init(controller, distributed_env):
 
     distributed_env.controller = controller
 
-    controller.info()
-
 
 class DistributedEnv(EnvProtocol):
     def __init__(
@@ -74,6 +75,7 @@ class DistributedEnv(EnvProtocol):
         subworld_size: int | None = None,
     ):
         self.controller = None
+        self._result_buffer: dict[int, object] = {}
 
         if not isinstance(system, str):
             raise ValueError(
@@ -94,7 +96,10 @@ class DistributedEnv(EnvProtocol):
         # MPI boot so that user can __call__ from controller
         args = (self,)
 
-        verbose = True
+        logging.getLogger("distwq").setLevel(
+            os.getenv("LIVN_DISTWQ_LOGGING", "WARNING")
+        )
+        verbose = False
         if distwq.is_controller:
             distwq.run(
                 fun_name="controller_init",
@@ -144,6 +149,14 @@ class DistributedEnv(EnvProtocol):
         self._broadcast_to_workers("set_noise", (noise,))
         return self
 
+    def enable_plasticity(self, config: dict | None = None) -> Self:
+        self._broadcast_to_workers("enable_plasticity", (config,))
+        return self
+
+    def disable_plasticity(self) -> Self:
+        self._broadcast_to_workers("disable_plasticity", ())
+        return self
+
     def record_spikes(self, population: str | list | tuple | None = None) -> Self:
         self._broadcast_to_workers("record_spikes", (population,))
         return self
@@ -183,7 +196,7 @@ class DistributedEnv(EnvProtocol):
         stimulus: Optional["Stimulus"] = None,
         dt: float = 0.025,
         **kwargs,
-    ) -> Tuple[
+    ) -> tuple[
         Int[Array, "n_spiking_neuron_ids"] | None,
         Float[Array, "n_spiking_neuron_times"] | None,
         Int[Array, "n_voltage_neuron_ids"] | None,
@@ -218,8 +231,8 @@ class DistributedEnv(EnvProtocol):
 
         return recordings
 
-    def submit_call(self, decoding, inputs=None, encoding=None, **kwargs):
-        self.controller.submit_call(
+    def submit_call(self, decoding, inputs=None, encoding=None, **kwargs) -> int:
+        return self.controller.submit_call(
             "envcall",
             (decoding, inputs, encoding, kwargs),
             module_name="livn.integrations.distwq",
@@ -229,6 +242,20 @@ class DistributedEnv(EnvProtocol):
         call_id, response = self.controller.get_next_result()
 
         return response
+
+    def probe_response(self, task_id: int):
+        if self.controller is None:
+            return None
+
+        if task_id not in self._result_buffer:
+            for tid, result in self.controller.probe_all_next_results():
+                self._result_buffer[tid] = result
+
+        if task_id not in self._result_buffer:
+            return None
+
+        raw = self._result_buffer.pop(task_id)
+        return raw[0] if len(raw) == 1 else raw
 
     def potential_recording(
         self, membrane_currents: Float[Array, "timestep n_neurons"] | None
