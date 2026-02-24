@@ -118,6 +118,58 @@ class Stimulus:
         )
 
     @classmethod
+    def monophasic_pulse(
+        cls,
+        n_channels: int,
+        channels: list[int] | np.ndarray,
+        amplitude: float | list[float] | np.ndarray = 1.5,
+        pulse_width: float = 1.0,
+        pulse_times: list[float] | None = None,
+        dt: float = 1.0,
+    ) -> "Stimulus":
+        """Generate a periodic rectangular pulse train for MEA stimulation
+
+        Args:
+            n_channels: Total number of MEA channels (io.num_channels)
+            channels: Indices of channels to stimulate
+            amplitude: Current amplitude in uA. Scalar applies to all channels;
+                array of length len(channels) sets a per-channel amplitude
+            pulse_width: Duration of each rectangular pulse
+            pulse_times: Onset times for each pulse (default None = [0.0])
+            dt: Timestep
+        """
+        if pulse_times is None:
+            pulse_times = [0.0]
+
+        channels = np.asarray(channels)
+        pulse_times = np.asarray(pulse_times, dtype=float)
+        amplitudes = np.broadcast_to(np.asarray(amplitude, dtype=np.float32), channels.shape).copy()
+
+        total_duration = pulse_times[-1] + pulse_width
+        n_steps = int(np.ceil(total_duration / dt))
+        inputs = np.zeros((n_steps, n_channels), dtype=np.float32)
+
+        pulse_steps = int(pulse_width / dt)
+
+        for pulse_onset in pulse_times:
+            onset_step = int(pulse_onset / dt)
+            pulse_end = min(onset_step + pulse_steps, n_steps)
+            for ch, amp in zip(channels, amplitudes):
+                if amp > 0.0:
+                    inputs[onset_step:pulse_end, ch] = amp
+
+        return cls(
+            array=inputs,
+            dt=dt,
+            # metadata
+            kind="monophasic_pulse",
+            pulse_times=pulse_times.tolist(),
+            pulse_width=pulse_width,
+            amplitude=amplitudes.tolist(),
+            channels=channels.tolist(),
+        )
+
+    @classmethod
     def from_conductance(
         cls,
         conductance: Float[Array, "timestep n_gids"],

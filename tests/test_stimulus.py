@@ -222,3 +222,123 @@ class TestBiphasicPulse:
         gap_end = int((0.2 + 0.1) / 0.05)
         gap_values = arr[gap_start:gap_end, 0]
         assert np.all(gap_values == 0)
+
+
+class TestMonophasicPulse:
+    def test_single_pulse_defaults(self):
+        stim = Stimulus.monophasic_pulse(n_channels=64, channels=[0])
+
+        assert stim.array is not None
+        assert stim.array.shape[1] == 64
+        assert stim.dt == 1.0
+        assert stim.meta_data["kind"] == "monophasic_pulse"
+        assert stim.meta_data["pulse_times"] == [0.0]
+        assert stim.meta_data["pulse_width"] == 1.0
+        assert stim.meta_data["channels"] == [0]
+
+    def test_single_pulse_duration(self):
+        stim = Stimulus.monophasic_pulse(
+            n_channels=4,
+            channels=[0],
+            pulse_width=10.0,
+            dt=1.0,
+        )
+        assert stim.duration == pytest.approx(10.0)
+
+    def test_pulse_waveform_shape(self):
+        stim = Stimulus.monophasic_pulse(
+            n_channels=4,
+            channels=[0],
+            amplitude=2.0,
+            pulse_width=5.0,
+            pulse_times=[0.0],
+            dt=1.0,
+        )
+        arr = stim.array
+        assert np.all(arr[0:5, 0] == pytest.approx(2.0))
+        assert np.all(arr[:, 1:] == 0)
+
+    def test_pulse_train_multiple_times(self):
+        stim = Stimulus.monophasic_pulse(
+            n_channels=4,
+            channels=[0],
+            amplitude=1.0,
+            pulse_width=5.0,
+            pulse_times=[0.0, 25.0, 50.0],
+            dt=1.0,
+        )
+        assert len(stim.meta_data["pulse_times"]) == 3
+        assert stim.duration == pytest.approx(55.0)
+        arr = stim.array
+        for onset in [0, 25, 50]:
+            assert np.all(arr[onset : onset + 5, 0] == pytest.approx(1.0))
+        # gaps between pulses should be zero
+        assert np.all(arr[5:25, 0] == 0)
+
+    def test_multiple_channels_scalar_amplitude(self):
+        stim = Stimulus.monophasic_pulse(
+            n_channels=64,
+            channels=[0, 1, 2, 3],
+            amplitude=1.5,
+        )
+        arr = stim.array
+        for c in range(4):
+            assert np.any(arr[:, c] != 0)
+        assert np.all(arr[:, 4] == 0)
+        assert np.all(arr[:, 63] == 0)
+
+    def test_per_channel_amplitude(self):
+        stim = Stimulus.monophasic_pulse(
+            n_channels=4,
+            channels=[0, 1, 2],
+            amplitude=[1.0, 2.0, 3.0],
+            pulse_width=5.0,
+            dt=1.0,
+        )
+        arr = stim.array
+        assert arr[0, 0] == pytest.approx(1.0)
+        assert arr[0, 1] == pytest.approx(2.0)
+        assert arr[0, 2] == pytest.approx(3.0)
+        assert stim.meta_data["amplitude"] == pytest.approx([1.0, 2.0, 3.0])
+
+    def test_zero_amplitude_channel_suppressed(self):
+        stim = Stimulus.monophasic_pulse(
+            n_channels=4,
+            channels=[0, 1],
+            amplitude=[1.0, 0.0],
+            pulse_width=5.0,
+            dt=1.0,
+        )
+        arr = stim.array
+        assert np.any(arr[:, 0] != 0)
+        assert np.all(arr[:, 1] == 0)
+
+    def test_numpy_array_channels(self):
+        channels = np.array([2, 5])
+        stim = Stimulus.monophasic_pulse(n_channels=16, channels=channels)
+        assert stim.meta_data["channels"] == [2, 5]
+        assert np.any(stim.array[:, 2] != 0)
+        assert np.any(stim.array[:, 5] != 0)
+        assert np.all(stim.array[:, 0] == 0)
+
+    def test_custom_dt(self):
+        stim = Stimulus.monophasic_pulse(
+            n_channels=4,
+            channels=[0],
+            pulse_width=0.2,
+            dt=0.05,
+        )
+        assert stim.dt == 0.05
+        # 0.2 ms / 0.05 ms = 4
+        assert np.sum(stim.array[:, 0] != 0) == 4
+
+    def test_unstimulated_channels_zero(self):
+        stim = Stimulus.monophasic_pulse(
+            n_channels=16,
+            channels=[3],
+            amplitude=2.0,
+        )
+        arr = stim.array
+        for c in range(16):
+            if c != 3:
+                assert np.all(arr[:, c] == 0)
