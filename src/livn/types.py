@@ -320,6 +320,15 @@ class Env(Protocol):
         )
         return self.io.potential_recording(distances, membrane_currents)
 
+    def clear_recordings(self) -> Self:
+        """Clear recording buffers
+
+        Note: This preserves simulation state for continued run(); for a full reset use clear()
+        """
+        ...
+
+        return self
+
     def clear(self) -> Self:
         """Discard the simulation and reset to t=0"""
         ...

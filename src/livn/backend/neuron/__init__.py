@@ -561,7 +561,7 @@ class Env(EnvProtocol):
 
         self.t_rec.record(h._ref_t)
 
-        self._free()
+        self.clear_recordings()
 
         if first_run:
             h.v_init = -75.0
@@ -700,7 +700,7 @@ class Env(EnvProtocol):
         if self._dt is not None:
             self._stimulus_step_index += 1
 
-    def _free(self):
+    def clear_recordings(self) -> Self:
         self.t_vec.resize(0)
         self.id_vec.resize(0)
         self.t_rec.resize(0)
@@ -710,8 +710,10 @@ class Env(EnvProtocol):
             i_rec.resize(0)
         # w_recs need to accumulate across consecutive run() calls so they are only freed in clear()
 
+        return self
+
     def clear(self):
-        self._free()
+        self.clear_recordings()
         for w_rec in self.w_recs.values():
             w_rec.resize(0)
         if self._w_rec_times is not None:

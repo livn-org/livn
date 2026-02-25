@@ -408,6 +408,10 @@ class Env(EnvProtocol):
 
         return concat(ii), concat(tt), concat(gids), concat(vv), all_gids, currents
 
+    def clear_recordings(self):
+        self.clear_monitors()
+        return self
+
     def clear(self):
         self.t = 0
         self.clear_monitors()

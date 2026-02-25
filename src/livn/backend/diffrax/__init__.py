@@ -167,6 +167,9 @@ class Env(EnvProtocol):
 
         return it, tt, iv, v, im, mp
 
+    def clear_recordings(self):
+        return self
+
     def clear(self):
         self.t = 0
         self.y0 = None
