@@ -18,7 +18,7 @@ def envcall(decoding, inputs, encoding, kwargs):
         kwargs = {}
 
     result = state["env"](decoding, inputs, encoding, **kwargs)
-    state["env"].clear()
+
     return result
 
 
@@ -136,6 +136,10 @@ class DistributedEnv(EnvProtocol):
 
         for _ in range(len(task_ids)):
             self.controller.get_next_result()
+
+    def clear_recordings(self) -> Self:
+        self._broadcast_to_workers("clear_recordings", ())
+        return self
 
     def apply_model_defaults(self, weights: bool = True, noise: bool = True) -> Self:
         self._broadcast_to_workers("apply_model_defaults", (weights, noise))
