@@ -153,9 +153,17 @@ class Pipe(Decoding):
                 return stage.reset(**kwargs)
         return None
 
-    def get_stage(self, stage_type: type):
+    def get_stage(self, stage_type: "type | str") -> Any | None:
+        """Return the first matching stage or None
+
+        Note: stage_type may be either a class object or a plain string name
+         but matching is done by class name rather than `isinstance` so that
+         the lookup is robust against the same module being imported under 
+         two different paths ('duck-typed override')
+        """
+        name = stage_type if isinstance(stage_type, str) else stage_type.__name__
         for s in self.stages:
-            if isinstance(s, stage_type):
+            if type(s).__name__ == name:
                 return s
         return None
 

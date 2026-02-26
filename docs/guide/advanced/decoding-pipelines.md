@@ -169,12 +169,16 @@ result = env(decoding)
 
 ## `get_stage`
 
-`Pipe.get_stage(stage_type)` returns the first stage matching a given type, or `None`. This is useful for post-hoc configuration:
+`Pipe.get_stage(stage_type)` returns the first stage whose class name matches `stage_type`, or `None`. The argument can be either a class or a plain string name but both match by class name rather than `isinstance`, so the lookup is robust when the same module is imported under two different paths to allow for 'duck-typed overrides'.
 
 ```python
+# Pass a class
 extractor = decoding.get_stage(SpikeCountExtractor)
 if extractor is not None:
     extractor.duration = 1000
+
+# Or pass a string name
+gym_step = decoding.get_stage("GymStep")
 ```
 
 ## Resetting state
