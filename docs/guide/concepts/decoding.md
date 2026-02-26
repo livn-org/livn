@@ -153,3 +153,7 @@ decoding = Pipe(
 ```
 
 Each stage receives the output of the previous stage, allowing you to build multi-step processing pipelines.
+
+::: tip Advanced usage
+For pipelines that need to share intermediate results between stages or carry state across multiple simulation steps, see [Decoding pipelines](/guide/advanced/decoding-pipelines).
+:::

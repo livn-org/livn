@@ -64,7 +64,7 @@ for (gid, syn_id, mech), w in list(weights.items())[:5]:
     print(f"  gid={gid} syn={syn_id} ({mech}): w={w:.4f}")
 ```
 
-For a complete training example with plotting, see the [STDP Training example](../examples/stdp-training.md).
+For a complete training example with plotting, see the [STDP Training example](../../examples/stdp-training.md).
 
 ## Tuning tips
 
@@ -76,7 +76,7 @@ For a complete training example with plotting, see the [STDP Training example](.
 - For homeostatic training, call `normalize_weights()` every 50–200 ms of simulation to prevent weight divergence
 - To freeze after learning, use `disable_plasticity()` once the network has settled, then run evaluation with fixed weights
 
-Learn more about [Tuning System](../systems/tuning.md).
+Learn more about [Tuning System](../../systems/tuning.md).
 
 ## Parameters
 

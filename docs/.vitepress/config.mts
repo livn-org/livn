@@ -48,7 +48,8 @@ export default defineConfig({
                 {
                     text: "Advanced",
                     items: [
-                        { text: "Plasticity", link: "/guide/plasticity" },
+                        { text: "Plasticity", link: "/guide/advanced/plasticity" },
+                        { text: "Decoding pipelines", link: "/guide/advanced/decoding-pipelines" },
                     ],
                 },
             ],

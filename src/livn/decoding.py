@@ -1,7 +1,7 @@
 from typing import Callable, Optional
 
 import numpy as np
-from pydantic import Field
+from pydantic import Field, PrivateAttr
 from scipy.signal import butter, filtfilt, welch
 from livn.types import Decoding
 from livn.utils import P
@@ -131,16 +131,49 @@ class GatherAndMerge(Decoding):
 class Pipe(Decoding):
     stages: list[Callable] = Field(default_factory=list)
 
+    _context: dict = PrivateAttr(default_factory=dict)  # cleared each __call__
+    _state: dict = PrivateAttr(default_factory=dict)  # persists across calls
+
+    @property
+    def context(self) -> dict:
+        return self._context
+
+    @property
+    def state(self) -> dict:
+        return self._state
+
     def setup(self, env):
         for stage in self.stages:
             if hasattr(stage, "setup"):
                 stage.setup(env)
 
+    def reset(self, **kwargs):
+        for stage in self.stages:
+            if hasattr(stage, "reset"):
+                return stage.reset(**kwargs)
+        return None
+
+    def get_stage(self, stage_type: type):
+        for s in self.stages:
+            if isinstance(s, stage_type):
+                return s
+        return None
+
+    def clear(self):
+        self._state.clear()
+
     def __call__(self, env, it, tt, iv, vv, im, mp):
+        self._context.clear()
         data = (it, tt, iv, vv, im, mp)
-        for i, stage in enumerate(self.stages):
-            data = stage(env, *data)
-        return data
+        for stage in self.stages:
+            result = stage(env, *data)
+            if result is None:
+                pass
+            elif isinstance(result, tuple):
+                data = result
+            else:
+                data = (result,)
+        return data[0] if len(data) == 1 else data
 
     def __repr__(self):
         stage_reprs = ", ".join(repr(s) for s in self.stages)
