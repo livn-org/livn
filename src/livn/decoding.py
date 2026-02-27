@@ -1,4 +1,4 @@
-from typing import Callable, Optional
+from typing import Callable, Optional, Any
 
 import numpy as np
 from pydantic import Field, PrivateAttr
@@ -158,7 +158,7 @@ class Pipe(Decoding):
 
         Note: stage_type may be either a class object or a plain string name
          but matching is done by class name rather than `isinstance` so that
-         the lookup is robust against the same module being imported under 
+         the lookup is robust against the same module being imported under
          two different paths ('duck-typed override')
         """
         name = stage_type if isinstance(stage_type, str) else stage_type.__name__

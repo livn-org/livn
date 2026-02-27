@@ -1,5 +1,6 @@
 import os
 import logging
+import time
 from typing import Optional, Self
 
 import distwq
@@ -11,6 +12,31 @@ from livn.io import IO
 from livn.utils import P
 
 state = {}
+
+
+class _ControllerSystem:
+    """System facade for the controller rank"""
+
+    _UNCACHED = frozenset({"neuron_coordinates", "gids"})
+
+    def __init__(self, uri: str):
+        from livn.system import System
+
+        object.__setattr__(self, "_inner", System(uri, comm=MPI.COMM_SELF))
+
+    def __getattr__(self, name):
+        # Guard against infinite recursion when pickle/copy probes for
+        # _inner before __init__ has run
+        if name == "_inner":
+            raise AttributeError(name)
+        result = getattr(self._inner, name)
+        # evict after access
+        if name in self._UNCACHED:
+            self._inner._neuron_coordinates = None
+        return result
+
+    def __repr__(self):
+        return f"_ControllerSystem({self._inner.uri!r})"
 
 
 def envcall(decoding, inputs, encoding, kwargs):
@@ -30,13 +56,13 @@ def env_config_call(method_name, args):
 
 
 def worker_init(worker, distributed_env):
-    if distributed_env.system is not None:
+    if distributed_env._system_uri is not None:
         worker_comm = getattr(worker, "merged_comm", worker.comm)
 
         env = Env(
-            distributed_env.system,
-            distributed_env.model,
-            distributed_env.io,
+            distributed_env._system_uri,
+            distributed_env._model_arg,
+            distributed_env._io_arg,
             distributed_env.seed,
             comm=worker_comm,
             subworld_size=distributed_env.subworld_size,
@@ -49,11 +75,13 @@ def worker_init(worker, distributed_env):
 
 
 def controller_init(controller, distributed_env):
-    if distributed_env.system is not None:
+    if distributed_env._system_uri is not None:
+        # Throwaway Env whose constructor participates in NEURON's global
+        # collective ops h.pc.subworlds().  We do NOT call .init() though
         Env(
-            distributed_env.system,
-            distributed_env.model,
-            distributed_env.io,
+            distributed_env._system_uri,
+            distributed_env._model_arg,
+            distributed_env._io_arg,
             distributed_env.seed,
             subworld_size=distributed_env.subworld_size,
         )
@@ -61,6 +89,10 @@ def controller_init(controller, distributed_env):
 
     MPI.COMM_WORLD.Barrier()
 
+    # Prevent the automatic controller.exit() inside distwq.run()
+    # from terminating the brokers; we restore this flag later in
+    # DistributedEnv.shutdown() so that the real exit sends EXIT
+    controller.workers_available = False
     distributed_env.controller = controller
 
 
@@ -82,12 +114,52 @@ class DistributedEnv(EnvProtocol):
                 "System must be a directory to allow re-initialization on workers"
             )
 
-        self.system = system
-        self.model = model
-        self.io = io
+        self._system_uri = system
+        self._model_arg = model
+        self._io_arg = io
+
+        self._local_system: "_ControllerSystem | None" = None
+        self._local_model: "Model | None" = None
+        self._local_io: "IO | None" = None
+
         self.seed = seed
         self.comm = comm
         self.subworld_size = subworld_size
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["_local_system"] = None
+        state["_local_model"] = None
+        state["_local_io"] = None
+        state["controller"] = None
+        state["_result_buffer"] = {}
+        return state
+
+    # lazy properties
+
+    @property
+    def system(self) -> "_ControllerSystem":
+        if self._local_system is None:
+            self._local_system = _ControllerSystem(self._system_uri)
+        return self._local_system
+
+    @property
+    def model(self) -> "Model":
+        if self._local_model is None:
+            self._local_model = (
+                self._model_arg
+                if self._model_arg is not None
+                else self.system.default_model()
+            )
+        return self._local_model
+
+    @property
+    def io(self) -> "IO":
+        if self._local_io is None:
+            self._local_io = (
+                self._io_arg if self._io_arg is not None else self.system.default_io()
+            )
+        return self._local_io
 
     def is_root(self):
         return P.is_root(os.getenv("DISTWQ_CONTROLLER_RANK", 0))
@@ -110,6 +182,10 @@ class DistributedEnv(EnvProtocol):
                 worker_grouping_method="split",
                 broker_is_worker=True,
             )
+
+            # restore workers_available (see above)
+            if self.controller is not None:
+                self.controller.workers_available = True
         else:
             distwq.run(
                 fun_name="worker_init",
@@ -274,4 +350,10 @@ class DistributedEnv(EnvProtocol):
 
     def shutdown(self):
         if self.controller is not None:
+            expected = self.controller.comm.size - 1
+            for _ in range(10):
+                self.controller.process()
+                if len(self.controller.active_workers) >= expected:
+                    break
+                time.sleep(0.2)
             self.controller.exit()
