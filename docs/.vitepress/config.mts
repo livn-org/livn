@@ -51,6 +51,7 @@ export default defineConfig({
                         { text: "Plasticity", link: "/guide/advanced/plasticity" },
                         { text: "Decoding pipelines", link: "/guide/advanced/decoding-pipelines" },
                         { text: "Distributed Environment", link: "/guide/advanced/distributed" },
+                        { text: "Gymnasium Integration", link: "/guide/advanced/gymnasium" },
                     ],
                 },
             ],
@@ -76,10 +77,6 @@ export default defineConfig({
                         {
                             text: "Differentiable Simulation",
                             link: "/examples/differentiable",
-                        },
-                        {
-                            text: "Reinforcement Learning",
-                            link: "/examples/reinforcement-learning",
                         },
                         {
                             text: "STDP Training",

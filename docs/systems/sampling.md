@@ -183,8 +183,6 @@ for sample in dataset["train"]:
     # ... process for RL training
 ```
 
-See the [Reinforcement Learning](/examples/reinforcement-learning) example for details.
-
 ## Predefined datasets
 
 livn publishes datasets for all standard systems on [Hugging Face](https://huggingface.co/datasets/livn-org/livn). See [Datasets](/systems/datasets) for the full listing.
