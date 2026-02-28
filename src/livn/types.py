@@ -8,6 +8,8 @@ from typing import (
     Union,
     runtime_checkable,
 )
+import hashlib
+import pickle
 
 from pydantic import BaseModel, field_validator
 
@@ -397,6 +399,14 @@ class Encoding(BaseModel):
     def input_space(self) -> "gymnasium.Space":
         raise NotImplementedError
 
+    def __hash__(self):
+        return int.from_bytes(hashlib.sha256(pickle.dumps(self)).digest()[:8], "little")
+
+    def __eq__(self, other):
+        if type(self) is not type(other):
+            return NotImplemented
+        return pickle.dumps(self) == pickle.dumps(other)
+
 
 class Decoding(BaseModel):
     duration: int
@@ -407,6 +417,14 @@ class Decoding(BaseModel):
         if v <= 0:
             raise ValueError(f"duration must be > 0, not {v}.")
         return v
+
+    def __hash__(self):
+        return int.from_bytes(hashlib.sha256(pickle.dumps(self)).digest()[:8], "little")
+
+    def __eq__(self, other):
+        if type(self) is not type(other):
+            return NotImplemented
+        return pickle.dumps(self) == pickle.dumps(other)
 
     def setup(self, env: "Env"):
         """Optional setup"""

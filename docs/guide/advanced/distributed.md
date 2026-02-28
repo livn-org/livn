@@ -88,3 +88,9 @@ To run with 2 workers, each using 3 processes:
 ```bash
 mpirun -n 7 python examples/distributed_workers.py
 ```
+
+## Pipeline caching
+
+`DistributedEnv` automatically caches encoding and decoding pipelines on workers. On the first `submit_call`, the full pipeline is serialized and sent to a worker; subsequent calls with the same (structurally identical) pipeline send only the action input and a lightweight state patch.
+
+This means that worker-side state persists, e.g. Gymnasium episode state lives on the worker across steps. No manual state shuttling is needed. Furthermore, fitted decodings auto-update, e.g. calling `fit()` on a trainable decoding changes its internal weights, which changes the pipeline's content hash. The next `submit_call` detects the cache miss and automatically re-installs the updated pipeline on the worker. Finally, after a pipeline is installed on a worker, subsequent calls prefer dispatching to the same worker to avoid re-installation. This is fully automatic and requires no changes to user code.

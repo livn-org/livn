@@ -154,6 +154,8 @@ obs, reward, terminated, truncated, info = gym_env.get_step(handle)
 
 This is detected automatically: if the underlying `env` has `submit_call` and `receive_response` methods, `submit_step` dispatches asynchronously. Otherwise it falls back to a synchronous call.
 
+When backed by `DistributedEnv`, the decoding pipeline is cached on the worker process. This means Gymnasium episode state (e.g. CartPole) persists on the worker across steps so no manual state management is needed. See [Pipeline caching](/guide/advanced/distributed#pipeline-caching) for details.
+
 ## Full example
 
 The following example wires a CartPole task to a livn neural culture using a spike-count decoding pipeline with observation augmentation:

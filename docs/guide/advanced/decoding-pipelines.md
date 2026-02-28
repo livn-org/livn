@@ -195,3 +195,28 @@ pipe.clear()
 ## Naming convention
 
 The dictionary keys form a contract for interaction between decoding stages. To ensure interoperability, we recommend a module naming convention that uses the `obj.__module__` import path as a prefix, for example `livn.decoding.<key>`
+
+## Custom stages and hashing
+
+When using `DistributedEnv`, pipelines are cached on workers using content-based hashing. Pydantic-based stages (subclasses of `Encoding` or `Decoding`) work out of the box since their hash is derived from their pickle representation.
+
+For plain Python classes used as Pipe stages (e.g. `GymStep`, `ObsAugmentation` subclasses), you must implement `__hash__` and `__eq__` based on structural configuration, not ephemeral state:
+
+```python
+class MyStage:
+    def __init__(self, n_features: int):
+        self.n_features = n_features
+
+    def __hash__(self):
+        return hash((type(self).__name__, tuple(sorted(self.__dict__.items()))))
+
+    def __eq__(self, other):
+        return type(self) is type(other) and self.__dict__ == other.__dict__
+
+    def __call__(self, env, *data):
+        ...
+```
+
+If a stage holds ephemeral state that changes every step (and shouldn't invalidate the cache), override `__getstate__` to exclude it (see `GymStep` and `Pipe` for examples).
+
+For Pydantic `Decoding` subclasses with a `PrivateAttr` that changes every step, put it in the `_state` dict (automatically excluded) or override `__getstate__` to strip it before pickling.

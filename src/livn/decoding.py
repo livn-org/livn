@@ -134,6 +134,16 @@ class Pipe(Decoding):
     _context: dict = PrivateAttr(default_factory=dict)  # cleared each __call__
     _state: dict = PrivateAttr(default_factory=dict)  # persists across calls
 
+    def __getstate__(self):
+        state = super().__getstate__()
+        private = state.get("__pydantic_private__", {})
+        if private:
+            private = dict(private)
+            private["_state"] = {}
+            private["_context"] = {}
+            state["__pydantic_private__"] = private
+        return state
+
     @property
     def context(self) -> dict:
         return self._context

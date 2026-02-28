@@ -72,6 +72,11 @@ class GymnasiumEnv(gym.Env):
                 self.env.clear()
         if not hasattr(self.decoding, "reset"):
             return None
+
+        # signal the worker to reset via state flag
+        if self._is_async and hasattr(self.decoding, "state"):
+            self.decoding.state["_needs_reset"] = True
+
         result = self.decoding.reset(**kwargs)
         if result is None:
             return None
@@ -119,9 +124,13 @@ class GymnasiumEnv(gym.Env):
 
     def get_step(self, handle: dict) -> tuple:
         if handle.get("_async", False):
-            return self.env.receive_response()
+            result = self.env.receive_response()
         else:
-            return self.env(self.decoding, handle["action"], self.encoding)
+            result = self.env(self.decoding, handle["action"], self.encoding)
+
+        if isinstance(result, list) and len(result) == 1:
+            return result[0]
+        return result
 
     def render(self):
         pass
@@ -139,6 +148,28 @@ class GymnasiumEnv(gym.Env):
 class GymStep:
     def __init__(self, gym_env):
         self.gym_env = gym_env
+
+    def __hash__(self):
+        spec = getattr(self.gym_env, "spec", None)
+        return hash(spec.id if spec else id(self))
+
+    def __eq__(self, other):
+        if not isinstance(other, GymStep):
+            return NotImplemented
+        s1 = getattr(self.gym_env, "spec", None)
+        s2 = getattr(other.gym_env, "spec", None)
+        if s1 is None or s2 is None:
+            return self is other
+        return s1.id == s2.id
+
+    def __getstate__(self):
+        # pickle only the spec, not the full gym env state
+        spec = getattr(self.gym_env, "spec", None)
+        return {"spec_id": spec.id if spec else None}
+
+    def __setstate__(self, d):
+        spec_id = d.get("spec_id")
+        self.gym_env = gym.make(spec_id) if spec_id else None
 
     def reset(self, **kwargs):
         obs, info = self.gym_env.reset(**kwargs)
@@ -185,6 +216,12 @@ class ObsAugmentation:
     def __init__(self, obs_dim: int | None = None):
         if obs_dim is not None:
             self.obs_dim = obs_dim
+
+    def __hash__(self):
+        return hash((type(self).__name__, tuple(sorted(self.__dict__.items()))))
+
+    def __eq__(self, other):
+        return type(self) is type(other) and self.__dict__ == other.__dict__
 
     @abstractmethod
     def _features(self, env, context: dict, state: dict) -> np.ndarray:  # (obs_dim,)

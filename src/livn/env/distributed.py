@@ -30,6 +30,14 @@ start_time = time.time()
 _state: dict = {}
 
 
+class _PipelineResult:
+    __slots__ = ("result", "state_back")
+
+    def __init__(self, result, state_back):
+        self.result = result
+        self.state_back = state_back
+
+
 class DistributedEnv(EnvProtocol):
     """Env wrapper that fans out simulation calls to MPI workers"""
 
@@ -45,6 +53,16 @@ class DistributedEnv(EnvProtocol):
         self.controller: MPIController | None = None
         self._result_buffer: dict[int, object] = {}
         self._last_probe_time: float = 0.0
+
+        # (decoding, encoding) -> pipeline_id
+        self._pipeline_cache: dict[tuple, int] = {}
+        # pipeline_id -> preferred worker rank
+        self._pipeline_worker: dict[int, int] = {}
+        # task_id -> pipeline_id
+        self._task_pipeline: dict[int, int] = {}
+        # task_id -> decoding
+        self._task_decoding: dict[int, object] = {}
+        self._next_pipeline_id: int = 0
 
         if not isinstance(system, str):
             raise ValueError(
@@ -230,15 +248,69 @@ class DistributedEnv(EnvProtocol):
 
     def submit_call(self, decoding, inputs=None, encoding=None, **kwargs) -> int:
         """Submit an env call for async execution on a worker."""
-        return self.controller.submit_call(
-            _envcall,
-            args=(decoding, inputs, encoding, kwargs),
-        )
+        cache_key = (decoding, encoding)
+        state_patch = decoding.state.copy() if hasattr(decoding, "state") else {}
+
+        if cache_key in self._pipeline_cache:
+            pid = self._pipeline_cache[cache_key]
+            preferred = self._pipeline_worker.get(pid)
+
+            if preferred is not None and preferred in self.controller._idle:
+                # pipeline already installed on this idle worker
+                task_id = self.controller.submit_call(
+                    _pipeline_call,
+                    args=(pid, inputs, state_patch, kwargs),
+                    preferred_worker=preferred,
+                )
+            else:
+                # re-install on whichever worker we get
+                task_id = self.controller.submit_call(
+                    _pipeline_call,
+                    args=(pid, inputs, state_patch, kwargs),
+                    kwargs={"decoding": decoding, "encoding": encoding},
+                )
+        else:
+            # first time seeing this pipeline
+            pid = self._next_pipeline_id
+            self._next_pipeline_id += 1
+            self._pipeline_cache[cache_key] = pid
+            task_id = self.controller.submit_call(
+                _pipeline_call,
+                args=(pid, inputs, {}, kwargs),
+                kwargs={"decoding": decoding, "encoding": encoding},
+            )
+
+        self._task_pipeline[task_id] = pid
+        self._task_decoding[task_id] = decoding
+        return task_id
+
+    def _unwrap_response(self, task_id, response):
+        pid = self._task_pipeline.pop(task_id, None)
+        decoding = self._task_decoding.pop(task_id, None)
+
+        if pid is not None and self.controller is not None:
+            worker = self.controller._task_worker.pop(task_id, None)
+            if worker is not None:
+                self._pipeline_worker[pid] = worker
+
+        unwrapped = []
+        for item in response:
+            if isinstance(item, _PipelineResult):
+                if (
+                    decoding is not None
+                    and item.state_back
+                    and hasattr(decoding, "state")
+                ):
+                    decoding.state.update(item.state_back)
+                unwrapped.append(item.result)
+            else:
+                unwrapped.append(item)
+        return unwrapped
 
     def receive_response(self):
         """Block until the next result is available."""
         _task_id, response = self.controller.get_next_result()
-        return response
+        return self._unwrap_response(_task_id, response)
 
     def probe_response(self, task_id: int):
         """Non-blocking poll for a specific task's result."""
@@ -256,7 +328,8 @@ class DistributedEnv(EnvProtocol):
             return None
 
         raw = self._result_buffer.pop(task_id)
-        return raw[0] if len(raw) == 1 else raw
+        unwrapped = self._unwrap_response(task_id, raw)
+        return unwrapped[0] if len(unwrapped) == 1 else unwrapped
 
     def potential_recording(
         self, membrane_currents: Float[Array, "timestep n_neurons"] | None
@@ -309,6 +382,8 @@ class MPIController:
         self.n_processed = np.zeros(n, dtype=int)
         self.total_time = np.zeros(n, dtype=np.float32)
         self.stats: list[dict] = []
+        # completed task_id -> worker rank that ran it
+        self._task_worker: dict[int, int] = {}
 
     def process(self, limit: int = 1000, block: bool = False) -> list[int]:
         if not self.workers_available:
@@ -344,6 +419,7 @@ class MPIController:
                 task_id, result, stat = pickle.loads(self._buf[:nbytes])
                 self._finished[task_id] = result
                 self._finished_order.append(task_id)
+                self._task_worker[task_id] = src
                 self._dispatched.pop(task_id, None)
                 self._per_worker[src] = [
                     t for t in self._per_worker[src] if t != task_id
@@ -366,6 +442,7 @@ class MPIController:
         kwargs: dict | None = None,
         time_est: int = 1,
         task_id: int | None = None,
+        preferred_worker: int | None = None,
     ) -> int:
         if kwargs is None:
             kwargs = {}
@@ -375,7 +452,9 @@ class MPIController:
         self._assert_unused(task_id)
 
         self.process()
-        if self._idle:
+        if preferred_worker is not None and preferred_worker in self._idle:
+            self._dispatch(task_id, fn, args, kwargs, time_est, worker=preferred_worker)
+        elif self._idle:
             self._dispatch(task_id, fn, args, kwargs, time_est)
         else:
             self._enqueue(task_id, fn, args, kwargs, time_est)
@@ -457,13 +536,21 @@ class MPIController:
         return self._idle[int(np.argmin(costs))]
 
     def _dispatch(
-        self, tid: int, fn: Callable, args: tuple, kwargs: dict, est: int
+        self,
+        tid: int,
+        fn: Callable,
+        args: tuple,
+        kwargs: dict,
+        est: int,
+        worker: int | None = None,
     ) -> None:
-        worker = self._select_worker()
+        if worker is None:
+            worker = self._select_worker()
         self.comm.isend(
             (fn, args, kwargs, est, tid), dest=worker, tag=MessageTag.TASK
         ).Wait()
-        self._idle.remove(worker)
+        if worker in self._idle:
+            self._idle.remove(worker)
         self._idle_data.pop(worker, None)
         self._dispatched[tid] = worker
         self._per_worker[worker].append(tid)
@@ -728,6 +815,23 @@ class _ControllerSystem:
         if name in self._UNCACHED:
             self._inner._neuron_coordinates = None
         return result
+
+
+def _pipeline_call(pid, inputs, state_patch, kwargs, decoding=None, encoding=None):
+    if "pipelines" not in _state:
+        _state["pipelines"] = {}
+    if decoding is not None:
+        _state["pipelines"][pid] = (decoding, encoding)
+    dec, enc = _state["pipelines"][pid]
+    if state_patch and hasattr(dec, "state"):
+        dec.state.update(state_patch)
+    if hasattr(dec, "state") and dec.state.pop("_needs_reset", False):
+        dec.reset()
+    if kwargs is None:
+        kwargs = {}
+    result = _state["env"](dec, inputs, enc, **kwargs)
+    state_back = dec.state.copy() if hasattr(dec, "state") else {}
+    return _PipelineResult(result, state_back)
 
 
 def _envcall(decoding, inputs, encoding, kwargs):
