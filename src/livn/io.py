@@ -40,8 +40,10 @@ class IO(Jsonable):
     """
 
     @classmethod
-    def from_directory(cls, directory: str):
-        return cls.from_json(os.path.join(directory, cls.__name__.lower() + ".json"))
+    def from_directory(cls, directory: str, comm=None):
+        return cls.from_json(
+            os.path.join(directory, cls.__name__.lower() + ".json"), comm=comm
+        )
 
     @property
     def num_channels(self) -> int:

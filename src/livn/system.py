@@ -412,16 +412,16 @@ class System:
         self._num_neurons = None
         self._bounding_box = None
 
-    def default_io(self) -> "IO":
+    def default_io(self, comm=None) -> "IO":
         from livn.io import MEA, IO
 
         try:
-            return MEA.from_directory(self.uri)
+            return MEA.from_directory(self.uri, comm=comm)
         except FileNotFoundError:
             return IO()
 
-    def default_model(self) -> "Model":
-        model = self.load_file("model.json", None)
+    def default_model(self, comm=None) -> "Model":
+        model = self.load_file("model.json", None, comm=comm)
         if model is not None:
             model = import_object_by_path(model["cls"])(**model["kwargs"])
         else:
@@ -436,8 +436,8 @@ class System:
 
         return model
 
-    def default_params(self) -> dict | None:
-        return self.load_file("params.json", None)
+    def default_params(self, comm=None) -> dict | None:
+        return self.load_file("params.json", None, comm=comm)
 
     def load_file(
         self,

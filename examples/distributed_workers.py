@@ -2,19 +2,15 @@
 # requires-python = ">=3.11"
 # dependencies = [
 #   "livn",
-#   "distwq",
 # ]
 # ///
 """
 mpirun -n {subworld_size * num_workers + 1} python examples/distributed_workers.py
 """
 
-import os
-
 import numpy as np
 
-from livn.integrations.distwq import DistributedEnv
-from livn.utils import P
+from livn.env.distributed import DistributedEnv
 from livn.types import Encoding
 from livn.decoding import ChannelRecording
 
@@ -26,12 +22,12 @@ class Constant(Encoding):
         channel_inputs = np.zeros([t_end, 16])
         for r in range(20):
             for c in [1, 4]:
-                channel_inputs[t_stim + r, c] = 750
+                channel_inputs[t_stim + r, c] = 1.5
         return env.cell_stimulus(channel_inputs)
 
 
 env = DistributedEnv(
-    "./systems/graphs/S1",
+    "./systems/graphs/EI1",
     subworld_size=3,  # processors per workers
 )
 
@@ -41,7 +37,7 @@ env.record_membrane_current()
 env.record_spikes()
 env.apply_model_defaults()
 
-if P.is_root(os.getenv("DISTWQ_CONTROLLER_RANK", 0)):
+if env.is_root():
     responses = env(
         ChannelRecording(duration=100),
         # different features to be processed by different workers

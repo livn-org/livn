@@ -124,9 +124,7 @@ This is equivalent to:
 
 This pattern is used extensively in [dataset generation](/systems/sampling) and the Gymnasium RL integration.
 
-## Configuration
-
-### Weights and noise
+## Weights and noise
 
 Synaptic weights and background noise can be configured after initialization:
 
@@ -142,7 +140,7 @@ env.set_noise({"g_e0": 1.0, "std_e": 0.3, ...})
 env.set_params({"weight-EXC_EXC-hillock-AMPA-weight": 0.5, "noise-g_e0": 1.0})
 ```
 
-### Seed
+## Seed
 
 The random seed controls noise generation and is set during construction:
 
@@ -150,7 +148,7 @@ The random seed controls noise generation and is set during construction:
 env = Env(system, seed=42).init()
 ```
 
-### MPI parallelism
+## MPI parallelism
 
 For the NEURON backend, MPI communicators can be passed for distributed simulation:
 
@@ -159,6 +157,10 @@ from mpi4py import MPI
 
 env = Env(system, comm=MPI.COMM_WORLD, subworld_size=4).init()
 ```
+
+::: tip 
+For running many simulations in parallel across MPI workers, checkout the [Distributed Environment](/guide/advanced/distributed)
+:::
 
 ## Cleanup
 
