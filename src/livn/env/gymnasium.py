@@ -66,6 +66,10 @@ class GymnasiumEnv(gym.Env):
         )
 
     def reset(self, **kwargs):
+        # reset neural simulation state unless explicitly opted out
+        if not kwargs.pop("without_clear", False):
+            if self.env is not None and hasattr(self.env, "clear"):
+                self.env.clear()
         if not hasattr(self.decoding, "reset"):
             return None
         result = self.decoding.reset(**kwargs)
