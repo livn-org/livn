@@ -1,7 +1,7 @@
 from machinable import Component
 from pydantic import BaseModel, ConfigDict
 
-from livn.utils import P, import_object_by_path
+from livn.utils import P, ObjSpec, import_instance
 from livn.env import Env
 
 
@@ -10,28 +10,18 @@ class Run(Component):
         model_config = ConfigDict(extra="forbid")
 
         system: str = "systems/graphs/S1"
-        model: str | None = None
-        decoding: str = "livn.types.Decoding"
-        decoding_kwargs: dict = {"duration": 100}
-        encoding: str | None = None
-        encoding_kwargs: dict = {}
+        model: ObjSpec = None
+        decoding: ObjSpec = ("livn.types.Decoding", {"duration": 100})
+        encoding: ObjSpec = None
 
     def __call__(self):
-        model = self.config.model
-        if model is not None:
-            model = import_object_by_path(model)()
+        model = import_instance(self.config.model)
 
         env = Env(self.config.system, model).init()
         env.apply_model_defaults()
 
-        decoding = import_object_by_path(self.config.decoding)(
-            **self.config.decoding_kwargs
-        )
-        encoding = self.config.encoding
-        if encoding is not None:
-            encoding = import_object_by_path(self.config.encoding)(
-                **self.config.encoding_kwargs
-            )
+        decoding = import_instance(self.config.decoding)
+        encoding = import_instance(self.config.encoding)
 
         response = env(decoding=decoding, encoding=encoding)
         if response is not None:

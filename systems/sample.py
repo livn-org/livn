@@ -5,8 +5,8 @@ from huggingface_hub import HfApi
 from machinable import Component
 from machinable.utils import load_file, save_file, random_str
 from pydantic import BaseModel, ConfigDict
-from livn.utils import import_object_by_path, P
-from livn.integrations.distwq import DistributedEnv
+from livn.utils import ObjSpec, import_instance, P
+from livn.env.distributed import DistributedEnv
 from livn.decoding import GatherAndMerge, Slice
 from livn.types import Encoding
 from livn.env import Env
@@ -49,21 +49,15 @@ class Sample(Component):
         noise: bool = True
 
         system: str = "./systems/graphs/EI3"
-        model: str | None = None
-        encoding: str | None = "systems.sample.WithouInput"
-        encoding_kwargs: dict = {}
-        decoding: str = "systems.sample.Raw"
-        decoding_kwargs: dict = {}
+        model: ObjSpec = None
+        encoding: ObjSpec = "systems.sample.WithouInput"
+        decoding: ObjSpec = "systems.sample.Raw"
 
         output_directory: str = "???"
         nprocs_per_worker: int = 1
 
     def model(self):
-        model = self.config.model
-        if model is not None:
-            model = import_object_by_path(model)()
-
-        return model
+        return import_instance(self.config.model)
 
     def __call__(self):
         env = DistributedEnv(
@@ -76,14 +70,17 @@ class Sample(Component):
         env.apply_model_defaults(noise=self.config.noise)
 
         if env.is_root():
-            encoding = self.config.encoding
-            if encoding is not None:
-                encoding = import_object_by_path(self.config.encoding)(
-                    **self.config.encoding_kwargs
+            encoding = import_instance(self.config.encoding)
+
+            decoding_spec = self.config.decoding
+            if isinstance(decoding_spec, str):
+                decoding_spec = (decoding_spec, {"duration": self.config.duration})
+            elif decoding_spec is not None:
+                decoding_spec = (
+                    decoding_spec[0],
+                    {"duration": self.config.duration, **decoding_spec[1]},
                 )
-            decoding = import_object_by_path(self.config.decoding)(
-                duration=self.config.duration, **self.config.decoding_kwargs
-            )
+            decoding = import_instance(decoding_spec)
 
             batch_size = max(1, (P.size() - 1) // self.config.nprocs_per_worker)
             num_batches = (self.config.samples + batch_size - 1) // batch_size

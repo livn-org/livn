@@ -15,6 +15,8 @@ if TYPE_CHECKING:
 
 sentinel = object()
 
+ObjSpec = Union[tuple[str, dict], str, None]
+
 
 def import_object_by_path(path):
     module_path, _, obj_name = path.rpartition(".")
@@ -23,6 +25,17 @@ def import_object_by_path(path):
     else:
         module = importlib.import_module(module_path)
     return getattr(module, obj_name)
+
+
+def import_instance(spec: ObjSpec):
+    if spec is None:
+        return None
+    if isinstance(spec, str):
+        cls = import_object_by_path(spec)
+        return cls()
+    path, kwargs = spec
+    cls = import_object_by_path(path)
+    return cls(**kwargs)
 
 
 def lnp() -> "np":
