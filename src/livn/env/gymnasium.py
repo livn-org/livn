@@ -99,7 +99,10 @@ class GymnasiumEnv(gym.Env):
         if hasattr(pipe, "state"):
             pipe.state["io_action"] = np.asarray(action, dtype=np.float32)
         # encoding can read raw_gym_obs from env.decoding.state["raw_gym_obs"]
-        return self.env(self.decoding, action, self.encoding)
+        result = self.env(self.decoding, action, self.encoding)
+        if isinstance(result, list) and len(result) == 1:
+            return result[0]
+        return result
 
     def submit_step(self, action) -> dict:
         if self._is_async:
@@ -114,7 +117,10 @@ class GymnasiumEnv(gym.Env):
 
     def poll_step(self, handle: dict):
         if not handle.get("_async", False):
-            return self.env(self.decoding, handle["action"], self.encoding)
+            result = self.env(self.decoding, handle["action"], self.encoding)
+            if isinstance(result, list) and len(result) == 1:
+                return result[0]
+            return result
 
         raw = self.env.probe_response(handle["task_id"])
         if raw is None:
@@ -124,7 +130,7 @@ class GymnasiumEnv(gym.Env):
 
     def get_step(self, handle: dict) -> tuple:
         if handle.get("_async", False):
-            result = self.env.receive_response()
+            result = self.env.receive_response(task_id=handle["task_id"])
         else:
             result = self.env(self.decoding, handle["action"], self.encoding)
 
@@ -185,7 +191,10 @@ class GymStep:
             space.high,
         )
 
-    def __call__(self, env, action):
+    def __call__(self, env, action, *_):
+        if action is None:
+            return None
+
         pipe = getattr(env, "decoding", None)
 
         action = self._clamp_action(action)
@@ -230,7 +239,10 @@ class ObsAugmentation:
     def zero_features(self) -> np.ndarray:
         return np.zeros(self.obs_dim, dtype=np.float32)
 
-    def __call__(self, env, obs, reward, terminated, truncated, info):
+    def __call__(self, env, obs, *rest):
+        if obs is None:
+            return None
+        reward, terminated, truncated, info = rest
         pipe = getattr(env, "decoding", None)
         ctx = getattr(pipe, "context", {})
         st = getattr(pipe, "state", {})

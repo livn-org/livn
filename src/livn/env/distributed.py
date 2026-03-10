@@ -38,6 +38,22 @@ class _PipelineResult:
         self.state_back = state_back
 
 
+class _WorkerError:
+    __slots__ = ("exc_type", "exc_value", "tb_str", "worker_rank")
+
+    def __init__(self, exc, worker_rank: int = -1):
+        self.exc_type = type(exc).__qualname__
+        self.exc_value = str(exc)
+        self.tb_str = traceback.format_exc()
+        self.worker_rank = worker_rank
+
+    def reraise(self):
+        raise RuntimeError(
+            f"Exception on MPI worker rank {self.worker_rank} "
+            f"({self.exc_type}: {self.exc_value}):\n{self.tb_str}"
+        )
+
+
 class DistributedEnv(EnvProtocol):
     """Env wrapper that fans out simulation calls to MPI workers"""
 
@@ -144,12 +160,19 @@ class DistributedEnv(EnvProtocol):
         if self.controller is None:
             return
         n_workers = self.controller.comm.size - 1
-        task_ids = self.controller.submit_multiple(
-            _env_config_call,
-            args_list=[(method_name, a) for a in [args] * n_workers],
+        expected = set(
+            self.controller.submit_multiple(
+                _env_config_call,
+                args_list=[(method_name, a) for a in [args] * n_workers],
+            )
         )
-        for _ in range(len(task_ids)):
-            self.controller.get_next_result()
+
+        while expected:
+            _task_id, response = self.controller.get_next_result()
+            if _task_id in expected:
+                expected.remove(_task_id)
+            else:
+                self._result_buffer[_task_id] = response
 
     def clear_recordings(self) -> Self:
         self._broadcast_to_workers("clear_recordings", ())
@@ -230,15 +253,16 @@ class DistributedEnv(EnvProtocol):
 
         if inputs is None:
             inputs = [None]
+        elif not isinstance(inputs, list):
+            inputs = [inputs]
 
-        num_inputs = 0
+        task_ids = []
         for i in inputs:
-            self.submit_call(decoding, i, encoding, **kwargs)
-            num_inputs += 1
+            task_ids.append(self.submit_call(decoding, i, encoding, **kwargs))
 
         recordings = []
-        for _ in range(num_inputs):
-            response = self.receive_response()
+        for tid in task_ids:
+            response = self.receive_response(task_id=tid)
             if len(response) == 1:
                 recordings.append(response[0])
             else:
@@ -276,7 +300,7 @@ class DistributedEnv(EnvProtocol):
             self._pipeline_cache[cache_key] = pid
             task_id = self.controller.submit_call(
                 _pipeline_call,
-                args=(pid, inputs, {}, kwargs),
+                args=(pid, inputs, state_patch, kwargs),
                 kwargs={"decoding": decoding, "encoding": encoding},
             )
 
@@ -293,9 +317,15 @@ class DistributedEnv(EnvProtocol):
             if worker is not None:
                 self._pipeline_worker[pid] = worker
 
+        for item in response:
+            if isinstance(item, _WorkerError):
+                item.reraise()
+
         unwrapped = []
         for item in response:
             if isinstance(item, _PipelineResult):
+                if item.result is None:
+                    continue
                 if (
                     decoding is not None
                     and item.state_back
@@ -307,9 +337,20 @@ class DistributedEnv(EnvProtocol):
                 unwrapped.append(item)
         return unwrapped
 
-    def receive_response(self):
-        """Block until the next result is available."""
-        _task_id, response = self.controller.get_next_result()
+    def receive_response(self, task_id: int | None = None):
+        if task_id is not None:
+            while task_id not in self._result_buffer:
+                _tid, _resp = self.controller.get_next_result()
+                self._result_buffer[_tid] = _resp
+            _task_id = task_id
+            response = self._result_buffer.pop(task_id)
+        else:
+            if self._result_buffer:
+                _task_id = next(iter(self._result_buffer.keys()))
+                response = self._result_buffer.pop(_task_id)
+            else:
+                _task_id, response = self.controller.get_next_result()
+
         return self._unwrap_response(_task_id, response)
 
     def probe_response(self, task_id: int):
@@ -329,6 +370,8 @@ class DistributedEnv(EnvProtocol):
 
         raw = self._result_buffer.pop(task_id)
         unwrapped = self._unwrap_response(task_id, raw)
+        if not unwrapped:
+            return None
         return unwrapped[0] if len(unwrapped) == 1 else unwrapped
 
     def potential_recording(
@@ -631,7 +674,10 @@ class MPICollectiveBroker:
 
             if self.is_worker:
                 t0 = time.time()
-                local_result = fn(*args, **kwargs)
+                try:
+                    local_result = fn(*args, **kwargs)
+                except Exception as exc:
+                    local_result = _WorkerError(exc, worker_rank=my_rank)
                 elapsed = time.time() - t0
                 self.n_processed[my_rank] += 1
                 local_stat = {
@@ -709,7 +755,10 @@ class MPICollectiveWorker:
                 break
 
             t0 = time.time()
-            result = fn(*args, **kwargs)
+            try:
+                result = fn(*args, **kwargs)
+            except Exception as exc:
+                result = _WorkerError(exc, worker_rank=my_rank)
             elapsed = time.time() - t0
 
             self.n_processed[my_rank] += 1
