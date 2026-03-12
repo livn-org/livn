@@ -18,6 +18,7 @@ class ReducedCalciumSomaDendrite(Model):
     def stimulus_coordinates(
         self,
         neuron_coordinates: types.Float[types.Array, "n_coords ixyz=4"],
+        population: str | None = None,
     ) -> types.Float[types.Array, "n_stim_coords ixyz=4"]:
         """
         Transform neuron coordinates for two-compartment model stimulation
@@ -48,8 +49,9 @@ class ReducedCalciumSomaDendrite(Model):
     def recording_coordinates(
         self,
         neuron_coordinates: types.Float[types.Array, "n_coords ixyz=4"],
+        population: str | None = None,
     ) -> types.Float[types.Array, "n_stim_coords ixyz=4"]:
-        return self.stimulus_coordinates(neuron_coordinates)
+        return self.stimulus_coordinates(neuron_coordinates, population=population)
 
     # neuron
 

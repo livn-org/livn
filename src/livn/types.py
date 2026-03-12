@@ -127,7 +127,9 @@ class Env(Protocol):
     ) -> Float[Array, "batch timestep n_gids"]:
         """Transforms channel inputs into neural inputs"""
         return self.io.cell_stimulus(
-            self.model.stimulus_coordinates(self.system.neuron_coordinates),
+            self.system.transform_coordinates(
+                self.model.stimulus_coordinates, all=False
+            ),
             channel_inputs,
         )
 
@@ -318,7 +320,9 @@ class Env(Protocol):
         self, membrane_currents: Float[Array, "n_neurons timestep"] | None
     ) -> Float[Array, "n_channels timestep"]:
         distances = self.io.distances(
-            self.model.recording_coordinates(self.system.neuron_coordinates),
+            self.system.transform_coordinates(
+                self.model.recording_coordinates, all=False
+            ),
         )
         return self.io.potential_recording(distances, membrane_currents)
 
@@ -349,12 +353,14 @@ class Model(Protocol):
     def stimulus_coordinates(
         self,
         neuron_coordinates: Float[Array, "n_coords ixyz=4"],
+        population: str | None = None,
     ) -> Float[Array, "n_stim_coords ixyz=4"]:
         return neuron_coordinates
 
     def recording_coordinates(
         self,
         neuron_coordinates: Float[Array, "n_coords ixyz=4"],
+        population: str | None = None,
     ) -> Float[Array, "n_stim_coords ixyz=4"]:
         return neuron_coordinates
 

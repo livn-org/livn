@@ -4,7 +4,7 @@ import os
 import random
 import numpy
 from functools import cached_property
-from typing import TYPE_CHECKING, Iterator, Optional, Any
+from typing import TYPE_CHECKING, Callable, Iterator, Optional, Any
 
 import pandas as pd
 from pydantic import BaseModel
@@ -553,6 +553,21 @@ class System:
             self._graph.cells_filepath, population, comm=self.comm, all=all
         )
 
+    def transform_coordinates(
+        self,
+        transform: Callable,
+        populations: list[str] | None = None,
+        all: bool = True,
+    ) -> types.Float[types.Array, "n_coords ixyz=4"]:
+        if populations is None:
+            populations = self.populations
+        return np.vstack(
+            [
+                transform(self.coordinate_array(p, all=all), population=p)
+                for p in populations
+            ]
+        )
+
     def projections(
         self,
         pre: types.PreSynapticPopulationName,
@@ -1030,6 +1045,32 @@ class TrainableSystem:
 
         # [n_total_neurons, ixyz=4]
         return np.concatenate([gids, xyz_flat], axis=1)
+
+    def coordinate_array(
+        self, population: str, all: bool = True
+    ) -> types.Float[types.Array, "n_coords cxyz=4"]:
+        pop_idx = self.populations.index(population)
+        absolute_coords = self.origins[pop_idx] + self.params[pop_idx]  # [n_neurons, 3]
+        gid_offset = pop_idx * self.n_neurons
+        gids = np.arange(
+            gid_offset, gid_offset + self.n_neurons, dtype=absolute_coords.dtype
+        ).reshape(-1, 1)
+        return np.concatenate([gids, absolute_coords], axis=1)
+
+    def transform_coordinates(
+        self,
+        transform: Callable,
+        populations: list[str] | None = None,
+        all: bool = True,
+    ) -> types.Float[types.Array, "n_coords ixyz=4"]:
+        if populations is None:
+            populations = self.populations
+        return np.vstack(
+            [
+                transform(self.coordinate_array(p, all=all), population=p)
+                for p in populations
+            ]
+        )
 
     @property
     def gids(self) -> types.Int[types.Array, "n_total_neurons"]:

@@ -803,8 +803,8 @@ class Env(EnvProtocol):
         Parameters
         ----------
         config : dict, optional
-            Either a flat ``{param: value}`` dict applied to all synapses, 
-            or a nested ``{population_name: {param: value}}`` dict where 
+            Either a flat ``{param: value}`` dict applied to all synapses,
+            or a nested ``{population_name: {param: value}}`` dict where
             each group targets specific mechanism types defined by
             ``model.neuron_plasticity_mechanism_groups()``
 
@@ -871,7 +871,7 @@ class Env(EnvProtocol):
         ----------
         target : float, optional
             Desired sum of incoming weights for each neuron. When ``None``, the target
-            is set to the number of incoming STDP connections for that neuron 
+            is set to the number of incoming STDP connections for that neuron
             (i.e. the sum that would result if every weight were 1.0)
         """
         per_neuron: dict[int, list] = defaultdict(list)  # (nc, w_min, w_max)
@@ -993,7 +993,7 @@ class Env(EnvProtocol):
 
             for sec_id, sec in enumerate(cell.sections):
                 self.i_recs[(int(gid), sec_id)] = h.Vector()
-                self.i_recs[(int(gid), sec_id)].record(sec(0.5)._ref_i_membrane, dt)
+                self.i_recs[(int(gid), sec_id)].record(sec(0.5)._ref_i_membrane_, dt)
                 area_um2 = h.area(0.5, sec=sec)
                 self.i_area[(int(gid), sec_id)] = float(area_um2) * 1e-8
 

@@ -1,9 +1,69 @@
 import os
 
+import numpy as np
+
 from livn.types import Model
+
+# approximate y-offsets (um) for each section relative to the soma, ordered 
+# to match NEURON's wholetree() traversal of the PyramidalCell topology
+# positive = apical (toward SLM), negative = basal/axonal (toward SO/alveus)
+# lengths are taken from PyramidalCellBilash.geom()
+_N_SECTIONS = 31
+_SECTION_Y_OFFSETS = np.array(
+    [
+        0.0,    # 0  soma
+        -10.0,  # 1  hillock        (L=20, toward axon)
+        -30.0,  # 2  ais            (L=10)
+        -105.0, # 3  axon           (L=150)
+        -37.5,  # 4  oriprox2       (L=75, basal)
+        -112.5, # 5  oridist2b      (L=75)
+        -112.5, # 6  oridist2a      (L=75)
+        -37.5,  # 7  oriprox1       (L=75, basal)
+        -112.5, # 8  oridist1b      (L=75)
+        -112.5, # 9  oridist1a      (L=75)
+        40.0,   # 10 radTprox       (L=80, apical trunk)
+        115.0,  # 11 radTmed        (L=70)
+        140.0,  # 12 rad_thick2     (L=50, oblique)
+        165.0,  # 13 rad_medium2    (L=50)
+        202.5,  # 14 rad_thin2b     (L=75)
+        202.5,  # 15 rad_thin2a     (L=75)
+        140.0,  # 16 rad_thick1     (L=50, oblique)
+        165.0,  # 17 rad_medium1    (L=50)
+        202.5,  # 18 rad_thin1b     (L=75)
+        202.5,  # 19 rad_thin1a     (L=75)
+        175.0,  # 20 radTdist1      (L=50, apical trunk cont.)
+        225.0,  # 21 radTdist2      (L=50)
+        275.0,  # 22 radTdist3      (L=50)
+        300.0,  # 23 lm_thick2      (L=100, tuft)
+        350.0,  # 24 lm_medium2     (L=50)
+        387.5,  # 25 lm_thin2b      (L=75)
+        387.5,  # 26 lm_thin2a      (L=75)
+        300.0,  # 27 lm_thick1      (L=50, tuft)
+        325.0,  # 28 lm_medium1     (L=50)
+        362.5,  # 29 lm_thin1b      (L=75)
+        362.5,  # 30 lm_thin1a      (L=75)
+    ],
+    dtype=np.float64,
+)
 
 
 class PinskyRinzel(Model):
+    def stimulus_coordinates(self, neuron_coordinates):
+        """Expand each neuron coordinate into per-section coordinates.
+
+        Returns [n_neurons * 31, 4] with GID preserved and Y offset per section.
+        """
+        neuron_coordinates = np.asarray(neuron_coordinates)
+        n_neurons = neuron_coordinates.shape[0]
+        # apply y-offsets (column 2) for each section, tiled for all neurons
+        coords = np.repeat(neuron_coordinates, _N_SECTIONS, axis=0)
+        offsets = np.tile(_SECTION_Y_OFFSETS, n_neurons)
+        coords[:, 2] = coords[:, 2] + offsets
+        return coords
+
+    def recording_coordinates(self, neuron_coordinates):
+        return self.stimulus_coordinates(neuron_coordinates)
+
     def neuron_template_directory(self):
         return os.path.join(os.path.dirname(__file__), "neuron", "templates")
 

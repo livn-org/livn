@@ -537,8 +537,10 @@ else:
 
         # induction matrix [n_channels, n_gids]
         induction_matrix = np.zeros((n_channels, n_gids))
+        # handle case where gids might not start at 0 (ignored in JAX backend)
+        _, channel_indices = np.unique(channel_ids, return_inverse=True)
         unique_gids, gids_indices = np.unique(gids, return_inverse=True)
-        induction_matrix[channel_ids, gids_indices] = amplitudes
+        induction_matrix[channel_indices, gids_indices] = amplitudes
 
         # reduce over gids
         # Result shape: [batch, timestep, n_gids]

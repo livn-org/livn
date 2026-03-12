@@ -396,6 +396,8 @@ class PyramidalCell:
         # Initialize the cell
         self.init()
 
+        self.sections = list(self.all)
+
     def set_default_parameters(self):
         self.params = NeuronParameters()
 
@@ -852,7 +854,7 @@ class PyramidalCell:
             elif sec.name().__contains__("radTdist"):
                 params = self.params.radTdist
             else:
-                raise RuntimeException(f"Unknown apical trunk section {sec}")
+                raise RuntimeError(f"Unknown apical trunk section {sec}")
 
             sec.Ra = params.Ra
             sec.cm = params.cm  # Membrane capacitance in uF/cm2
