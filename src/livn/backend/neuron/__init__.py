@@ -9,18 +9,25 @@ from typing import TYPE_CHECKING, Union, Self
 import numpy as np
 from machinable.config import to_dict
 from miv_simulator import config
-from miv_simulator.network import connect_cells, connect_gjs, make_cells
+from miv_simulator.network import (
+    connect_cells,
+    connect_gjs,
+)
 from miv_simulator.optimization import update_network_params
 from miv_simulator.synapses import SynapseManager
 from miv_simulator.utils import ExprClosure, from_yaml
-from miv_simulator.utils.neuron import configure_hoc
+from miv_simulator.utils import neuron as neuron_utils
+from miv_simulator.utils.neuron import configure_hoc, HocObject
 from miv_simulator import cells
 from mpi4py import MPI
 from neuroh5.io import (
+    read_cell_attribute_selection,
     read_projection_names,
     read_cell_attribute_info,
+    read_tree_selection,
     scatter_read_cell_attributes,
     scatter_read_cell_attribute_selection,
+    scatter_read_trees,
 )
 from neuron import h
 
@@ -47,6 +54,53 @@ logging.getLogger("miv_simulator").setLevel(
 )
 
 
+class _Compat:
+    def __init__(self, env):
+        self.__dict__.update(
+            {
+                "_env": env,
+                "dt": 0.025,
+                "dataset_path": None,
+                "dataset_prefix": "",
+                "datasetName": "",
+                "recording_profile": None,
+                "model_config": {
+                    "Random Seeds": {
+                        "Intracellular Recording Sample": env.seed,
+                    }
+                },
+                "gapjunctions_file_path": None,
+                "gapjunctions": None,
+            }
+        )
+
+    def __getattr__(self, name):
+        return getattr(self.__dict__["_env"], name)
+
+    def __setattr__(self, name, value):
+        if name in (
+            "dt",
+            "dataset_path",
+            "dataset_prefix",
+            "datasetName",
+            "recording_profile",
+            "model_config",
+            "gapjunctions_file_path",
+            "gapjunctions",
+        ):
+            self.__dict__[name] = value
+        else:
+            setattr(self.__dict__["_env"], name, value)
+
+
+class _Cell(cells.BiophysCell):
+    def position(self, x: float, y: float, z: float) -> None:
+        target = self.hoc_cell if self.hoc_cell is not None else self.cell_obj
+        if target is None or not hasattr(target, "position"):
+            raise RuntimeError("cell has no position()")
+        target.position(x, y, z)
+
+
 class Env(EnvProtocol):
     def __init__(
         self,
@@ -71,9 +125,6 @@ class Env(EnvProtocol):
             io = self.system.default_io()
         self.io = io
 
-        self._original_get_reduced_cell_constructor = getattr(
-            cells, "get_reduced_cell_constructor", None
-        )
         self._closed = False
 
         if comm is None:
@@ -254,82 +305,15 @@ class Env(EnvProtocol):
             "celltypes": celltypes,
         }
 
-        class _binding:
-            pass
+        self.celltypes = celltypes
+        self.cell_attribute_info = self.system.cells_meta_data.cell_attribute_info
+        self.data_file_path = filepath
+        self.coordinates_ns = "Generated Coordinates"
+        self.SWC_Types = config.SWCTypesDef.__members__
+        self.io_size = io_size
+        self.template_paths = [self.template_directory]
 
-        this = _binding()
-        this.__dict__.update(
-            {
-                # bound
-                "pc": self.pc,
-                "data_file_path": filepath,
-                "io_size": io_size,
-                "comm": self.comm,
-                "node_allocation": self.node_allocation,
-                "cells": self.cells,
-                "artificial_cells": self.artificial_cells,
-                "biophys_cells": self.biophys_cells,
-                "spike_onset_delay": self.spike_onset_delay,
-                "recording_sets": self.recording_sets,
-                "t_vec": self.t_vec,
-                "id_vec": self.id_vec,
-                "t_rec": self.t_rec,
-                # compat
-                "gapjunctions_file_path": None,
-                "gapjunctions": None,
-                "recording_profile": None,
-                "dt": 0.025,
-                "datasetName": "",
-                "gidset": self.gidset,
-                "SWC_Types": config.SWCTypesDef.__members__,
-                "template_paths": [self.template_directory],
-                "dataset_path": None,
-                "dataset_prefix": "",
-                "template_dict": self.template_dict,
-                "cell_attribute_info": self.system.cells_meta_data.cell_attribute_info,
-                "celltypes": celltypes,
-                "model_config": {
-                    "Random Seeds": {"Intracellular Recording Sample": self.seed}
-                },
-                "coordinates_ns": "Generated Coordinates",
-            }
-        )
-
-        class _Cell(cells.BiophysCell):
-            def position(self, x: float, y: float, z: float) -> None:
-                target = self.hoc_cell if self.hoc_cell is not None else self.cell_obj
-                if target is None or not hasattr(target, "position"):
-                    raise RuntimeError("cell has no position()")
-                target.position(x, y, z)
-
-        def make_cell(target):
-            if not target or not target.startswith("@"):
-                return None
-
-            def _cell(gid, pop_name, env, mech_dict):
-                cell = env.biophys_cells[pop_name][gid] = _Cell(
-                    gid=gid,
-                    population_name=pop_name,
-                    cell_obj=import_object_by_path(target[1:])(),
-                    mech_dict=mech_dict,
-                    env=env,
-                )
-                return cell
-
-            return _cell
-
-        cells.get_reduced_cell_constructor = make_cell
-
-        make_cells(this)
-
-        # HACK given its initial `None` primitive data type, the
-        #  env.node_allocation copy at the end of make_cells will
-        #  be lost when the local function stack is freed;
-        #  fortunately, gidid is heap-allocated so we can
-        #  simply repeat the set operation here
-        self.node_allocation = set()
-        for gid in self.gidset:
-            self.node_allocation.add(gid)
+        self._make_cells()
 
         self.mkcellstime = time.time() - st
         if self.rank == 0:
@@ -340,12 +324,233 @@ class Env(EnvProtocol):
 
         st = time.time()
 
-        connect_gjs(this)
+        compat = _Compat(self)
+        connect_gjs(compat)
 
         self.pc.setup_transfer()
         self.connectgjstime = time.time() - st
         if rank == 0:
             logger.info(f"*** Gap junctions created in {self.connectgjstime:.02f} s")
+
+    def _make_cells(self, cell_selection=None):
+        rank = self.rank
+        nhosts = int(self.pc.nhost())
+        compat = _Compat(self)
+
+        if cell_selection is not None:
+            pop_names = sorted(cell_selection.keys())
+        else:
+            pop_names = sorted(self.celltypes.keys())
+
+        for pop_name in pop_names:
+            if cell_selection is None:
+                self.pc.barrier()
+
+            if rank == 0:
+                logger.info(f"*** Creating population {pop_name}")
+
+            template_name = self.celltypes[pop_name].get("template", None)
+
+            mech_dict = None
+            if "mech_file_path" in self.celltypes[pop_name]:
+                mech_dict = self.celltypes[pop_name]["mech_dict"]
+
+            # resolve cell constructor
+            reduced_cons = None
+            if template_name and template_name.startswith("@"):
+                # custom @-template constructor
+                self.template_dict[pop_name] = None
+
+                def _make_custom_cell(target):
+                    def _cell(gid, pop_name, env, mech_dict):
+                        cell = env.biophys_cells[pop_name][gid] = _Cell(
+                            gid=gid,
+                            population_name=pop_name,
+                            cell_obj=import_object_by_path(target[1:])(),
+                            mech_dict=mech_dict,
+                            env=env,
+                        )
+                        return cell
+
+                    return _cell
+
+                reduced_cons = _make_custom_cell(template_name)
+            else:
+                # legacy HOC/template path
+                template_class = neuron_utils.load_cell_template(
+                    compat, pop_name, bcast_template=True
+                )
+                if cell_selection is None:
+                    reduced_cons = cells.get_reduced_cell_constructor(template_name)
+
+            num_cells = 0
+
+            if (pop_name in self.cell_attribute_info) and (
+                "Trees" in self.cell_attribute_info[pop_name]
+            ):
+                if rank == 0:
+                    logger.info(f"*** Reading trees for population {pop_name}")
+
+                if cell_selection is not None:
+                    gid_range = [
+                        gid for gid in cell_selection[pop_name] if gid % nhosts == rank
+                    ]
+                    (trees, _) = read_tree_selection(
+                        self.data_file_path, pop_name, gid_range, comm=self.comm
+                    )
+                else:
+                    if self.node_allocation is None:
+                        (trees, _) = scatter_read_trees(
+                            self.data_file_path,
+                            pop_name,
+                            comm=self.comm,
+                            io_size=self.io_size,
+                        )
+                    else:
+                        (trees, _) = scatter_read_trees(
+                            self.data_file_path,
+                            pop_name,
+                            comm=self.comm,
+                            io_size=self.io_size,
+                            node_allocation=self.node_allocation,
+                        )
+
+                if rank == 0:
+                    logger.info(f"*** Done reading trees for population {pop_name}")
+
+                first_gid = None
+                for i, (gid, tree) in enumerate(trees):
+                    if rank == 0:
+                        logger.info(f"*** Creating {pop_name} gid {gid}")
+                    if first_gid is None:
+                        first_gid = gid
+
+                    if reduced_cons:
+                        cell = reduced_cons(
+                            gid=gid, pop_name=pop_name, env=compat, mech_dict=mech_dict
+                        )
+                    elif cell_selection is not None and template_class is not None:
+                        if isinstance(template_class, HocObject):
+                            hoc_cell = cells.make_hoc_cell(
+                                compat, pop_name, gid, neurotree_dict=tree
+                            )
+                            if mech_dict is None:
+                                cell = hoc_cell
+                            else:
+                                cell = cells.make_biophys_cell(
+                                    gid=gid,
+                                    population_name=pop_name,
+                                    hoc_cell=hoc_cell,
+                                    env=compat,
+                                    tree_dict=tree,
+                                    mech_dict=mech_dict,
+                                )
+                        else:
+                            cell_obj = template_class()
+                            cell = cells.make_biophys_cell(
+                                gid=gid,
+                                population_name=pop_name,
+                                cell_obj=cell_obj,
+                                env=compat,
+                                mech_dict=mech_dict,
+                            )
+                    else:
+                        cell = cells.make_biophys_cell(
+                            gid=gid,
+                            population_name=pop_name,
+                            env=compat,
+                            tree_dict=tree,
+                            mech_dict=mech_dict,
+                        )
+
+                    soma_xyz = cells.get_soma_xyz(tree, self.SWC_Types)
+                    cell.position(soma_xyz[0], soma_xyz[1], soma_xyz[2])
+
+                    cells.register_cell(compat, pop_name, gid, cell)
+                    num_cells += 1
+                del trees
+
+            elif (pop_name in self.cell_attribute_info) and (
+                self.coordinates_ns in self.cell_attribute_info[pop_name]
+            ):
+                if rank == 0:
+                    logger.info(f"*** Reading coordinates for population {pop_name}")
+
+                if cell_selection is not None:
+                    gid_range = [
+                        gid for gid in cell_selection[pop_name] if gid % nhosts == rank
+                    ]
+                    coords_iter, coords_attr_info = read_cell_attribute_selection(
+                        self.data_file_path,
+                        pop_name,
+                        selection=gid_range,
+                        namespace=self.coordinates_ns,
+                        comm=self.comm,
+                        return_type="tuple",
+                    )
+                else:
+                    if self.node_allocation is None:
+                        cell_attr_dict = scatter_read_cell_attributes(
+                            self.data_file_path,
+                            pop_name,
+                            namespaces=[self.coordinates_ns],
+                            comm=self.comm,
+                            io_size=self.io_size,
+                            return_type="tuple",
+                        )
+                    else:
+                        cell_attr_dict = scatter_read_cell_attributes(
+                            self.data_file_path,
+                            pop_name,
+                            namespaces=[self.coordinates_ns],
+                            node_allocation=self.node_allocation,
+                            comm=self.comm,
+                            io_size=self.io_size,
+                            return_type="tuple",
+                        )
+                    coords_iter, coords_attr_info = cell_attr_dict[self.coordinates_ns]
+
+                if rank == 0:
+                    logger.info(
+                        f"*** Done reading coordinates for population {pop_name}"
+                    )
+
+                x_index = coords_attr_info.get("X Coordinate", None)
+                y_index = coords_attr_info.get("Y Coordinate", None)
+                z_index = coords_attr_info.get("Z Coordinate", None)
+
+                for i, (gid, cell_coords) in enumerate(coords_iter):
+                    if rank == 0:
+                        logger.info(f"*** Creating {pop_name} gid {gid}")
+
+                    cell_x = cell_coords[x_index][0]
+                    cell_y = cell_coords[y_index][0]
+                    cell_z = cell_coords[z_index][0]
+
+                    if reduced_cons:
+                        cell = reduced_cons(
+                            gid=gid, pop_name=pop_name, env=compat, mech_dict=mech_dict
+                        )
+                    else:
+                        cell = cells.make_hoc_cell(compat, pop_name, gid)
+                    cell.position(cell_x, cell_y, cell_z)
+                    cells.register_cell(compat, pop_name, gid, cell)
+                    num_cells += 1
+            else:
+                raise RuntimeError(
+                    f"_make_cells: unknown cell configuration type "
+                    f"for cell type {pop_name}"
+                )
+
+            h.define_shape()
+
+            self.recording_sets[pop_name] = set()
+
+            logger.info(
+                f"*** Rank {rank}: Created {num_cells} cells from population {pop_name}"
+            )
+
+        self.node_allocation = set(self.gidset)
 
     def _load_connections(self):
         synapses = self.system.connections_config["synapses"]
@@ -1453,101 +1658,93 @@ class Env(EnvProtocol):
 
         self._closed = True
 
-        try:
-            syn_manager = getattr(self, "synapse_manager", None)
-            if syn_manager is not None and hasattr(syn_manager, "clear"):
-                try:
-                    syn_manager.clear()
-                except Exception:
-                    logger.debug("Failed to clear synapse manager", exc_info=True)
-            self.synapse_manager = None
-
-            self._release_cell_container(getattr(self, "cells", None))
-            self._release_cell_container(getattr(self, "biophys_cells", None))
-            self._release_cell_container(getattr(self, "artificial_cells", None))
-
-            for attr_name in (
-                "syns_set",
-                "edge_count",
-                "recording_sets",
-                "v_recs",
-                "v_recs_dt",
-                "i_recs",
-                "i_recs_dt",
-                "i_area",
-            ):
-                mapping = getattr(self, attr_name, None)
-                if mapping is not None:
-                    mapping.clear()
-
-            stim_vectors = getattr(self, "_stimulus_vectors", None)
-            if stim_vectors is not None:
-                stim_vectors.clear()
-
-            gidset = getattr(self, "gidset", None)
-            if gidset is not None:
-                gidset.clear()
-            flucts = getattr(self, "_flucts", None)
-            if flucts is not None:
-                flucts.clear()
-            template_dict = getattr(self, "template_dict", None)
-            if template_dict is not None:
-                template_dict.clear()
-
-            for vec_name in ("t_vec", "id_vec", "t_rec"):
-                vec = getattr(self, vec_name, None)
-                if vec is not None:
-                    try:
-                        vec.resize(0)
-                    except Exception:
-                        logger.debug("Failed to resize %s", vec_name, exc_info=True)
-
-            if hasattr(self, "cells_meta_data"):
-                self.cells_meta_data = None
-            if hasattr(self, "connections_meta_data"):
-                self.connections_meta_data = None
-            if hasattr(self, "input_sources"):
-                self.input_sources = None
-            if hasattr(self, "this"):
-                self.this = None
-            if hasattr(self, "node_allocation"):
-                self.node_allocation = None
-
-            pc = getattr(self, "pc", None)
-            if pc is not None:
-                try:
-                    pc.gid_clear()
-                except Exception:
-                    logger.debug("ParallelContext gid_clear failure", exc_info=True)
-            self.pc = None
-
+        syn_manager = getattr(self, "synapse_manager", None)
+        if syn_manager is not None and hasattr(syn_manager, "clear"):
             try:
-                secs = list(h.allsec())
+                syn_manager.clear()
             except Exception:
-                secs = []
-            for sec in reversed(secs):
-                try:
-                    h.delete_section(sec=sec)
-                except Exception:
-                    sec_name = "<unknown>"
-                    try:
-                        sec_name = sec.hname()
-                    except Exception:
-                        pass
-                    logger.debug(
-                        "Unable to delete section %s during teardown",
-                        sec_name,
-                        exc_info=True,
-                    )
+                logger.debug("Failed to clear synapse manager", exc_info=True)
+        self.synapse_manager = None
 
-            gc.collect()
-        finally:
-            original_ctor = getattr(
-                self, "_original_get_reduced_cell_constructor", None
-            )
-            if original_ctor is not None:
-                cells.get_reduced_cell_constructor = original_ctor
-                self._original_get_reduced_cell_constructor = None
+        self._release_cell_container(getattr(self, "cells", None))
+        self._release_cell_container(getattr(self, "biophys_cells", None))
+        self._release_cell_container(getattr(self, "artificial_cells", None))
+
+        for attr_name in (
+            "syns_set",
+            "edge_count",
+            "recording_sets",
+            "v_recs",
+            "v_recs_dt",
+            "i_recs",
+            "i_recs_dt",
+            "i_area",
+        ):
+            mapping = getattr(self, attr_name, None)
+            if mapping is not None:
+                mapping.clear()
+
+        stim_vectors = getattr(self, "_stimulus_vectors", None)
+        if stim_vectors is not None:
+            stim_vectors.clear()
+
+        gidset = getattr(self, "gidset", None)
+        if gidset is not None:
+            gidset.clear()
+        flucts = getattr(self, "_flucts", None)
+        if flucts is not None:
+            flucts.clear()
+        template_dict = getattr(self, "template_dict", None)
+        if template_dict is not None:
+            template_dict.clear()
+
+        for vec_name in ("t_vec", "id_vec", "t_rec"):
+            vec = getattr(self, vec_name, None)
+            if vec is not None:
+                try:
+                    vec.resize(0)
+                except Exception:
+                    logger.debug("Failed to resize %s", vec_name, exc_info=True)
+
+        if hasattr(self, "cells_meta_data"):
+            self.cells_meta_data = None
+        if hasattr(self, "connections_meta_data"):
+            self.connections_meta_data = None
+        if hasattr(self, "input_sources"):
+            self.input_sources = None
+        if hasattr(self, "this"):
+            self.this = None
+        if hasattr(self, "node_allocation"):
+            self.node_allocation = None
+
+        pc = getattr(self, "pc", None)
+        if pc is not None:
+            try:
+                pc.gid_clear()
+            except Exception:
+                logger.debug("ParallelContext gid_clear failure", exc_info=True)
+        self.pc = None
+
+        try:
+            secs = list(h.allsec())
+        except Exception:
+            secs = []
+        for sec in reversed(secs):
+            try:
+                h.delete_section(sec=sec)
+            except Exception:
+                sec_name = "<unknown>"
+                try:
+                    sec_name = sec.hname()
+                except Exception:
+                    pass
+                logger.debug(
+                    "Unable to delete section %s during teardown",
+                    sec_name,
+                    exc_info=True,
+                )
+
+        gc.collect()
 
         return self
 
