@@ -15,7 +15,7 @@ def get_version() -> str:
 __version__: str = get_version()
 
 
-def make(system_url: str = "hf://datasets/livn-org/livn/systems/data/S1"):
+def make(system_url: str = "hf://datasets/livn-org/livn/systems/graphs/EI1"):
     """Initializes a default env from a system directory"""
     from livn.env import Env
     from livn.system import fetch
