@@ -313,7 +313,10 @@ class Env(EnvProtocol):
         self.io_size = io_size
         self.template_paths = [self.template_directory]
 
-        self._make_cells()
+        if self.system.name == "CA1d":
+            self._make_cells(cell_selection={"PYR": [48041]})
+        else:
+            self._make_cells()
 
         self.mkcellstime = time.time() - st
         if self.rank == 0:

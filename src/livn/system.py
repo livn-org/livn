@@ -106,21 +106,25 @@ def fetch(
     return target
 
 
-def predefined(name: str = "S1", download_directory: str = ".", force: bool = False):
-    available = [f"S{s + 1}" for s in range(4)] + ["CA1"]
+def predefined(name: str = "EI1", download_directory: str = ".", force: bool = False):
+    available = (
+        [f"EI{s + 1}" for s in range(4)]
+        + [f"S{s + 1}" for s in range(4)]
+        + ["CA1", "CA1d"]
+    )
 
     if name not in available:
         raise ValueError(f"'{name}' is invalid, pick one of ", available)
 
     return fetch(
-        source=f"hf://datasets/livn-org/livn/systems/data/{name}",
+        source=f"hf://datasets/livn-org/livn/systems/graphs/{name}",
         directory=download_directory,
         name=name,
         force=force,
     )
 
 
-def make(name: str = "S1", cached: bool = True) -> "System":
+def make(name: str = "EI1", cached: bool = True) -> "System":
     system = predefined(name)
 
     if cached:
