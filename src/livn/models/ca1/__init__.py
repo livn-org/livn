@@ -1,68 +1,100 @@
+import functools
 import os
 
 import numpy as np
 
 from livn.types import Model
 
-# approximate y-offsets (um) for each section relative to the soma, ordered 
-# to match NEURON's wholetree() traversal of the PyramidalCell topology
-# positive = apical (toward SLM), negative = basal/axonal (toward SO/alveus)
-# lengths are taken from PyramidalCellBilash.geom()
-_N_SECTIONS = 31
-_SECTION_Y_OFFSETS = np.array(
-    [
-        0.0,    # 0  soma
-        -10.0,  # 1  hillock        (L=20, toward axon)
-        -30.0,  # 2  ais            (L=10)
-        -105.0, # 3  axon           (L=150)
-        -37.5,  # 4  oriprox2       (L=75, basal)
-        -112.5, # 5  oridist2b      (L=75)
-        -112.5, # 6  oridist2a      (L=75)
-        -37.5,  # 7  oriprox1       (L=75, basal)
-        -112.5, # 8  oridist1b      (L=75)
-        -112.5, # 9  oridist1a      (L=75)
-        40.0,   # 10 radTprox       (L=80, apical trunk)
-        115.0,  # 11 radTmed        (L=70)
-        140.0,  # 12 rad_thick2     (L=50, oblique)
-        165.0,  # 13 rad_medium2    (L=50)
-        202.5,  # 14 rad_thin2b     (L=75)
-        202.5,  # 15 rad_thin2a     (L=75)
-        140.0,  # 16 rad_thick1     (L=50, oblique)
-        165.0,  # 17 rad_medium1    (L=50)
-        202.5,  # 18 rad_thin1b     (L=75)
-        202.5,  # 19 rad_thin1a     (L=75)
-        175.0,  # 20 radTdist1      (L=50, apical trunk cont.)
-        225.0,  # 21 radTdist2      (L=50)
-        275.0,  # 22 radTdist3      (L=50)
-        300.0,  # 23 lm_thick2      (L=100, tuft)
-        350.0,  # 24 lm_medium2     (L=50)
-        387.5,  # 25 lm_thin2b      (L=75)
-        387.5,  # 26 lm_thin2a      (L=75)
-        300.0,  # 27 lm_thick1      (L=50, tuft)
-        325.0,  # 28 lm_medium1     (L=50)
-        362.5,  # 29 lm_thin1b      (L=75)
-        362.5,  # 30 lm_thin1a      (L=75)
-    ],
-    dtype=np.float64,
-)
-
 
 class PinskyRinzel(Model):
-    def stimulus_coordinates(self, neuron_coordinates):
-        """Expand each neuron coordinate into per-section coordinates.
+    @functools.cache
+    def section_y_offsets(self, population=None):
+        if population is None:
+            return np.array([])
 
-        Returns [n_neurons * 31, 4] with GID preserved and Y offset per section.
-        """
+        # VecStim: no compartments
+        if population in {"EC", "CA2", "CA3"}:
+            return np.array([])
+
+        # PYR: 31-section morphology
+        if population == "PYR":
+            # Section tree in wholetree() traversal order, matching NEURON's
+            # soma.wholetree() for the PyramidalCellBilash topology with
+            # lengths from PyramidalCellBilash.geom()
+            section_tree = [
+                # (name, length_um, parent_index)
+                ("soma", 10, -1),  # 0  (-1 = root)
+                ("hillock", 20, 0),  # 1
+                ("ais", 10, 1),  # 2
+                ("axon", 150, 2),  # 3
+                ("oriprox2", 75, 0),  # 4
+                ("oridist2b", 75, 4),  # 5
+                ("oridist2a", 75, 4),  # 6
+                ("oriprox1", 75, 0),  # 7
+                ("oridist1b", 75, 7),  # 8
+                ("oridist1a", 75, 7),  # 9
+                ("radTprox", 80, 0),  # 10
+                ("radTmed", 70, 10),  # 11
+                ("rad_thick2", 50, 11),  # 12
+                ("rad_medium2", 50, 12),  # 13
+                ("rad_thin2b", 75, 13),  # 14
+                ("rad_thin2a", 75, 13),  # 15
+                ("rad_thick1", 50, 11),  # 16
+                ("rad_medium1", 50, 16),  # 17
+                ("rad_thin1b", 75, 17),  # 18
+                ("rad_thin1a", 75, 17),  # 19
+                ("radTdist1", 50, 11),  # 20
+                ("radTdist2", 50, 20),  # 21
+                ("radTdist3", 50, 21),  # 22
+                ("lm_thick2", 100, 22),  # 23
+                ("lm_medium2", 50, 23),  # 24
+                ("lm_thin2b", 75, 24),  # 25
+                ("lm_thin2a", 75, 24),  # 26
+                ("lm_thick1", 50, 22),  # 27
+                ("lm_medium1", 50, 27),  # 28
+                ("lm_thin1b", 75, 28),  # 29
+                ("lm_thin1a", 75, 28),  # 30
+            ]
+            n = len(section_tree)
+            offsets = np.zeros(n, dtype=np.float64)
+            end_y = np.zeros(n, dtype=np.float64)
+            direction = np.zeros(n, dtype=np.intp)
+            for i, (_, length, parent) in enumerate(section_tree):
+                if parent == -1:
+                    continue
+                if i in {1, 4, 7}:  # hillock, oriprox2, oriprox1
+                    direction[i] = -1
+                    start_y = 0.0
+                elif i in {10}:  # radTprox
+                    direction[i] = 1
+                    start_y = 0.0
+                else:
+                    direction[i] = direction[parent]
+                    start_y = end_y[parent]
+                end_y[i] = start_y + direction[i] * length
+                offsets[i] = start_y + direction[i] * length / 2
+            return offsets
+
+        # interneurons: 2 compartments (soma + dend)
+        cell_config = self.neuron_cell_config()
+        config_key = population[:2] if population.startswith("IS") else population
+        if config_key not in cell_config:
+            return np.array([])
+        Ltotal = cell_config[config_key]["PinskyRinzel"]["Ltotal"]
+        return np.array([0.0, Ltotal / 2.0])
+
+    def stimulus_coordinates(self, neuron_coordinates, population=None):
         neuron_coordinates = np.asarray(neuron_coordinates)
-        n_neurons = neuron_coordinates.shape[0]
-        # apply y-offsets (column 2) for each section, tiled for all neurons
-        coords = np.repeat(neuron_coordinates, _N_SECTIONS, axis=0)
-        offsets = np.tile(_SECTION_Y_OFFSETS, n_neurons)
-        coords[:, 2] = coords[:, 2] + offsets
+        offsets = self.section_y_offsets(population)
+        if len(offsets) == 0:
+            return neuron_coordinates
+        n = neuron_coordinates.shape[0]
+        coords = np.repeat(neuron_coordinates, len(offsets), axis=0)
+        coords[:, 2] += np.tile(offsets, n)
         return coords
 
-    def recording_coordinates(self, neuron_coordinates):
-        return self.stimulus_coordinates(neuron_coordinates)
+    def recording_coordinates(self, neuron_coordinates, population=None):
+        return self.stimulus_coordinates(neuron_coordinates, population=population)
 
     def neuron_template_directory(self):
         return os.path.join(os.path.dirname(__file__), "neuron", "templates")
