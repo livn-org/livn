@@ -1,19 +1,19 @@
 # Installation on DeltaAI
 
-'''
+[DeltaAI](https://docs.ncsa.illinois.edu/systems/deltaai/en/latest/user-guide/prog-env.html#gpudirect-for-mpi-cuda) provides a preconfigured MPI/PHDF5 environment via the following modules:
+
+```sh
 module purge
 module load default
-module load PrgEnv-gnu
-module load cray-mpich/8.1.33
-module load cray-hdf5-parallel/1.14.3.7
-module load cmake/3.30.2
-'''
 
-'''
-echo "HDF5 Directory is: $HDF5_DIR"
+module load PrgEnv-gnu cray-mpich/9.0.1 cray-hdf5-parallel/1.14.3.7 cmake/3.30.2 cray-python/3.11.7
+
 export HDF5_ROOT="$HDF5_DIR"
 export HDF5_USE_SHLIB=yes
 export HDF5_HL_LIBRARIES="$HDF5_DIR/lib/libhdf5_hl.so"
-'''
 
-Then follow the [standard instructions](../installation/)
+export MPICC="cc -shared"
+export UV_PYTHON=/opt/cray/pe/python/3.11.7/bin/python
+```
+
+Once configured, follow the [standard instructions](../installation/).
