@@ -8,4 +8,11 @@ elif backend() == "neuron":
 elif backend() == "diffrax":
     from livn.backend.diffrax import *
 else:
-    print(f"livn: Unknown backend: {backend()}")
+    try:
+        import importlib
+        _mod = importlib.import_module(backend())
+        globals().update(
+            {k: getattr(_mod, k) for k in dir(_mod) if not k.startswith("_")}
+        )
+    except ImportError:
+        raise ImportError(f"livn: backend not found: {backend()}")

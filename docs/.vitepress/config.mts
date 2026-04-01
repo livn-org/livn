@@ -51,6 +51,7 @@ export default defineConfig({
                         { text: "Plasticity", link: "/guide/advanced/plasticity" },
                         { text: "Decoding pipelines", link: "/guide/advanced/decoding-pipelines" },
                         { text: "Distributed Environment", link: "/guide/advanced/distributed" },
+                        { text: "Custom Backends", link: "/guide/advanced/custom-backends" },
                         { text: "Gymnasium Integration", link: "/guide/advanced/gymnasium" },
                     ],
                 },
