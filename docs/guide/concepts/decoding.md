@@ -136,6 +136,31 @@ result = env(decoding=AvalancheAnalysis(duration=5000))
 # Includes branching_ratio, power_law_exponent, mean_size, mean_duration, ...
 ```
 
+### ArrowDataset
+
+Saves raw simulation output to Arrow files that can be loaded with [HF Datasets](https://huggingface.co/docs/datasets). Each call writes an independently valid shard, so the data is usable even if the process is interrupted. Extends `GatherAndMerge` to handle distributed simulations automatically.
+
+```python
+from livn.decoding import ArrowDataset
+
+decoding = ArrowDataset(
+    duration=5000,
+    directory="./output/my_dataset",
+    spikes=True,
+    voltages=True,
+    membrane_currents=False,
+)
+
+# Each call writes a new shard (data-00000.arrow, data-00001.arrow, ...)
+for _ in range(10):
+    env(decoding=decoding)
+
+# Load as a HF Dataset
+ds = decoding.dataset()
+```
+
+New instances pick up where previous ones left off by counting existing shards on disk, so the decoding object can be safely destroyed and recreated without data loss.
+
 ## Composing decodings
 
 The `Pipe` decoding allows sequential composition of multiple decodings:

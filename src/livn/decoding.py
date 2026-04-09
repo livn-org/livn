@@ -1,3 +1,4 @@
+import os
 from typing import Callable, Optional, Any
 
 import numpy as np
@@ -578,3 +579,90 @@ class AvalancheAnalysis(Decoding):
                 }
 
         return P.broadcast(result, comm=env.comm)
+
+
+class ArrowDataset(GatherAndMerge):
+    """Save raw simulation output to an Arrow file
+
+    Gathers and merges distributed data, then writes each decoded result as an
+    independently valid Arrow shard file.  The dataset is readable after
+    every call via `datasets.Dataset.from_file()`.
+
+    To turn written shards into a full dataset use `.dataset()`
+
+    Args:
+        directory: Directory where the Arrow dataset is written
+        spikes: Whether to record / save spike data
+        voltages: Whether to record / save voltage traces
+        membrane_currents: Whether to record / save membrane currents
+        root: MPI root rank for gather operations
+    """
+
+    directory: str
+
+    def __call__(self, env, it, tt, iv, vv, im, mp):
+        data = super().__call__(env, it, tt, iv, vv, im, mp)
+        if data is None:
+            return
+
+        it, tt, iv, vv, im, mp = data
+
+        row = {"duration": self.duration}
+        if self.spikes:
+            row["it"] = it
+            row["tt"] = tt
+        if self.voltages:
+            row["iv"] = iv
+            row["vv"] = vv
+        if self.membrane_currents:
+            row["im"] = im
+            row["mp"] = mp
+
+        self._write_shard(row)
+
+        return it, tt, iv, vv, im, mp
+
+    def _write_shard(self, row):
+        from datasets.arrow_writer import ArrowWriter
+
+        os.makedirs(self.directory, exist_ok=True)
+        idx = self._next_shard_index()
+        shard_path = os.path.join(
+            self.directory,
+            f"data-{idx:05d}.arrow",
+        )
+        writer = ArrowWriter(path=shard_path, writer_batch_size=1)
+        writer.write(row)
+        writer.finalize()
+        writer.close()
+
+    def _next_shard_index(self) -> int:
+        if not os.path.isdir(self.directory):
+            return 0
+        return len(
+            [
+                f
+                for f in os.listdir(self.directory)
+                if f.startswith("data-") and f.endswith(".arrow")
+            ]
+        )
+
+    def dataset(self):
+        import pyarrow as pa
+        from datasets import Dataset
+
+        shard_files = sorted(
+            f
+            for f in os.listdir(self.directory)
+            if f.startswith("data-") and f.endswith(".arrow")
+        )
+        if not shard_files:
+            return
+
+        tables = []
+        for f in shard_files:
+            tables.append(
+                pa.ipc.open_stream(os.path.join(self.directory, f)).read_all()
+            )
+
+        return Dataset(pa.concat_tables(tables))
