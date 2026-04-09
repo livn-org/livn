@@ -64,9 +64,6 @@ class Env(EnvProtocol):
         self.key = jr.PRNGKey(seed)
         self.key, self.init_key, self.run_key = jr.split(self.key, 3)
 
-        self.t = 0.0
-        self.y0 = None
-
     def init(self):
         self.module = self.model.diffrax_module(
             self,
@@ -150,20 +147,19 @@ class Env(EnvProtocol):
                 stimulus.array = stimulus.array[:, 0]
 
         dt_solver = kwargs.pop("dt_solver", 0.01)
+        t0 = kwargs.pop("t0", 0.0)
+        y0 = kwargs.pop("y0", None)
         it, tt, iv, v, im, mp, yT = self.module.run(
             input_current=stimulus.array,
             noise=self._noise,
-            t0=self.t,
-            t1=self.t + duration,
+            t0=t0,
+            t1=t0 + duration,
             dt=dt,
-            y0=self.y0,
+            y0=y0,
             dt_solver=dt_solver,
             key=self.run_key,
             **kwargs,
         )
-
-        self.t += duration
-        self.y0 = yT
 
         return it, tt, iv, v, im, mp
 
@@ -171,9 +167,6 @@ class Env(EnvProtocol):
         return self
 
     def clear(self):
-        self.t = 0
-        self.y0 = None
-
         return self
 
 
@@ -183,11 +176,10 @@ def _env_tree_flatten(env):
     else:
         module_params, module_static = None, None
 
-    children = (module_params, env.key, env._noise, env.system)
+    children = (module_params, env.key, env._noise)
     aux = (
         module_static,
-        env.t,
-        env.y0,
+        env.system,
         env._weights,
         env.model,
         env.io,
@@ -203,11 +195,10 @@ def _env_tree_flatten(env):
 
 
 def _env_tree_unflatten(aux, children):
-    module_params, key, noise, system = children
+    module_params, key, noise = children
     (
         module_static,
-        t,
-        y0,
+        system,
         weights,
         model,
         io,
@@ -227,8 +218,6 @@ def _env_tree_unflatten(aux, children):
 
     env = Env(system, model, io, seed, comm, subworld_size)
     env.module = module
-    env.y0 = y0
-    env.t = t
     env.key = key
     env._noise = noise
     env._weights = weights
