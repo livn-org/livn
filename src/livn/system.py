@@ -910,13 +910,12 @@ class TrainableSystem:
     Arguments:
         n_neurons: Number of neurons per population
         n_populations: Number of populations
-        params: Learnable offsets [n_populations, n_neurons, xyz=3]
-            If None, initialized to vec{0}
-        origins: Reference origins [n_populations, xyz=3] for electrode locations;
+        params: Learnable offsets from origins [n_populations, n_neurons, xyz=3].
+            If None or dict, initialized using physics-informed radial distribution
+            around each origin. A dict is passed as kwargs to _init_radial_offsets,
+            e.g. params={'max_dist': 13} to constrain the initial radius.
+        origins: Reference origins [n_populations, xyz=3] for channel locations;
             defaults to vec{0} for all populations
-        params: Learnable offsets from electrode origins [n_populations, n_neurons, xyz=3].
-            If None, initialized using physics-informed radial distribution around
-            each electrode
         uri: Optional URI for loading IO configuration
         seed:
     """
@@ -925,7 +924,9 @@ class TrainableSystem:
         self,
         n_neurons: int,
         n_populations: int = 1,
-        params: types.Float[types.Array, "n_populations n_neurons xyz=3"] | None = None,
+        params: types.Float[types.Array, "n_populations n_neurons xyz=3"]
+        | dict
+        | None = None,
         origins: types.Float[types.Array, "n_populations xyz=3"] | None = None,
         uri: str | None = None,
         seed: int | None = None,
@@ -941,7 +942,9 @@ class TrainableSystem:
         self.origins = np.array(origins)
 
         if params is None:
-            params = self._init_radial_offsets(seed=seed)
+            params = {}
+        if isinstance(params, dict):
+            params = self._init_radial_offsets(seed=seed, **params)
         self.set_params(params)
 
     def _init_radial_offsets(
