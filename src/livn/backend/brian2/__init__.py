@@ -10,8 +10,6 @@ from livn.types import Env as EnvProtocol
 from livn.types import SynapticParam
 from livn.utils import P
 
-b2.prefs.codegen.target = "numpy"
-
 if TYPE_CHECKING:
     from mpi4py import MPI
 
@@ -49,6 +47,8 @@ class Env(EnvProtocol):
         self.decoding = None
 
         self.prng = RandomState(seed)
+        if seed is not None:
+            b2.seed(seed)
 
         self._populations = {}
         self._synapses = {}
@@ -61,6 +61,10 @@ class Env(EnvProtocol):
         self._network = b2.Network()
 
         self.t = 0
+
+    @property
+    def network(self):
+        return self._network
 
     @property
     def voltage_recording_dt(self) -> float:
@@ -215,7 +219,9 @@ class Env(EnvProtocol):
     def set_noise(self, noise: dict):
         if not self._noise_ops:
             for population in self._populations.values():
-                self._noise_ops.add(self.model.brian2_noise_op(population, self.prng))
+                op = self.model.brian2_noise_op(population, self.prng)
+                if op is not None:
+                    self._noise_ops.add(op)
 
         if noise:
             for population in self._populations.values():
@@ -261,20 +267,24 @@ class Env(EnvProtocol):
         return self
 
     def _record_membrane_current(self, population: str, dt: float) -> "Env":
-        """Record synaptic/input current I for each neuron of the population"""
         if population not in self._populations:
             return self
 
-        monitor = b2.StateMonitor(
-            self._populations[population],
-            "I",
-            record=True,
-            dt=dt * b2.ms,
-        )
-        self._membrane_monitors[population] = monitor
-        self._membrane_monitors_dt[population] = dt
-        self._network.add(monitor)
+        pop = self._populations[population]
+        has_compartments = "I_memb_s" in pop.variables and "I_memb_d" in pop.variables
 
+        if has_compartments:
+            monitor_s = b2.StateMonitor(pop, "I_memb_s", record=True, dt=dt * b2.ms)
+            monitor_d = b2.StateMonitor(pop, "I_memb_d", record=True, dt=dt * b2.ms)
+            self._membrane_monitors[population] = (monitor_s, monitor_d)
+            self._network.add(monitor_s)
+            self._network.add(monitor_d)
+        else:
+            monitor = b2.StateMonitor(pop, "I", record=True, dt=dt * b2.ms)
+            self._membrane_monitors[population] = monitor
+            self._network.add(monitor)
+
+        self._membrane_monitors_dt[population] = dt
         return self
 
     def run(
@@ -303,15 +313,19 @@ class Env(EnvProtocol):
 
         stimulus = Stimulus.from_arg(stimulus)
 
-        if stimulus.array.shape[0] < (self.t + duration) / stimulus.dt:
-            # left-pad with zeros
-            padding = np.zeros(
-                (
-                    int((self.t + duration) / stimulus.dt) - stimulus.array.shape[0],
-                    stimulus.array.shape[1],
-                )
-            )
-            stimulus.array = np.vstack((padding, stimulus))
+        # Check for stimulus dt consistency across continued runs
+        if not hasattr(self, "_stimulus_dt"):
+            self._stimulus_dt = stimulus.dt
+        elif not np.isclose(self._stimulus_dt, stimulus.dt, rtol=0.0, atol=1e-12):
+            raise ValueError("Stimulus dt mismatch; call clear() before rerunning")
+
+        # Left-pad stimulus to align with brian2's absolute time reference.
+        # Brian2's TimedArray indexes from t=0 (simulation start), so for
+        # continued runs (self.t > 0) the stimulus must be padded.
+        pad_rows = max(0, int(round(self.t / stimulus.dt)))
+        if pad_rows > 0:
+            padding = np.zeros((pad_rows, stimulus.array.shape[1]))
+            stimulus.array = np.vstack((padding, stimulus.array))
 
         t_start = self.t
         self._network.run(
@@ -355,7 +369,7 @@ class Env(EnvProtocol):
             ii.append(monitor.i[ts >= t_start] + monitor.source.gid_offset)
             tt.append(ts[ts >= t_start] - t_start)
 
-        # membrane currents (in uA) aligned to global gid order if enabled
+        # membrane currents aligned to global gid order if enabled
         if len(self._membrane_monitors) == 0:
             return concat(ii), concat(tt), concat(gids), concat(vv), None, None
 
@@ -367,6 +381,12 @@ class Env(EnvProtocol):
         all_gids = np.asarray(coords)[:, 0].astype(np.uint32)
         gid_to_index = {int(g): idx for idx, g in enumerate(all_gids)}
 
+        # Check if any population uses per-compartment recording
+        has_compartments = any(
+            isinstance(m, tuple) for m in self._membrane_monitors.values()
+        )
+        sections_per_neuron = 2 if has_compartments else 1
+
         # determine maximum T across monitors after slicing
         lengths = []
         per_pop_data = {}
@@ -374,37 +394,65 @@ class Env(EnvProtocol):
             start_idx = int(
                 t_start / max(self._membrane_monitors_dt.get(population, 0.1), 1e-9)
             )
-            data = (monitor.I / b2.uA)[:, start_idx:]
-            per_pop_data[population] = data
-            lengths.append(data.shape[1] if data.ndim == 2 else 0)
+            if isinstance(monitor, tuple):
+                # Two-compartment: (monitor_soma, monitor_dend)
+                mon_s, mon_d = monitor
+                data_s = np.array(mon_s.I_memb_s[:, start_idx:])
+                data_d = np.array(mon_d.I_memb_d[:, start_idx:])
+                per_pop_data[population] = (data_s, data_d)
+                lengths.append(data_s.shape[1] if data_s.ndim == 2 else 0)
+            else:
+                data = (monitor.I / b2.uA)[:, start_idx:]
+                per_pop_data[population] = data
+                lengths.append(data.shape[1] if data.ndim == 2 else 0)
 
         T = int(max(lengths) if lengths else 0)
         if T == 0:
             return concat(ii), concat(tt), concat(gids), concat(vv), None, None
 
         n_neurons = int(len(all_gids))
-        currents = np.zeros((n_neurons, T), dtype=np.float32)
+        currents = np.zeros((n_neurons * sections_per_neuron, T), dtype=np.float32)
 
         for population, data in per_pop_data.items():
-            if data.size == 0:
-                continue
             base = int(self._populations[population].gid_offset)
-            n_pop = data.shape[0]
-            # data shape: [n_pop_neurons, t]
-            for k in range(n_pop):
-                gid = base + k
-                idx = gid_to_index.get(int(gid))
-                if idx is None:
+
+            if isinstance(data, tuple):
+                # Two-compartment: interleave soma/dend (soma0, dend0, soma1, dend1, ...)
+                data_s, data_d = data
+                if data_s.size == 0:
                     continue
-                series = np.array(data[k], dtype=np.float32)
-                # pad/truncate to T
-                if series.shape[0] < T:
-                    pad = np.zeros(T, dtype=np.float32)
-                    pad[: series.shape[0]] = series
-                    series = pad
-                elif series.shape[0] > T:
-                    series = series[:T]
-                currents[idx, :] = series
+                n_pop = data_s.shape[0]
+                for k in range(n_pop):
+                    gid = base + k
+                    idx = gid_to_index.get(int(gid))
+                    if idx is None:
+                        continue
+                    for sec_idx, sec_data in enumerate([data_s[k], data_d[k]]):
+                        series = np.array(sec_data, dtype=np.float32)
+                        if series.shape[0] < T:
+                            pad = np.zeros(T, dtype=np.float32)
+                            pad[: series.shape[0]] = series
+                            series = pad
+                        elif series.shape[0] > T:
+                            series = series[:T]
+                        currents[idx * sections_per_neuron + sec_idx, :] = series
+            else:
+                if data.size == 0:
+                    continue
+                n_pop = data.shape[0]
+                for k in range(n_pop):
+                    gid = base + k
+                    idx = gid_to_index.get(int(gid))
+                    if idx is None:
+                        continue
+                    series = np.array(data[k], dtype=np.float32)
+                    if series.shape[0] < T:
+                        pad = np.zeros(T, dtype=np.float32)
+                        pad[: series.shape[0]] = series
+                        series = pad
+                    elif series.shape[0] > T:
+                        series = series[:T]
+                    currents[idx, :] = series
 
         return concat(ii), concat(tt), concat(gids), concat(vv), all_gids, currents
 
@@ -452,3 +500,30 @@ class Env(EnvProtocol):
         gc.collect()
 
         self.init()
+
+    def cleosim(self):
+        """Wrap the brian2 network in a cleo CLSimulator.
+
+        Assigns livn neuron coordinates to the brian2 NeuronGroups and
+        returns a CLSimulator ready for device injection. Use env.run()
+        instead of sim.run() to step the simulation.
+        """
+        import cleo
+        from cleo.coords import assign_coords
+
+        for name, pop in self._populations.items():
+            coords_array = self.system.coordinate_array(name)  # [n, 4] = gid, x, y, z
+            xyz_um = coords_array[:, 1:4]
+            assign_coords(pop, xyz_um * b2.um)
+
+        sim = cleo.CLSimulator(self._network)
+
+        def _run_disabled(*args, **kwargs):
+            raise RuntimeError(
+                "Use env.run() instead of sim.run() to step the simulation. "
+                "The livn environment manages time tracking, stimulus, and monitors"
+            )
+
+        sim.run = _run_disabled
+
+        return sim

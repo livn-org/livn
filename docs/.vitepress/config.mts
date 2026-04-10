@@ -53,6 +53,7 @@ export default defineConfig({
                         { text: "Distributed Environment", link: "/guide/advanced/distributed" },
                         { text: "Custom Backends", link: "/guide/advanced/custom-backends" },
                         { text: "Gymnasium Integration", link: "/guide/advanced/gymnasium" },
+                        { text: "Cleo Integration", link: "/guide/advanced/cleo" },
                     ],
                 },
             ],

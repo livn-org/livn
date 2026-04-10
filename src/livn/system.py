@@ -429,14 +429,9 @@ class System:
         if model is not None:
             model = import_object_by_path(model["cls"])(**model["kwargs"])
         else:
-            if backend() == "brian2":
-                from livn.models.izhikevich import Izhikevich
+            from livn.models.rcsd import ReducedCalciumSomaDendrite
 
-                model = Izhikevich()
-            else:
-                from livn.models.rcsd import ReducedCalciumSomaDendrite
-
-                model = ReducedCalciumSomaDendrite()
+            model = ReducedCalciumSomaDendrite()
 
         return model
 
