@@ -59,6 +59,8 @@ class Env(EnvProtocol):
         self._membrane_monitors_dt = {}
         self._noise_ops = set()
         self._network = b2.Network()
+        self._weight_monitors = {}
+        self._plasticity_enabled = False
 
         self.t = 0
 
@@ -119,14 +121,9 @@ class Env(EnvProtocol):
     def _load_connections(self):
         for post, v in self.system.connections_config["synapses"].items():
             for pre, synapse in v.items():
-                S = self.model.brian2_connection_synapse(
-                    self._populations[pre], self._populations[post]
-                )
-                S.add_attribute("kind")
-                S.kind = synapse["type"]
-
                 population_ranges = self.system.cells_meta_data.population_ranges
 
+                # Build connectivity arrays
                 all_i = []
                 all_j = []
                 all_multipliers = []
@@ -180,18 +177,75 @@ class Env(EnvProtocol):
                 all_multipliers = np.concatenate(all_multipliers)
                 all_distances = np.concatenate(all_distances)
 
-                S.connect(i=all_i, j=all_j)
-                S.multiplier[:] = all_multipliers
-                S.distance[:] = all_distances
+                # Iterate over mechanisms for this connection
+                mechanisms = synapse.get("mechanisms", {}).get("default", {})
+                if not mechanisms:
+                    # Fallback: use legacy single synapse
+                    S = self.model.brian2_connection_synapse(
+                        self._populations[pre], self._populations[post]
+                    )
+                    S.add_attribute("kind")
+                    S.kind = synapse["type"]
+                    S.connect(i=all_i, j=all_j)
+                    S.multiplier[:] = all_multipliers
+                    S.distance[:] = all_distances
+                    S.prefix = 1.0 if synapse["type"] == "excitatory" else -1.0
+                    S.w[:] = 0
+                    self._synapses[(post, pre)] = S
+                    self._network.add(S)
+                    continue
 
-                S.prefix = 1.0 if synapse["type"] == "excitatory" else -1.0
-                S.w[:] = 0
+                # Set mechanism time constants and reversal potentials on post group
+                post_group = self._populations[post]
+                for mech_name, mech_params in mechanisms.items():
+                    mech_lower = mech_name.lower()
+                    if mech_params.get("tau_rise") is not None:
+                        setattr(
+                            post_group,
+                            f"tau_rise_{mech_lower}",
+                            mech_params["tau_rise"],
+                        )
+                    if mech_params.get("tau_decay") is not None:
+                        setattr(
+                            post_group,
+                            f"tau_decay_{mech_lower}",
+                            mech_params["tau_decay"],
+                        )
+                    if mech_params.get("e") is not None:
+                        setattr(post_group, f"e_{mech_lower}", mech_params["e"])
+                    # Set NMDA Mg block parameters if present
+                    if mech_name == "NMDA":
+                        for p in ("mg", "Kd", "gamma", "vshift"):
+                            if p in mech_params and mech_params[p] is not None:
+                                setattr(post_group, f"{p}_nmda", mech_params[p])
 
-                # S.delay = 1 * b2.ms
+                for mech_name, mech_params in mechanisms.items():
+                    if mech_params.get("tau_decay") is None:
+                        continue
 
-                self._synapses[(post, pre)] = S
+                    S = self.model.brian2_mechanism_synapse(
+                        self._populations[pre],
+                        self._populations[post],
+                        mech_name,
+                        mech_params,
+                        synapse["type"],
+                    )
+                    S.add_attribute("kind")
+                    S.kind = synapse["type"]
 
-                self._network.add(S)
+                    S.connect(i=all_i, j=all_j)
+                    S.multiplier[:] = all_multipliers
+                    S.distance[:] = all_distances
+                    S.w[:] = mech_params.get("weight", 1.0)
+
+                    if hasattr(S, "w_plastic"):
+                        S.w_plastic[:] = 1.0
+                        S.last_int[:] = 0.0
+                        S.w_min[:] = 0.0
+                        S.w_max[:] = 10.0
+
+                    self._synapses[(post, pre, mech_name)] = S
+                    self._network.add(S)
 
         return self
 
@@ -209,10 +263,28 @@ class Env(EnvProtocol):
     def set_weights(self, weights):
         for k, v in weights.items():
             param = SynapticParam.from_string(k)
-            if param.sec_type is not None:
+            if param.sec_type is not None and param.sec_type not in (
+                "soma",
+                "dend",
+                "basal",
+                "apical",
+            ):
                 print(f"Warning: brian2 backend does not support sections ({k})")
-            # key: (post, pre)
-            self._synapses[(param.population, param.source)].w = v
+
+            post = param.population
+            pre = param.source
+            mech_name = param.syn_name  # e.g., "AMPA", "NMDA", "GABA_A"
+
+            if mech_name and (post, pre, mech_name) in self._synapses:
+                self._synapses[(post, pre, mech_name)].w = v
+            elif (post, pre) in self._synapses:
+                # Legacy key without mechanism
+                self._synapses[(post, pre)].w = v
+            elif mech_name is None:
+                # Apply to all mechanisms for this (post, pre) pair
+                for key, S in self._synapses.items():
+                    if len(key) == 3 and key[0] == post and key[1] == pre:
+                        S.w = v
 
         return self
 
@@ -222,6 +294,7 @@ class Env(EnvProtocol):
                 op = self.model.brian2_noise_op(population, self.prng)
                 if op is not None:
                     self._noise_ops.add(op)
+                    self._network.add(op)
 
         if noise:
             for population in self._populations.values():
@@ -455,6 +528,111 @@ class Env(EnvProtocol):
                     currents[idx, :] = series
 
         return concat(ii), concat(tt), concat(gids), concat(vv), all_gids, currents
+
+    def _iter_stdp_synapses(self):
+        for key, S in self._synapses.items():
+            if hasattr(S, "_has_stdp") and S._has_stdp:
+                yield key, S
+
+    def enable_plasticity(self, config=None):
+        if config is None:
+            config = {}
+
+        for pop in self._populations.values():
+            pop.plasticity_on = 1
+            for param, value in config.items():
+                if hasattr(pop, param):
+                    setattr(pop, param, value)
+
+        for key, S in self._iter_stdp_synapses():
+            if len(S) > 0:
+                post_pop = self._populations[key[0]]
+                learn_int_var = (
+                    "learn_int_exc" if S.kind == "excitatory" else "learn_int_inh"
+                )
+                S.last_int[:] = getattr(post_pop, learn_int_var)[S.j]
+
+        self._plasticity_enabled = True
+        return self
+
+    def disable_plasticity(self):
+        for pop in self._populations.values():
+            pop.plasticity_on = 0
+
+        self._plasticity_enabled = False
+        return self
+
+    def get_weights(self):
+        """Returns current synaptic weights of all plastic synapses
+
+        (post, pre, mechanism, pre_idx, post_idx) -> w_plastic value
+        """
+        weights = {}
+        for key, S in self._iter_stdp_synapses():
+            if len(S) > 0:
+                post, pre, mech = key
+                w_plastic = np.array(S.w_plastic[:])
+                i_arr = np.array(S.i[:])
+                j_arr = np.array(S.j[:])
+                for idx in range(len(S)):
+                    weights[(post, pre, mech, int(i_arr[idx]), int(j_arr[idx]))] = (
+                        float(w_plastic[idx])
+                    )
+        return weights
+
+    def normalize_weights(self, target=None):
+        from collections import defaultdict
+
+        per_neuron = defaultdict(list)  # post_gid -> [(S, syn_idx, w_min, w_max)]
+
+        for key, S in self._iter_stdp_synapses():
+            if len(S) == 0:
+                continue
+            j_arr = np.array(S.j[:])
+            w_min_arr = np.array(S.w_min[:])
+            w_max_arr = np.array(S.w_max[:])
+            for idx in range(len(S)):
+                per_neuron[(key[0], int(j_arr[idx]))].append(
+                    (S, idx, float(w_min_arr[idx]), float(w_max_arr[idx]))
+                )
+
+        for (pop, j), conns in per_neuron.items():
+            t = target if target is not None else float(len(conns))
+
+            free = list(conns)
+            clamped_sum = 0.0
+            for _ in range(20):
+                free_sum = sum(float(S.w_plastic[idx]) for S, idx, _, _ in free)
+                remaining = t - clamped_sum
+                if free_sum <= 0 or abs(free_sum - remaining) < 1e-12:
+                    break
+                scale = remaining / free_sum
+                next_free = []
+                for S, idx, w_min, w_max in free:
+                    new_w = float(S.w_plastic[idx]) * scale
+                    if new_w >= w_max:
+                        S.w_plastic[idx] = w_max
+                        clamped_sum += w_max
+                    elif new_w <= w_min:
+                        S.w_plastic[idx] = w_min
+                        clamped_sum += w_min
+                    else:
+                        S.w_plastic[idx] = new_w
+                        next_free.append((S, idx, w_min, w_max))
+                if len(next_free) == len(free):
+                    break
+                free = next_free
+
+        return self
+
+    def record_weights(self, dt=0.1):
+        for key, S in self._iter_stdp_synapses():
+            if len(S) > 0 and key not in self._weight_monitors:
+                monitor = b2.StateMonitor(S, "w_plastic", record=True, dt=dt * b2.ms)
+                self._weight_monitors[key] = monitor
+                self._network.add(monitor)
+
+        return self
 
     def clear_recordings(self):
         self.clear_monitors()
