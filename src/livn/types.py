@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -27,12 +29,8 @@ if TYPE_CHECKING:
     from livn.types import Model
 
     Array = Union[TorchTensor, ndarray, JaxArray, TfTensor]
-else:
-    from numpy import ndarray
 
-    Array = ndarray
-
-from jaxtyping import Float, Int
+    from jaxtyping import Float, Int
 
 PopulationName = str
 PostSynapticPopulationName = PopulationName

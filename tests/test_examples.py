@@ -7,15 +7,22 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 
 def test_using_the_dataset():
+    pytest.importorskip("datasets")
     from examples import using_the_dataset
 
 
+@pytest.mark.skipif(
+    not os.getenv("LIVN_BACKEND"), reason="no simulation backend selected"
+)
 def test_run_a_simulation():
     from examples import run_a_simulation
 
     run_a_simulation.env.close()
 
 
+@pytest.mark.skipif(
+    not os.getenv("LIVN_BACKEND"), reason="no simulation backend selected"
+)
 def test_parallel_simulation():
     from examples import parallel_simulation
 

@@ -6,6 +6,12 @@ import pytest
 from livn.utils import P, merge, merge_array, merge_dict
 from livn.backend import backend
 
+try:
+    import mpi4py  # noqa: F401
+    _has_mpi4py = True
+except ImportError:
+    _has_mpi4py = False
+
 
 def _get_rank():
     if backend() == "neuron":
@@ -116,6 +122,7 @@ def test_utils_P(monkeypatch):
 @pytest.mark.skipif(
     "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
 )
+@pytest.mark.skipif(not _has_mpi4py, reason="mpi4py not available")
 @pytest.mark.mpiexec(timeout=10)
 @pytest.mark.parametrize(
     "mpiexec_n",
@@ -204,6 +211,7 @@ def test_utils_reduce_sum_no_mpi(monkeypatch):
 @pytest.mark.skipif(
     "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
 )
+@pytest.mark.skipif(not _has_mpi4py, reason="mpi4py not available")
 @pytest.mark.mpiexec(timeout=10)
 @pytest.mark.parametrize(
     "mpiexec_n",

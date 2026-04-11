@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import collections
 import importlib
 import json
@@ -7,11 +9,11 @@ import sys
 from typing import TYPE_CHECKING, Any, Optional, Union
 import pickle
 
-from livn.types import Array
 
 if TYPE_CHECKING:
     import numpy as np
     from mpi4py import MPI
+    from livn.types import Array
 
 sentinel = object()
 

@@ -1,6 +1,6 @@
 import os
 
-_BACKEND = "brian2"
+_BACKEND = ""
 
 
 if "LIVN_BACKEND" in os.environ:

@@ -1,6 +1,12 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+
 import numpy as np
 
-from livn.types import Array, Float, Int
+if TYPE_CHECKING:
+    from livn.types import Array, Float, Int
 
 
 class Stimulus:
@@ -143,7 +149,9 @@ class Stimulus:
 
         channels = np.asarray(channels)
         pulse_times = np.asarray(pulse_times, dtype=float)
-        amplitudes = np.broadcast_to(np.asarray(amplitude, dtype=np.float32), channels.shape).copy()
+        amplitudes = np.broadcast_to(
+            np.asarray(amplitude, dtype=np.float32), channels.shape
+        ).copy()
 
         total_duration = pulse_times[-1] + pulse_width
         n_steps = int(np.ceil(total_duration / dt))

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import pickle
 import signal
 import time
@@ -11,10 +13,11 @@ from mpi4py.MPI import Intracomm
 
 from livn.env import Env
 from livn.io import IO
-from livn.types import Array, Env as EnvProtocol, Float, Int, Model
+from livn.types import Env as EnvProtocol
 
 if TYPE_CHECKING:
     from livn.stimulus import Stimulus
+    from livn.types import Array, Float, Int, Model
 
 world_comm = MPI.COMM_WORLD
 size = world_comm.size

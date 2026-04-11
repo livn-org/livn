@@ -8,14 +8,19 @@ z = z coordinate
 p = payload value (distance, induction strength etc.)
 """
 
+from __future__ import annotations
+
 import os
+from typing import TYPE_CHECKING
 from collections import defaultdict
 
 import gymnasium
 
 from livn.backend import backend
-from livn.types import Array, Float, Int
 from livn.utils import Jsonable
+
+if TYPE_CHECKING:
+    from livn.types import Array, Float, Int
 
 _USES_JAX = False
 

@@ -40,7 +40,10 @@ def pytest_configure(config):
         except ImportError:
             return
 
-        from mpi4py import MPI
+        try:
+            from mpi4py import MPI
+        except ImportError:
+            return
 
         rank = MPI.COMM_WORLD.rank
         reportlog_dir = Path(os.getenv(TEST_REPORT_DIR_ENV, ""))
@@ -63,9 +66,19 @@ def pytest_runtest_protocol(item, nextitem):
     if not mpi_mark:
         return
 
+    # Respect skipif markers before spawning an mpi subprocess
+    for skip_mark in item.iter_markers("skipif"):
+        if skip_mark.args[0]:
+            return
+
+    # Skip mpiexec tests when mpi4py is not available
+    try:
+        import mpi4py  # noqa: F401
+    except ImportError:
+        return
+
     _run_mpi_test(item, mpi_mark)
     return True
-
 
 
 def _run_mpi_test(item, mpi_mark):

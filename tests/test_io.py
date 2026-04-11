@@ -7,6 +7,12 @@ from livn import io
 from livn.system import System
 from livn.utils import P
 
+try:
+    import mpi4py  # noqa: F401
+    _has_mpi4py = True
+except ImportError:
+    _has_mpi4py = False
+
 
 def test_calculate_distances():
     electrodes = [[0, 0.0, 0.0, 0.0], [1, 1.0, 0.0, 0.0], [2, 0.0, 1.0, 0.0]]
@@ -156,6 +162,7 @@ def test_potential_recording():
 @pytest.mark.skipif(
     "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
 )
+@pytest.mark.skipif(not _has_mpi4py, reason="mpi4py not available")
 @pytest.mark.mpiexec(timeout=60)
 @pytest.mark.parametrize("mpiexec_n", [1, 2])
 def test_mea_parallel(mpiexec_n):

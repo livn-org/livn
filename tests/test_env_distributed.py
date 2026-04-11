@@ -4,16 +4,10 @@ import time
 
 import numpy as np
 import pytest
-from mpi4py import MPI
 
 from livn.backend import backend
-from livn.decoding import GatherAndMerge
-from livn.env import Env
-from livn.env.distributed import DistributedEnv
-from livn.types import Encoding
 
 pytestmark = pytest.mark.skipif(backend() != "neuron", reason="NEURON only")
-
 
 T_END = 250
 STIM_AMPLITUDE = 750
@@ -25,16 +19,21 @@ _HARD_TIMEOUT = 60
 
 _BASELINE_FILE = os.path.join(os.path.dirname(__file__), "tmp", "perf_baseline.p")
 
+if backend() == "neuron":
+    from livn.decoding import GatherAndMerge
+    from livn.env import Env
+    from livn.env.distributed import DistributedEnv
+    from livn.types import Encoding
 
-class ConstantChannelInput(Encoding):
-    """Applies a 20 ms stimulus on all channels starting at t=50 ms."""
+    class ConstantChannelInput(Encoding):
+        """Applies a 20 ms stimulus on all channels starting at t=50 ms."""
 
-    def __call__(self, env, t_end, inputs):
-        channel_inputs = np.zeros([t_end, env.io.num_channels])
-        for r in range(20):
-            for c in range(env.io.num_channels):
-                channel_inputs[50 + r, c] = STIM_AMPLITUDE
-        return env.cell_stimulus(channel_inputs)
+        def __call__(self, env, t_end, inputs):
+            channel_inputs = np.zeros([t_end, env.io.num_channels])
+            for r in range(20):
+                for c in range(env.io.num_channels):
+                    channel_inputs[50 + r, c] = STIM_AMPLITUDE
+            return env.cell_stimulus(channel_inputs)
 
 
 def _save_baseline(timings: dict):
@@ -67,6 +66,8 @@ def _max_allowed(baseline_seconds: float) -> float:
 @pytest.mark.mpiexec(timeout=120)
 @pytest.mark.parametrize("mpiexec_n", [1, 3])
 def test_distributed_env_matches_standard(mpiexec_n):
+    from mpi4py import MPI
+
     assert MPI.COMM_WORLD.size == mpiexec_n
 
     system = os.environ["LIVN_TEST_SYSTEM"]
@@ -139,6 +140,8 @@ def test_distributed_env_matches_standard(mpiexec_n):
 @pytest.mark.mpiexec(timeout=60)
 @pytest.mark.parametrize("mpiexec_n", [3])
 def test_distributed_env_attribute_access(mpiexec_n):
+    from mpi4py import MPI
+
     assert MPI.COMM_WORLD.size == mpiexec_n
 
     system = os.environ["LIVN_TEST_SYSTEM"]
@@ -170,6 +173,8 @@ def test_distributed_env_attribute_access(mpiexec_n):
 @pytest.mark.mpiexec(timeout=120)
 @pytest.mark.parametrize("mpiexec_n", [3])
 def test_distributed_env_multiple_inputs(mpiexec_n):
+    from mpi4py import MPI
+
     assert MPI.COMM_WORLD.size == mpiexec_n
 
     system = os.environ["LIVN_TEST_SYSTEM"]
@@ -202,6 +207,8 @@ def test_distributed_env_multiple_inputs(mpiexec_n):
 @pytest.mark.mpiexec(timeout=120)
 @pytest.mark.parametrize("mpiexec_n", [3])
 def test_distributed_env_subworld_size_gt_one(mpiexec_n):
+    from mpi4py import MPI
+
     assert MPI.COMM_WORLD.size == mpiexec_n
 
     system = os.environ["LIVN_TEST_SYSTEM"]

@@ -3,16 +3,18 @@
 livn supports three simulation backends, each providing a full implementation of the [`Env`](/guide/concepts/env) protocol. Select a backend via the `LIVN_BACKEND` environment variable **before** importing livn:
 
 ```sh
-export LIVN_BACKEND=brian2     # default
+export LIVN_BACKEND=brian2     # requires livn[brian2] dependencies
 export LIVN_BACKEND=diffrax    # requires livn[diffrax] dependencies
 export LIVN_BACKEND=neuron     # requires livn[neuron] dependencies and MPI
 ```
 
+When no `LIVN_BACKEND` is set, livn uses a neutral default backend that provides the full `Env` interface without running any simulation. This is useful for working with systems, I/O, and datasets without installing a simulation engine. To run actual simulations, set one of the backends above.
+
 All backends share the same user-facing API - you write your simulation code once and switch backends by changing the environment variable.
 
-## brian2 (default)
+## brian2
 
-[brian2](https://brian2.readthedocs.io/) is the default backend, suitable for rapid prototyping and small-to-medium systems. It models neurons as point processes using brian2's equation-based description language. No additional dependencies are required beyond the base install.
+[brian2](https://brian2.readthedocs.io/) is a lightweight backend suitable for rapid prototyping and small-to-medium systems. It models neurons as point processes using brian2's equation-based description language.
 
 **Strengths:**
 - Fast setup, no external system libraries needed
@@ -20,7 +22,9 @@ All backends share the same user-facing API - you write your simulation code onc
 - Includes Izhikevich and Leaky Integrate-and-Fire (LIF) models
 
 ```python
-# brian2 is the default, just import and go
+import os
+os.environ["LIVN_BACKEND"] = "brian2"
+
 from livn import make
 
 env = make("EI2")

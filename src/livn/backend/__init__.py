@@ -1,7 +1,9 @@
 from livn.backend.common import *
 from livn.backend.config import backend
 
-if backend() == "brian2":
+if backend() == "":
+    from livn.backend.default import *
+elif backend() == "brian2":
     from livn.backend.brian2 import *
 elif backend() == "neuron":
     from livn.backend.neuron import *
@@ -10,6 +12,7 @@ elif backend() == "diffrax":
 else:
     try:
         import importlib
+
         _mod = importlib.import_module(backend())
         globals().update(
             {k: getattr(_mod, k) for k in dir(_mod) if not k.startswith("_")}

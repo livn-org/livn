@@ -3,7 +3,6 @@ import pickle
 
 import numpy as np
 import pytest
-from mpi4py import MPI
 
 from livn.backend import backend
 from livn.env import Env
@@ -79,6 +78,7 @@ def _gather_and_merge(comm, *values):
 @pytest.mark.skipif(
     "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
 )
+@pytest.mark.skipif(backend() == "", reason="no simulation backend selected")
 @pytest.mark.mpiexec(timeout=TIMEOUT)
 @pytest.mark.parametrize("mpiexec_n", [1, 4] if backend() != "brian2" else [1])
 @pytest.mark.parametrize(
@@ -86,6 +86,8 @@ def _gather_and_merge(comm, *values):
     [False, True],
 )
 def test_env(mpiexec_n, subworld):
+    from mpi4py import MPI
+
     if mpiexec_n == 1 and subworld:
         return
 
@@ -141,6 +143,7 @@ def test_env(mpiexec_n, subworld):
 @pytest.mark.skipif(
     "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
 )
+@pytest.mark.skipif(backend() == "", reason="no simulation backend selected")
 @pytest.mark.mpiexec(timeout=TIMEOUT)
 @pytest.mark.parametrize("mpiexec_n", [1, 4] if backend() != "brian2" else [1])
 @pytest.mark.parametrize(
@@ -148,6 +151,8 @@ def test_env(mpiexec_n, subworld):
     [False, True],
 )
 def test_env_continued_runs(mpiexec_n, subworld):
+    from mpi4py import MPI
+
     if mpiexec_n == 1 and subworld:
         return
 
@@ -266,9 +271,12 @@ def test_env_continued_runs(mpiexec_n, subworld):
 @pytest.mark.skipif(
     "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
 )
+@pytest.mark.skipif(backend() == "", reason="no simulation backend selected")
 @pytest.mark.mpiexec(timeout=TIMEOUT)
 @pytest.mark.parametrize("mpiexec_n", [1])
 def test_env_continued_runs_stimulus_dt_mismatch(mpiexec_n):
+    from mpi4py import MPI
+
     assert MPI.COMM_WORLD.size == mpiexec_n
 
     comm = MPI.COMM_WORLD
@@ -400,9 +408,12 @@ def test_env_continued_runs_stimulus_dt_mismatch(mpiexec_n):
 @pytest.mark.skipif(
     "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
 )
+@pytest.mark.skipif(backend() == "", reason="no simulation backend selected")
 @pytest.mark.mpiexec(timeout=TIMEOUT)
 @pytest.mark.parametrize("mpiexec_n", [1, 2])
 def test_env_noise(mpiexec_n):
+    from mpi4py import MPI
+
     if backend() != "neuron":
         return
 
@@ -452,9 +463,12 @@ def test_env_noise(mpiexec_n):
 @pytest.mark.skipif(
     "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
 )
+@pytest.mark.skipif(backend() == "", reason="no simulation backend selected")
 @pytest.mark.mpiexec(timeout=TIMEOUT)
 @pytest.mark.parametrize("mpiexec_n", [1])
 def test_env_stochastic_variability(mpiexec_n):
+    from mpi4py import MPI
+
     assert MPI.COMM_WORLD.size == mpiexec_n
     comm = MPI.COMM_WORLD
 
@@ -480,9 +494,12 @@ def test_env_stochastic_variability(mpiexec_n):
 @pytest.mark.skipif(
     "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
 )
+@pytest.mark.skipif(backend() == "", reason="no simulation backend selected")
 @pytest.mark.mpiexec(timeout=TIMEOUT)
 @pytest.mark.parametrize("mpiexec_n", [1])
 def test_env_deterministic_without_noise(mpiexec_n):
+    from mpi4py import MPI
+
     assert MPI.COMM_WORLD.size == mpiexec_n
     comm = MPI.COMM_WORLD
 

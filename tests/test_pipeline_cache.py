@@ -2,6 +2,7 @@ import pickle
 
 import gymnasium as gym
 import numpy as np
+import pytest
 
 from livn.decoding import Pipe
 from livn.env.gymnasium import GymStep, ObsAugmentation
@@ -156,6 +157,10 @@ class TestObsAugmentation:
 
 
 class TestCultureActivityExtractor:
+    @pytest.fixture(autouse=True)
+    def _require_machinable(self):
+        pytest.importorskip("machinable")
+
     def test_same_config_same_hash(self):
         from benchmarks.rl.decoding import CultureActivityExtractor
 
@@ -174,6 +179,10 @@ class TestCultureActivityExtractor:
 
 
 class TestSpikeDecodingGetstate:
+    @pytest.fixture(autouse=True)
+    def _require_machinable(self):
+        pytest.importorskip("machinable")
+
     def test_last_spike_counts_excluded(self):
         from benchmarks.rl.decoding import ArgmaxDecoding
 
@@ -211,6 +220,10 @@ class TestPipeWithGymStep:
 
 
 class TestPipelineCall:
+    @pytest.fixture(autouse=True)
+    def _require_mpi4py(self):
+        pytest.importorskip("mpi4py")
+
     def test_install_and_step(self):
         from livn.env.distributed import _PipelineResult, _pipeline_call, _state
 

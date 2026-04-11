@@ -752,6 +752,11 @@ def test_avalanche_analysis_integration(env_response):
 
 
 class TestArrowDataset:
+    @pytest.fixture(autouse=True)
+    def _require_datasets(self):
+        pytest.importorskip("datasets")
+        pytest.importorskip("pyarrow")
+
     def test_single_write_and_load(self, tmp_path):
         env = MockEnv(n_units=10)
         duration = 1000

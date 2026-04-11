@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import os
 import random
@@ -915,8 +917,6 @@ class System:
         return w
 
     def summary(self) -> dict[str, int | dict[str, int]]:
-        import h5py
-
         num_neurons = 0
         num_projections = 0
         population_counts = {}
@@ -926,13 +926,10 @@ class System:
             population_counts[population] = count
             num_neurons += count
 
-        with h5py.File(self._graph.connections_filepath, "r") as h5file:
-            for post, v in self.connections_config["synapses"].items():
-                for pre, _ in v.items():
-                    path = f"Projections/{pre}/{post}/Connections"
-                    if path in h5file:
-                        distances = h5file[path]["distance"]
-                        num_projections += len(distances)
+        for post, v in self.connections_config["synapses"].items():
+            for pre, _ in v.items():
+                for _, (pre_gids, _) in self.projection_array(pre, post):
+                    num_projections += len(pre_gids)
 
         return {
             "num_neurons": num_neurons,
