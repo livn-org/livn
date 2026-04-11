@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from livn import io
-from livn.system import CachedSystem, System
+from livn.system import System
 from livn.utils import P
 
 
@@ -160,13 +160,31 @@ def test_potential_recording():
 @pytest.mark.parametrize("mpiexec_n", [1, 2])
 def test_mea_parallel(mpiexec_n):
     system = System(os.environ["LIVN_TEST_SYSTEM"])
-    cached_system = CachedSystem(os.environ["LIVN_TEST_SYSTEM"])
 
     mea = io.MEA.from_json(os.path.join(system.uri, "mea.json"))
-    cached_mea = io.MEA.from_json(os.path.join(cached_system.uri, "mea.json"))
 
     q = P.gather(system.neuron_coordinates)
 
     if P.is_root():
         cc = np.vstack(q)
-        assert np.array_equal(cc[cc[:, 0].argsort()], cached_system.neuron_coordinates)
+        # build reference coordinates via pyfive (no MPI needed)
+        from livn.system import (
+            _pyfive_read_cell_attributes_tuple,
+            _pyfive_read_population_names,
+        )
+
+        cells_fp = system._graph.cells_filepath
+        pop_names = _pyfive_read_population_names(cells_fp)
+        ref_parts = []
+        for pop in pop_names:
+            items, attr_info = _pyfive_read_cell_attributes_tuple(
+                cells_fp, pop, "Generated Coordinates"
+            )
+            x_i = attr_info["X Coordinate"]
+            y_i = attr_info["Y Coordinate"]
+            z_i = attr_info["Z Coordinate"]
+            for gid, vals in items:
+                ref_parts.append([gid, vals[x_i][0], vals[y_i][0], vals[z_i][0]])
+        ref_coords = np.array(ref_parts)
+        ref_coords = ref_coords[ref_coords[:, 0].argsort()]
+        assert np.array_equal(cc[cc[:, 0].argsort()], ref_coords)

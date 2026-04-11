@@ -1,4 +1,3 @@
-import hashlib
 import json
 import os
 import random
@@ -6,8 +5,8 @@ import numpy
 from functools import cached_property
 from typing import TYPE_CHECKING, Callable, Iterator, Optional, Any
 
-import pandas as pd
 from pydantic import BaseModel
+import pyfive
 
 from livn import types
 from livn.backend import backend
@@ -27,6 +26,14 @@ if "ax" in backend():
     _USES_JAX = True
 else:
     import numpy as np
+
+try:
+    import neuroh5.io  # noqa: F401
+    from mpi4py import MPI as _MPI  # noqa: F401
+
+    _HAS_NEUROH5 = True
+except ImportError:
+    _HAS_NEUROH5 = False
 
 
 class CellsMetaData(BaseModel):
@@ -124,210 +131,481 @@ def predefined(name: str = "EI1", download_directory: str = ".", force: bool = F
     )
 
 
-def make(name: str = "EI1", cached: bool = True) -> "System":
+def make(name: str = "EI1") -> "System":
     system = predefined(name)
-
-    if cached:
-        return CachedSystem(system)
 
     return System(system)
 
 
-def read_cells_meta_data(
-    filepath: str, comm: Optional["MPI.Intracomm"] = None
-) -> CellsMetaData:
-    from mpi4py import MPI
+def _pyfive_population_ranges(f, pop_names):
+    pops_data = f["H5Types/Populations"][:]
+    ranges = {}
+    for name, row in zip(pop_names, pops_data):
+        ranges[name] = (int(row[0]), int(row[1]))
+    return ranges
 
-    if comm is None:
-        comm = MPI.COMM_WORLD
 
-    from neuroh5.io import (
-        read_cell_attribute_info,
-        read_population_names,
-        read_population_ranges,
-    )
+def _pyfive_read_population_names(filepath):
+    f = pyfive.File(filepath)
+    return list(f["Populations"].keys())
 
-    rank = comm.Get_rank()
-    comm0 = comm.Split(int(rank == 0), 0)
-    cell_attribute_info = None
-    population_ranges = None
-    population_names = None
-    if rank == 0:
-        population_names = read_population_names(filepath, comm0)
-        (population_ranges, _) = read_population_ranges(filepath, comm0)
-        cell_attribute_info = read_cell_attribute_info(
-            filepath, population_names, comm=comm0
+
+def _pyfive_read_population_ranges(filepath):
+    f = pyfive.File(filepath)
+    pop_names = list(f["Populations"].keys())
+    return _pyfive_population_ranges(f, pop_names)
+
+
+def _pyfive_read_cell_attribute_info(filepath, population_names):
+    f = pyfive.File(filepath)
+    result = {}
+    for pop_name in population_names:
+        pop_group = f[f"Populations/{pop_name}"]
+        namespaces = {}
+        for ns_name in pop_group.keys():
+            ns_group = pop_group[ns_name]
+            if hasattr(ns_group, "keys"):
+                namespaces[ns_name] = sorted(ns_group.keys())
+        result[pop_name] = namespaces
+    return result
+
+
+def _pyfive_read_cell_attributes(filepath, population, namespace, mask=None):
+    f = pyfive.File(filepath)
+    pop_ranges = _pyfive_read_population_ranges(filepath)
+    pop_start = pop_ranges[population][0]
+
+    ns_group = f[f"Populations/{population}/{namespace}"]
+    attr_names = list(ns_group.keys())
+    if mask is not None:
+        attr_names = [a for a in attr_names if a in mask]
+
+    attrs_data = {}
+    cell_index = None
+    for attr_name in attr_names:
+        attr_group = ns_group[attr_name]
+        if cell_index is None:
+            cell_index = attr_group["Cell Index"][:]
+        pointer = attr_group["Attribute Pointer"][:]
+        value = attr_group["Attribute Value"][:]
+        attrs_data[attr_name] = (pointer, value)
+
+    if cell_index is None:
+        return {}
+
+    result = {}
+    for i, rel_gid in enumerate(cell_index):
+        abs_gid = int(rel_gid) + pop_start
+        cell_attrs = {}
+        for attr_name, (pointer, value) in attrs_data.items():
+            start = int(pointer[i])
+            end = int(pointer[i + 1])
+            cell_attrs[attr_name] = value[start:end]
+        result[abs_gid] = cell_attrs
+
+    return result
+
+
+def _pyfive_read_cell_attributes_tuple(filepath, population, namespace):
+    f = pyfive.File(filepath)
+    pop_ranges = _pyfive_read_population_ranges(filepath)
+    pop_start = pop_ranges[population][0]
+
+    ns_group = f[f"Populations/{population}/{namespace}"]
+    attr_names = sorted(ns_group.keys())
+    attr_info = {name: idx for idx, name in enumerate(attr_names)}
+
+    attrs_data = {}
+    cell_index = None
+    for attr_name in attr_names:
+        attr_group = ns_group[attr_name]
+        if cell_index is None:
+            cell_index = attr_group["Cell Index"][:]
+        pointer = attr_group["Attribute Pointer"][:]
+        value = attr_group["Attribute Value"][:]
+        attrs_data[attr_name] = (pointer, value)
+
+    if cell_index is None:
+        return [], {}
+
+    items = []
+    for i, rel_gid in enumerate(cell_index):
+        abs_gid = int(rel_gid) + pop_start
+        values = []
+        for attr_name in attr_names:
+            pointer, value = attrs_data[attr_name]
+            start = int(pointer[i])
+            end = int(pointer[i + 1])
+            values.append(value[start:end])
+        items.append((abs_gid, tuple(values)))
+
+    return items, attr_info
+
+
+def _pyfive_read_graph(filepath, pre, post, namespaces=None, population_ranges=None):
+    if namespaces is None:
+        namespaces = []
+    if population_ranges is None:
+        population_ranges = _pyfive_read_population_ranges(filepath)
+
+    f = pyfive.File(filepath)
+    pre_start = population_ranges[pre][0]
+    post_start = population_ranges[post][0]
+
+    proj_group = f[f"Projections/{post}/{pre}"]
+    edges = proj_group["Edges"]
+    dest_block_index = edges["Destination Block Index"][:]
+    dest_block_pointer = edges["Destination Block Pointer"][:]
+    dest_pointer = edges["Destination Pointer"][:]
+    source_index = edges["Source Index"][:]
+
+    ns_data_arrays = {}
+    for ns_name in namespaces:
+        if ns_name in proj_group:
+            ns_group = proj_group[ns_name]
+            ns_data_arrays[ns_name] = {}
+            for ds_name in ns_group.keys():
+                ds = ns_group[ds_name]
+                if hasattr(ds, "shape"):
+                    ns_data_arrays[ns_name][ds_name] = ds[:]
+
+    results = []
+    for block_idx in range(len(dest_block_index)):
+        block_start_gid = int(dest_block_index[block_idx])
+        ptr_start = int(dest_block_pointer[block_idx])
+        ptr_end = int(dest_block_pointer[block_idx + 1])
+        n_dest = ptr_end - ptr_start - 1
+
+        for d in range(n_dest):
+            rel_dest_gid = block_start_gid + d
+            abs_dest_gid = rel_dest_gid + post_start
+
+            edge_start = int(dest_pointer[ptr_start + d])
+            edge_end = int(dest_pointer[ptr_start + d + 1])
+
+            pre_gids = (
+                source_index[edge_start:edge_end].astype(numpy.uint32) + pre_start
+            )
+
+            ns_data = {}
+            for ns_name in namespaces:
+                if ns_name in ns_data_arrays:
+                    ns_data[ns_name] = [
+                        arr[edge_start:edge_end]
+                        for arr in ns_data_arrays[ns_name].values()
+                    ]
+
+            results.append((abs_dest_gid, (pre_gids, ns_data)))
+
+    return results
+
+
+if _HAS_NEUROH5:
+
+    def read_cells_meta_data(
+        filepath: str, comm: Optional["MPI.Intracomm"] = None
+    ) -> CellsMetaData:
+        from mpi4py import MPI
+        from neuroh5.io import (
+            read_cell_attribute_info,
+            read_population_names,
+            read_population_ranges,
         )
-    population_ranges = comm.bcast(population_ranges, root=0)
-    population_names = comm.bcast(population_names, root=0)
-    cell_attribute_info = comm.bcast(cell_attribute_info, root=0)
 
-    comm0.Free()
+        if comm is None:
+            comm = MPI.COMM_WORLD
 
-    return CellsMetaData(
-        population_names=population_names,
-        population_ranges=population_ranges,
-        cell_attribute_info=cell_attribute_info,
-    )
+        rank = comm.Get_rank()
+        comm0 = comm.Split(int(rank == 0), 0)
+        cell_attribute_info = None
+        population_ranges = None
+        population_names = None
+        if rank == 0:
+            population_names = read_population_names(filepath, comm0)
+            (population_ranges, _) = read_population_ranges(filepath, comm0)
+            cell_attribute_info = read_cell_attribute_info(
+                filepath, population_names, comm=comm0
+            )
+        population_ranges = comm.bcast(population_ranges, root=0)
+        population_names = comm.bcast(population_names, root=0)
+        cell_attribute_info = comm.bcast(cell_attribute_info, root=0)
 
+        comm0.Free()
 
-def read_coordinates(
-    filepath: str,
-    population: types.PopulationName,
-    comm: Optional["MPI.Intracomm"] = None,
-) -> Iterator[tuple[int, tuple[float, float, float]]]:
-    from mpi4py import MPI
-    from neuroh5.io import scatter_read_cell_attributes
-
-    if comm is None:
-        comm = MPI.COMM_WORLD
-
-    cell_attr_dict = scatter_read_cell_attributes(
-        filepath,
-        population,
-        namespaces=["Generated Coordinates"],
-        return_type="tuple",
-        comm=comm,
-    )
-    coords_iter, coords_attr_info = cell_attr_dict["Generated Coordinates"]
-    x_index = coords_attr_info.get("X Coordinate", None)
-    y_index = coords_attr_info.get("Y Coordinate", None)
-    z_index = coords_attr_info.get("Z Coordinate", None)
-    for gid, cell_coords in coords_iter:
-        yield (
-            gid,
-            (
-                cell_coords[x_index][0],
-                cell_coords[y_index][0],
-                cell_coords[z_index][0],
-            ),
+        return CellsMetaData(
+            population_names=population_names,
+            population_ranges=population_ranges,
+            cell_attribute_info=cell_attribute_info,
         )
 
+    def read_coordinates(
+        filepath: str,
+        population: types.PopulationName,
+        comm: Optional["MPI.Intracomm"] = None,
+    ) -> Iterator[tuple[int, tuple[float, float, float]]]:
+        from mpi4py import MPI
+        from neuroh5.io import scatter_read_cell_attributes
 
-def coordinate_array(
-    filepath: str,
-    population: types.PopulationName,
-    comm: Optional["MPI.Intracomm"] = None,
-    all: bool = True,
-) -> types.Float[types.Array, "n_coords cxyz=4"]:
-    from mpi4py import MPI
+        if comm is None:
+            comm = MPI.COMM_WORLD
 
-    if comm is None:
-        comm = MPI.COMM_WORLD
-
-    coordinates = []
-    for gid, coordinate in read_coordinates(filepath, population, comm=comm):
-        coordinates.append([gid] + list(coordinate))
-
-    if all:
-        all_coordinates = comm.allgather(coordinates)
-        coordinates = np.array(
-            [coord for sublist in all_coordinates for coord in sublist]
+        cell_attr_dict = scatter_read_cell_attributes(
+            filepath,
+            population,
+            namespaces=["Generated Coordinates"],
+            return_type="tuple",
+            comm=comm,
         )
-    else:
+        coords_iter, coords_attr_info = cell_attr_dict["Generated Coordinates"]
+        x_index = coords_attr_info.get("X Coordinate", None)
+        y_index = coords_attr_info.get("Y Coordinate", None)
+        z_index = coords_attr_info.get("Z Coordinate", None)
+        for gid, cell_coords in coords_iter:
+            yield (
+                gid,
+                (
+                    cell_coords[x_index][0],
+                    cell_coords[y_index][0],
+                    cell_coords[z_index][0],
+                ),
+            )
+
+    def coordinate_array(
+        filepath: str,
+        population: types.PopulationName,
+        comm: Optional["MPI.Intracomm"] = None,
+        all: bool = True,
+    ) -> types.Float[types.Array, "n_coords cxyz=4"]:
+        from mpi4py import MPI
+
+        if comm is None:
+            comm = MPI.COMM_WORLD
+
+        coordinates = []
+        for gid, coordinate in read_coordinates(filepath, population, comm=comm):
+            coordinates.append([gid] + list(coordinate))
+
+        if all:
+            all_coordinates = comm.allgather(coordinates)
+            coordinates = np.array(
+                [coord for sublist in all_coordinates for coord in sublist]
+            )
+        else:
+            coordinates = np.array(coordinates)
+
+        if coordinates.size == 0:
+            return np.zeros((0, 4))
+
+        return coordinates[coordinates[:, 0].argsort()]
+
+    def read_trees(
+        filepath: str,
+        population: types.PopulationName,
+        comm: Optional["MPI.Intracomm"] = None,
+    ) -> Iterator[tuple[int, Tree]]:
+        from mpi4py import MPI
+        from neuroh5.io import scatter_read_trees
+
+        if comm is None:
+            comm = MPI.COMM_WORLD
+
+        (trees, forestSize) = scatter_read_trees(filepath, population, comm=comm)
+        yield from trees
+
+    def read_synapses(
+        filepath: str,
+        population: types.PostSynapticPopulationName,
+        comm: Optional["MPI.Intracomm"] = None,
+        node_allocation: set[int] | None = None,
+    ):
+        from mpi4py import MPI
+        from neuroh5.io import scatter_read_cell_attributes
+
+        if comm is None:
+            comm = MPI.COMM_WORLD
+
+        cell_attributes_dict = scatter_read_cell_attributes(
+            filepath,
+            population,
+            namespaces=["Synapse Attributes"],
+            mask={
+                "syn_ids",
+                "syn_locs",
+                "syn_secs",
+                "syn_layers",
+                "syn_types",
+                "swc_types",
+            },
+            comm=comm,
+            node_allocation=node_allocation,
+            io_size=1,
+            return_type="dict",
+        )
+
+        for gid, syn_attrs in cell_attributes_dict["Synapse Attributes"]:
+            yield gid, syn_attrs
+
+    def read_projections(
+        filepath: str,
+        pre: types.PreSynapticPopulationName,
+        post: types.PostSynapticPopulationName,
+        comm: Optional["MPI.Intracomm"] = None,
+        population_ranges: dict[str, tuple[int, int]] | None = None,
+    ) -> Iterator[tuple[int, tuple[list[int], Projection]]]:
+        from mpi4py import MPI
+        from neuroh5.io import scatter_read_graph
+
+        if comm is None:
+            comm = MPI.COMM_WORLD
+
+        (graph, a) = scatter_read_graph(
+            filepath,
+            comm=comm,
+            io_size=1,
+            projections=[(pre, post)],
+            namespaces=["Synapses", "Connections"],
+        )
+
+        yield from graph[post][pre]
+
+    def projection_array(
+        filepath: str,
+        pre: types.PreSynapticPopulationName,
+        post: types.PostSynapticPopulationName,
+        comm: Optional["MPI.Intracomm"] = None,
+        all: bool = True,
+        population_ranges: dict[str, tuple[int, int]] | None = None,
+    ) -> list[tuple[int, tuple[list[int], Projection]]]:
+        from mpi4py import MPI
+
+        if comm is None:
+            comm = MPI.COMM_WORLD
+
+        projections = []
+        for post_gid, (pre_gids, projection) in read_projections(
+            filepath, pre, post, comm=comm
+        ):
+            projections.append([post_gid, (pre_gids, projection)])
+
+        if all:
+            all_projections = comm.allgather(projections)
+            projections = [projs for sublist in all_projections for projs in sublist]
+
+        return projections
+
+else:
+
+    def read_cells_meta_data(
+        filepath: str, comm: Optional["MPI.Intracomm"] = None
+    ) -> CellsMetaData:
+        population_names = _pyfive_read_population_names(filepath)
+        population_ranges = _pyfive_read_population_ranges(filepath)
+        cell_attribute_info = _pyfive_read_cell_attribute_info(
+            filepath, population_names
+        )
+
+        return CellsMetaData(
+            population_names=population_names,
+            population_ranges=population_ranges,
+            cell_attribute_info=cell_attribute_info,
+        )
+
+    def read_coordinates(
+        filepath: str,
+        population: types.PopulationName,
+        comm: Optional["MPI.Intracomm"] = None,
+    ) -> Iterator[tuple[int, tuple[float, float, float]]]:
+        items, attr_info = _pyfive_read_cell_attributes_tuple(
+            filepath, population, "Generated Coordinates"
+        )
+        x_index = attr_info.get("X Coordinate", None)
+        y_index = attr_info.get("Y Coordinate", None)
+        z_index = attr_info.get("Z Coordinate", None)
+        for gid, cell_coords in items:
+            yield (
+                gid,
+                (
+                    cell_coords[x_index][0],
+                    cell_coords[y_index][0],
+                    cell_coords[z_index][0],
+                ),
+            )
+
+    def coordinate_array(
+        filepath: str,
+        population: types.PopulationName,
+        comm: Optional["MPI.Intracomm"] = None,
+        all: bool = True,
+    ) -> types.Float[types.Array, "n_coords cxyz=4"]:
+        coordinates = []
+        for gid, coordinate in read_coordinates(filepath, population):
+            coordinates.append([gid] + list(coordinate))
         coordinates = np.array(coordinates)
+        if coordinates.size == 0:
+            return np.zeros((0, 4))
+        return coordinates[coordinates[:, 0].argsort()]
 
-    if coordinates.size == 0:
-        return np.zeros((0, 4))
+    def read_trees(
+        filepath: str,
+        population: types.PopulationName,
+        comm: Optional["MPI.Intracomm"] = None,
+    ) -> Iterator[tuple[int, Tree]]:
+        raise NotImplementedError(
+            "read_trees requires neuroh5; no pyfive fallback available"
+        )
 
-    return coordinates[coordinates[:, 0].argsort()]
-
-
-def read_trees(
-    filepath: str,
-    population: types.PopulationName,
-    comm: Optional["MPI.Intracomm"] = None,
-) -> Iterator[tuple[int, Tree]]:
-    from mpi4py import MPI
-    from neuroh5.io import scatter_read_trees
-
-    if comm is None:
-        comm = MPI.COMM_WORLD
-
-    (trees, forestSize) = scatter_read_trees(filepath, population, comm=comm)
-    yield from trees
-
-
-def read_synapses(
-    filepath: str,
-    population: types.PostSynapticPopulationName,
-    comm: Optional["MPI.Intracomm"] = None,
-    node_allocation: set[int] | None = None,
-):
-    from mpi4py import MPI
-    from neuroh5.io import scatter_read_cell_attributes
-
-    if comm is None:
-        comm = MPI.COMM_WORLD
-
-    cell_attributes_dict = scatter_read_cell_attributes(
-        filepath,
-        population,
-        namespaces=["Synapse Attributes"],
-        mask={
+    def read_synapses(
+        filepath: str,
+        population: types.PostSynapticPopulationName,
+        comm: Optional["MPI.Intracomm"] = None,
+        node_allocation: set[int] | None = None,
+    ):
+        mask = {
             "syn_ids",
             "syn_locs",
             "syn_secs",
             "syn_layers",
             "syn_types",
             "swc_types",
-        },
-        comm=comm,
-        node_allocation=node_allocation,
-        io_size=1,
-        return_type="dict",
-    )
+        }
+        attrs = _pyfive_read_cell_attributes(
+            filepath, population, "Synapse Attributes", mask=mask
+        )
+        for gid in sorted(attrs.keys()):
+            if node_allocation is not None and gid not in node_allocation:
+                continue
+            yield gid, attrs[gid]
 
-    for gid, syn_attrs in cell_attributes_dict["Synapse Attributes"]:
-        yield gid, syn_attrs
+    def read_projections(
+        filepath: str,
+        pre: types.PreSynapticPopulationName,
+        post: types.PostSynapticPopulationName,
+        comm: Optional["MPI.Intracomm"] = None,
+        population_ranges: dict[str, tuple[int, int]] | None = None,
+    ) -> Iterator[tuple[int, tuple[list[int], Projection]]]:
+        results = _pyfive_read_graph(
+            filepath,
+            pre,
+            post,
+            namespaces=["Synapses", "Connections"],
+            population_ranges=population_ranges,
+        )
+        yield from results
 
-
-def read_projections(
-    filepath: str,
-    pre: types.PreSynapticPopulationName,
-    post: types.PostSynapticPopulationName,
-    comm: Optional["MPI.Intracomm"] = None,
-) -> Iterator[tuple[int, tuple[list[int], Projection]]]:
-    from mpi4py import MPI
-    from neuroh5.io import scatter_read_graph
-
-    if comm is None:
-        comm = MPI.COMM_WORLD
-
-    (graph, a) = scatter_read_graph(
-        filepath,
-        comm=comm,
-        io_size=1,
-        projections=[(pre, post)],
-        namespaces=["Synapses", "Connections"],
-    )
-
-    yield from graph[post][pre]
-
-
-def projection_array(
-    filepath: str,
-    pre: types.PreSynapticPopulationName,
-    post: types.PostSynapticPopulationName,
-    comm: Optional["MPI.Intracomm"] = None,
-    all: bool = True,
-) -> list[tuple[int, tuple[list[int], Projection]]]:
-    from mpi4py import MPI
-
-    if comm is None:
-        comm = MPI.COMM_WORLD
-
-    projections = []
-    for post_gid, (pre_gids, projection) in read_projections(
-        filepath, pre, post, comm=comm
-    ):
-        projections.append([post_gid, (pre_gids, projection)])
-
-    if all:
-        all_projections = comm.allgather(projections)
-        projections = [projs for sublist in all_projections for projs in sublist]
-
-    return projections
+    def projection_array(
+        filepath: str,
+        pre: types.PreSynapticPopulationName,
+        post: types.PostSynapticPopulationName,
+        comm: Optional["MPI.Intracomm"] = None,
+        all: bool = True,
+        population_ranges: dict[str, tuple[int, int]] | None = None,
+    ) -> list[tuple[int, tuple[list[int], Projection]]]:
+        projections = []
+        for post_gid, (pre_gids, projection) in read_projections(
+            filepath, pre, post, population_ranges=population_ranges
+        ):
+            projections.append([post_gid, (pre_gids, projection)])
+        return projections
 
 
 class NeuroH5Graph:
@@ -573,7 +851,11 @@ class System:
         post: types.PostSynapticPopulationName,
     ) -> Iterator[tuple[int, tuple[list[int], Projection]]]:
         yield from read_projections(
-            self._graph.connections_filepath, pre, post, comm=self.comm
+            self._graph.connections_filepath,
+            pre,
+            post,
+            comm=self.comm,
+            population_ranges=self.cells_meta_data.population_ranges,
         )
 
     def synapses(
@@ -592,11 +874,16 @@ class System:
         all: bool = True,
     ) -> list[tuple[int, tuple[list[int], Projection]]]:
         return projection_array(
-            self._graph.connections_filepath, pre, post, comm=self.comm, all=all
+            self._graph.connections_filepath,
+            pre,
+            post,
+            comm=self.comm,
+            all=all,
+            population_ranges=self.cells_meta_data.population_ranges,
         )
 
     def connectivity_matrix(
-        self, weights: dict | None = None, reduced: bool = False, seed=123
+        self, weights: dict | None = None, seed=123
     ) -> types.Float[types.Array, "num_neurons num_neurons"]:
         # use numpy, not jax
         import numpy as npn
@@ -622,25 +909,8 @@ class System:
                     if isinstance(projection, dict):
                         distances = projection["Connections"][0]
 
-                    # filter autapses
-                    autapse = pre_gids == post_gid
-                    distances = distances[~autapse]
-                    pre_gids = pre_gids[~autapse]
-
-                    if not reduced:
-                        for pre_gid in pre_gids:
-                            w[pre_gid, post_gid] = prefix * prng.random() * weight
-                    else:
-                        # multiplier connectivity
-                        unique_q, inverse_indices = npn.unique(
-                            pre_gids, return_inverse=True
-                        )
-                        multiplier = npn.bincount(inverse_indices) / 10000.0
-
-                        for m, pre_gid in enumerate(unique_q):
-                            w[pre_gid, post_gid] = (
-                                prefix * prng.random() * weight * multiplier[m]
-                            )
+                    for pre_gid in pre_gids:
+                        w[pre_gid, post_gid] = prefix * prng.random() * weight
 
         return w
 
@@ -669,233 +939,6 @@ class System:
             "num_projections": num_projections,
             "population_counts": population_counts,
         }
-
-
-class CachedSystem(System):
-    def __init__(
-        self, uri: str, comm: Optional["MPI.Intracomm"] = None, filter_projections=False
-    ):
-        super().__init__(uri=uri, comm=comm)
-
-        rank = 0
-        if self.comm:
-            rank = self.comm.Get_rank()
-        if rank == 0:
-            try:
-                parquet_file = self._graph.local_directory("system.parquet")
-                if os.path.exists(parquet_file):
-                    df = pd.read_parquet(parquet_file)
-
-                    self._cache = self._deserialize_cache(df)
-                else:
-                    self._cache = {}
-            except Exception:
-                self._cache = {}
-        else:
-            self._cache = {}
-        if self.comm:
-            self._cache = self.comm.bcast(self._cache, root=0)
-
-        if len(self._cache) == 0:
-            # build cache
-            from mpi4py import MPI
-
-            if comm is None:
-                comm = MPI.COMM_WORLD
-
-            c = System(uri, comm)
-            self._cache["cells_meta_data"] = c.cells_meta_data
-            for p in c.cells_meta_data.population_names:
-                self._cache[f"coordinates_{p}"] = c.coordinate_array(p, all=True)
-            for post, v in c.connections_config["synapses"].items():
-                for pre, _ in v.items():
-                    if float(filter_projections) > 0:
-                        projections = []
-                        for post_gid, (pre_gids, projection) in c.projections(
-                            pre, post
-                        ):
-                            distances = projection["Connections"][0]
-
-                            mask = np.random.rand(len(pre_gids)) > filter_projections
-                            if not np.any(mask):
-                                mask[0] = True
-                            projections.append(
-                                [post_gid, (pre_gids[mask], distances[mask])]
-                            )
-
-                        projections = [
-                            projs
-                            for sublist in c.comm.allgather(projections)
-                            for projs in sublist
-                        ]
-                    else:
-                        projections = c.projection_array(pre, post, all=True)
-                    self._cache[f"projection_{pre}_{post}"] = projections
-            del c
-            if rank == 0:
-                serialized_cache = self._serialize_cache(self._cache)
-                df = pd.DataFrame([serialized_cache])
-                df.to_parquet(
-                    self._graph.local_directory("system.parquet"), index=False
-                )
-
-    def _serialize_cache(self, cache):
-        """Convert cache to parquet-compatible format"""
-        serialized = {}
-
-        if "cells_meta_data" in cache:
-            cells_meta = cache["cells_meta_data"]
-            serialized["cells_meta_data"] = {
-                "population_names": cells_meta.population_names,
-                "population_ranges": json.dumps(cells_meta.population_ranges),
-                "cell_attribute_info": json.dumps(cells_meta.cell_attribute_info),
-            }
-
-        for key, value in cache.items():
-            if key.startswith("coordinates_"):
-                serialized[key] = value.tolist()
-
-        for key, value in cache.items():
-            if key.startswith("projection_"):
-                serialized_projections = []
-                for post_gid, (pre_gids, projection_data) in value:
-                    serialized_projection = {
-                        "post_gid": int(post_gid),
-                        "pre_gids": pre_gids.tolist(),
-                    }
-
-                    if "Connections" in projection_data:
-                        connections = [
-                            conn.tolist() for conn in projection_data["Connections"]
-                        ]
-                        serialized_projection["connections"] = json.dumps(connections)
-
-                    if "Synapses" in projection_data:
-                        synapses = [syn.tolist() for syn in projection_data["Synapses"]]
-                        serialized_projection["synapses"] = json.dumps(synapses)
-
-                    serialized_projections.append(serialized_projection)
-
-                serialized[key] = json.dumps(serialized_projections)
-
-        return serialized
-
-    def _deserialize_cache(self, df):
-        """Convert parquet data back to cache format"""
-        if len(df) == 0:
-            return {}
-
-        row = df.iloc[0]
-        deserialized = {}
-
-        if "cells_meta_data" in row:
-            cells_meta = row["cells_meta_data"]
-            deserialized["cells_meta_data"] = CellsMetaData(
-                population_names=cells_meta["population_names"],
-                population_ranges=json.loads(cells_meta["population_ranges"]),
-                cell_attribute_info=json.loads(cells_meta["cell_attribute_info"]),
-            )
-
-        for key in row.index:
-            if key.startswith("coordinates_"):
-                deserialized[key] = np.array([np.array(d) for d in row[key]])
-
-        for key in row.index:
-            if key.startswith("projection_"):
-                projections_data = json.loads(row[key])
-                deserialized_projections = []
-
-                for proj in projections_data:
-                    post_gid = proj["post_gid"]
-                    pre_gids = np.array(proj["pre_gids"], dtype=np.uint32)
-
-                    projection_data = {}
-                    if "connections" in proj:
-                        connections = json.loads(proj["connections"])
-                        projection_data["Connections"] = [
-                            np.array(conn, dtype=np.float32) for conn in connections
-                        ]
-
-                    if "synapses" in proj:
-                        synapses = json.loads(proj["synapses"])
-                        projection_data["Synapses"] = [
-                            np.array(syn, dtype=np.uint32) for syn in synapses
-                        ]
-
-                    deserialized_projections.append(
-                        [post_gid, (pre_gids, projection_data)]
-                    )
-
-                deserialized[key] = deserialized_projections
-
-        return deserialized
-
-    @property
-    def cells_meta_data(self):
-        return self._cache["cells_meta_data"]
-
-    def projection_array(
-        self,
-        pre: types.PreSynapticPopulationName,
-        post: types.PostSynapticPopulationName,
-        all: bool = True,
-    ) -> list[tuple[int, tuple[list[int], Projection]]]:
-        return self._cache[f"projection_{pre}_{post}"]
-
-    def coordinate_array(
-        self,
-        population: types.PopulationName,
-        all: bool = True,
-    ) -> types.Float[types.Array, "n_coords cxyz=4"]:
-        return self._cache[f"coordinates_{population}"]
-
-    def connectivity_matrix(
-        self, weights: dict | None = None, reduced: bool = False, seed=123
-    ) -> types.Float[types.Array, "num_neurons num_neurons"]:
-        # use numpy, not jax
-        import numpy as npn
-
-        weights_str = json.dumps(weights or {}, sort_keys=True)
-        hash_input = f"{weights_str}_{int(reduced)}_{seed}"
-        hash_value = hashlib.md5(hash_input.encode()).hexdigest()
-
-        cache_file = self._graph.local_directory(
-            f"connectivity_matrix_{hash_value}.parquet"
-        )
-
-        rank = 0
-        if self.comm:
-            rank = self.comm.Get_rank()
-
-        matrix = None
-        if rank == 0:
-            try:
-                if os.path.exists(cache_file):
-                    df = pd.read_parquet(cache_file)
-                    matrix = df["connectivity_matrix"][0]
-            except Exception as e:
-                print(f"Error loading cached connectivity matrix: {e}")
-                matrix = None
-
-            if matrix is None:
-                # build cache
-                matrix = super().connectivity_matrix(
-                    weights=weights, reduced=reduced, seed=seed
-                )
-
-                try:
-                    df = pd.DataFrame([{"connectivity_matrix": matrix.tolist()}])
-                    df.to_parquet(cache_file, index=False)
-                except Exception as e:
-                    print(f"Error saving connectivity matrix to cache: {e}")
-
-        if self.comm:
-            matrix = self.comm.bcast(matrix, root=0)
-
-        return npn.array(
-            [npn.array(m, dtype=npn.float32) for m in matrix],
-            dtype=npn.float32,
-        )
 
 
 class TrainableSystem:
