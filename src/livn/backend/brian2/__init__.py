@@ -28,11 +28,11 @@ class Env(EnvProtocol):
         comm: Optional["MPI.Intracomm"] = None,
         subworld_size: int | None = None,
     ):
-        from livn.system import CachedSystem
+        if isinstance(system, str):
+            from livn.system import System
 
-        self.system = (
-            system if not isinstance(system, str) else CachedSystem(system, comm=comm)
-        )
+            system = System(system, comm=comm)
+        self.system = system
         if model is None:
             model = self.system.default_model()
         self.model = model
@@ -85,9 +85,18 @@ class Env(EnvProtocol):
         return self.system.cells_meta_data.population_ranges
 
     def init(self):
+        import logging
+
+        # Suppress expected dt mismatch warning: neuron groups use a finer dt
+        # (e.g. 0.005ms for Euler stability) while synapses use 0.025ms
+        # matching the NEURON backend's timestep
+        logging.getLogger("brian2.synapses.synapses").setLevel(logging.ERROR)
+
         self._load_cells()
         self._load_connections()
         self._set_delays()
+
+        logging.getLogger("brian2.synapses.synapses").setLevel(logging.WARNING)
 
         self.set_noise({})  # force noise op init
 
@@ -136,41 +145,11 @@ class Env(EnvProtocol):
                     if isinstance(projection, dict):
                         distances = projection["Connections"][0]
 
-                    # filter autapses
-                    autapse = pre_gids == post_gid
-                    distances = distances[~autapse]
-                    pre_gids = pre_gids[~autapse]
-
-                    if not getattr(self.model, "reduced", True):
-                        all_i.append(pre_gids - population_ranges[pre][0])
-                        j = post_gid - population_ranges[post][0]
-                        all_j.append(np.full_like(pre_gids, j))
-                        all_multipliers.append(
-                            np.random.uniform(0, 1, size=pre_gids.size).reshape(
-                                pre_gids.shape
-                            )
-                        )
-                        all_distances.append(distances)
-                    else:
-                        # multiplier connectivity
-                        q_values = pre_gids - population_ranges[pre][0]
-                        unique_q, inverse_indices = np.unique(
-                            q_values, return_inverse=True
-                        )
-                        multiplier = np.bincount(inverse_indices) / 10000.0
-
-                        distances = distances[
-                            np.sort(np.unique(inverse_indices, return_index=True)[1])
-                        ]
-
-                        all_i.append(unique_q)
-                        all_j.append(
-                            np.full_like(
-                                unique_q, post_gid - population_ranges[post][0]
-                            )
-                        )
-                        all_multipliers.append(multiplier)
-                        all_distances.append(distances)
+                    all_i.append(pre_gids - population_ranges[pre][0])
+                    j = post_gid - population_ranges[post][0]
+                    all_j.append(np.full_like(pre_gids, j))
+                    all_multipliers.append(np.ones(pre_gids.size))
+                    all_distances.append(distances)
 
                 all_i = np.concatenate(all_i).astype(np.int32)
                 all_j = np.concatenate(all_j).astype(np.int32)
@@ -249,14 +228,20 @@ class Env(EnvProtocol):
 
         return self
 
-    def _set_delays(self, velocity=1.0, diffusion=1.0):
+    def _set_delays(self, velocity=250.0, dt=0.025):
+        """Compute delays matching miv-simulator: max(distance/velocity, 2*dt).
+
+        Args:
+            velocity: Connection velocity in um/ms (default 250, matching NEURON backend).
+            dt: Simulation timestep in ms (default 0.025).
+        """
         for S in self._synapses.values():
             if velocity == 0:
                 S.delay = 0 * b2.ms
                 continue
-            distances = S.distance * b2.um
-            delays = distances / (velocity * b2.metre / b2.second)
-            S.delay = delays + diffusion * b2.ms
+            distances = np.array(S.distance)  # in um
+            delays_ms = np.maximum(distances / velocity, 2.0 * dt)
+            S.delay = delays_ms * b2.ms
 
         return self
 
@@ -642,9 +627,25 @@ class Env(EnvProtocol):
         self.t = 0
         self.clear_monitors()
 
+        if hasattr(self, "_stimulus_dt"):
+            del self._stimulus_dt
+
         return self
 
     def clear_monitors(self):
+        for monitor in self._spike_monitors.values():
+            self._network.remove(monitor)
+        for monitor in self._voltage_monitors.values():
+            self._network.remove(monitor)
+        for monitor in self._membrane_monitors.values():
+            if isinstance(monitor, tuple):
+                for m in monitor:
+                    self._network.remove(m)
+            else:
+                self._network.remove(monitor)
+        for monitor in self._weight_monitors.values():
+            self._network.remove(monitor)
+
         spms = list(self._spike_monitors.keys())
         vms = list(self._voltage_monitors.keys())
         mms = list(self._membrane_monitors.keys())
@@ -652,6 +653,7 @@ class Env(EnvProtocol):
         self._spike_monitors = {}
         self._voltage_monitors = {}
         self._membrane_monitors = {}
+        self._weight_monitors = {}
 
         gc.collect()
 

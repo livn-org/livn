@@ -27,6 +27,26 @@ env = make("EI2")
 it, t, iv, v, *_ = env.run(100)
 ```
 
+### GSL integration
+
+By default, brian2 uses the forward Euler method with a small timestep (0.005 ms) for numerical integration. For improved accuracy and performance, you can enable the [GNU Scientific Library (GSL)](https://www.gnu.org/software/gsl/) adaptive solver by setting the `LIVN_USE_LIBGSL` environment variable:
+
+```sh
+export LIVN_USE_LIBGSL=1
+```
+
+When enabled, the integrator switches to `gsl_rkf45` (adaptive Runge-Kutta-Fehlberg 4(5)) with a base timestep of 0.025 ms. The adaptive method automatically adjusts step sizes to maintain accuracy, allowing a larger base timestep while preserving numerical stability for stiff biophysical equations.
+
+This requires GSL to be installed on your system:
+
+```sh
+# Ubuntu/Debian
+sudo apt install libgsl-dev
+
+# macOS
+brew install gsl
+```
+
 ## Jax
 
 A [JAX](https://jax.readthedocs.io/)-based backend that enables **differentiable simulations** through [Diffrax](https://docs.kidger.site/diffrax/) and [Equinox](https://docs.kidger.site/equinox/). This allows you to compute exact gradients through the simulation and use gradient-based optimization to learn stimulus parameters, decode neural activity, or train surrogate models end-to-end.

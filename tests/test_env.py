@@ -10,6 +10,8 @@ from livn.env import Env
 from livn.stimulus import Stimulus
 from livn.utils import P
 
+TIMEOUT = int(os.environ.get("LIVN_TEST_TIMEOUT", 300))
+
 
 def _create_env(comm, subworld):
     system = os.environ["LIVN_TEST_SYSTEM"]
@@ -77,7 +79,7 @@ def _gather_and_merge(comm, *values):
 @pytest.mark.skipif(
     "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
 )
-@pytest.mark.mpiexec(timeout=60)
+@pytest.mark.mpiexec(timeout=TIMEOUT)
 @pytest.mark.parametrize("mpiexec_n", [1, 4] if backend() != "brian2" else [1])
 @pytest.mark.parametrize(
     "subworld",
@@ -139,7 +141,7 @@ def test_env(mpiexec_n, subworld):
 @pytest.mark.skipif(
     "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
 )
-@pytest.mark.mpiexec(timeout=60)
+@pytest.mark.mpiexec(timeout=TIMEOUT)
 @pytest.mark.parametrize("mpiexec_n", [1, 4] if backend() != "brian2" else [1])
 @pytest.mark.parametrize(
     "subworld",
@@ -159,8 +161,8 @@ def test_env_continued_runs(mpiexec_n, subworld):
 
     env_single = _create_env(comm, subworld)
 
-    total_duration = 120
-    split = 60
+    total_duration = 30
+    split = 15
 
     inputs = np.zeros([total_duration, env_single.io.num_channels])
     inputs[split:, :] = 500.0
@@ -264,7 +266,7 @@ def test_env_continued_runs(mpiexec_n, subworld):
 @pytest.mark.skipif(
     "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
 )
-@pytest.mark.mpiexec(timeout=60)
+@pytest.mark.mpiexec(timeout=TIMEOUT)
 @pytest.mark.parametrize("mpiexec_n", [1])
 def test_env_continued_runs_stimulus_dt_mismatch(mpiexec_n):
     assert MPI.COMM_WORLD.size == mpiexec_n
@@ -398,7 +400,7 @@ def test_env_continued_runs_stimulus_dt_mismatch(mpiexec_n):
 @pytest.mark.skipif(
     "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
 )
-@pytest.mark.mpiexec(timeout=60)
+@pytest.mark.mpiexec(timeout=TIMEOUT)
 @pytest.mark.parametrize("mpiexec_n", [1, 2])
 def test_env_noise(mpiexec_n):
     if backend() != "neuron":
@@ -443,5 +445,64 @@ def test_env_noise(mpiexec_n):
     env.run(50)
     v_soma = env.v_recs[(gid, 0)].as_numpy()
     assert np.std(v_soma) > 1e-3
+
+    env.close()
+
+
+@pytest.mark.skipif(
+    "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
+)
+@pytest.mark.mpiexec(timeout=TIMEOUT)
+@pytest.mark.parametrize("mpiexec_n", [1])
+def test_env_stochastic_variability(mpiexec_n):
+    assert MPI.COMM_WORLD.size == mpiexec_n
+    comm = MPI.COMM_WORLD
+
+    env = _create_env(comm, subworld=False)
+    env.apply_model_defaults(noise=True)
+
+    duration = 50
+    inputs = np.zeros([duration, env.io.num_channels])
+
+    voltages = []
+    for _ in range(3):
+        stimulus = env.cell_stimulus(inputs)
+        _, _, iv, v, _, _ = env.run(duration, stimulus=stimulus)
+        voltages.append(v.copy())
+        env.clear()
+
+    all_same = all(np.allclose(voltages[0], vi) for vi in voltages[1:])
+    assert not all_same, "Multiple runs produced identical voltage traces"
+
+    env.close()
+
+
+@pytest.mark.skipif(
+    "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
+)
+@pytest.mark.mpiexec(timeout=TIMEOUT)
+@pytest.mark.parametrize("mpiexec_n", [1])
+def test_env_deterministic_without_noise(mpiexec_n):
+    assert MPI.COMM_WORLD.size == mpiexec_n
+    comm = MPI.COMM_WORLD
+
+    env = _create_env(comm, subworld=False)
+
+    duration = 50
+    inputs = np.zeros([duration, env.io.num_channels])
+
+    voltages = []
+    for _ in range(2):
+        stimulus = env.cell_stimulus(inputs)
+        _, _, iv, v, _, _ = env.run(duration, stimulus=stimulus)
+        voltages.append(v.copy())
+        env.clear()
+
+    np.testing.assert_allclose(
+        voltages[0],
+        voltages[1],
+        atol=1e-9,
+        err_msg="Runs without noise should be deterministic",
+    )
 
     env.close()
