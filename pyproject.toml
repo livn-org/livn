@@ -55,6 +55,9 @@ override-dependencies = [
 no-build-isolation-package = ["neuroh5"]
 no-binary-package = ["mpi4py"]
 
+[tool.uv.extra-build-dependencies]
+neuroh5 = ["setuptools"]
+
 [tool.uv.workspace]
 members = ["systems", "benchmarks", 'visualization']
 
