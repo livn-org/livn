@@ -32,6 +32,11 @@ overrides = [
     { name = "neuroh5", git = "https://github.com/iraikov/neuroh5.git?rev=7179472" },
 ]
 
+[[manifest.dependency-metadata]]
+name = "neuroh5"
+version = "0.1.18"
+requires-dist = ["click", "h5py", "mpi4py", "numpy"]
+
 [[package]]
 name = "absl-py"
 version = "2.4.0"
@@ -1720,7 +1725,7 @@ wheels = [
 
 [[package]]
 name = "livn"
-version = "0.1.0"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "gymnasium" },
@@ -1754,6 +1759,7 @@ diffrax = [
 ]
 neuron = [
     { name = "miv-simulator" },
+    { name = "setuptools" },
 ]
 
 [package.metadata]
@@ -1784,7 +1790,10 @@ diffrax = [
     { name = "optimistix", specifier = ">=0.0.11" },
     { name = "signax", specifier = ">=0.2.1" },
 ]
-neuron = [{ name = "miv-simulator", git = "https://github.com/GazzolaLab/MiV-Simulator.git?rev=edfd2ef" }]
+neuron = [
+    { name = "miv-simulator", git = "https://github.com/GazzolaLab/MiV-Simulator.git?rev=edfd2ef" },
+    { name = "setuptools" },
+]
 
 [[package]]
 name = "livn-visualization"
@@ -4066,7 +4075,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "dmosopt", git = "https://github.com/iraikov/dmosopt.git?rev=7647f01" },
-    { name = "huggingface-hub", extras = ["cli"], specifier = ">=0.3.1" },
+    { name = "huggingface-hub", specifier = ">=0.3.1" },
     { name = "keras", specifier = "==3.13.0" },
     { name = "livn", editable = "." },
     { name = "machinable", specifier = "==4.10.6" },

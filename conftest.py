@@ -75,10 +75,21 @@ def pytest_runtest_protocol(item, nextitem):
     try:
         import mpi4py  # noqa: F401
     except ImportError:
-        return
+        _report_skip(item, "mpi4py not available")
+        return True
 
     _run_mpi_test(item, mpi_mark)
     return True
+
+
+def _report_skip(item, reason):
+    hook = item.config.hook
+    hook.pytest_runtest_logstart(nodeid=item.nodeid, location=item.location)
+    skip_exc = pytest.skip.Exception(reason)
+    call = pytest.CallInfo.from_call(lambda: (_ for _ in ()).throw(skip_exc), "call")
+    report = hook.pytest_runtest_makereport(item=item, call=call)
+    hook.pytest_runtest_logreport(report=report)
+    hook.pytest_runtest_logfinish(nodeid=item.nodeid, location=item.location)
 
 
 def _run_mpi_test(item, mpi_mark):
@@ -113,7 +124,7 @@ def _mpi_subprocess(item, mpi_mark):
     timeout = mpi_mark.kwargs.get("timeout", 30)
 
     exe = [
-        MPIEXEC,
+        *shlex.split(MPIEXEC),
         "-n",
         str(n),
         sys.executable,
@@ -127,6 +138,7 @@ def _mpi_subprocess(item, mpi_mark):
 
     env = dict(os.environ)
     env[MPI_SUBPROCESS_ENV] = "1"
+    env["TQDM_DISABLE"] = "1"  # tqdm monitor thread segfaults on fork()
 
     item.add_report_section(
         "call",
@@ -192,12 +204,30 @@ def _collect_reports(reportlog_dir: str, n: int) -> list[dict]:
             continue
         with open(path) as f:
             for line in f:
-                report = json.loads(line)
-                if report.get("$report_type") != "TestReport":
-                    continue
-                report["_mpi_rank"] = rank
-                reports.append(report)
+                for report in _parse_jsonl(line):
+                    if report.get("$report_type") != "TestReport":
+                        continue
+                    report["_mpi_rank"] = rank
+                    reports.append(report)
     return reports
+
+
+def _parse_jsonl(line: str) -> list[dict]:
+    results = []
+    decoder = json.JSONDecoder()
+    line = line.strip()
+    pos = 0
+    while pos < len(line):
+        try:
+            obj, end = decoder.raw_decode(line, pos)
+        except json.JSONDecodeError:
+            break
+        results.append(obj)
+        # skip whitespace between objects
+        while end < len(line) and line[end] in " \t\r\n":
+            end += 1
+        pos = end
+    return results
 
 
 def _extract_skip_reason(reports: list[dict]) -> str:

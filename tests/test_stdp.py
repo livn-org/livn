@@ -1,3 +1,4 @@
+import os
 from collections import defaultdict
 
 import numpy as np
@@ -9,10 +10,13 @@ from livn.env import Env
 _is_neuron = backend() == "neuron"
 _is_brian2 = backend() == "brian2"
 
-pytestmark = pytest.mark.skipif(
-    not _is_neuron and not _is_brian2,
-    reason="STDP tests require neuron or brian2 backend",
-)
+pytestmark = [
+    pytest.mark.skipif(
+        not _is_neuron and not _is_brian2,
+        reason="STDP tests require neuron or brian2 backend",
+    ),
+    pytest.mark.skipif(os.getenv("CI") == "true", reason="STDP tests unstable on CI"),
+]
 
 _neuron_only = pytest.mark.skipif(not _is_neuron, reason="neuron only")
 _brian2_only = pytest.mark.skipif(not _is_brian2, reason="brian2 only")

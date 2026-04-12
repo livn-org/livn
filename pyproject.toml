@@ -1,6 +1,6 @@
 [project]
 name = "livn"
-version = "0.1.0"
+version = "1.0.0"
 description = "A testbed for learning to interact with in vitro neural networks"
 authors = [
     { name = "Frithjof Gressmann", email = "fg14@illinois.edu" },
@@ -32,6 +32,7 @@ dev = [
 ]
 # backends
 neuron = [
+    "setuptools",
     "miv-simulator @ git+https://github.com/GazzolaLab/MiV-Simulator.git@edfd2ef",
 ]
 diffrax = [
@@ -52,9 +53,16 @@ override-dependencies = [
     "jaxtyping>=0.3.2",
     "neuroh5 @ git+https://github.com/iraikov/neuroh5.git@7179472",
 ]
+no-build-isolation-package = ["neuroh5"]
+no-binary-package = ["mpi4py"]
+
+[[tool.uv.dependency-metadata]]
+name = "neuroh5"
+version = "0.1.18"
+requires-dist = ["click", "h5py", "mpi4py", "numpy"]
 
 [tool.uv.workspace]
-members = ["systems", "benchmarks", 'visualization']
+members = ["systems", "benchmarks"]
 
 [tool.hatch.metadata]
 allow-direct-references = true

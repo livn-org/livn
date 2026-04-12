@@ -7,7 +7,7 @@
 from livn.env import Env
 from livn.system import predefined
 
-env = Env(predefined("S1")).init()
+env = Env(predefined("EI1")).init()
 
 env.apply_model_defaults()
 env.record_spikes()
