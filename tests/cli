@@ -83,7 +83,7 @@ case "$cmd" in
         env_vars+=(JAX_PLATFORMS=cpu LIVN_BACKEND=diffrax)
         ;;
       neuron)
-        env_vars+=(LIVN_BACKEND=neuron TQDM_DISABLE=1)
+        env_vars+=(LIVN_BACKEND=neuron)
         ;;
       brian2)
         env_vars+=(LIVN_BACKEND=brian2)

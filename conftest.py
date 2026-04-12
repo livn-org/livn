@@ -28,21 +28,6 @@ def pytest_addoption(parser):
 def pytest_configure(config):
     global MPIEXEC
 
-    # Disable tqdm monitor thread — it causes segfaults with NEURON's
-    # ParallelContext when the monitor thread runs during psolve().
-    # TQDM_DISABLE alone suppresses output but the monitor thread still starts,
-    # so we must also set monitor_interval = 0.
-    os.environ.setdefault("TQDM_DISABLE", "1")
-    try:
-        import tqdm
-
-        tqdm.tqdm.monitor_interval = 0
-        if tqdm.tqdm.monitor:
-            tqdm.tqdm.monitor.cancel()
-            tqdm.tqdm.monitor = None
-    except ImportError:
-        pass
-
     mpiexec = config.getoption("mpiexec", default=None)
     if mpiexec:
         MPIEXEC = mpiexec
