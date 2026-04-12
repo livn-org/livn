@@ -22,9 +22,9 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Install dev dependencies
-        run: uv sync --group dev
+        run: uv sync --only-group dev
       - name: Lint
-        run: uv run tests/cli lint
+        run: uv run --only-group dev tests/cli lint
 
   download-ei1:
     runs-on: ubuntu-latest
