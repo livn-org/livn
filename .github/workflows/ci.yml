@@ -14,7 +14,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: astral-sh/ruff-action@v3
         with:
           args: "format --check"
@@ -25,17 +25,17 @@ jobs:
   download-ei1:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Cache EI1 system
         id: cache-ei1
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: systems/graphs/EI1
           key: ei1-system-v1
@@ -52,16 +52,16 @@ jobs:
     runs-on: ubuntu-latest
     needs: [lint, download-ei1]
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Restore EI1 system
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: systems/graphs/EI1
           key: ei1-system-v1
@@ -77,16 +77,16 @@ jobs:
     runs-on: ubuntu-latest
     needs: [lint, download-ei1]
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Restore EI1 system
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: systems/graphs/EI1
           key: ei1-system-v1
@@ -102,16 +102,16 @@ jobs:
     runs-on: ubuntu-latest
     needs: [lint, download-ei1]
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Restore EI1 system
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: systems/graphs/EI1
           key: ei1-system-v1
@@ -132,16 +132,16 @@ jobs:
     runs-on: ubuntu-latest
     needs: [lint, download-ei1]
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Restore EI1 system
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: systems/graphs/EI1
           key: ei1-system-v1
@@ -162,16 +162,16 @@ jobs:
     runs-on: macos-latest
     needs: [lint, download-ei1]
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Restore EI1 system
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: systems/graphs/EI1
           key: ei1-system-v1

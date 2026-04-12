@@ -217,7 +217,10 @@ def _parse_jsonl(line: str) -> list[dict]:
     line = line.strip()
     pos = 0
     while pos < len(line):
-        obj, end = decoder.raw_decode(line, pos)
+        try:
+            obj, end = decoder.raw_decode(line, pos)
+        except json.JSONDecodeError:
+            break
         results.append(obj)
         # skip whitespace between objects
         while end < len(line) and line[end] in " \t\r\n":
