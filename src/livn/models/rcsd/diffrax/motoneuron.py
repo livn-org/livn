@@ -633,6 +633,8 @@ class BoothRinzelKiehn(eqx.Module):
         scaled_max_steps = int(self.max_steps * (t_dur / 1000.0))
         scaled_max_steps = max(scaled_max_steps, 10000)
 
+        kwargs.pop("unroll", None)
+
         solution = diffrax.diffeqsolve(
             term,
             solver,

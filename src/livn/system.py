@@ -814,7 +814,7 @@ class System:
     @property
     def gids(self) -> types.Int[types.Array, "n_neurons"]:
         if _USES_JAX:
-            return np.asarray(self.neuron_coordinates.at[:, 0], dtype=int)
+            return np.asarray(self.neuron_coordinates[:, 0], dtype=int)
 
         return self.neuron_coordinates[:, 0].astype(int)
 

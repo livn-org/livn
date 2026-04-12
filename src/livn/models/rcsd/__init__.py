@@ -380,7 +380,7 @@ class ReducedCalciumSomaDendrite(Model):
         from livn.models.rcsd.diffrax.culture import MotoneuronCulture
 
         return MotoneuronCulture(
-            num_neurons=env.system.num_neurons,
+            num_neurons=len(env.system.gids),
             params=self.params("BoothRinzelKiehn-MN"),
             key=key,
         )

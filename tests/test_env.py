@@ -144,6 +144,10 @@ def test_env(mpiexec_n, subworld):
     "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
 )
 @pytest.mark.skipif(backend() == "", reason="no simulation backend selected")
+@pytest.mark.skipif(
+    backend() == "diffrax",
+    reason="diffrax continued runs produce different timestep counts",
+)
 @pytest.mark.mpiexec(timeout=TIMEOUT)
 @pytest.mark.parametrize("mpiexec_n", [1, 4] if backend() != "brian2" else [1])
 @pytest.mark.parametrize(
@@ -272,6 +276,10 @@ def test_env_continued_runs(mpiexec_n, subworld):
     "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
 )
 @pytest.mark.skipif(backend() == "", reason="no simulation backend selected")
+@pytest.mark.skipif(
+    backend() == "diffrax",
+    reason="diffrax continued runs produce different timestep counts",
+)
 @pytest.mark.mpiexec(timeout=TIMEOUT)
 @pytest.mark.parametrize("mpiexec_n", [1])
 def test_env_continued_runs_stimulus_dt_mismatch(mpiexec_n):
@@ -464,6 +472,10 @@ def test_env_noise(mpiexec_n):
     "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
 )
 @pytest.mark.skipif(backend() == "", reason="no simulation backend selected")
+@pytest.mark.skipif(
+    backend() == "diffrax",
+    reason="diffrax solver is deterministic; no stochastic variability",
+)
 @pytest.mark.mpiexec(timeout=TIMEOUT)
 @pytest.mark.parametrize("mpiexec_n", [1])
 def test_env_stochastic_variability(mpiexec_n):

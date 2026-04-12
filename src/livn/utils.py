@@ -55,7 +55,7 @@ def merge_array(data):
     if data is None:
         return None
     np = lnp()
-    filtered = [x for x in data if x is not None and len(x) > 0]
+    filtered = [np.asarray(x) for x in data if x is not None and len(x) > 0]
     return np.concatenate(filtered) if filtered else np.array([])
 
 

@@ -123,6 +123,10 @@ def test_utils_P(monkeypatch):
     "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
 )
 @pytest.mark.skipif(not _has_mpi4py, reason="mpi4py not available")
+@pytest.mark.skipif(
+    os.environ.get("LIVN_BACKEND") == "diffrax",
+    reason="MPI gather/merge not supported under diffrax backend",
+)
 @pytest.mark.mpiexec(timeout=10)
 @pytest.mark.parametrize(
     "mpiexec_n",

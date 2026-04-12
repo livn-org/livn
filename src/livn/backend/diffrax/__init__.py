@@ -1,5 +1,6 @@
 from typing import TYPE_CHECKING, Optional, Union
 
+import numpy as np
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -41,9 +42,9 @@ class Env(EnvProtocol):
         if isinstance(system, int):
             system = _ParallelSystem(system)
         elif isinstance(system, str):
-            from livn.system import CachedSystem
+            from livn.system import System
 
-            system = CachedSystem(system, comm=comm)
+            system = System(system, comm=comm)
         self.system = system
         if model is None:
             model = system.default_model()
@@ -90,6 +91,12 @@ class Env(EnvProtocol):
         stimulus = Stimulus.from_arg(stimulus)
 
         if stimulus.array is not None:
+            if not hasattr(self, "_stimulus_dt"):
+                self._stimulus_dt = stimulus.dt
+            elif not np.isclose(self._stimulus_dt, stimulus.dt, rtol=0.0, atol=1e-12):
+                raise ValueError(
+                    "Stimulus dt mismatch; call clear() before rerunning"
+                )
             stimulus.array = jnp.array(stimulus.array)
 
             # adjust timesteps if necessary
@@ -167,6 +174,8 @@ class Env(EnvProtocol):
         return self
 
     def clear(self):
+        if hasattr(self, "_stimulus_dt"):
+            del self._stimulus_dt
         return self
 
 
