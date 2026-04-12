@@ -124,7 +124,7 @@ def _mpi_subprocess(item, mpi_mark):
     timeout = mpi_mark.kwargs.get("timeout", 30)
 
     exe = [
-        MPIEXEC,
+        *shlex.split(MPIEXEC),
         "-n",
         str(n),
         sys.executable,
@@ -138,6 +138,7 @@ def _mpi_subprocess(item, mpi_mark):
 
     env = dict(os.environ)
     env[MPI_SUBPROCESS_ENV] = "1"
+    env["TQDM_DISABLE"] = "1"  # tqdm monitor thread segfaults on fork()
 
     item.add_report_section(
         "call",

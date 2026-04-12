@@ -126,9 +126,7 @@ jobs:
         uses: ./.github/actions/install-neuron
 
       - name: Run tests
-        run: uv run tests/cli test --backend neuron
-        env:
-          OMPI_MCA_rmaps_base_oversubscribe: "1"
+        run: uv run tests/cli test --backend neuron --args '--mpiexec "mpiexec --oversubscribe"'
 
   test-brian2:
     runs-on: ubuntu-latest
@@ -186,6 +184,4 @@ jobs:
         uses: ./.github/actions/install-neuron
 
       - name: Run tests
-        run: uv run tests/cli test --backend neuron
-        env:
-          OMPI_MCA_rmaps_base_oversubscribe: "1"
+        run: uv run tests/cli test --backend neuron --args '--mpiexec "mpiexec --oversubscribe"'
