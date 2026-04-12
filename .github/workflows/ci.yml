@@ -9,7 +9,6 @@ on:
 env:
   UV_CACHE_DIR: /tmp/.uv-cache
   PYTHON_VERSION: "3.12"
-  TQDM_DISABLE: "1"
 
 jobs:
   lint:
