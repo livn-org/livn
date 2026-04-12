@@ -95,7 +95,7 @@ case "$cmd" in
     esac
 
     # shellcheck disable=SC2086
-    exec env "${env_vars[@]}" pytest $pytest_args
+    exec env "${env_vars[@]}" pytest -x $pytest_args
     ;;
 
   download-ei1)

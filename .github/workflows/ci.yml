@@ -48,6 +48,31 @@ jobs:
         if: steps.cache-ei1.outputs.cache-hit != 'true'
         run: uv run tests/cli download-ei1
 
+  test-default:
+    runs-on: ubuntu-latest
+    needs: [lint, download-ei1]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Restore EI1 system
+        uses: actions/cache/restore@v4
+        with:
+          path: systems/graphs/EI1
+          key: ei1-system-v1
+          fail-on-cache-miss: true
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Run tests
+        run: uv run tests/cli test --backend none
+
   test-diffrax:
     runs-on: ubuntu-latest
     needs: [lint, download-ei1]
