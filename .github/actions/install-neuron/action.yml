@@ -1,0 +1,27 @@
+name: Install neuron deps
+description: Install Python dependencies for the NEURON backend (neuroh5 with no-build-isolation)
+
+# neuroh5 is built with no-build-isolation (configured in pyproject.toml) because
+# its build requires mpi4py, which must be compiled against the system MPI — a
+# prebuilt wheel from an isolated build env would link against the wrong MPI.
+#
+# However, no-build-isolation means neuroh5's cmake build runs against the project
+# venv, and uv does not guarantee that numpy/mpi4py are installed before neuroh5
+# is built within a single `uv sync`.
+#
+# The workaround is a two-step install:
+#   1. Sync everything except neuroh5 (gets numpy, mpi4py, setuptools into the venv)
+#   2. Install neuroh5 explicitly via `uv pip install --no-build-isolation`
+#
+# The neuroh5 git URL is read from pyproject.toml's override-dependencies to avoid
+# duplicating the pinned commit hash.
+
+runs:
+  using: composite
+  steps:
+    - name: Install Python dependencies
+      shell: bash
+      run: |
+        uv sync --group dev --group neuron --no-install-package neuroh5
+        NEUROH5_DEP=$(python -c "import tomllib; print(next(d for d in tomllib.load(open('pyproject.toml','rb'))['tool']['uv']['override-dependencies'] if 'neuroh5' in d))")
+        uv pip install --no-build-isolation "$NEUROH5_DEP"
