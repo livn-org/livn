@@ -120,15 +120,15 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake mpich libmpich-dev libhdf5-mpich-dev hdf5-tools
-          # Ensure mpiexec points to MPICH (Ubuntu has OpenMPI pre-installed)
-          sudo update-alternatives --set mpiexec /usr/bin/mpiexec.mpich
+          sudo apt-get install -y cmake openmpi-bin libopenmpi-dev libhdf5-openmpi-dev hdf5-tools
 
       - name: Install Python dependencies
         uses: ./.github/actions/install-neuron
 
       - name: Run tests
         run: uv run tests/cli test --backend neuron
+        env:
+          OMPI_MCA_rmaps_base_oversubscribe: "1"
 
   test-brian2:
     runs-on: ubuntu-latest
