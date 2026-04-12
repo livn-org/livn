@@ -32,6 +32,7 @@ dev = [
 ]
 # backends
 neuron = [
+    "setuptools",
     "miv-simulator @ git+https://github.com/GazzolaLab/MiV-Simulator.git@edfd2ef",
 ]
 diffrax = [
@@ -55,8 +56,10 @@ override-dependencies = [
 no-build-isolation-package = ["neuroh5"]
 no-binary-package = ["mpi4py"]
 
-[tool.uv.extra-build-dependencies]
-neuroh5 = ["setuptools"]
+[[tool.uv.dependency-metadata]]
+name = "neuroh5"
+version = "0.1.18"
+requires-dist = ["click", "h5py", "mpi4py", "numpy"]
 
 [tool.uv.workspace]
 members = ["systems", "benchmarks", 'visualization']
