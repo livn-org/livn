@@ -29,9 +29,14 @@ runs:
 
     - name: Install neuroh5 (no-build-isolation, needs venv on PATH for cmake)
       shell: bash
+      env:
+        # actions/setup-python sets Python_ROOT_DIR & Python3_ROOT_DIR to the
+        # system Python. CMake's FindPython uses these with higher priority than
+        # PATH, so it ignores the venv even when activated. Override them to
+        # point at the venv so cmake finds numpy/mpi4py.
+        Python_ROOT_DIR: ${{ github.workspace }}/.venv
+        Python3_ROOT_DIR: ${{ github.workspace }}/.venv
       run: |
-        # Activate venv so cmake's FindPython discovers the venv interpreter
-        # (which has numpy/mpi4py) instead of the system Python.
         source .venv/bin/activate
         NEUROH5_DEP=$(python -c "import tomllib; print(next(d for d in tomllib.load(open('pyproject.toml','rb'))['tool']['uv']['override-dependencies'] if 'neuroh5' in d))")
         uv pip install --no-build-isolation "$NEUROH5_DEP"
