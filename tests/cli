@@ -11,6 +11,7 @@ Commands:
 Options for 'test':
   --backend <diffrax|neuron|brian2|none|all>  Backend to test (default: all)
   --system  <path>                        Path to test system (default: ./systems/graphs/EI1)
+  --oversubscribe                         Pass --oversubscribe to mpiexec
   --args    <pytest-args>                  Extra arguments passed to pytest
 
 Options for 'download-ei1':
@@ -19,6 +20,7 @@ Options for 'download-ei1':
 Examples:
   tests/cli lint
   tests/cli test --backend diffrax
+  tests/cli test --backend neuron --oversubscribe
   tests/cli test --backend neuron --args '-x --tb=short'
   tests/cli test --backend none
   tests/cli download-ei1
@@ -53,11 +55,13 @@ case "$cmd" in
     backend="all"
     system="./systems/graphs/EI1"
     pytest_args=""
+    oversubscribe=false
 
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --backend) backend="$2"; shift 2 ;;
         --system)  system="$2";  shift 2 ;;
+        --oversubscribe) oversubscribe=true; shift ;;
         --args)    pytest_args="$2"; shift 2 ;;
         *) echo "Unknown option: $1"; echo "$USAGE"; exit 1 ;;
       esac
@@ -68,7 +72,7 @@ case "$cmd" in
     if [[ "$backend" == "all" ]]; then
       for b in diffrax neuron brian2; do
         echo "=== Running tests with backend: $b ==="
-        "$0" test --backend "$b" --system "$system" --args "$pytest_args"
+        "$0" test --backend "$b" --system "$system" $($oversubscribe && echo --oversubscribe) --args "$pytest_args"
       done
       exit 0
     fi
@@ -94,8 +98,13 @@ case "$cmd" in
         ;;
     esac
 
+    oversubscribe_args=()
+    if $oversubscribe; then
+      oversubscribe_args=(--mpiexec "mpiexec --oversubscribe")
+    fi
+
     # shellcheck disable=SC2086
-    exec env "${env_vars[@]}" pytest -x $pytest_args
+    exec env "${env_vars[@]}" pytest -x "${oversubscribe_args[@]}" $pytest_args
     ;;
 
   download-ei1)

@@ -15,12 +15,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: astral-sh/ruff-action@v3
-        with:
-          args: "format --check"
-      - uses: astral-sh/ruff-action@v3
-        with:
-          args: "check"
+      - uses: astral-sh/setup-uv@v7
+      - run: uvx ruff format --check
+      - run: uvx ruff check
 
   download-ei1:
     runs-on: ubuntu-latest
@@ -126,7 +123,7 @@ jobs:
         uses: ./.github/actions/install-neuron
 
       - name: Run tests
-        run: uv run tests/cli test --backend neuron --args '--mpiexec "mpiexec --oversubscribe"'
+        run: uv run tests/cli test --backend neuron --oversubscribe
 
   test-brian2:
     runs-on: ubuntu-latest
@@ -184,4 +181,4 @@ jobs:
         uses: ./.github/actions/install-neuron
 
       - name: Run tests
-        run: uv run tests/cli test --backend neuron --args '--mpiexec "mpiexec --oversubscribe"'
+        run: uv run tests/cli test --backend neuron --oversubscribe
