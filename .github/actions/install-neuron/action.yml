@@ -17,26 +17,40 @@ description: Install Python dependencies for the NEURON backend (neuroh5 with no
 #
 # The neuroh5 git URL is read from pyproject.toml's override-dependencies to avoid
 # duplicating the pinned commit hash.
+#
+# The entire .venv is cached to avoid rebuilding mpi4py and neuroh5 from source
+# on every run. The cache key includes the lockfile, pyproject.toml (for
+# override-dependencies), and OS so it invalidates on any dependency change.
 
 runs:
   using: composite
   steps:
+    - name: Cache neuron venv
+      id: cache-venv
+      uses: actions/cache@v4
+      with:
+        path: .venv
+        key: neuron-venv-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-${{ hashFiles('uv.lock', 'pyproject.toml') }}
+
     - name: Install Python dependencies (without neuroh5)
+      if: steps.cache-venv.outputs.cache-hit != 'true'
       shell: bash
       run: |
         uv sync --group dev --group neuron --no-install-package neuroh5
         uv pip install --no-build-isolation mpi4py
 
     - name: Install neuroh5 (no-build-isolation, needs venv on PATH for cmake)
+      if: steps.cache-venv.outputs.cache-hit != 'true'
       shell: bash
       env:
-        # actions/setup-python sets Python_ROOT_DIR & Python3_ROOT_DIR to the
-        # system Python. CMake's FindPython uses these with higher priority than
-        # PATH, so it ignores the venv even when activated. Override them to
-        # point at the venv so cmake finds numpy/mpi4py.
         Python_ROOT_DIR: ${{ github.workspace }}/.venv
         Python3_ROOT_DIR: ${{ github.workspace }}/.venv
       run: |
         source .venv/bin/activate
         NEUROH5_DEP=$(python -c "import tomllib; print(next(d for d in tomllib.load(open('pyproject.toml','rb'))['tool']['uv']['override-dependencies'] if 'neuroh5' in d))")
         uv pip install --no-build-isolation "$NEUROH5_DEP"
+
+    - name: Sync venv from cache (fast, no-build packages already present)
+      if: steps.cache-venv.outputs.cache-hit == 'true'
+      shell: bash
+      run: uv sync --group dev --group neuron --no-install-package neuroh5
