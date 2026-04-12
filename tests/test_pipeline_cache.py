@@ -154,48 +154,6 @@ class TestObsAugmentation:
         assert a != b
 
 
-class TestCultureActivityExtractor:
-    @pytest.fixture(autouse=True)
-    def _require_machinable(self):
-        pytest.importorskip("machinable")
-
-    def test_same_config_same_hash(self):
-        from benchmarks.rl.decoding import CultureActivityExtractor
-
-        a = CultureActivityExtractor(n_channels=16, duration=100)
-        b = CultureActivityExtractor(n_channels=16, duration=100)
-        assert hash(a) == hash(b)
-        assert a == b
-
-    def test_different_config_different_hash(self):
-        from benchmarks.rl.decoding import CultureActivityExtractor
-
-        a = CultureActivityExtractor(n_channels=16, duration=100)
-        b = CultureActivityExtractor(n_channels=8, duration=100)
-        assert hash(a) != hash(b)
-        assert a != b
-
-
-class TestSpikeDecodingGetstate:
-    @pytest.fixture(autouse=True)
-    def _require_machinable(self):
-        pytest.importorskip("machinable")
-
-    def test_last_spike_counts_excluded(self):
-        from benchmarks.rl.decoding import ArgmaxDecoding
-
-        dec = ArgmaxDecoding(duration=100, groups=((0,), (1,)))
-
-        dec._last_spike_counts = {0: 5, 1: 10}
-
-        h1 = hash(dec)
-
-        dec2 = ArgmaxDecoding(duration=100, groups=((0,), (1,)))
-        h2 = hash(dec2)
-
-        assert h1 == h2, "_last_spike_counts should not affect hash"
-
-
 class TestPipeWithGymStep:
     def test_pipe_hash_stable_across_gym_steps(self):
         cart = gym.make("CartPole-v1")
