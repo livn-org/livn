@@ -121,6 +121,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake mpich libmpich-dev libhdf5-mpich-dev hdf5-tools
+          # Ensure mpiexec points to MPICH (Ubuntu has OpenMPI pre-installed)
+          sudo update-alternatives --set mpiexec /usr/bin/mpiexec.mpich
 
       - name: Install Python dependencies
         uses: ./.github/actions/install-neuron
