@@ -142,10 +142,8 @@ class TestPyfiveReaders:
                     assert len(ns_data["Connections"]) > 0
 
 
-
 @neuroh5_required
 class TestPyfiveVsNeuroh5:
-
     def test_population_names(self, cells_filepath):
         from mpi4py import MPI
         from neuroh5.io import read_population_names as neuroh5_read_pop_names
@@ -345,7 +343,6 @@ class TestPyfiveVsNeuroh5:
                             )
 
 
-
 class TestSystemWithPyfive:
     def test_cells_meta_data(self):
         from livn.system import System
@@ -406,7 +403,6 @@ class TestSystemWithPyfive:
 
 @neuroh5_required
 class TestSystemPyfiveVsNeuroh5:
-
     def test_coordinate_array_equivalence(self):
         from livn.system import (
             System,

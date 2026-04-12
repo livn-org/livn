@@ -9,6 +9,7 @@ from livn.utils import P
 
 try:
     import mpi4py  # noqa: F401
+
     _has_mpi4py = True
 except ImportError:
     _has_mpi4py = False

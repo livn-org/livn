@@ -94,9 +94,7 @@ class Env(EnvProtocol):
             if not hasattr(self, "_stimulus_dt"):
                 self._stimulus_dt = stimulus.dt
             elif not np.isclose(self._stimulus_dt, stimulus.dt, rtol=0.0, atol=1e-12):
-                raise ValueError(
-                    "Stimulus dt mismatch; call clear() before rerunning"
-                )
+                raise ValueError("Stimulus dt mismatch; call clear() before rerunning")
             stimulus.array = jnp.array(stimulus.array)
 
             # adjust timesteps if necessary
