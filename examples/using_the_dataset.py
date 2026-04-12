@@ -26,7 +26,7 @@ mea = MEA.from_directory(system.uri)
 features = sample["features"]
 
 duration = 1000
-channel = int(np.round(features[0]))
+channel = 0
 t_stim = int(features[1])
 amplitude = features[2]
 

@@ -236,7 +236,6 @@ def test_distributed_env_subworld_size_gt_one(mpiexec_n):
     env.shutdown()
 
 
-
 @pytest.mark.skipif(
     "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
 )

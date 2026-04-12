@@ -9,6 +9,7 @@ from livn.utils import P
 
 try:
     import mpi4py  # noqa: F401
+
     _has_mpi4py = True
 except ImportError:
     _has_mpi4py = False
@@ -167,8 +168,6 @@ def test_potential_recording():
 @pytest.mark.parametrize("mpiexec_n", [1, 2])
 def test_mea_parallel(mpiexec_n):
     system = System(os.environ["LIVN_TEST_SYSTEM"])
-
-    mea = io.MEA.from_json(os.path.join(system.uri, "mea.json"))
 
     q = P.gather(system.neuron_coordinates)
 

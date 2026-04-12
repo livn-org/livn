@@ -1,0 +1,165 @@
+name: CI
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+        branches: [main]
+
+env:
+    UV_CACHE_DIR: /tmp/.uv-cache
+    PYTHON_VERSION: "3.12"
+
+jobs:
+    lint:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: astral-sh/setup-uv@v6
+              with:
+                  enable-cache: true
+            - uses: actions/setup-python@v5
+              with:
+                  python-version: ${{ env.PYTHON_VERSION }}
+            - name: Install dev dependencies
+              run: uv sync --group dev
+            - name: Lint
+              run: uv run tests/cli lint
+
+    download-ei1:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: astral-sh/setup-uv@v6
+              with:
+                  enable-cache: true
+            - uses: actions/setup-python@v5
+              with:
+                  python-version: ${{ env.PYTHON_VERSION }}
+
+            - name: Cache EI1 system
+              id: cache-ei1
+              uses: actions/cache@v4
+              with:
+                  path: systems/graphs/EI1
+                  key: ei1-system-v1
+
+            - name: Install minimal dependencies
+              if: steps.cache-ei1.outputs.cache-hit != 'true'
+              run: uv sync --group dev
+
+            - name: Download EI1 system
+              if: steps.cache-ei1.outputs.cache-hit != 'true'
+              run: uv run tests/cli download-ei1
+
+    test-diffrax:
+        runs-on: ubuntu-latest
+        needs: [lint, download-ei1]
+        steps:
+            - uses: actions/checkout@v4
+            - uses: astral-sh/setup-uv@v6
+              with:
+                  enable-cache: true
+            - uses: actions/setup-python@v5
+              with:
+                  python-version: ${{ env.PYTHON_VERSION }}
+
+            - name: Restore EI1 system
+              uses: actions/cache/restore@v4
+              with:
+                  path: systems/graphs/EI1
+                  key: ei1-system-v1
+                  fail-on-cache-miss: true
+
+            - name: Install dependencies
+              run: uv sync --group dev --group diffrax
+
+            - name: Run tests
+              run: uv run tests/cli test --backend diffrax
+
+    test-neuron:
+        runs-on: ubuntu-latest
+        needs: [lint, download-ei1]
+        steps:
+            - uses: actions/checkout@v4
+            - uses: astral-sh/setup-uv@v6
+              with:
+                  enable-cache: true
+            - uses: actions/setup-python@v5
+              with:
+                  python-version: ${{ env.PYTHON_VERSION }}
+
+            - name: Restore EI1 system
+              uses: actions/cache/restore@v4
+              with:
+                  path: systems/graphs/EI1
+                  key: ei1-system-v1
+                  fail-on-cache-miss: true
+
+            - name: Install system dependencies
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y cmake mpich libmpich-dev libhdf5-mpich-dev hdf5-tools
+
+            - name: Install Python dependencies
+              run: |
+                  uv sync --group dev --group neuron
+                  uv pip install --force-reinstall --no-cache-dir --no-binary=mpi4py mpi4py
+
+            - name: Run tests
+              run: uv run tests/cli test --backend neuron
+
+    test-brian2:
+        runs-on: ubuntu-latest
+        needs: [lint, download-ei1]
+        steps:
+            - uses: actions/checkout@v4
+            - uses: astral-sh/setup-uv@v6
+              with:
+                  enable-cache: true
+            - uses: actions/setup-python@v5
+              with:
+                  python-version: ${{ env.PYTHON_VERSION }}
+
+            - name: Restore EI1 system
+              uses: actions/cache/restore@v4
+              with:
+                  path: systems/graphs/EI1
+                  key: ei1-system-v1
+                  fail-on-cache-miss: true
+
+            - name: Install dependencies
+              run: uv sync --group dev --group brian2
+
+            - name: Run tests
+              run: uv run tests/cli test --backend brian2
+
+    test-neuron-macos:
+        runs-on: macos-latest
+        needs: [lint, download-ei1]
+        steps:
+            - uses: actions/checkout@v4
+            - uses: astral-sh/setup-uv@v6
+              with:
+                  enable-cache: true
+            - uses: actions/setup-python@v5
+              with:
+                  python-version: ${{ env.PYTHON_VERSION }}
+
+            - name: Restore EI1 system
+              uses: actions/cache/restore@v4
+              with:
+                  path: systems/graphs/EI1
+                  key: ei1-system-v1
+                  fail-on-cache-miss: true
+
+            - name: Install system dependencies
+              run: brew install hdf5-mpi
+
+            - name: Install Python dependencies
+              run: |
+                  uv sync --group dev --group neuron
+                  uv pip install --force-reinstall --no-cache-dir --no-binary=mpi4py mpi4py
+
+            - name: Run tests
+              run: uv run tests/cli test --backend neuron

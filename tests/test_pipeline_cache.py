@@ -133,7 +133,6 @@ class TestGymStep:
         assert h1 == h2, "GymStep hash should not change with episode state"
 
 
-
 class ConcreteAug(ObsAugmentation):
     obs_dim: int = 4
 
@@ -153,7 +152,6 @@ class TestObsAugmentation:
         b = ConcreteAug(obs_dim=8)
         assert hash(a) != hash(b)
         assert a != b
-
 
 
 class TestCultureActivityExtractor:
@@ -196,8 +194,6 @@ class TestSpikeDecodingGetstate:
         h2 = hash(dec2)
 
         assert h1 == h2, "_last_spike_counts should not affect hash"
-
-
 
 
 class TestPipeWithGymStep:

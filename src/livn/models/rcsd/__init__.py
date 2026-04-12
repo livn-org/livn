@@ -404,9 +404,9 @@ class ReducedCalciumSomaDendrite(Model):
 
         # Compartment areas (um^2) and lengths
         L_soma = pp * Ltotal  # um
-        L_dend = (1 - pp) * Ltotal  # um
+        # L_dend = (1 - pp) * Ltotal  # um
         area_soma = math.pi * diam * L_soma  # um^2
-        area_dend = math.pi * diam * L_dend  # um^2
+        # area_dend = math.pi * diam * L_dend  # um^2
 
         # Axial resistance: same formula as in BRK.py biophys()
         # Ra is set so coupling effective conductance = gc (mS/cm2)
@@ -620,9 +620,9 @@ class ReducedCalciumSomaDendrite(Model):
         e_pas = p["e_pas"]
 
         L_soma = pp * Ltotal
-        L_dend = (1 - pp) * Ltotal
+        # L_dend = (1 - pp) * Ltotal
         area_soma = math.pi * diam * L_soma
-        area_dend = math.pi * diam * L_dend
+        # area_dend = math.pi * diam * L_dend
 
         celsius = 6.3
         fN = ((36.0 / 293.15) * (celsius + 273.15)) / 2.0
