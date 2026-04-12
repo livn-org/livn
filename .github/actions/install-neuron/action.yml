@@ -21,10 +21,17 @@ description: Install Python dependencies for the NEURON backend (neuroh5 with no
 runs:
   using: composite
   steps:
-    - name: Install Python dependencies
+    - name: Install Python dependencies (without neuroh5)
       shell: bash
       run: |
         uv sync --group dev --group neuron --no-install-package neuroh5
         uv pip install --no-build-isolation mpi4py
+
+    - name: Install neuroh5 (no-build-isolation, needs venv on PATH for cmake)
+      shell: bash
+      run: |
+        # Activate venv so cmake's FindPython discovers the venv interpreter
+        # (which has numpy/mpi4py) instead of the system Python.
+        source .venv/bin/activate
         NEUROH5_DEP=$(python -c "import tomllib; print(next(d for d in tomllib.load(open('pyproject.toml','rb'))['tool']['uv']['override-dependencies'] if 'neuroh5' in d))")
         uv pip install --no-build-isolation "$NEUROH5_DEP"
