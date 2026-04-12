@@ -1,6 +1,6 @@
 [project]
 name = "livn"
-version = "0.1.0"
+version = "1.0.0"
 description = "A testbed for learning to interact with in vitro neural networks"
 authors = [
     { name = "Frithjof Gressmann", email = "fg14@illinois.edu" },
