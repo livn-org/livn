@@ -103,6 +103,7 @@ jobs:
 
       - name: Install Python dependencies
         run: |
+          uv sync --group dev
           uv pip install numpy
           uv sync --group dev --group neuron
           uv pip install --force-reinstall --no-cache-dir --no-binary=mpi4py mpi4py
@@ -159,6 +160,7 @@ jobs:
 
       - name: Install Python dependencies
         run: |
+          uv sync --group dev
           uv pip install numpy
           uv sync --group dev --group neuron
           uv pip install --force-reinstall --no-cache-dir --no-binary=mpi4py mpi4py
