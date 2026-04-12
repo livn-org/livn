@@ -38,8 +38,15 @@ shift || true
 
 case "$cmd" in
   lint)
-    ruff format --check .
-    exec ruff check .
+    tracked_files=$(git ls-files -- '*.py')
+    if [[ -z "$tracked_files" ]]; then
+      echo "No tracked Python files found."
+      exit 0
+    fi
+    # shellcheck disable=SC2086
+    ruff format --check $tracked_files
+    # shellcheck disable=SC2086
+    exec ruff check $tracked_files
     ;;
 
   test)

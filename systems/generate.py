@@ -69,7 +69,7 @@ class GenerateSystem(Interface):
             shutil.copy2(os.path.join(d, file), t)
 
         if os.path.isfile(os.path.join(d, "mea.json")):
-            print(f"Copying mea.json ...")
+            print("Copying mea.json ...")
             shutil.copy2(os.path.join(d, "mea.json"), t)
 
         print(f"Export to {t} complete.")

@@ -12,7 +12,6 @@ os.environ["LIVN_BACKEND"] = "diffrax"
 import time
 
 import equinox as eqx
-import jax
 import jax.numpy as jnp
 import jax.random as jr
 import optax

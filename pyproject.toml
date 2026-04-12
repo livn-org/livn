@@ -60,5 +60,8 @@ packages = ["src/livn"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
+[tool.ruff.lint]
+ignore = ["F722", "F821"]
+
 [tool.setuptools]
 py-modules = []
