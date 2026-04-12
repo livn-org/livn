@@ -52,6 +52,8 @@ override-dependencies = [
     "jaxtyping>=0.3.2",
     "neuroh5 @ git+https://github.com/iraikov/neuroh5.git@7179472",
 ]
+no-build-isolation-package = ["neuroh5"]
+no-binary-package = ["mpi4py"]
 
 [tool.uv.workspace]
 members = ["systems", "benchmarks", 'visualization']

@@ -102,11 +102,7 @@ jobs:
           sudo apt-get install -y cmake mpich libmpich-dev libhdf5-mpich-dev hdf5-tools
 
       - name: Install Python dependencies
-        run: |
-          uv sync --group dev
-          uv pip install numpy
-          uv sync --group dev --group neuron
-          uv pip install --force-reinstall --no-cache-dir --no-binary=mpi4py mpi4py
+        run: uv sync --group dev --group neuron
 
       - name: Run tests
         run: uv run tests/cli test --backend neuron
@@ -130,11 +126,16 @@ jobs:
           key: ei1-system-v1
           fail-on-cache-miss: true
 
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libgsl-dev
+
       - name: Install dependencies
         run: uv sync --group dev --group brian2
 
       - name: Run tests
         run: uv run tests/cli test --backend brian2
+        env:
+          LIVN_USE_LIBGSL: "1"
 
   test-neuron-macos:
     runs-on: macos-latest
@@ -159,11 +160,7 @@ jobs:
         run: brew install hdf5-mpi
 
       - name: Install Python dependencies
-        run: |
-          uv sync --group dev
-          uv pip install numpy
-          uv sync --group dev --group neuron
-          uv pip install --force-reinstall --no-cache-dir --no-binary=mpi4py mpi4py
+        run: uv sync --group dev --group neuron
 
       - name: Run tests
         run: uv run tests/cli test --backend neuron

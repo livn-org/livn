@@ -1720,7 +1720,7 @@ wheels = [
 
 [[package]]
 name = "livn"
-version = "0.1.0"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "gymnasium" },
@@ -4066,7 +4066,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "dmosopt", git = "https://github.com/iraikov/dmosopt.git?rev=7647f01" },
-    { name = "huggingface-hub", extras = ["cli"], specifier = ">=0.3.1" },
+    { name = "huggingface-hub", specifier = ">=0.3.1" },
     { name = "keras", specifier = "==3.13.0" },
     { name = "livn", editable = "." },
     { name = "machinable", specifier = "==4.10.6" },

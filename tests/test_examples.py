@@ -24,6 +24,7 @@ def test_run_a_simulation():
     not os.getenv("LIVN_BACKEND"), reason="no simulation backend selected"
 )
 def test_parallel_simulation():
+    pytest.importorskip("matplotlib")
     from examples import parallel_simulation
 
     parallel_simulation.env.close()

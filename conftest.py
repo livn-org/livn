@@ -75,10 +75,21 @@ def pytest_runtest_protocol(item, nextitem):
     try:
         import mpi4py  # noqa: F401
     except ImportError:
-        return
+        _report_skip(item, "mpi4py not available")
+        return True
 
     _run_mpi_test(item, mpi_mark)
     return True
+
+
+def _report_skip(item, reason):
+    hook = item.config.hook
+    hook.pytest_runtest_logstart(nodeid=item.nodeid, location=item.location)
+    skip_exc = pytest.skip.Exception(reason)
+    call = pytest.CallInfo.from_call(lambda: (_ for _ in ()).throw(skip_exc), "call")
+    report = hook.pytest_runtest_makereport(item=item, call=call)
+    hook.pytest_runtest_logreport(report=report)
+    hook.pytest_runtest_logfinish(nodeid=item.nodeid, location=item.location)
 
 
 def _run_mpi_test(item, mpi_mark):
