@@ -64,7 +64,6 @@ class TuningTargets:
             return max(0.0, 10**x - 1.0)
         return math.log10(x + 1.0)
 
-
     def _weight_space(self, populations: list[str] | None = None) -> dict[str, list]:
         """Define weight parameter bounds.
 
@@ -97,7 +96,6 @@ class TuningTargets:
             [min, max, transform_fn].
         """
         return {}
-
 
     def search_space(self) -> dict[str, list[float]]:
         """Return the transformed search space for optimization.

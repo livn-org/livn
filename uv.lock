@@ -1736,6 +1736,7 @@ brian2 = [
     { name = "cleosim" },
 ]
 dev = [
+    { name = "huggingface-hub" },
     { name = "pytest" },
     { name = "pytest-reportlog" },
     { name = "ruff" },
@@ -1767,6 +1768,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 brian2 = [{ name = "cleosim", specifier = ">=0.18.1" }]
 dev = [
+    { name = "huggingface-hub", specifier = ">=0.3.1" },
     { name = "pytest", specifier = ">=8.3.3" },
     { name = "pytest-reportlog" },
     { name = "ruff", specifier = ">=0.11.5" },
@@ -4051,6 +4053,7 @@ version = "0.1.0"
 source = { virtual = "systems" }
 dependencies = [
     { name = "dmosopt" },
+    { name = "huggingface-hub" },
     { name = "keras" },
     { name = "livn" },
     { name = "machinable" },
@@ -4063,6 +4066,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "dmosopt", git = "https://github.com/iraikov/dmosopt.git?rev=7647f01" },
+    { name = "huggingface-hub", extras = ["cli"], specifier = ">=0.3.1" },
     { name = "keras", specifier = "==3.13.0" },
     { name = "livn", editable = "." },
     { name = "machinable", specifier = "==4.10.6" },
