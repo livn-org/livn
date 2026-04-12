@@ -98,7 +98,9 @@ jobs:
           sudo apt-get install -y cmake mpich libmpich-dev libhdf5-mpich-dev hdf5-tools
 
       - name: Install Python dependencies
-        run: uv sync --group dev --group neuron
+        run: |
+          uv sync --group dev --group neuron --no-install-package neuroh5
+          uv sync --group dev --group neuron
 
       - name: Run tests
         run: uv run tests/cli test --backend neuron
@@ -156,7 +158,9 @@ jobs:
         run: brew install hdf5-mpi
 
       - name: Install Python dependencies
-        run: uv sync --group dev --group neuron
+        run: |
+          uv sync --group dev --group neuron --no-install-package neuroh5
+          uv sync --group dev --group neuron
 
       - name: Run tests
         run: uv run tests/cli test --backend neuron
