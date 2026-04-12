@@ -8,7 +8,7 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 def test_using_the_dataset():
     pytest.importorskip("datasets")
-    from examples import using_the_dataset
+    from examples import using_the_dataset  # noqa: F401
 
 
 @pytest.mark.skipif(
@@ -31,4 +31,4 @@ def test_parallel_simulation():
 
 @pytest.mark.skipif(os.getenv("LIVN_BACKEND") != "diffrax", reason="diffrax only")
 def test_differentiable_simulation():
-    from examples import differentiable_simulation
+    from examples import differentiable_simulation  # noqa: F401

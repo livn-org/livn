@@ -558,8 +558,6 @@ class TestNormalizeWeights:
 
     @_neuron_only
     def test_normalize_preserves_ratios(self):
-        from neuron import h
-
         env = Env("systems/graphs/EI1").init()
         try:
             env.apply_model_defaults()

@@ -1,5 +1,4 @@
 import jax.numpy as jnp
-import numpy as np
 from jaxtyping import Float
 
 from livn.models.slif.snn import SpikingNeuralNet

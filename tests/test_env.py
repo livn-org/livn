@@ -102,7 +102,7 @@ def test_env(mpiexec_n, subworld):
     tmp_data_path = os.path.join(os.path.dirname(__file__), "tmp")
     os.makedirs(tmp_data_path, exist_ok=True)
 
-    reference = os.path.join(tmp_data_path, f"reference.p")
+    reference = os.path.join(tmp_data_path, "reference.p")
 
     env = _create_env(comm, subworld)
 

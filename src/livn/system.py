@@ -907,9 +907,9 @@ class System:
                 for post_gid, (pre_gids, projection) in self.projection_array(
                     pre, post
                 ):
-                    distances = projection
-                    if isinstance(projection, dict):
-                        distances = projection["Connections"][0]
+                    # distances = projection
+                    # if isinstance(projection, dict):
+                    #     distances = projection["Connections"][0]
 
                     for pre_gid in pre_gids:
                         w[pre_gid, post_gid] = prefix * prng.random() * weight

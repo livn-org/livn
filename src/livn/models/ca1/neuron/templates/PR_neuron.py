@@ -175,7 +175,7 @@ class PR:
         xx = yy = zz = 0
         for sec in [self.soma, self.dend]:
             for i in range(sec.n3d()):
-                pt3d = h.pt3dchange(
+                h.pt3dchange(
                     i,
                     x - xx + sec.x3d(i),
                     y - yy + sec.y3d(i),

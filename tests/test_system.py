@@ -175,10 +175,7 @@ class TestPyfiveVsNeuroh5:
             read_population_names,
         )
 
-        from livn.system import (
-            _pyfive_read_cell_attribute_info,
-            _pyfive_read_population_names,
-        )
+        from livn.system import _pyfive_read_cell_attribute_info
 
         comm = MPI.COMM_WORLD
         pop_names = read_population_names(cells_filepath, comm)

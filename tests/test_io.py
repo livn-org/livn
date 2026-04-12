@@ -169,8 +169,6 @@ def test_potential_recording():
 def test_mea_parallel(mpiexec_n):
     system = System(os.environ["LIVN_TEST_SYSTEM"])
 
-    mea = io.MEA.from_json(os.path.join(system.uri, "mea.json"))
-
     q = P.gather(system.neuron_coordinates)
 
     if P.is_root():

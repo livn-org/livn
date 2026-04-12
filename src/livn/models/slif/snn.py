@@ -765,8 +765,8 @@ class SpikingNeuralNet(eqx.Module):
 
         ts, ys = plottable_paths(sol)
 
-        v_end = ys[0, :, -1, 0]
-        i_end = ys[0, :, -1, 1]
+        # v_end = ys[0, :, -1, 0]
+        # i_end = ys[0, :, -1, 1]
 
         v = ys[0, :, :, 0]
         assert v.shape[1] == int(duration / dt)

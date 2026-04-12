@@ -1,11 +1,9 @@
-import sys
 from neuron import h
 from collections import defaultdict
-import math
 import numpy as np
 from pathlib import Path
 from dataclasses import dataclass, field, fields
-from typing import Dict, Any, Type, TypeVar, Optional
+from typing import Dict, Any, Type, TypeVar
 from typing_extensions import get_type_hints
 import yaml
 
@@ -217,15 +215,15 @@ class NeuronParameters:
             Dictionary containing all parameter values organized by compartment
         """
         result = {}
-        for field in fields(self):
-            value = getattr(self, field.name)
+        for f in fields(self):
+            value = getattr(self, f.name)
             if hasattr(value, "__dataclass_fields__"):
-                result[field.name] = {
+                result[f.name] = {
                     nested_field.name: getattr(value, nested_field.name)
                     for nested_field in fields(value)
                 }
             else:
-                result[field.name] = value
+                result[f.name] = value
         return result
 
     def update_from_dict(self, data: Dict[str, Any]) -> None:
@@ -242,8 +240,8 @@ class NeuronParameters:
             })
         """
         new_params = self.from_dict(data)
-        for field in fields(self):
-            setattr(self, field.name, getattr(new_params, field.name))
+        for f in fields(self):
+            setattr(self, f.name, getattr(new_params, f.name))
 
     @classmethod
     def from_yaml(cls, yaml_path: Path | str) -> "NeuronParameters":
@@ -972,7 +970,7 @@ class PyramidalCell:
         swc_point_idx = 0
         swc_points = []
         swc_point_sec_dict = defaultdict(list)
-        sec_dict = {}
+        # sec_dict = {}
         seen = set([])
         for section, sectype in sections:
             if hasattr(self, f"{section}_list"):
@@ -1025,11 +1023,11 @@ class PyramidalCell:
                         swc_points.append(swc_point)
                         swc_point_sec_dict[sec.name()].append(swc_point)
                         swc_point_idx += 1
-        soma_sec = list(self.soma_list)[0]
+        # soma_sec = list(self.soma_list)[0]
         for swc_point in swc_points:
             (swc_point_idx, section, sectype, x, y, z, rad, loc, sec, first) = swc_point
             parent_idx = -1
-            distance_to_soma = h.distance(soma_sec(0.5), sec(loc))
+            # distance_to_soma = h.distance(soma_sec(0.5), sec(loc))
             if not first:
                 parent_idx = swc_point_idx - 1
             else:
@@ -1055,7 +1053,7 @@ class PyramidalCell:
         xx = yy = zz = 0
         for sec in [self.soma]:  # , self.dend]:
             for i in range(sec.n3d()):
-                pt3d = h.pt3dchange(
+                h.pt3dchange(
                     i,
                     x - xx + sec.x3d(i),
                     y - yy + sec.y3d(i),
@@ -1145,10 +1143,10 @@ def ic_constant_f(
     h.finitialize(h.v_init)
     try:
         h.run()
-    except:
+    except Exception:
         pass
 
-    t = vec_t.as_numpy()
+    # t = vec_t.as_numpy()
 
     mean_vs = []
     for sec, vec_v in vec_v_dict.items():
