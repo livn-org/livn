@@ -203,12 +203,27 @@ def _collect_reports(reportlog_dir: str, n: int) -> list[dict]:
             continue
         with open(path) as f:
             for line in f:
-                report = json.loads(line)
-                if report.get("$report_type") != "TestReport":
-                    continue
-                report["_mpi_rank"] = rank
-                reports.append(report)
+                for report in _parse_jsonl(line):
+                    if report.get("$report_type") != "TestReport":
+                        continue
+                    report["_mpi_rank"] = rank
+                    reports.append(report)
     return reports
+
+
+def _parse_jsonl(line: str) -> list[dict]:
+    results = []
+    decoder = json.JSONDecoder()
+    line = line.strip()
+    pos = 0
+    while pos < len(line):
+        obj, end = decoder.raw_decode(line, pos)
+        results.append(obj)
+        # skip whitespace between objects
+        while end < len(line) and line[end] in " \t\r\n":
+            end += 1
+        pos = end
+    return results
 
 
 def _extract_skip_reason(reports: list[dict]) -> str:

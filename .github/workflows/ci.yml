@@ -185,3 +185,5 @@ jobs:
 
       - name: Run tests
         run: uv run tests/cli test --backend neuron
+        env:
+          OMPI_MCA_rmaps_base_oversubscribe: "1"

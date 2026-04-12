@@ -19,6 +19,9 @@ from livn.backend import backend
 
 @pytest.fixture
 def env_response(request):
+    if not os.getenv("LIVN_BACKEND"):
+        pytest.skip("no simulation backend selected")
+
     env = Env(os.environ["LIVN_TEST_SYSTEM"])
 
     response = request.config.cache.get("livn/env/response-" + env.system.name, None)
