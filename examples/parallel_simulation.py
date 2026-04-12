@@ -9,6 +9,7 @@ import numpy as np
 
 from livn.env import Env
 from livn.system import predefined
+from livn.utils import P
 
 env = Env(predefined("EI1")).init()
 
@@ -31,13 +32,7 @@ for r in range(20):
         inputs[warmup + t_stim + r, c] = 1.5
 stimulus = env.cell_stimulus(inputs)
 
-
-rt = time.time()
-
 it, t, iv, v, im, mm = env.run(t_end, stimulus=stimulus)
-
-rt = time.time() - rt
-
 
 # per-rank electrode potential, sum-reduced
 p = P.reduce_sum(env.potential_recording(mm), all=True)
