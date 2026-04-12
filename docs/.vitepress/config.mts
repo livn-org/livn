@@ -103,6 +103,12 @@ export default defineConfig({
                         { text: "NCSA DeltaAI", link: "/installation/ncsa-deltaai" },
                     ],
                 },
+                {
+                    text: "In the browser",
+                    items: [
+                        { text: "via Pyodide", link: "/installation/pyodide" },
+                    ],
+                },
             ],
         },
 
