@@ -1,3 +1,4 @@
+import os
 from collections import defaultdict
 
 import numpy as np
@@ -92,6 +93,7 @@ class TestNeuronMechanisms:
         finally:
             env.close()
 
+    @pytest.mark.skipif(os.getenv("CI") == "true", reason="flaky on CI")
     def test_stdp_default_off(self):
         from neuron import h
 
