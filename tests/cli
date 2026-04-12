@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+USAGE="Usage: tests/cli <command> [options]
+
+Commands:
+  lint          Run ruff format check and lint
+  test          Run pytest for a backend
+  download-ei1  Download the EI1 test system
+
+Options for 'test':
+  --backend <diffrax|neuron|brian2|none|all>  Backend to test (default: all)
+  --system  <path>                        Path to test system (default: ./systems/graphs/EI1)
+  --args    <pytest-args>                  Extra arguments passed to pytest
+
+Options for 'download-ei1':
+  --directory <path>  Download directory (default: .)
+
+Examples:
+  tests/cli lint
+  tests/cli test --backend diffrax
+  tests/cli test --backend neuron --args '-x --tb=short'
+  tests/cli test --backend none
+  tests/cli download-ei1
+"
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Use python/pytest from venv if available and not already in a uv run context
+if [[ -z "${VIRTUAL_ENV:-}" ]] && [[ -x "$PROJECT_DIR/.venv/bin/python" ]]; then
+  export VIRTUAL_ENV="$PROJECT_DIR/.venv"
+  export PATH="$VIRTUAL_ENV/bin:$PATH"
+fi
+
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+  lint)
+    ruff format --check .
+    exec ruff check .
+    ;;
+
+  test)
+    backend="all"
+    system="./systems/graphs/EI1"
+    pytest_args=""
+
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --backend) backend="$2"; shift 2 ;;
+        --system)  system="$2";  shift 2 ;;
+        --args)    pytest_args="$2"; shift 2 ;;
+        *) echo "Unknown option: $1"; echo "$USAGE"; exit 1 ;;
+      esac
+    done
+
+    export LIVN_TEST_SYSTEM="$system"
+
+    if [[ "$backend" == "all" ]]; then
+      for b in diffrax neuron brian2; do
+        echo "=== Running tests with backend: $b ==="
+        "$0" test --backend "$b" --system "$system" --args "$pytest_args"
+      done
+      exit 0
+    fi
+
+    env_vars=()
+    case "$backend" in
+      diffrax)
+        env_vars+=(JAX_PLATFORMS=cpu LIVN_BACKEND=diffrax)
+        ;;
+      neuron)
+        env_vars+=(LIVN_BACKEND=neuron)
+        ;;
+      brian2)
+        env_vars+=(LIVN_BACKEND=brian2)
+        ;;
+      none|"")
+        env_vars+=(LIVN_BACKEND=)
+        ;;
+      *)
+        echo "Unknown backend: $backend"
+        echo "$USAGE"
+        exit 1
+        ;;
+    esac
+
+    # shellcheck disable=SC2086
+    exec env "${env_vars[@]}" pytest $pytest_args
+    ;;
+
+  download-ei1)
+    directory="."
+
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --directory) directory="$2"; shift 2 ;;
+        *) echo "Unknown option: $1"; echo "$USAGE"; exit 1 ;;
+      esac
+    done
+
+    exec python -c "from livn.system import predefined; predefined('EI1', download_directory='$directory')"
+    ;;
+
+  help|--help|-h|"")
+    echo "$USAGE"
+    exit 0
+    ;;
+
+  *)
+    echo "Unknown command: $cmd"
+    echo "$USAGE"
+    exit 1
+    ;;
+esac
