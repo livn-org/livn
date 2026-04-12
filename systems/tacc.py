@@ -12,7 +12,7 @@ from machinable.errors import ExecutionFailed
 from machinable.utils import chmodx, run_and_stream
 from pydantic import BaseModel, ConfigDict
 from pathlib import Path
-import distwq
+from livn.env.distributed import controller_rank as _mpi_controller_rank
 
 
 def make_relative_if_subpath(path, root):
@@ -224,7 +224,7 @@ class TACC(Execution):
 
                 ranks_per_node = int(resources.get("--ntasks-per-node", 56))
                 nodes_requested = int(resources.get("--nodes", 1))
-                controller_rank = getattr(distwq, "controller_rank", 0)
+                controller_rank = _mpi_controller_rank
                 controller_rank_env = os.getenv("DISTWQ_CONTROLLER_RANK")
                 if controller_rank_env == "-1":
                     controller_rank = max(nodes_requested - 1, 0) * ranks_per_node
@@ -247,7 +247,7 @@ class TACC(Execution):
                     python=python, project_directory="/tmp/source_code"
                 )
 
-            controller_rank = getattr(distwq, "controller_rank")
+            controller_rank = _mpi_controller_rank
             if os.getenv("DISTWQ_CONTROLLER_RANK", 0) == "-1":
                 controller_rank = int(resources.get("--nodes", 0)) - 1
             script += (

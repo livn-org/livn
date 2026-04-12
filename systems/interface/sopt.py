@@ -1,7 +1,5 @@
-import copy
 import importlib
 import os
-import random
 from functools import partial
 
 import numpy as np
@@ -21,25 +19,33 @@ _, Dmosopt = (
     .on_resolve_element("interface.dmosopt")
 )
 
+live_envs = []
+
 
 class Evaluation:
-    def __init__(self, objective_names):
-        self.objective_names = objective_names
-        self.features = {n: [] for n in objective_names}
-        self.objectives = {n: [] for n in objective_names}
+    def __init__(self):
+        self.features = {}
+        self.objectives = {}
+        self.constraints = {}
 
     def push(self, name, objective, feature=None):
         if feature is None:
             feature = objective
 
+        self.objectives.setdefault(name, [])
         self.objectives[name].append(objective)
+        self.features.setdefault(name, [])
         self.features[name].append(feature)
+
+    def push_constraint(self, name, value, feature=None):
+        self.constraints.setdefault(name, [])
+        self.constraints[name].append(value)
 
     def result(self):
         objectives = []
         features = []
 
-        for name in self.objective_names:
+        for name in self.objectives:
             objectives.append(np.mean(self.objectives[name]))
             features.append(np.mean(self.features[name]))
 
@@ -49,284 +55,119 @@ class Evaluation:
             dtype=np.dtype([(name, np.float32) for name in self.features.keys()]),
         )
 
+        if len(self.constraints) > 0:
+            constraints = []
+            for name in sorted(self.constraints.keys()):
+                constraints.append(np.min(self.constraints[name]))
+
+            return {
+                0: (
+                    reduced_objectives,
+                    reduced_features,
+                    np.asarray(
+                        constraints,
+                        dtype=np.float32,
+                    ),
+                )
+            }
+
         return {0: (reduced_objectives, reduced_features)}
 
 
-def generate_time_windows(n, window_length, max_gap, seed=42):
-    random.seed(seed)
-
-    windows = []
-    current_time = 0
-
-    for _ in range(n):
-        if windows:
-            gap = max(random.random() * max_gap, 10)
-            current_time += int(gap)
-
-        start_time = current_time
-        end_time = start_time + window_length
-        windows.append((start_time, end_time))
-
-        current_time = end_time
-
-    # add gaps
-    windows = [
-        (ws, we, windows[i + 1][0] - we if i < len(windows) - 1 else 0)
-        for i, (ws, we) in enumerate(windows)
-    ]
-
-    return windows
+def objective_names(c):
+    target = config.import_object_by_path(
+        c.config.dopt_params.obj_fun_init_args.target
+    )()
+    return target.objective_names()
 
 
-def evaluate_isi(it, t, r):
-    isi_cvs = []
-    for neuron in np.unique(it):
-        neuron_spikes = t[it == neuron]
-        if len(neuron_spikes) > 1:
-            isi = np.diff(np.sort(neuron_spikes))
-            if np.nan_to_num(np.mean(isi)) > 0:
-                cv = np.std(isi) / np.mean(isi)
-                isi_cvs.append(cv)
-
-    if isi_cvs:
-        mean_cv = np.mean(isi_cvs)
-        isi_error = (mean_cv - 1) ** 2
-        r.push("isi", isi_error, mean_cv)
-    else:
-        r.push("isi", 10.0, 0.0)
-
-
-def evaluate_correlation(it, t, r, trial_length):
-    bin_size = 50
-    bins = np.arange(0, trial_length + bin_size, bin_size)
-
-    unique_neurons = np.unique(it)
-    if len(unique_neurons) < 2:
-        r.push("corr", 0.0, -1)
-        return
-
-    binned_spikes = np.zeros((len(unique_neurons), len(bins) - 1))
-    for i, neuron in enumerate(unique_neurons):
-        neuron_spikes = t[it == neuron]
-        hist, _ = np.histogram(neuron_spikes, bins=bins)
-        binned_spikes[i, :] = hist
-
-    if np.all(binned_spikes.std(axis=1) == 0):
-        r.push("corr", 0.0, -1)
-        return
-
-    corr_matrix = np.corrcoef(binned_spikes)
-    mask = np.ones(corr_matrix.shape, dtype=bool)
-    np.fill_diagonal(mask, 0)
-
-    corr_values = corr_matrix[mask]
-    if len(corr_values) == 0 or np.all(np.isnan(corr_values)):
-        mean_corr = 0.0
-    else:
-        mean_corr = np.nanmean(corr_values)
-
-    target_min = 0.05
-    target_max = 0.4
-    target_mid = (target_min + target_max) / 2
-
-    if mean_corr < target_min:
-        corr_score = (mean_corr / target_min) ** 2
-    elif mean_corr > target_max:
-        corr_score = np.exp(-2 * (mean_corr - target_max) / (1 - target_max))
-    else:
-        corr_score = 1.0 - 0.5 * abs(mean_corr - target_mid) / (target_max - target_min)
-
-    if np.isnan(corr_score):
-        r.push("corr", 0.0, -1)
-        return
-
-    r.push("corr", -corr_score, corr_score)
-
-
-def evaluate_stimulation(it, t, r, channel, trial_length):
-    active = len(it[t <= 150])
-    silent = len(it[t > 150])
-    trivial = active == 0 and silent == 0
-
-    # maximize spikes in active window
-    r.push(f"a{channel}", -float(active) if not trivial else 999.0)
-    # minimize in silent range
-    r.push(f"s{channel}", float(silent) if not trivial else 999.0)
-
-
-def evaluate_dynamics(it, t, r, targets, trial_length):
-    # rate
-    rate = np.nan_to_num(
-        np.mean(np.unique(it, return_counts=True)[1] / (trial_length / 100))
-    )
-    r.push("rate", (rate - targets["rate"]) ** 2, rate)
-
-    # active fraction of neurons
-    active_neurons = np.unique(it).size
-    total_neurons = sum(targets["cell_count"].values())
-    active = active_neurons / total_neurons
-    r.push("active", (targets["active"] - active) ** 2, active)
-
-    # ISI
-    evaluate_isi(it, t, r)
-
-
-def _concat(a):
-    if len(a) == 1:
-        return a[0]
-
-    if len(a) > 1:
-        return np.concatenate(a)
-
-    return []
+def constraint_names(c):
+    target = config.import_object_by_path(
+        c.config.dopt_params.obj_fun_init_args.target
+    )()
+    return target.constraint_names()
 
 
 def feature_dtypes(c):
-    return [(f, np.float32) for f in c.config.dopt_params.objective_names]
-
-
-def objective_names(c):
-    return [f for f in c.config.dopt_params.reduce_fun_args[0]]
+    return [(f, np.float32) for f in objective_names(c)]
 
 
 def get_model(model):
     return find_subclass_in_module(importlib.import_module(model), base_class=Model)()
 
 
-live_envs = []
-
-
-def make_env(system, model, subworld_size, comm=None):
+def obj_fun_init(
+    system,
+    model,
+    target,
+    trials,
+    subworld_size,
+    worker=None,
+):
     env = Env(
         system,
         model=get_model(model) if model is not None else None,
         io=io.MEA.from_json(os.path.join(system, "mea.json"), comm=False),
-        comm=comm,
+        comm=worker.merged_comm,
         subworld_size=subworld_size,
     )
     env.init()
     env.record_spikes()
-
-    return env
-
-
-def obj_fun_init(system, model, subworld_size, stimulate=False, trials=1, worker=None):
-    env = make_env(
-        system,
-        model,
-        subworld_size,
-        worker.merged_comm,
-    )
+    env.record_membrane_current()
 
     live_envs.append(env)
-    return partial(obj_fun, env=env, stimulate=stimulate, trials=trials)
+
+    target = config.import_object_by_path(target)()
+
+    return partial(obj_fun, env=env, target=target, trials=trials)
 
 
-def controller_init(system, model, subworld_size):
+def controller_init(system, model, target, subworld_size):
     env = Env(
         system,
         model=get_model(model) if model is not None else None,
         io=io.MEA.from_json(os.path.join(system, "mea.json"), comm=False),
         subworld_size=subworld_size,
     )
+
     live_envs.append(env)
 
 
-def obj_fun(x, env, stimulate, trials):
-    env.clear()
-    x_c = copy.deepcopy(x)
-    env.set_noise(exc=x_c.pop("noise_exc", 0.0), inh=x_c.pop("noise_inh", 0.0))
-    env.set_weights(x_c)
+def obj_fun(x, env, trials, target):
+    results = {}
+    constraints = {}
 
-    warmup = 250
+    for _ in range(trials):
+        env.clear()
+        env.set_params(target.transform_params(x))
 
-    if stimulate:
-        trial_length = 500
-        t_end = warmup + trial_length
-        num_channels = env.io.num_channels
+        objectives_dict, constraints_dict = target(env)
 
-        it = []
-        t = []
-        for c in range(num_channels):
-            inputs = np.zeros([t_end, num_channels])
-            for r in range(20):
-                inputs[warmup + r, c] = 750
+        for name, val in objectives_dict.items():
+            results.setdefault(name, [])
+            results[name].append(val)
 
-            stimulus = env.cell_stimulus(inputs)
+        for name, val in constraints_dict.items():
+            constraints.setdefault(name, [])
+            constraints[name].append(val)
 
-            _it, _t, *_ = env.run(t_end, stimulus=stimulus, root_only=False)
-
-            for ii in _it[_t >= warmup]:
-                it.append(ii)
-            for tt in _t[_t >= warmup]:
-                t.append(tt - warmup)
-
-            env.clear()
-
-        return {
-            "it": np.array(it),
-            "t": np.array(t),
-            "t_end": trial_length * num_channels,
-            "stimulate": stimulate,
-            "trials": num_channels,
-        }
-
-    trial_length = 500
-    t_end = warmup + trial_length * trials
-    it, t, *_ = env.run(t_end, stimulus=None, root_only=False)
-
-    it, t = it[t >= warmup], t[t >= warmup] - warmup
-    t_end = t_end - warmup
-
-    return {
-        "it": it,
-        "t": t,
-        "t_end": t_end,
-        "stimulate": stimulate,
-        "trials": trials,
-    }
+    return results, constraints
 
 
-def obj_reduce(payload, targets, callback=None):
-    it = []
-    t = []
-    t_end = 0
-    trials = None
-    stimulate = None
-    for result in payload:
-        it.append(result[0]["it"])
-        t.append(result[0]["t"])
-        t_end = max(t_end, result[0]["t_end"])
-        trials = result[0]["trials"]
-        stimulate = result[0]["stimulate"]
+def obj_reduce(payload):
+    evaluation = Evaluation()
 
-    it, t = _concat(it), _concat(t)
+    objectives_dict, constraints_dict = payload[-1][0]
 
-    if callback is not None:
-        callback(it=it, t=t, t_end=t_end, trials=trials, targets=targets)
+    for name, trials in objectives_dict.items():
+        for objective, feature in trials:
+            evaluation.push(name, objective, feature)
 
-    r = Evaluation(targets["objective_names"])
+    for name, trials in constraints_dict.items():
+        for constraint_value, feature in trials:
+            evaluation.push_constraint(name, constraint_value, feature)
 
-    if stimulate:
-        evaluate_correlation(it, t, r, t_end)
-        evaluate_isi(it, t, r)
-
-    trial_length = t_end // trials
-    for i in range(trials):
-        trial_start = i * trial_length
-        trial_end = (i + 1) * trial_length
-
-        mask = (t >= trial_start) & (t < trial_end)
-
-        trial_it = it[mask]
-        trial_t = t[mask] - trial_start
-
-        if stimulate:
-            evaluate_stimulation(it, t, r, i, trial_length)
-        else:
-            evaluate_dynamics(trial_it, trial_t, r, targets, trial_length)
-
-    return r.result()
+    return evaluation.result()
 
 
 class Sopt(Dmosopt):
@@ -338,19 +179,22 @@ class Sopt(Dmosopt):
                 "obj_fun_init_args": {
                     "system": "???",
                     "model": "???",
+                    "target": "???",
                     "subworld_size": "${...nprocs_per_worker}",
                 },
                 # "objective_names": "${oc.dict.keys: .obj_fun_init_args.target_rates}",
                 "objective_names": "interface.sopt.objective_names",
+                "constraint_names": "interface.sopt.constraint_names",
                 "feature_dtypes": "interface.sopt.feature_dtypes",
                 "controller_init_fun_name": "interface.sopt.controller_init",
                 "controller_init_fun_args": {
                     "subworld_size": "${...nprocs_per_worker}",
                     "system": "${..obj_fun_init_args.system}",
                     "model": "${..obj_fun_init_args.model}",
+                    "target": "${..obj_fun_init_args.target}",
                 },
                 "reduce_fun_name": "interface.sopt.obj_reduce",
-                "reduce_fun_args": "???",
+                "reduce_fun_args": (),
                 "problem_parameters": {},
                 "optimizer_name": "nsga2",
                 "initial_method": "slh",
@@ -361,8 +205,10 @@ class Sopt(Dmosopt):
                 "num_generations": 100,
                 "termination_conditions": True,
                 "resample_fraction": 1.0,
-                "surrogate_method_name": "gpr",
+                "surrogate_method_name": None,
                 "surrogate_method_kwargs": {},
+                "surrogate_custom_training": "dmosopt.custom_training.joint",
+                "surrogate_custom_training_kwargs": {},
                 "feasibility_method_name": None,
                 "feasibility_method_kwargs": {},
                 "save": True,
@@ -418,6 +264,7 @@ class Sopt(Dmosopt):
         for env in live_envs:
             if hasattr(env, "pc"):
                 env.pc.done()
+            env.close()
 
     def on_after_dispatch(self, success: bool):
         if success:
