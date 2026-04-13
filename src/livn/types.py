@@ -122,7 +122,7 @@ class Env(Protocol):
     def cell_stimulus(
         self,
         channel_inputs: Float[Array, "batch timestep n_channels"],
-    ) -> Float[Array, "batch timestep n_gids"]:
+    ) -> "Stimulus":
         """Transforms channel inputs into neural inputs"""
         return self.io.cell_stimulus(
             self.system.transform_coordinates(
@@ -361,6 +361,9 @@ class Model(Protocol):
         population: str | None = None,
     ) -> Float[Array, "n_stim_coords ixyz=4"]:
         return neuron_coordinates
+
+    def prepare_stimulus(self, stimulus: "Stimulus") -> "Stimulus":
+        return stimulus
 
     def apply_defaults(self, env, weights: bool = True, noise: bool = True):
         if weights:

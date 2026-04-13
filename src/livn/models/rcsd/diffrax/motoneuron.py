@@ -111,6 +111,23 @@ class BoothRinzelKiehn(eqx.Module):
 
     input_mode: str = eqx.field(static=True)
 
+    # ChR2 4-state opsin parameters (Grossman et al. 2011)
+    chr2_g_max: float = eqx.field(static=True)  # mS/cm^2
+    chr2_E_rev: float = eqx.field(static=True)  # mV
+    chr2_gamma: float = eqx.field(static=True)  # O2/O1 conductance ratio
+    chr2_Gd1: float = eqx.field(static=True)  # O1 -> C1 rate
+    chr2_Gd2: float = eqx.field(static=True)  # O2 -> C2 rate
+    chr2_Gr: float = eqx.field(static=True)  # C2 -> C1 dark recovery rate
+    chr2_Gf: float = eqx.field(static=True)  # O1 -> O2 rate
+    chr2_Gb: float = eqx.field(static=True)  # O2 -> O1 rate
+    chr2_k1: float = eqx.field(static=True)  # C1 -> O1 activation scale
+    chr2_k2: float = eqx.field(static=True)  # C2 -> O2 activation scale
+    chr2_p: float = eqx.field(static=True)  # Hill coefficient
+    chr2_phim: float = eqx.field(static=True)  # half-max photon flux
+    chr2_v0: float = eqx.field(static=True)  # voltage-dependence scale (mV)
+    chr2_v1: float = eqx.field(static=True)  # voltage-dependence amplitude
+    chr2_E_photon: float = eqx.field(static=True)  # energy per photon (mW·s)
+
     def set_default_parameters(self) -> None:
         # Conductances (mho/cm^2)
         self.GNa = 0.00030  # soma_gmax_Na
@@ -197,6 +214,24 @@ class BoothRinzelKiehn(eqx.Module):
         self.E_syn_inh = -75.0  # Inhibitory (GABA_A)
 
         self.input_mode = "conductance"
+
+        # ChR2 4-state opsin defaults (Grossman et al. 2011)
+        self.chr2_g_max = 0.4
+        self.chr2_E_rev = 0.0
+        self.chr2_gamma = 0.1
+        self.chr2_Gd1 = 0.11
+        self.chr2_Gd2 = 0.025
+        self.chr2_Gr = 6.67e-5
+        self.chr2_Gf = 0.015
+        self.chr2_Gb = 0.011
+        self.chr2_k1 = 0.8535
+        self.chr2_k2 = 0.14
+        self.chr2_p = 0.833
+        self.chr2_phim = 1.5e16
+        self.chr2_v0 = 43.0
+        self.chr2_v1 = 17.1
+        wavelength_nm = 473.0
+        self.chr2_E_photon = 6.626e-34 * 3e8 / (wavelength_nm * 1e-9) * 1e3
 
     def set_parameters(self, params: Mapping[str, Any]) -> None:
         """
@@ -298,9 +333,10 @@ class BoothRinzelKiehn(eqx.Module):
         # Input mode
         if get("input_mode") is not None:
             mode = get("input_mode")
-            if mode not in ("current_density", "conductance", "current"):
+            if mode not in ("current_density", "conductance", "current", "irradiance"):
                 raise ValueError(
-                    f"input_mode must be 'current_density', 'conductance', or 'current', got {mode}"
+                    f"input_mode must be 'current_density', 'conductance', "
+                    f"'current', or 'irradiance', got {mode}"
                 )
             self.input_mode = mode
 
@@ -357,6 +393,24 @@ class BoothRinzelKiehn(eqx.Module):
 
         return area_s, area_d, g_c_s, g_c_d
 
+    def _chr2_derivatives(self, C1, O1, O2, phi):
+        """ChR2 4-state Markov derivatives"""
+        C2 = 1.0 - C1 - O1 - O2
+        Hp = phi**self.chr2_p / (phi**self.chr2_p + self.chr2_phim**self.chr2_p)
+        Ga1 = self.chr2_k1 * Hp
+        Ga2 = self.chr2_k2 * Hp
+
+        dC1 = self.chr2_Gd1 * O1 + self.chr2_Gr * C2 - Ga1 * C1
+        dO1 = Ga1 * C1 + self.chr2_Gb * O2 - (self.chr2_Gd1 + self.chr2_Gf) * O1
+        dO2 = Ga2 * C2 + self.chr2_Gf * O1 - (self.chr2_Gd2 + self.chr2_Gb) * O2
+        return dC1, dO1, dO2
+
+    def _chr2_current(self, O1, O2, V):
+        """ChR2 photocurrent density (mA/cm^2), negative = inward"""
+        fphi = O1 + self.chr2_gamma * O2
+        fv = self.chr2_v1 * (1 - jnp.exp(-(V - self.chr2_E_rev) / self.chr2_v0))
+        return -self.chr2_g_max * fphi * fv
+
     def _calculate_membrane_currents(self, t, y, args=None):
         """Calculate membrane currents for soma and dendrite.
 
@@ -411,21 +465,39 @@ class BoothRinzelKiehn(eqx.Module):
     def __call__(self, t, y: Array, args) -> Array:
         """Vector field for the Booth-Rinzel-Kiehn model
 
-        [Vs, Vd, h, n, mnS, hnS, mnD, hnD, ml, CaS, CaD]
+        State vector: [Vs, Vd, h, n, mnS, hnS, mnD, hnD, ml, CaS, CaD, ...opsin_states]
+
+        When input_mode='irradiance', the state vector is extended with opsin
+        Markov states (e.g. 3 extra for ChR2_4State).
 
         Args:
             t: time
-            y: state vector
+            y: state vector (11 neural + n_opsin_states)
             args: (I_stim_array, t_array) for array stimulus
         """
 
         area_s, area_d, g_c_s, g_c_d = self._geometry()
 
-        Vs, Vd, h, n, mnS, hnS, mnD, hnD, ml, CaS, CaD = y
+        # Split neural and opsin states
+        y_neural = y[:11]
+        Vs, Vd, h, n, mnS, hnS, mnD, hnD, ml, CaS, CaD = y_neural
 
         I_stim_array, t_array = args
 
-        if self.input_mode == "current_density":
+        if self.input_mode == "irradiance":
+            # I_stim_array is irradiance in mW/mm²
+            Irr = jnp.interp(t, t_array, I_stim_array.ravel())
+            phi = Irr / self.chr2_E_photon
+
+            # Unpack ChR2 opsin states from extended state vector
+            C1 = y[11]
+            O1 = y[12]
+            O2 = y[13]
+
+            Iapp_density_soma = self._chr2_current(O1, O2, Vs)
+            Iapp_density_dend = 0.0
+
+        elif self.input_mode == "current_density":
             # direct current density in mA/cm2
             if I_stim_array.ndim == 1:
                 Iapp_density_soma = jnp.interp(t, t_array, I_stim_array)
@@ -543,7 +615,15 @@ class BoothRinzelKiehn(eqx.Module):
         dCaS = self.f * (channel_flow_S - self.kca * (CaS - cai0))
         dCaD = self.f * (channel_flow_D - self.kca * (CaD - cai0))
 
-        return jnp.array([dVs, dVd, dh, dn, dmnS, dhnS, dmnD, dhnD, dml, dCaS, dCaD])
+        dy_neural = jnp.array(
+            [dVs, dVd, dh, dn, dmnS, dhnS, dmnD, dhnD, dml, dCaS, dCaD]
+        )
+
+        if self.input_mode == "irradiance":
+            dC1, dO1, dO2 = self._chr2_derivatives(C1, O1, O2, phi)
+            return jnp.concatenate([dy_neural, jnp.array([dC1, dO1, dO2])])
+
+        return dy_neural
 
     def solve(
         self,
@@ -570,6 +650,7 @@ class BoothRinzelKiehn(eqx.Module):
                     Positive values = excitatory (→ E_syn_exc = 0 mV)
                     Negative values = inhibitory (→ E_syn_inh = -75 mV)
             - "current": Direct current injection in nA
+            - "irradiance": Light intensity in mW/mm^2
 
             Shape can be either:
             - 1D array [n_time_points] for soma-only stimulation
@@ -615,6 +696,10 @@ class BoothRinzelKiehn(eqx.Module):
                 ]
             )
 
+        # Extend y0 with ChR2 opsin initial states for irradiance mode
+        if self.input_mode == "irradiance":
+            y0 = jnp.concatenate([y0, jnp.array([1.0, 0.0, 0.0])])
+
         term = diffrax.ODETerm(self)
 
         solver = self.solver
@@ -650,14 +735,13 @@ class BoothRinzelKiehn(eqx.Module):
         )
 
         t_arr = solution.ts
-        v_soma = solution.ys[:, 0]
-        v_dend = solution.ys[:, 1]
+        ys_neural = solution.ys[:, :11]
+        v_soma = ys_neural[:, 0]
+        v_dend = ys_neural[:, 1]
 
         def calculate_currents_at_time(t, y):
             return self._calculate_membrane_currents(t, y, stimulus_args)
 
-        i_mem_soma, i_mem_dend = jax.vmap(calculate_currents_at_time)(
-            t_arr, solution.ys
-        )
+        i_mem_soma, i_mem_dend = jax.vmap(calculate_currents_at_time)(t_arr, ys_neural)
 
         return t_arr, v_soma, v_dend, i_mem_soma, i_mem_dend, solution.ys[-1]

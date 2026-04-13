@@ -360,16 +360,33 @@ class Env(EnvProtocol):
 
         b2.defaultclock.dt = dt * b2.ms
 
-        if stimulus is None:
-            stimulus = Stimulus()
-            stimulus.array = np.zeros(
-                [
-                    int((self.t + duration) / stimulus.dt),
-                    len(self.system.gids),
-                ]
-            )
+        if stimulus is not None:
+            if not isinstance(stimulus, Stimulus):
+                stimulus = Stimulus.from_arg(stimulus)
+            stimulus = self.model.prepare_stimulus(stimulus)
 
-        stimulus = Stimulus.from_arg(stimulus)
+        if stimulus is None or stimulus.array is None:
+            stimulus = Stimulus(
+                array=np.zeros(
+                    [
+                        int((self.t + duration) / 1.0),
+                        len(self.system.gids),
+                    ]
+                ),
+                dt=1.0,
+            )
+        else:
+            n_gids = len(self.system.gids)
+            if stimulus.array.shape[-1] != n_gids and stimulus.gids is not None:
+                gid_to_idx = {int(g): i for i, g in enumerate(self.system.gids)}
+                expanded = np.zeros(
+                    (stimulus.array.shape[0], n_gids), dtype=stimulus.array.dtype
+                )
+                for col_idx, gid in enumerate(stimulus.gids):
+                    sys_idx = gid_to_idx.get(int(gid))
+                    if sys_idx is not None:
+                        expanded[:, sys_idx] += stimulus.array[:, col_idx]
+                stimulus = Stimulus(array=expanded, dt=stimulus.dt)
 
         # Check for stimulus dt consistency across continued runs
         if not hasattr(self, "_stimulus_dt"):

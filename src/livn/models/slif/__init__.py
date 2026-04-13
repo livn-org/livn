@@ -6,6 +6,14 @@ from livn.types import Model
 
 
 class SLIF(Model):
+    def prepare_stimulus(self, stimulus):
+        if stimulus.input_mode not in {"current", "conductance"}:
+            raise ValueError(
+                f"SLIF only supports 'current' and 'conductance' input modes, "
+                f"got '{stimulus.input_mode}'"
+            )
+        return stimulus
+
     def diffrax_module(self, env, key):
         connectivity = env.system.connectivity_matrix()
 

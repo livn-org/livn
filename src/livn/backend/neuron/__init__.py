@@ -662,9 +662,16 @@ class Env(EnvProtocol):
         **kwargs,
     ):
         current_time = self.t
-        if stimulus is not None:
-            stimulus = Stimulus.from_arg(stimulus)
 
+        if stimulus is not None:
+            if not isinstance(stimulus, Stimulus):
+                stimulus = Stimulus.from_arg(stimulus)
+            stimulus = self.model.prepare_stimulus(stimulus)
+
+        if stimulus is not None and stimulus.array is None:
+            stimulus = None
+
+        if stimulus is not None:
             if stimulus.gids is None:
                 stimulus.gids = self.system.gids
 

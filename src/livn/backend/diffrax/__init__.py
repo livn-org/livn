@@ -1,6 +1,5 @@
 from typing import TYPE_CHECKING, Optional, Union
 
-import numpy as np
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -88,74 +87,23 @@ class Env(EnvProtocol):
         dt: float = 0.1,
         **kwargs,
     ):
-        stimulus = Stimulus.from_arg(stimulus)
+        if stimulus is not None:
+            if not isinstance(stimulus, Stimulus):
+                stimulus = Stimulus.from_arg(stimulus)
+            stimulus = self.model.prepare_stimulus(stimulus)
 
-        if stimulus.array is not None:
-            if not hasattr(self, "_stimulus_dt"):
-                self._stimulus_dt = stimulus.dt
-            elif not np.isclose(self._stimulus_dt, stimulus.dt, rtol=0.0, atol=1e-12):
-                raise ValueError("Stimulus dt mismatch; call clear() before rerunning")
-            stimulus.array = jnp.array(stimulus.array)
-
-            # adjust timesteps if necessary
-            if dt > stimulus.dt:
-                raise ValueError("stimulus_dt can not be smaller than simulation dt")
-
-            if int(stimulus.dt / dt) != stimulus.dt / dt:
-                raise ValueError("stimulus_dt must be a multiple of dt")
-
-            model_input_mode = getattr(self.module, "input_mode", "conductance")
-            stimulus_input_mode = stimulus.meta_data.get("input_mode", "conductance")
-
-            if model_input_mode != stimulus_input_mode:
-                raise ValueError(
-                    f"Stimulus input_mode '{stimulus_input_mode}' does not match "
-                    f"model input_mode '{model_input_mode}'. "
-                    f"Create stimulus with correct mode:\n"
-                    f"  - Stimulus.from_conductance() for ±uS\n"
-                    f"  - Stimulus.from_current_density() for mA/cm2\n"
-                    f"  - Stimulus.from_current() for nA"
-                )
-
-            expected_steps = int(duration / dt) + 1
-            original_ndim = stimulus.array.ndim
-            if original_ndim == 1:
-                stimulus.array = stimulus.array[:, None]
-
-            if stimulus.array.shape[0] != expected_steps or stimulus.dt != dt:
-                time_src = jnp.arange(
-                    stimulus.array.shape[0], dtype=stimulus.array.dtype
-                )
-                time_src = time_src * stimulus.dt
-                time_target = jnp.linspace(
-                    0.0, duration, expected_steps, dtype=stimulus.array.dtype
-                )
-
-                def _interp_column(column):
-                    return jnp.interp(time_target, time_src, column)
-
-                stimulus.array = jax.vmap(_interp_column, in_axes=1, out_axes=1)(
-                    stimulus.array
-                )
-
-            current_steps = stimulus.array.shape[0]
-            if current_steps < expected_steps:
-                pad_rows = expected_steps - current_steps
-                pad = jnp.zeros(
-                    (pad_rows, stimulus.array.shape[1]), dtype=stimulus.array.dtype
-                )
-                stimulus.array = jnp.concatenate([stimulus.array, pad], axis=0)
-            elif current_steps > expected_steps:
-                stimulus.array = stimulus.array[:expected_steps]
-
-            if original_ndim == 1:
-                stimulus.array = stimulus.array[:, 0]
+        input_current = None
+        if stimulus is not None:
+            arr = stimulus.to_array(duration, dt)
+            if arr is not None:
+                input_current = jnp.array(arr)
 
         dt_solver = kwargs.pop("dt_solver", 0.01)
         t0 = kwargs.pop("t0", 0.0)
         y0 = kwargs.pop("y0", None)
-        it, tt, iv, v, im, mp, yT = self.module.run(
-            input_current=stimulus.array,
+
+        run_kwargs = dict(
+            input_current=input_current,
             noise=self._noise,
             t0=t0,
             t1=t0 + duration,
@@ -166,14 +114,14 @@ class Env(EnvProtocol):
             **kwargs,
         )
 
+        it, tt, iv, v, im, mp, yT = self.module.run(**run_kwargs)
+
         return it, tt, iv, v, im, mp
 
     def clear_recordings(self):
         return self
 
     def clear(self):
-        if hasattr(self, "_stimulus_dt"):
-            del self._stimulus_dt
         return self
 
 

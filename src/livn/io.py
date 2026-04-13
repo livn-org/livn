@@ -250,6 +250,117 @@ class MEA(IO):
         return disk_electrode_model(distances)
 
 
+class LightArray(IO):
+    """Fiber optic array for optical stimulation
+
+    Maps per-fiber light power (mW) to per-neuron irradiance (mW/mm^2)
+    using a Kubelka-Munk scattering propagation model
+    """
+
+    def __init__(
+        self,
+        fiber_coordinates: Float[Array, "n_fibers ixyz=4"],
+        numerical_aperture: float = 0.37,
+        fiber_radius_um: float = 100.0,
+        wavelength_nm: float = 473.0,
+        scattering_coefficient: float = 11.2,
+    ):
+        self.fiber_coordinates = np.array(fiber_coordinates)
+        self.numerical_aperture = numerical_aperture
+        self.fiber_radius_um = fiber_radius_um
+        self.wavelength_nm = wavelength_nm
+        self.scattering_coefficient = scattering_coefficient
+        self._transmittance = None
+
+    @property
+    def num_channels(self) -> int:
+        return len(self.fiber_coordinates)
+
+    @property
+    def channel_ids(self) -> Int[Array, "n_channel_ids"]:
+        return self.fiber_coordinates[:, 0].astype(np.int32)
+
+    def cell_stimulus(
+        self,
+        neuron_coordinates: Float[Array, "n_coords ixyz=4"],
+        channel_inputs: Float[Array, "batch timestep n_fibers"],
+        dt: float = 0.1,
+    ):
+        from livn.stimulus import Stimulus
+
+        autobatch = False
+        if len(channel_inputs.shape) == 2:
+            autobatch = True
+            channel_inputs = channel_inputs[np.newaxis, ...]
+
+        if self._transmittance is None:
+            self._transmittance = self._compute_transmittance(neuron_coordinates)
+
+        irradiance = np.einsum("...tf,fg->...tg", channel_inputs, self._transmittance)
+
+        if autobatch:
+            irradiance = irradiance[0]
+
+        return Stimulus.from_irradiance(irradiance, dt=dt)
+
+    def channel_recording(
+        self,
+        neuron_coordinates: Float[Array, "n_coords ixyz=4"] | None,
+        ii: Float[Array, "i"],
+        *recordings: Float[Array, "_"],
+    ) -> tuple[dict[int, Array], ...]:
+        raise NotImplementedError("LightArray does not support recording")
+
+    def potential_recording(
+        self,
+        distances: Float[Array, "n_distances cip=3"],
+        membrane_currents: Float[Array, "timestep n_neurons"],
+    ) -> Float[Array, "timestep n_channels"]:
+        raise NotImplementedError("LightArray does not support recording")
+
+    def _compute_transmittance(
+        self,
+        neuron_coordinates: Float[Array, "n_coords ixyz=4"],
+    ) -> Float[Array, "n_fibers n_gids"]:
+        """Compute irradiance at each neuron per unit source power
+
+        Kubelka-Munk model (Aravanis et al. 2007):
+            I(r,z) = (NA^2) / (n^2 * (z + z0)^2) * exp(-mu_s * sqrt(r^2 + z^2))
+        """
+        fiber_xyz = self.fiber_coordinates[:, 1:4]
+        neuron_xyz = neuron_coordinates[:, 1:4]
+
+        n_fibers = len(fiber_xyz)
+        n_gids = len(neuron_xyz)
+
+        NA = self.numerical_aperture
+        n_tissue = 1.36
+        mu_s = self.scattering_coefficient  # mm^-1
+        fiber_r_mm = self.fiber_radius_um / 1000.0
+
+        # z0: distance from fiber tip where cone area equals fiber area
+        z0 = fiber_r_mm * n_tissue / NA
+
+        T = np.zeros((n_fibers, n_gids))
+
+        for fi in range(n_fibers):
+            diff = neuron_xyz - fiber_xyz[fi]
+            diff_mm = diff / 1000.0  # um to mm
+
+            r = np.sqrt(diff_mm[:, 0] ** 2 + diff_mm[:, 1] ** 2)
+            z = np.abs(diff_mm[:, 2])
+
+            dist = np.sqrt(r**2 + z**2)
+            denom = (z + z0) ** 2
+            denom = np.maximum(denom, 1e-12)
+
+            T[fi, :] = (
+                (NA**2 / (n_tissue**2 * denom)) * np.exp(-mu_s * dist) / (4 * np.pi)
+            )
+
+        return T
+
+
 def calculate_distances(
     source: Float[Array, "n_sources cxyz=4"],
     coords: Float[Array, "n_coords cxyz=4"],

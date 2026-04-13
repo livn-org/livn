@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 
 import numpy as np
@@ -29,6 +29,14 @@ class Stimulus:
         if self.array is None:
             return 0.0
         return self.array.shape[0] * self.dt
+
+    @property
+    def input_mode(
+        self,
+    ) -> Literal[
+        "extracellular", "current", "current_density", "conductance", "irradiance"
+    ]:
+        return self.meta_data.get("input_mode", "extracellular")
 
     def __iter__(self):
         yield from zip(self.gids, self.array.T)
@@ -236,3 +244,154 @@ class Stimulus:
         meta_data["input_mode"] = "current_density"
         meta_data["units"] = "mA/cm2"
         return cls(array=current_density, dt=dt, gids=gids, **meta_data)
+
+    @classmethod
+    def from_extracellular(
+        cls,
+        voltage: Float[Array, "timestep n_gids"],
+        dt: float = 0.1,
+        gids: Int[Array, "n_gids"] | None = None,
+        **meta_data,
+    ) -> "Stimulus":
+        meta_data["input_mode"] = "extracellular"
+        meta_data["units"] = "mV"
+        return cls(array=voltage, dt=dt, gids=gids, **meta_data)
+
+    @classmethod
+    def from_irradiance(
+        cls,
+        irradiance: Float[Array, "timestep n_gids"],
+        dt: float = 0.1,
+        gids: Int[Array, "n_gids"] | None = None,
+        **meta_data,
+    ) -> "Stimulus":
+        """Optical stimulus as irradiance at each neuron (mW/mm^2).
+
+        Args:
+            irradiance: Light power density at each neuron, shape [timestep, n_gids].
+        """
+        meta_data["input_mode"] = "irradiance"
+        meta_data["units"] = "mW/mm2"
+        return cls(array=irradiance, dt=dt, gids=gids, **meta_data)
+
+    @staticmethod
+    def align_gids(
+        stimulus: "Stimulus",
+        all_gids: Int[Array, "n_total_gids"],
+    ) -> "Stimulus":
+        """Expand stimulus array to cover all_gids, zero-padding missing neurons"""
+        if stimulus.array is None:
+            return stimulus
+
+        if stimulus.gids is None:
+            assert stimulus.array.shape[-1] == len(all_gids), (
+                f"Stimulus has {stimulus.array.shape[-1]} columns but system has "
+                f"{len(all_gids)} neurons. Set gids= explicitly."
+            )
+            return stimulus
+
+        gid_to_idx = {int(g): i for i, g in enumerate(all_gids)}
+        n_timesteps = stimulus.array.shape[0]
+        expanded = np.zeros((n_timesteps, len(all_gids)), dtype=stimulus.array.dtype)
+        for col_idx, gid in enumerate(stimulus.gids):
+            sys_idx = gid_to_idx.get(int(gid))
+            if sys_idx is None:
+                raise ValueError(
+                    f"Stimulus targets GID {gid} which is not in the system"
+                )
+            expanded[:, sys_idx] += stimulus.array[:, col_idx]
+
+        return Stimulus(
+            array=expanded, dt=stimulus.dt, gids=all_gids, **stimulus.meta_data
+        )
+
+    @staticmethod
+    def resample(
+        stimulus: "Stimulus",
+        target_dt: float,
+        duration: float,
+    ) -> "Stimulus":
+        """Resample stimulus to a common dt via linear interpolation"""
+        if stimulus.array is None or np.isclose(stimulus.dt, target_dt):
+            return stimulus
+
+        n_target_steps = int(round(duration / target_dt))
+        t_target = np.linspace(0.0, duration, n_target_steps, endpoint=False)
+        t_src = np.arange(stimulus.array.shape[0]) * stimulus.dt
+        resampled = np.stack(
+            [
+                np.interp(t_target, t_src, stimulus.array[:, col])
+                for col in range(stimulus.array.shape[-1])
+            ],
+            axis=-1,
+        )
+        return Stimulus(
+            array=resampled, dt=target_dt, gids=stimulus.gids, **stimulus.meta_data
+        )
+
+    def to_array(self, duration: float, dt: float):
+        """Resample and pad/trim to simulation time grid.
+
+        Returns a numpy array with ``int(duration / dt) + 1`` rows,
+        or *None* when no waveform data is present.
+        """
+        if self.array is None:
+            return None
+
+        arr = np.asarray(self.array)
+        expected_steps = int(duration / dt) + 1
+        original_ndim = arr.ndim
+
+        if original_ndim == 1:
+            arr = arr[:, None]
+
+        if arr.shape[0] != expected_steps or not np.isclose(self.dt, dt):
+            time_src = np.arange(arr.shape[0]) * self.dt
+            time_target = np.linspace(0.0, duration, expected_steps)
+            arr = np.stack(
+                [
+                    np.interp(time_target, time_src, arr[:, col])
+                    for col in range(arr.shape[1])
+                ],
+                axis=1,
+            )
+
+        if arr.shape[0] < expected_steps:
+            pad = np.zeros(
+                (expected_steps - arr.shape[0], arr.shape[1]), dtype=arr.dtype
+            )
+            arr = np.concatenate([arr, pad], axis=0)
+        elif arr.shape[0] > expected_steps:
+            arr = arr[:expected_steps]
+
+        if original_ndim == 1:
+            arr = arr[:, 0]
+
+        return arr
+
+    def tree_flatten(self):
+        children = [self.array]
+        aux = (self.dt, self.gids, self.meta_data)
+        return children, aux
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        dt, gids, meta_data = aux
+        return cls(array=children[0], dt=dt, gids=gids, **meta_data)
+
+
+def _register_pytree():
+    """Register Stimulus as a JAX pytree if JAX is available."""
+    try:
+        import jax
+
+        jax.tree_util.register_pytree_node(
+            Stimulus,
+            Stimulus.tree_flatten,
+            Stimulus.tree_unflatten,
+        )
+    except ImportError:
+        pass
+
+
+_register_pytree()

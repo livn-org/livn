@@ -18,6 +18,21 @@ else:
 
 
 class ReducedCalciumSomaDendrite(Model):
+    def prepare_stimulus(self, stimulus):
+        modes = {
+            "extracellular",
+            "current",
+            "current_density",
+            "conductance",
+            "irradiance",
+        }
+        if stimulus.input_mode not in modes:
+            raise ValueError(
+                f"ReducedCalciumSomaDendrite does not support input_mode "
+                f"'{stimulus.input_mode}'. Supported: {modes}"
+            )
+        return stimulus
+
     def stimulus_coordinates(
         self,
         neuron_coordinates: types.Float[types.Array, "n_coords ixyz=4"],

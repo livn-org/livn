@@ -1,6 +1,6 @@
 # IO
 
-**IO** (Input/Output) in livn models the physical interface between the neural system and the outside world. In a real experiment, this would be a multi-electrode array (MEA) or optical stimulation device. In livn, IO transformations translate between per-channel signals and per-neuron effects, bridging the gap between the neuronal level and what an experimenter controls.
+**IO** (Input/Output) in livn models the physical interface between the neural system and the outside world, whether through a multi-electrode array (MEA) for electrical stimulation, a fiber optic array for optical stimulation, or a combination of both. IO transformations translate between per-channel signals and per-neuron effects, bridging the gap between the neuronal level and what an experimenter controls.
 
 ## The `IO` class
 
@@ -145,17 +145,57 @@ You can implement custom IO transformations by subclassing `IO`:
 ```python
 from livn.io import IO
 
-class OptogeneticIO(IO):
-    def __init__(self, light_sources):
-        self.light_sources = light_sources
+class MyCustomIO(IO):
+    def __init__(self, sources):
+        self.sources = sources
 
     @property
     def num_channels(self):
-        return len(self.light_sources)
+        return len(self.sources)
 
     def cell_stimulus(self, neuron_coordinates, channel_inputs):
-        # Map light source intensities to opsin-mediated currents
+        # Map source inputs to per-neuron effects
         ...
 ```
+
+## Light Array (Fiber Optic)
+
+The `LightArray` class models a fiber optic array for optical stimulation. It maps per-fiber light power (mW) to per-neuron irradiance (mW/mm^2) using a Kubelka-Munk scattering propagation model:
+
+```python
+from livn.io import LightArray
+import numpy as np
+
+fibers = LightArray(
+    fiber_coordinates=np.array([
+        [0, 500, 500, 0],    # fiber 0 at (500, 500, 0)
+        [1, 1500, 500, 0],   # fiber 1 at (1500, 500, 0)
+    ]),
+    numerical_aperture=0.37,
+    fiber_radius_um=100.0,
+    wavelength_nm=473.0,
+    scattering_coefficient=11.2,  # mm⁻¹, brain tissue at 473nm
+)
+```
+
+`cell_stimulus()` returns a `Stimulus` object with `input_mode='irradiance'`:
+
+```python
+# Per-fiber power trace: 100 timesteps, 2 fibers
+fiber_power = np.zeros((100, 2))
+fiber_power[10:50, 0] = 5.0  # 5 mW on fiber 0
+
+stim = fibers.cell_stimulus(system.neuron_coordinates, fiber_power, dt=0.1)
+# stim is a Stimulus with input_mode='irradiance'
+env.run(100, stimulus=stim)
+```
+
+### Light propagation model
+
+The transmittance from each fiber to each neuron is computed using the Kubelka-Munk model (Aravanis et al. 2007), accounting for:
+
+- Fiber numerical aperture and cone geometry
+- Tissue scattering at the specified wavelength
+- 3D distance between fiber tip and neuron
 
 livn also integrates with the [cleo](https://cleosim.readthedocs.io/) library for modelling optogenetic stimulation with detailed laser and opsin models.

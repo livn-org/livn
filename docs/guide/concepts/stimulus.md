@@ -106,6 +106,47 @@ stim = Stimulus.from_current_density(
 )
 ```
 
+### From extracellular voltage
+
+For explicit extracellular voltage stimulation:
+
+```python
+stim = Stimulus.from_extracellular(
+    voltage=cell_stim_array,  # mV, [timesteps, n_gids]
+    dt=0.1,
+)
+```
+
+### From irradiance (optical stimulation)
+
+For optical stimulation via opsin-expressing neurons. The opsin model is part of the neuron model and does not need to be specified on the stimulus:
+
+```python
+stim = Stimulus.from_irradiance(
+    irradiance=light_at_neurons,  # mW/mm^2, [timesteps, n_gids]
+    dt=0.1,
+)
+```
+
+## Stimulus types
+
+Each stimulus carries an `input_mode` that tells the backend what physical quantity the array represents:
+
+| Type | Factory | Units | Description |
+|------|---------|-------|-------------|
+| `extracellular` | `Stimulus()`, `from_extracellular()` | mV | Extracellular voltage (MEA default) |
+| `current` | `from_current()` | nA | Direct intracellular current injection |
+| `current_density` | `from_current_density()` | mA/cm² | Current density normalized to membrane area |
+| `conductance` | `from_conductance()` | µS | Synaptic conductance (requires model `E_rev`) |
+| `irradiance` | `from_irradiance()` | mW/mm² | Light intensity for optogenetic stimulation |
+
+Access the mode via `stim.input_mode`:
+
+```python
+stim = Stimulus.from_current(np.ones((100, 10)), dt=0.1)
+print(stim.input_mode)  # "current"
+```
+
 ## Using stimuli
 
 Pass a stimulus to `env.run()`:
@@ -126,7 +167,7 @@ result = env(
 
 ## Automatic conversion
 
-`Stimulus.from_arg()` automatically converts common types:
+`Stimulus.from_arg()` automatically converts common types into a single `Stimulus`:
 
 ```python
 # From array
