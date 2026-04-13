@@ -342,3 +342,98 @@ class TestMonophasicPulse:
         for c in range(16):
             if c != 3:
                 assert np.all(arr[:, c] == 0)
+
+
+class TestStimulusJax:
+    @pytest.fixture(autouse=True)
+    def requires_jax(self):
+        jax = pytest.importorskip("jax")
+        self.jnp = jax.numpy
+        self.jax = jax
+
+    def test_array_accepted(self):
+        arr = self.jnp.ones((10, 3), dtype=self.jnp.float32)
+        stim = Stimulus(arr, dt=0.1)
+        assert stim.duration == pytest.approx(1.0)
+        assert len(stim) == 3
+
+    def test_to_array(self):
+        arr = self.jnp.ones((5, 2), dtype=self.jnp.float32)
+        stim = Stimulus(arr, dt=0.1)
+        result = stim.to_array(duration=1.0, dt=0.1)
+        assert result.shape == (11, 2)
+
+    def test_align_gids(self):
+        arr = self.jnp.ones((10, 3), dtype=self.jnp.float32)
+        gids = self.jnp.array([0, 2, 4])
+        stim = Stimulus(arr, dt=0.1, gids=gids)
+        all_gids = self.jnp.array([0, 1, 2, 3, 4])
+        result = Stimulus.align_gids(stim, all_gids)
+        result_arr = np.asarray(result.array)
+        assert result_arr.shape == (10, 5)
+        np.testing.assert_allclose(result_arr[:, [0, 2, 4]], 1.0)
+        np.testing.assert_allclose(result_arr[:, [1, 3]], 0.0)
+
+    def test_resample(self):
+        arr = self.jnp.ones((10, 2), dtype=self.jnp.float32)
+        stim = Stimulus(arr, dt=0.1)
+        result = Stimulus.resample(stim, target_dt=0.05, duration=1.0)
+        assert result.array.shape[0] == 20
+        np.testing.assert_allclose(np.asarray(result.array), 1.0, atol=1e-5)
+
+    def _requires_jax_backend(self):
+        from livn.stimulus import _USES_JAX
+
+        if not _USES_JAX:
+            pytest.skip("Requires JAX backend")
+
+    def test_to_array_jit(self):
+        self._requires_jax_backend()
+        arr = self.jnp.ones((11, 3), dtype=self.jnp.float32)
+        stim = Stimulus(arr, dt=0.1)
+
+        @self.jax.jit
+        def f(stim):
+            return stim.to_array(duration=1.0, dt=0.1)
+
+        result = f(stim)
+        assert result.shape == (11, 3)
+        np.testing.assert_allclose(np.asarray(result), 1.0)
+
+    def test_to_array_pad_jit(self):
+        self._requires_jax_backend()
+        arr = self.jnp.ones((5, 2), dtype=self.jnp.float32)
+        stim = Stimulus(arr, dt=0.1)
+
+        @self.jax.jit
+        def f(stim):
+            return stim.to_array(duration=1.0, dt=0.1)
+
+        result = f(stim)
+        assert result.shape == (11, 2)
+        np.testing.assert_allclose(np.asarray(result[:5]), 1.0)
+
+    def test_to_array_trim_jit(self):
+        self._requires_jax_backend()
+        arr = self.jnp.ones((20, 2), dtype=self.jnp.float32)
+        stim = Stimulus(arr, dt=0.1)
+
+        @self.jax.jit
+        def f(stim):
+            return stim.to_array(duration=1.0, dt=0.1)
+
+        result = f(stim)
+        assert result.shape == (11, 2)
+
+    def test_to_array_1d_jit(self):
+        self._requires_jax_backend()
+        arr = self.jnp.ones(11, dtype=self.jnp.float32)
+        stim = Stimulus(arr, dt=0.1)
+
+        @self.jax.jit
+        def f(stim):
+            return stim.to_array(duration=1.0, dt=0.1)
+
+        result = f(stim)
+        assert result.shape == (11,)
+        np.testing.assert_allclose(np.asarray(result), 1.0)

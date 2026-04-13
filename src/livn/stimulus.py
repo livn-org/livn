@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, Literal
-
-
-import numpy as np
 
 if TYPE_CHECKING:
     from livn.types import Array, Float, Int
+
+_USES_JAX = False
+
+if "ax" in os.environ.get("LIVN_BACKEND", ""):
+    import jax.numpy as np
+
+    _USES_JAX = True
+else:
+    import numpy as np
 
 
 class Stimulus:
@@ -111,12 +118,20 @@ class Stimulus:
 
             phase1_start = onset_step
             phase1_end = onset_step + phase1_steps
-            inputs[phase1_start:phase1_end, channels] = phase1_amp
+            if _USES_JAX:
+                inputs = inputs.at[phase1_start:phase1_end, channels].set(phase1_amp)
+            else:
+                inputs[phase1_start:phase1_end, channels] = phase1_amp
 
             phase2_start = onset_step + phase1_steps + gap_steps
             phase2_end = phase2_start + phase2_steps
             if phase2_end <= n_steps:
-                inputs[phase2_start:phase2_end, channels] = phase2_amp
+                if _USES_JAX:
+                    inputs = inputs.at[phase2_start:phase2_end, channels].set(
+                        phase2_amp
+                    )
+                else:
+                    inputs[phase2_start:phase2_end, channels] = phase2_amp
 
         return cls(
             array=inputs,
@@ -172,7 +187,10 @@ class Stimulus:
             pulse_end = min(onset_step + pulse_steps, n_steps)
             for ch, amp in zip(channels, amplitudes):
                 if amp > 0.0:
-                    inputs[onset_step:pulse_end, ch] = amp
+                    if _USES_JAX:
+                        inputs = inputs.at[onset_step:pulse_end, ch].set(float(amp))
+                    else:
+                        inputs[onset_step:pulse_end, ch] = amp
 
         return cls(
             array=inputs,
@@ -299,7 +317,10 @@ class Stimulus:
                 raise ValueError(
                     f"Stimulus targets GID {gid} which is not in the system"
                 )
-            expanded[:, sys_idx] += stimulus.array[:, col_idx]
+            if _USES_JAX:
+                expanded = expanded.at[:, sys_idx].add(stimulus.array[:, col_idx])
+            else:
+                expanded[:, sys_idx] += stimulus.array[:, col_idx]
 
         return Stimulus(
             array=expanded, dt=stimulus.dt, gids=all_gids, **stimulus.meta_data
@@ -332,8 +353,8 @@ class Stimulus:
     def to_array(self, duration: float, dt: float):
         """Resample and pad/trim to simulation time grid.
 
-        Returns a numpy array with ``int(duration / dt) + 1`` rows,
-        or *None* when no waveform data is present.
+        Returns an array with ``int(duration / dt) + 1`` rows, or None when no waveform data is present.
+        Compatible with JAX tracers inside JIT.
         """
         if self.array is None:
             return None
@@ -345,16 +366,17 @@ class Stimulus:
         if original_ndim == 1:
             arr = arr[:, None]
 
-        if arr.shape[0] != expected_steps or not np.isclose(self.dt, dt):
-            time_src = np.arange(arr.shape[0]) * self.dt
-            time_target = np.linspace(0.0, duration, expected_steps)
-            arr = np.stack(
-                [
-                    np.interp(time_target, time_src, arr[:, col])
-                    for col in range(arr.shape[1])
-                ],
-                axis=1,
-            )
+        if not _USES_JAX:
+            if arr.shape[0] != expected_steps or not np.isclose(self.dt, dt):
+                time_src = np.arange(arr.shape[0]) * self.dt
+                time_target = np.linspace(0.0, duration, expected_steps)
+                arr = np.stack(
+                    [
+                        np.interp(time_target, time_src, arr[:, col])
+                        for col in range(arr.shape[1])
+                    ],
+                    axis=1,
+                )
 
         if arr.shape[0] < expected_steps:
             pad = np.zeros(
