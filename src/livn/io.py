@@ -249,6 +249,36 @@ class MEA(IO):
     ) -> Float[Array, "n_amplitudes cip=3"]:
         return disk_electrode_model(distances)
 
+    def channel_contribution(
+        self,
+        neuron_coordinates: Float[Array, "n_coords ixyz=4"],
+        channel_id: int,
+    ):
+        import pandas as pd
+
+        distances = self.distances(neuron_coordinates)
+        mask = distances[:, 0] == channel_id
+        ch = distances[mask]  # (n_compartments, 3)
+
+        within = ch[:, 2] <= self.output_radius
+        ch = ch[within]
+
+        order = ch[:, 2].argsort()
+        ch = ch[order]
+
+        weights = electrode_potential_point_source_weights(ch[:, 2])
+        total = weights.sum()
+        contribution_pct = weights / total * 100 if total > 0 else weights * 0
+
+        return pd.DataFrame(
+            {
+                "gid": ch[:, 1].astype(int),
+                "distance_um": ch[:, 2],
+                "weight": weights,
+                "contribution_pct": contribution_pct,
+            }
+        )
+
 
 class LightArray(IO):
     """Fiber optic array for optical stimulation
