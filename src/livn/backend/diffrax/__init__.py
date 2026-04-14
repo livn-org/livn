@@ -131,10 +131,22 @@ def _env_tree_flatten(env):
     else:
         module_params, module_static = None, None
 
-    children = (module_params, env.key, env._noise)
+    # If system is a registered JAX pytree (e.g. TrainableSystem), put it in
+    # children so its arrays are traced/differentiated. Otherwise (regular
+    # System with file handles etc.) keep it in static aux
+    flat = jax.tree_util.tree_leaves(env.system)
+    system_is_pytree = not (len(flat) == 1 and flat[0] is env.system)
+
+    children = (
+        module_params,
+        env.key,
+        env._noise,
+        env.system if system_is_pytree else None,
+    )
     aux = (
         module_static,
-        env.system,
+        None if system_is_pytree else env.system,
+        system_is_pytree,
         env._weights,
         env.model,
         env.io,
@@ -150,10 +162,11 @@ def _env_tree_flatten(env):
 
 
 def _env_tree_unflatten(aux, children):
-    module_params, key, noise = children
+    module_params, key, noise, system_child = children
     (
         module_static,
-        system,
+        system_aux,
+        system_is_trainable,
         weights,
         model,
         io,
@@ -165,6 +178,8 @@ def _env_tree_unflatten(aux, children):
         encoding,
         decoding,
     ) = aux
+
+    system = system_child if system_is_trainable else system_aux
 
     if module_params is not None and module_static is not None:
         module = eqx.combine(module_params, module_static)
