@@ -16,4 +16,4 @@ export MPICC="cc -shared"
 export UV_PYTHON=/opt/cray/pe/python/3.11.7/bin/python
 ```
 
-Once configured, follow the [standard instructions](../installation/).
+With this environment, use `uv` as normal to create a venv (e.g. on `/work/hdd/<partition>/$USER/livn`). For more details, see the [standard instructions](../installation/).
