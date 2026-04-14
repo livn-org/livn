@@ -67,8 +67,8 @@ Full documentation at **[livn-org.github.io/livn](https://livn-org.github.io/liv
 
 - [Getting started](https://livn-org.github.io/livn/guide/getting-started) — installation, first simulation, using datasets
 - [Concepts](https://livn-org.github.io/livn/guide/concepts/env) — environments, systems, models, IO, encoding, decoding, stimulus
-- [Systems](https://livn-org.github.io/livn/guide/systems/) — generating, tuning, and sampling custom systems
-- [Examples](https://livn-org.github.io/livn/examples/dataset) — dataset usage, differentiable simulation, reinforcement learning
+- [Systems](https://livn-org.github.io/livn/systems/) — generating, tuning, and sampling custom systems
+- [Examples](https://livn-org.github.io/livn/examples) — dataset usage, differentiable simulation, reinforcement learning
 
 ### Full installation
 
