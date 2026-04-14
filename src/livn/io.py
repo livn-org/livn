@@ -84,6 +84,17 @@ class IO(Jsonable):
         """Transforms neural recordings identified by their gids into per channel recordings"""
         raise NotImplementedError("Please specify an IO")
 
+    def source_gain(
+        self,
+        distances: Float[Array, "n_distances cip=3"],
+    ) -> Float[Array, "n_channels n_recording_coords"]:
+        """Compute the per-recording-coordinate gain matrix
+
+        Parameters
+        - distances: triplets [channel_id, gid, distance_um] as returned by `self.distances(...)`
+        """
+        raise NotImplementedError("Please specify an IO")
+
     def potential_recording(
         self,
         distances: Float[Array, "n_distances cip=3"],
@@ -120,9 +131,6 @@ class MEA(IO):
     cell_measurement
         Array containing the relative measurement weights for each neuron-electrode pair,
         filtered based on output_radius.
-    cell_induction
-        Array containing the stimulation amplitudes for each neuron-electrode pair,
-        calculated based on distances.
     """
 
     def __init__(
@@ -138,7 +146,7 @@ class MEA(IO):
         self.output_radius = output_radius
 
         self.cell_measurement = None
-        self.cell_induction = None
+        self._cell_induction = None
 
     @property
     def num_channels(self) -> int:
@@ -166,13 +174,13 @@ class MEA(IO):
             autobatch = True
             channel_inputs = channel_inputs[np.newaxis, ...]
 
-        if self.cell_induction is None:
+        if self._cell_induction is None:
             distances = self.distances(neuron_coordinates)
 
-            self.cell_induction = self.amplitude_from_distance(distances)
+            self._cell_induction = self.cell_induction(distances)
 
         stimulus = calculate_cell_stimulus(
-            channel_inputs, self.cell_induction, n_gids=len(neuron_coordinates)
+            channel_inputs, self._cell_induction, n_gids=len(neuron_coordinates)
         )
 
         if autobatch:
@@ -198,6 +206,36 @@ class MEA(IO):
 
         return channel_recording(self.cell_measurement, ii, *recordings)
 
+    def source_gain(
+        self,
+        distances: Float[Array, "n_distances cip=3"],
+    ) -> Float[Array, "n_channels n_recording_coords"]:
+        """
+        Compute per-recording-coordinate gain for electrode potential.
+
+        Uses the point-source volume conductor formula:
+
+            g = (1 / (4*pi*sigma_S_per_mm)) * (1 / r_mm)
+
+        Only recording coordinates within output_radius get non-zero gain.
+
+        Arguments
+        - distances: as returned by `MEA.distances(neuron_coordinates)`
+        """
+        n_electrodes = int(self.num_channels)
+        d = distances[:, -1]
+        if d.size % n_electrodes != 0:
+            raise ValueError(
+                f"distances size mismatch: expected a multiple of {n_electrodes}, got {d.size}"
+            )
+
+        n_recording_coords = d.size // n_electrodes
+        d = d.reshape(n_electrodes, n_recording_coords)
+
+        gain = electrode_potential_point_source_weights(d)
+        mask = d <= float(self.output_radius)
+        return np.where(mask, gain, 0.0)
+
     def potential_recording(
         self,
         distances: Float[Array, "n_distances cip=3"],
@@ -217,23 +255,9 @@ class MEA(IO):
 
         Returns: microvolts array (uV), shape [n_channels, timestep]
         """
-        n_electrodes = int(self.num_channels)
-        d = distances[:, -1]
-        if d.size % n_electrodes != 0:
-            raise ValueError(
-                f"distances size mismatch: expected a multiple of {n_electrodes}, got {d.size}"
-            )
-
-        n_neurons_expected = d.size // n_electrodes
-
-        d = d.reshape(n_electrodes, n_neurons_expected)
-
-        weights = electrode_potential_point_source_weights(d)
-        mask = d <= float(self.output_radius)
-        weights = np.where(mask, weights, 0.0)
-
+        gain = self.source_gain(distances)
         # compute potentials [E, t] = [E, I] @ [I, t]
-        return np.matmul(weights, membrane_currents)
+        return np.matmul(gain, membrane_currents)
 
     def distances(
         self, neuron_coordinates: Float[Array, "n_coords ixyz=4"]
@@ -243,7 +267,7 @@ class MEA(IO):
     def default_electrode_coordinates(self):
         return electrode_array_coordinates()
 
-    def amplitude_from_distance(
+    def cell_induction(
         self,
         distances: Float[Array, "n_distances cip=3"],
     ) -> Float[Array, "n_amplitudes cip=3"]:
@@ -257,24 +281,30 @@ class MEA(IO):
         import pandas as pd
 
         distances = self.distances(neuron_coordinates)
-        mask = distances[:, 0] == channel_id
-        ch = distances[mask]  # (n_compartments, 3)
+        full_gain = self.source_gain(distances)  # (n_channels, n_recording_coords)
 
-        within = ch[:, 2] <= self.output_radius
+        ch_idx = int(np.where(self.channel_ids == channel_id)[0][0])
+        ch_gain = full_gain[ch_idx]
+
+        mask = distances[:, 0] == channel_id
+        ch = distances[mask]
+
+        within = ch_gain > 0
         ch = ch[within]
+        ch_gain = ch_gain[within]
 
         order = ch[:, 2].argsort()
         ch = ch[order]
+        ch_gain = ch_gain[order]
 
-        weights = electrode_potential_point_source_weights(ch[:, 2])
-        total = weights.sum()
-        contribution_pct = weights / total * 100 if total > 0 else weights * 0
+        total = ch_gain.sum()
+        contribution_pct = ch_gain / total * 100 if total > 0 else ch_gain * 0
 
         return pd.DataFrame(
             {
                 "gid": ch[:, 1].astype(int),
                 "distance_um": ch[:, 2],
-                "weight": weights,
+                "gain": ch_gain,
                 "contribution_pct": contribution_pct,
             }
         )
@@ -300,7 +330,7 @@ class LightArray(IO):
         self.fiber_radius_um = fiber_radius_um
         self.wavelength_nm = wavelength_nm
         self.scattering_coefficient = scattering_coefficient
-        self._transmittance = None
+        self._cell_induction = None
 
     def serialize(self) -> dict:
         return {
@@ -332,10 +362,10 @@ class LightArray(IO):
             autobatch = True
             channel_inputs = channel_inputs[np.newaxis, ...]
 
-        if self._transmittance is None:
-            self._transmittance = self._compute_transmittance(neuron_coordinates)
+        if self._cell_induction is None:
+            self._cell_induction = self.cell_induction(neuron_coordinates)
 
-        irradiance = np.einsum("...tf,fg->...tg", channel_inputs, self._transmittance)
+        irradiance = np.einsum("...tf,fg->...tg", channel_inputs, self._cell_induction)
 
         if autobatch:
             irradiance = irradiance[0]
@@ -357,7 +387,7 @@ class LightArray(IO):
     ) -> Float[Array, "timestep n_channels"]:
         raise NotImplementedError("LightArray does not support recording")
 
-    def _compute_transmittance(
+    def cell_induction(
         self,
         neuron_coordinates: Float[Array, "n_coords ixyz=4"],
     ) -> Float[Array, "n_fibers n_gids"]:
@@ -428,6 +458,12 @@ class ComposedIO(IO):
         *recordings: "Float[Array, '_']",
     ) -> "tuple[dict[int, Array], ...]":
         return self.outputs.channel_recording(neuron_coordinates, ii, *recordings)
+
+    def source_gain(
+        self,
+        distances: "Float[Array, 'n_distances cip=3']",
+    ) -> "Float[Array, 'n_channels n_recording_coords']":
+        return self.outputs.source_gain(distances)
 
     def potential_recording(
         self,

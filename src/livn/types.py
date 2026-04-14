@@ -314,15 +314,29 @@ class Env(Protocol):
         """Recording time step for membrane current traces in ms"""
         return 0.1
 
-    def potential_recording(
-        self, membrane_currents: Float[Array, "n_neurons timestep"] | None
-    ) -> Float[Array, "n_channels timestep"]:
-        distances = self.io.distances(
-            self.system.transform_coordinates(
-                self.model.recording_coordinates, all=False
-            ),
+    def recording_distances(self):
+        neuron_coordinates = self.system.transform_coordinates(
+            self.model.recording_coordinates, all=False
         )
-        return self.io.potential_recording(distances, membrane_currents)
+        return self.io.distances(neuron_coordinates)
+
+    def source_gain(
+        self,
+    ) -> Float[Array, "n_channels n_recording_coords"]:
+        return self.io.source_gain(self.recording_distances())
+
+    def neuron_gain(
+        self,
+    ) -> Float[Array, "n_channels n_neurons"]:
+        return self.model.reduce_source_gain(self.source_gain())
+
+    def potential_recording(
+        self,
+        membrane_currents: Float[Array, "n_neurons timestep"] | None,
+    ) -> Float[Array, "n_channels timestep"]:
+        return self.io.potential_recording(
+            self.recording_distances(), membrane_currents
+        )
 
     def clear_recordings(self) -> Self:
         """Clear recording buffers
@@ -361,6 +375,12 @@ class Model(Protocol):
         population: str | None = None,
     ) -> Float[Array, "n_stim_coords ixyz=4"]:
         return neuron_coordinates
+
+    def reduce_source_gain(
+        self,
+        gain: Float[Array, "n_channels n_recording_coords"],
+    ) -> Float[Array, "n_channels n_neurons"]:
+        return gain
 
     def prepare_stimulus(self, stimulus: "Stimulus") -> "Stimulus":
         return stimulus
