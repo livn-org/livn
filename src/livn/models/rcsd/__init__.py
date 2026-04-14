@@ -33,6 +33,19 @@ class ReducedCalciumSomaDendrite(Model):
             )
         return stimulus
 
+    def opsin_config(self):
+        return {
+            "mechanism": "RhO3c",
+            "sections": ["soma"],
+            "wavelength_nm": 473.0,
+        }
+
+    def neuron_opsin_config(self):
+        return self.opsin_config()
+
+    def diffrax_opsin_config(self):
+        return self.opsin_config()
+
     def stimulus_coordinates(
         self,
         neuron_coordinates: types.Float[types.Array, "n_coords ixyz=4"],

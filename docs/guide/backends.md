@@ -110,6 +110,7 @@ env = make("EI2")
 | Differentiable | No | **Yes** | No |
 | GPU support | No | **Yes** | No |
 | Multi-compartment models | No | **Yes** | **Yes** |
+| Built-in opsins | No | **Yes** (RhO3c) | **Yes** (RhO3c, RhO6c) |
 | MPI parallelism | No | No | **Yes** |
 | Setup complexity | Low | Medium | High |
 | Ideal scale | ≤1,000 neurons | ≤10,000 neurons | ≤millions |

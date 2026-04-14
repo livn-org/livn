@@ -302,6 +302,15 @@ class LightArray(IO):
         self.scattering_coefficient = scattering_coefficient
         self._transmittance = None
 
+    def serialize(self) -> dict:
+        return {
+            "fiber_coordinates": self.fiber_coordinates.tolist(),
+            "numerical_aperture": self.numerical_aperture,
+            "fiber_radius_um": self.fiber_radius_um,
+            "wavelength_nm": self.wavelength_nm,
+            "scattering_coefficient": self.scattering_coefficient,
+        }
+
     @property
     def num_channels(self) -> int:
         return len(self.fiber_coordinates)

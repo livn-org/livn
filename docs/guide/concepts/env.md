@@ -87,6 +87,17 @@ stim = Stimulus(array=np.random.randn(100, 10) * 0.1, dt=1.0)
 it, t, *_ = env.run(100, stimulus=stim)
 ```
 
+### Optical stimulation
+
+For optogenetic stimulation, pass an irradiance [`Stimulus`](/guide/concepts/stimulus):
+
+```python
+stim = Stimulus.from_irradiance(irradiance_array, dt=0.1)
+it, t, *_ = env.run(100, stimulus=stim)
+```
+
+See the [Optical Stimulation](/guide/advanced/optical-stimulation) guide for full details.
+
 ### Continuing simulation
 
 The simulation state persists between `run()` calls, allowing you to implement closed-loop experiments:

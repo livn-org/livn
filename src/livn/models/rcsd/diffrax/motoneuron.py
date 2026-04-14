@@ -111,22 +111,19 @@ class BoothRinzelKiehn(eqx.Module):
 
     input_mode: str = eqx.field(static=True)
 
-    # ChR2 4-state opsin parameters (Grossman et al. 2011)
-    chr2_g_max: float = eqx.field(static=True)  # mS/cm^2
-    chr2_E_rev: float = eqx.field(static=True)  # mV
-    chr2_gamma: float = eqx.field(static=True)  # O2/O1 conductance ratio
-    chr2_Gd1: float = eqx.field(static=True)  # O1 -> C1 rate
-    chr2_Gd2: float = eqx.field(static=True)  # O2 -> C2 rate
-    chr2_Gr: float = eqx.field(static=True)  # C2 -> C1 dark recovery rate
-    chr2_Gf: float = eqx.field(static=True)  # O1 -> O2 rate
-    chr2_Gb: float = eqx.field(static=True)  # O2 -> O1 rate
-    chr2_k1: float = eqx.field(static=True)  # C1 -> O1 activation scale
-    chr2_k2: float = eqx.field(static=True)  # C2 -> O2 activation scale
-    chr2_p: float = eqx.field(static=True)  # Hill coefficient
-    chr2_phim: float = eqx.field(static=True)  # half-max photon flux
-    chr2_v0: float = eqx.field(static=True)  # voltage-dependence scale (mV)
-    chr2_v1: float = eqx.field(static=True)  # voltage-dependence amplitude
-    chr2_E_photon: float = eqx.field(static=True)  # energy per photon (mW·s)
+    # RhO3c 3-state opsin parameters (Nikolic et al. 2009)
+    opsin_g0: float = eqx.field(static=True)  # pS
+    opsin_E_rev: float = eqx.field(static=True)  # mV
+    opsin_k_a: float = eqx.field(static=True)  # activation rate scaling (/ms)
+    opsin_k_r: float = eqx.field(static=True)  # recovery rate scaling (/ms)
+    opsin_Gd: float = eqx.field(static=True)  # deactivation rate (/ms)
+    opsin_Gr0: float = eqx.field(static=True)  # dark recovery rate (/ms)
+    opsin_p: float = eqx.field(static=True)  # Hill coefficient (activation)
+    opsin_q: float = eqx.field(static=True)  # Hill coefficient (recovery)
+    opsin_phi_m: float = eqx.field(static=True)  # half-max photon flux
+    opsin_v0: float = eqx.field(static=True)  # voltage-dependence scale (mV)
+    opsin_v1: float = eqx.field(static=True)  # voltage-dependence amplitude
+    opsin_E_photon: float = eqx.field(static=True)  # energy per photon (mW·s)
 
     def set_default_parameters(self) -> None:
         # Conductances (mho/cm^2)
@@ -215,23 +212,20 @@ class BoothRinzelKiehn(eqx.Module):
 
         self.input_mode = "conductance"
 
-        # ChR2 4-state opsin defaults (Grossman et al. 2011)
-        self.chr2_g_max = 0.4
-        self.chr2_E_rev = 0.0
-        self.chr2_gamma = 0.1
-        self.chr2_Gd1 = 0.11
-        self.chr2_Gd2 = 0.025
-        self.chr2_Gr = 6.67e-5
-        self.chr2_Gf = 0.015
-        self.chr2_Gb = 0.011
-        self.chr2_k1 = 0.8535
-        self.chr2_k2 = 0.14
-        self.chr2_p = 0.833
-        self.chr2_phim = 1.5e16
-        self.chr2_v0 = 43.0
-        self.chr2_v1 = 17.1
+        # RhO3c 3-state opsin defaults (Nikolic et al. 2009)
+        self.opsin_g0 = 1.0  # pS
+        self.opsin_E_rev = 0.0  # mV
+        self.opsin_k_a = 0.28  # /ms
+        self.opsin_k_r = 0.28  # /ms
+        self.opsin_Gd = 0.0909  # /ms
+        self.opsin_Gr0 = 0.0002  # /ms
+        self.opsin_p = 0.4
+        self.opsin_q = 0.4
+        self.opsin_phi_m = 1e16  # photons/s·mm²
+        self.opsin_v0 = 43.0  # mV
+        self.opsin_v1 = 17.1  # mV (auto-calc: (70+E)/(exp((70+E)/v0)-1))
         wavelength_nm = 473.0
-        self.chr2_E_photon = 6.626e-34 * 3e8 / (wavelength_nm * 1e-9) * 1e3
+        self.opsin_E_photon = 6.626e-34 * 3e8 / (wavelength_nm * 1e-9) * 1e3
 
     def set_parameters(self, params: Mapping[str, Any]) -> None:
         """
@@ -393,23 +387,30 @@ class BoothRinzelKiehn(eqx.Module):
 
         return area_s, area_d, g_c_s, g_c_d
 
-    def _chr2_derivatives(self, C1, O1, O2, phi):
-        """ChR2 4-state Markov derivatives"""
-        C2 = 1.0 - C1 - O1 - O2
-        Hp = phi**self.chr2_p / (phi**self.chr2_p + self.chr2_phim**self.chr2_p)
-        Ga1 = self.chr2_k1 * Hp
-        Ga2 = self.chr2_k2 * Hp
+    def _opsin_derivatives(self, C, O, phi):  # noqa: E741
+        """RhO3c 3-state Markov derivatives (Nikolic et al. 2009)"""
+        D = 1.0 - C - O
+        Hp = phi**self.opsin_p / (phi**self.opsin_p + self.opsin_phi_m**self.opsin_p)
+        Hq = phi**self.opsin_q / (phi**self.opsin_q + self.opsin_phi_m**self.opsin_q)
+        Ga = self.opsin_k_a * Hp
+        Gr = self.opsin_Gr0 + self.opsin_k_r * Hq
+        dC = Gr * D - Ga * C
+        dO = Ga * C - self.opsin_Gd * O
+        return dC, dO
 
-        dC1 = self.chr2_Gd1 * O1 + self.chr2_Gr * C2 - Ga1 * C1
-        dO1 = Ga1 * C1 + self.chr2_Gb * O2 - (self.chr2_Gd1 + self.chr2_Gf) * O1
-        dO2 = Ga2 * C2 + self.chr2_Gf * O1 - (self.chr2_Gd2 + self.chr2_Gb) * O2
-        return dC1, dO1, dO2
+    def _opsin_current(self, O, V):  # noqa: E741
+        """Opsin photocurrent in nA, matching NEURON RhO3c.mod exactly.
 
-    def _chr2_current(self, O1, O2, V):
-        """ChR2 photocurrent density (mA/cm^2), negative = inward"""
-        fphi = O1 + self.chr2_gamma * O2
-        fv = self.chr2_v1 * (1 - jnp.exp(-(V - self.chr2_E_rev) / self.chr2_v0))
-        return -self.chr2_g_max * fphi * fv
+        Uses g0 in pS, same formula and units as the .mod file:
+            i = g0 * fphi * fv * (v - E) * 1e-6   [nA]
+        """
+        fphi = O
+        fv = (
+            self.opsin_v1
+            * (1 - jnp.exp(-(V - self.opsin_E_rev) / self.opsin_v0))
+            / (V - self.opsin_E_rev)
+        )
+        return self.opsin_g0 * fphi * fv * (V - self.opsin_E_rev) * 1e-6  # nA
 
     def _calculate_membrane_currents(self, t, y, args=None):
         """Calculate membrane currents for soma and dendrite.
@@ -468,7 +469,7 @@ class BoothRinzelKiehn(eqx.Module):
         State vector: [Vs, Vd, h, n, mnS, hnS, mnD, hnD, ml, CaS, CaD, ...opsin_states]
 
         When input_mode='irradiance', the state vector is extended with opsin
-        Markov states (e.g. 3 extra for ChR2_4State).
+        Markov states (2 extra for RhO3c: C, O).
 
         Args:
             t: time
@@ -487,14 +488,14 @@ class BoothRinzelKiehn(eqx.Module):
         if self.input_mode == "irradiance":
             # I_stim_array is irradiance in mW/mm²
             Irr = jnp.interp(t, t_array, I_stim_array.ravel())
-            phi = Irr / self.chr2_E_photon
+            phi = Irr / self.opsin_E_photon
 
-            # Unpack ChR2 opsin states from extended state vector
-            C1 = y[11]
-            O1 = y[12]
-            O2 = y[13]
+            # Unpack RhO3c opsin states from extended state vector
+            C = y[11]
+            O = y[12]  # noqa: E741
 
-            Iapp_density_soma = self._chr2_current(O1, O2, Vs)
+            i_opsin_nA = self._opsin_current(O, Vs)
+            Iapp_density_soma = -i_opsin_nA * 1e-6 / area_s  # nA → mA/cm²
             Iapp_density_dend = 0.0
 
         elif self.input_mode == "current_density":
@@ -620,8 +621,8 @@ class BoothRinzelKiehn(eqx.Module):
         )
 
         if self.input_mode == "irradiance":
-            dC1, dO1, dO2 = self._chr2_derivatives(C1, O1, O2, phi)
-            return jnp.concatenate([dy_neural, jnp.array([dC1, dO1, dO2])])
+            dC, dO = self._opsin_derivatives(C, O, phi)
+            return jnp.concatenate([dy_neural, jnp.array([dC, dO])])
 
         return dy_neural
 
@@ -696,9 +697,9 @@ class BoothRinzelKiehn(eqx.Module):
                 ]
             )
 
-        # Extend y0 with ChR2 opsin initial states for irradiance mode
+        # Extend y0 with RhO3c opsin initial states for irradiance mode (C=1, O=0)
         if self.input_mode == "irradiance":
-            y0 = jnp.concatenate([y0, jnp.array([1.0, 0.0, 0.0])])
+            y0 = jnp.concatenate([y0, jnp.array([1.0, 0.0])])
 
         term = diffrax.ODETerm(self)
 

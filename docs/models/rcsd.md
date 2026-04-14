@@ -75,6 +75,25 @@ RCSD supports spike-timing-dependent plasticity via specialized synapse mechanis
 
 See the [Plasticity](/models/plasticity/stdp) reference and the [Plasticity guide](/guide/advanced/plasticity) for usage details.
 
+## Opsin configuration
+
+RCSD includes built-in opsin (channelrhodopsin) support for [optical stimulation](/guide/advanced/optical-stimulation). The `opsin_config()` method controls which opsin mechanism is inserted and where:
+
+```python
+model = ReducedCalciumSomaDendrite()
+model.opsin_config()
+# {'mechanism': 'RhO3c', 'sections': ['soma'], 'wavelength_nm': 473.0}
+```
+
+Override in a subclass to customize or disable:
+
+```python
+class NoOpsin(ReducedCalciumSomaDendrite):
+    def opsin_config(self):
+        return None  # disable opsins
+```
+
+
 ## Background noise
 
 RCSD uses an Ornstein-Uhlenbeck process (Gfluct3) to model fluctuating synaptic conductances. The noise is spatially split: the soma receives inhibitory noise only, while the dendrite receives excitatory noise only.

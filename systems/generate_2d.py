@@ -21,7 +21,7 @@ from neuroh5.io import (
     write_graph,
 )
 from mpi4py import MPI
-from livn.io import electrode_array_coordinates_for_area
+from livn.io import LightArray, electrode_array_coordinates_for_area
 from livn.utils import import_object_by_path
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
@@ -212,6 +212,50 @@ class Generate2DSystem(Component):
             json.dump(data, f)
 
         return data
+
+    def lightarray(
+        self,
+        fiber_coordinates: list[list[float]] | None = None,
+        fiber_height_um: float = 100.0,
+        wavelength_nm: float = 473.0,
+        overwrite: bool = False,
+    ):
+        """Write a ``lightarray.json`` for use with ``LightArray.from_directory``.
+
+        Args:
+            fiber_coordinates: Explicit ``[[id, x, y, z], ...]`` fibre positions.
+                If *None*, a single fibre is placed at the centre of the culture
+                area at ``-fiber_height_um`` above the surface.
+        """
+        fn = os.path.join(self.config.output_directory, "lightarray.json")
+        if not overwrite and os.path.isfile(fn):
+            raise FileExistsError("lightarray.json already exists.")
+
+        if fiber_coordinates is None:
+            rng = np.random.default_rng(self.config.random_seed)
+            bounds = bounding_box(
+                *(
+                    import_object_by_path(self.config.area)(
+                        10_000,
+                        rng,
+                        **self.config.area_kwargs,
+                    )
+                )
+            )
+            (xmin, ymin), (xmax, ymax) = bounds
+            fiber_coordinates = [
+                [0, (xmin + xmax) / 2, (ymin + ymax) / 2, -fiber_height_um]
+            ]
+
+        la = LightArray(
+            fiber_coordinates=np.array(fiber_coordinates, dtype=np.float32),
+            wavelength_nm=wavelength_nm,
+        )
+
+        with open(fn, "w") as f:
+            f.write(la.as_json(indent=2))
+
+        return la
 
     def __call__(self):
         counts: Dict[str, int] = {}

@@ -292,6 +292,34 @@ class Stimulus:
         meta_data["units"] = "mW/mm2"
         return cls(array=irradiance, dt=dt, gids=gids, **meta_data)
 
+    def convert_to(self, target_units: str) -> "Stimulus":
+        """Convert stimulus to equivalent units
+
+        Supported conversions:
+            "mW/mm2" -> "photon_flux"  (irradiance -> photons/s/mm^2)
+            "photon_flux" -> "mW/mm2"  (photons/s/mm^2 -> irradiance)
+
+        Wavelength is read from meta_data["wavelength_nm"]
+        """
+        current_units = self.meta_data.get("units")
+        if current_units == target_units:
+            return self
+
+        wavelength_nm = self.meta_data.get("wavelength_nm", 473.0)
+        E_photon = 6.626e-34 * 3e8 / (wavelength_nm * 1e-9) * 1e3  # mW*s
+
+        if current_units == "mW/mm2" and target_units == "photon_flux":
+            converted = self.array / E_photon
+        elif current_units == "photon_flux" and target_units == "mW/mm2":
+            converted = self.array * E_photon
+        else:
+            raise ValueError(
+                f"No conversion from '{current_units}' to '{target_units}'"
+            )
+
+        meta = {**self.meta_data, "units": target_units}
+        return Stimulus(array=converted, dt=self.dt, gids=self.gids, **meta)
+
     @staticmethod
     def align_gids(
         stimulus: "Stimulus",

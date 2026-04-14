@@ -50,6 +50,7 @@ export default defineConfig({
                     text: "Advanced",
                     items: [
                         { text: "Plasticity", link: "/guide/advanced/plasticity" },
+                        { text: "Optical Stimulation", link: "/guide/advanced/optical-stimulation" },
                         { text: "Decoding pipelines", link: "/guide/advanced/decoding-pipelines" },
                         { text: "Distributed Environment", link: "/guide/advanced/distributed" },
                         { text: "Custom Backends", link: "/guide/advanced/custom-backends" },

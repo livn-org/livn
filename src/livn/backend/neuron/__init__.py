@@ -213,6 +213,12 @@ class Env(EnvProtocol):
         self._stimulus_callback_registered = False
         self._stimulus_step_index = 0
 
+        # Opsin state
+        self._opsin_refs: dict[tuple[int, int], object] = {}
+        self._opsin_stimulus_vectors: dict[tuple[int, int], dict] = {}
+        self._opsin_callback_registered = False
+        self._opsin_step_index = 0
+
     @property
     def voltage_recording_dt(self) -> float:
         if self.v_recs_dt:
@@ -229,6 +235,7 @@ class Env(EnvProtocol):
     def init(self):
         self._load_cells()
         self._load_connections()
+        self._insert_opsins()
 
         # disable defaultdicts
         self.cells = dict(self.cells)
@@ -240,6 +247,36 @@ class Env(EnvProtocol):
         self.pc.set_maxstep(10)
 
         return self
+
+    def _insert_opsins(self):
+        if not hasattr(self.model, "neuron_opsin_config"):
+            return
+
+        opsin_cfg = self.model.neuron_opsin_config()
+        if opsin_cfg is None:
+            return
+
+        mech_name = opsin_cfg.get("mechanism", "RhO3c")
+        populations = opsin_cfg.get("populations", list(self.cells.keys()))
+        target_sections = opsin_cfg.get("sections", ["soma"])
+        params = opsin_cfg.get("params", {})
+
+        for pop in populations:
+            for gid, cell in self.cells.get(pop, {}).items():
+                if not self.pc.gid_exists(gid):
+                    continue
+                if not hasattr(cell, "sections"):
+                    continue
+                for sec_id, sec in enumerate(cell.sections):
+                    sec_name = sec.name().split(".")[-1]
+                    if sec_name not in target_sections:
+                        continue
+
+                    pp = getattr(h, mech_name)(sec(0.5))
+                    for param_name, value in params.items():
+                        setattr(pp, param_name, value)
+
+                    self._opsin_refs[(int(gid), sec_id)] = pp
 
     def _load_cells(self):
         filepath = self.system.files["cells"]
@@ -671,7 +708,9 @@ class Env(EnvProtocol):
         if stimulus is not None and stimulus.array is None:
             stimulus = None
 
-        if stimulus is not None:
+        is_irradiance = stimulus is not None and stimulus.input_mode == "irradiance"
+
+        if stimulus is not None and not is_irradiance:
             if stimulus.gids is None:
                 stimulus.gids = self.system.gids
 
@@ -743,8 +782,11 @@ class Env(EnvProtocol):
                     self._ensure_stimulus_buffer(state, end_step)
                     state["buffer"][start_step:end_step] = values
                     state["length"] = end_step
-        if stimulus is not None and self._stimulus_vectors:
+        if stimulus is not None and not is_irradiance and self._stimulus_vectors:
             self._ensure_stimulus_callback()
+
+        if is_irradiance:
+            self._setup_opsin_stimulus(stimulus, current_time)
 
         first_run = self.t == 0
 
@@ -915,6 +957,94 @@ class Env(EnvProtocol):
         if self._dt is not None:
             self._stimulus_step_index += 1
 
+    def _setup_opsin_stimulus(self, stimulus, current_time):
+        if not self._opsin_refs:
+            raise ValueError(
+                "Stimulus has input_mode='irradiance' but no opsins are "
+                "attached. Configure opsin in the model."
+            )
+
+        phi_stimulus = stimulus.convert_to("photon_flux")
+
+        if phi_stimulus.gids is None:
+            phi_stimulus.gids = self.system.gids
+
+        sections_per_neuron = len(phi_stimulus) // len(self.system.neuron_coordinates)
+
+        start_step = int(round(current_time / phi_stimulus.dt))
+
+        for count, (gid, st) in enumerate(phi_stimulus):
+            if not self.pc.gid_exists(gid):
+                continue
+
+            section_id = count % sections_per_neuron
+            key = (int(gid), section_id)
+
+            if key not in self._opsin_refs:
+                continue
+
+            phi_array = np.asarray(st, dtype=np.float64)
+
+            state = self._opsin_stimulus_vectors.get(key)
+            if state is None:
+                state = {
+                    "pp": self._opsin_refs[key],
+                    "dt": phi_stimulus.dt,
+                    "buffer": np.zeros(0, dtype=np.float64),
+                    "length": 0,
+                }
+                self._opsin_stimulus_vectors[key] = state
+
+            scheduled = state["length"]
+            if start_step > scheduled:
+                self._ensure_stimulus_buffer(state, start_step)
+                state["length"] = start_step
+
+            if len(phi_array) > 0:
+                end_step = start_step + len(phi_array)
+                self._ensure_stimulus_buffer(state, end_step)
+                state["buffer"][start_step:end_step] = phi_array
+                state["length"] = end_step
+
+        if self._opsin_stimulus_vectors:
+            self._ensure_opsin_callback()
+
+    def _ensure_opsin_callback(self) -> None:
+        if self._opsin_callback_registered:
+            return
+
+        cvode = h.CVode()
+        cvode.extra_scatter_gather(0, self._update_opsin_phi)
+        self._opsin_callback_registered = True
+
+    def _update_opsin_phi(self) -> None:
+        if not self._opsin_stimulus_vectors:
+            return
+
+        if self._dt is not None:
+            current_time = self._opsin_step_index * self._dt
+        else:
+            current_time = float(h.t)
+
+        for state in self._opsin_stimulus_vectors.values():
+            buffer = state["buffer"]
+            if buffer.size == 0:
+                phi = 0.0
+            else:
+                dt = state["dt"]
+                if dt <= 0:
+                    phi = buffer[-1]
+                else:
+                    idx = int(current_time / dt)
+                    if idx < buffer.size:
+                        phi = buffer[idx]
+                    else:
+                        phi = buffer[-1]
+            state["pp"].phi = float(phi)
+
+        if self._dt is not None:
+            self._opsin_step_index += 1
+
     def clear_recordings(self) -> Self:
         self.t_vec.resize(0)
         self.id_vec.resize(0)
@@ -937,6 +1067,8 @@ class Env(EnvProtocol):
         self._dt = None
         self._stimulus_step_index = 0
         self._stimulus_vectors.clear()
+        self._opsin_step_index = 0
+        self._opsin_stimulus_vectors.clear()
 
         return self
 
