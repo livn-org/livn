@@ -391,6 +391,48 @@ class LightArray(IO):
         return T
 
 
+class ComposedIO(IO):
+    def __init__(self, inputs: IO, outputs: IO):
+        self.inputs = inputs
+        self.outputs = outputs
+
+    @property
+    def num_channels(self) -> int:
+        return self.outputs.num_channels
+
+    @property
+    def channel_ids(self) -> "Int[Array, 'n_channel_ids']":
+        return self.outputs.channel_ids
+
+    def cell_stimulus(
+        self,
+        neuron_coordinates: "Float[Array, 'n_coords ixyz=4']",
+        channel_inputs: "Float[Array, 'batch timestep n_channels']",
+        **kwargs,
+    ):
+        return self.inputs.cell_stimulus(neuron_coordinates, channel_inputs, **kwargs)
+
+    def channel_recording(
+        self,
+        neuron_coordinates: "Float[Array, 'n_coords ixyz=4']" | None,
+        ii: "Float[Array, 'i']",
+        *recordings: "Float[Array, '_']",
+    ) -> "tuple[dict[int, Array], ...]":
+        return self.outputs.channel_recording(neuron_coordinates, ii, *recordings)
+
+    def potential_recording(
+        self,
+        distances: "Float[Array, 'n_distances cip=3']",
+        membrane_currents: "Float[Array, 'timestep n_neurons']",
+    ) -> "Float[Array, 'timestep n_channels']":
+        return self.outputs.potential_recording(distances, membrane_currents)
+
+    def distances(
+        self, neuron_coordinates: "Float[Array, 'n_coords ixyz=4']"
+    ) -> "Float[Array, 'n_sources*n_coords cip=3']":
+        return self.outputs.distances(neuron_coordinates)
+
+
 def calculate_distances(
     source: Float[Array, "n_sources cxyz=4"],
     coords: Float[Array, "n_coords cxyz=4"],

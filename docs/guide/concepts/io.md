@@ -199,3 +199,19 @@ The transmittance from each fiber to each neuron is computed using the Kubelka-M
 - 3D distance between fiber tip and neuron
 
 livn also integrates with the [cleo](https://cleosim.readthedocs.io/) library for modelling optogenetic stimulation with detailed laser and opsin models.
+
+## Composed IO
+
+When stimulation and recording use different physical modalities (for example, optical stimulation via a `LightArray` and electrical recording via an `MEA`), use `ComposedIO` to pair them into a single IO object:
+
+```python
+from livn.io import ComposedIO, LightArray, MEA
+
+io = ComposedIO(
+    inputs=LightArray(),
+    outputs=MEA(),
+)
+env = Env(system, io=io)
+```
+
+`ComposedIO` delegates `cell_stimulus` to the `inputs` IO and `channel_recording`, `potential_recording`, and `distances` to the `outputs` IO. Channel properties (`num_channels`, `channel_ids`) are taken from the output IO.
