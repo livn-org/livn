@@ -20,6 +20,7 @@ export default defineConfig({
         nav: [
             { text: "Installation", link: "/installation/" },
             { text: "Guide", link: "/guide/getting-started" },
+            { text: "Models", link: "/models/" },
             { text: "Systems", link: "/systems/" },
             { text: "Examples", link: "/examples/" },
         ],
@@ -66,6 +67,25 @@ export default defineConfig({
                         { text: "Generating systems", link: "/systems/generate" },
                         { text: "Tuning systems", link: "/systems/tuning" },
                         { text: "Generating datasets", link: "/systems/sampling" },
+                    ],
+                },
+            ],
+            "/models/": [
+                {
+                    text: "Models",
+                    items: [
+                        { text: "livn models", link: "/models/" },
+                        { text: "RCSD (default)", link: "/models/rcsd" },
+                        { text: "CA1", link: "/models/ca1" },
+                        { text: "Izhikevich", link: "/models/izhikevich" },
+                        { text: "LIF", link: "/models/lif" },
+                        { text: "SLIF", link: "/models/slif" },
+                    ],
+                },
+                {
+                    text: "Plasticity",
+                    items: [
+                        { text: "STDP", link: "/models/plasticity/stdp" },
                     ],
                 },
             ],
