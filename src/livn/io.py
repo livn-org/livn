@@ -25,11 +25,43 @@ if TYPE_CHECKING:
 _USES_JAX = False
 
 if "ax" in backend():
+    import jax
     import jax.numpy as np
+    import equinox as eqx
 
     _USES_JAX = True
 else:
     import numpy as np
+
+
+if _USES_JAX:
+
+    class PointSourceModel(eqx.Module):
+        sigma_S_per_mm: float = eqx.field(default=0.0003, static=True)
+        min_distance_um: float = eqx.field(default=5.0, static=True)
+
+        def source_gain(self, distances_um):
+            r_mm = (distances_um + self.min_distance_um) / 1000.0
+            factor = 1.0 / (4.0 * np.pi * self.sigma_S_per_mm)
+            return factor * (1.0 / r_mm)
+
+        def potential_recording(self, gain, membrane_currents):
+            return np.matmul(gain, membrane_currents)
+
+else:
+
+    class PointSourceModel:
+        def __init__(self, sigma_S_per_mm=0.0003, min_distance_um=5.0):
+            self.sigma_S_per_mm = sigma_S_per_mm
+            self.min_distance_um = min_distance_um
+
+        def source_gain(self, distances_um):
+            r_mm = (distances_um + self.min_distance_um) / 1000.0
+            factor = 1.0 / (4.0 * np.pi * self.sigma_S_per_mm)
+            return factor * (1.0 / r_mm)
+
+        def potential_recording(self, gain, membrane_currents):
+            return np.matmul(gain, membrane_currents)
 
 
 def _empty_array():
@@ -138,12 +170,16 @@ class MEA(IO):
         electrode_coordinates: Float[Array, "n_electrodes ixyz=4"] | None = None,
         input_radius=250,
         output_radius=250,
+        volume_conductor=None,
     ):
         if electrode_coordinates is None:
             electrode_coordinates = self.default_electrode_coordinates()
         self.electrode_coordinates = np.array(electrode_coordinates)
         self.input_radius = input_radius
         self.output_radius = output_radius
+        if volume_conductor is None:
+            volume_conductor = PointSourceModel()
+        self.volume_conductor = volume_conductor
 
         self.cell_measurement = None
         self._cell_induction = None
@@ -232,7 +268,7 @@ class MEA(IO):
         n_recording_coords = d.size // n_electrodes
         d = d.reshape(n_electrodes, n_recording_coords)
 
-        gain = electrode_potential_point_source_weights(d)
+        gain = self.volume_conductor.source_gain(d)
         mask = d <= float(self.output_radius)
         return np.where(mask, gain, 0.0)
 
@@ -256,8 +292,7 @@ class MEA(IO):
         Returns: microvolts array (uV), shape [n_channels, timestep]
         """
         gain = self.source_gain(distances)
-        # compute potentials [E, t] = [E, I] @ [I, t]
-        return np.matmul(gain, membrane_currents)
+        return self.volume_conductor.potential_recording(gain, membrane_currents)
 
     def distances(
         self, neuron_coordinates: Float[Array, "n_coords ixyz=4"]
@@ -308,6 +343,38 @@ class MEA(IO):
                 "contribution_pct": contribution_pct,
             }
         )
+
+
+if _USES_JAX:
+
+    def _mea_tree_flatten(mea):
+        flat_vc = jax.tree_util.tree_leaves(mea.volume_conductor)
+        vc_is_pytree = not (len(flat_vc) == 1 and flat_vc[0] is mea.volume_conductor)
+        children = (mea.volume_conductor if vc_is_pytree else None,)
+        aux = {
+            "electrode_coordinates": mea.electrode_coordinates,
+            "input_radius": mea.input_radius,
+            "output_radius": mea.output_radius,
+            "volume_conductor": None if vc_is_pytree else mea.volume_conductor,
+            "vc_is_pytree": vc_is_pytree,
+            "cell_measurement": mea.cell_measurement,
+            "_cell_induction": mea._cell_induction,
+        }
+        return children, aux
+
+    def _mea_tree_unflatten(aux, children):
+        (vc_child,) = children
+        vc = vc_child if aux["vc_is_pytree"] else aux["volume_conductor"]
+        mea = MEA.__new__(MEA)
+        mea.electrode_coordinates = aux["electrode_coordinates"]
+        mea.input_radius = aux["input_radius"]
+        mea.output_radius = aux["output_radius"]
+        mea.volume_conductor = vc
+        mea.cell_measurement = aux["cell_measurement"]
+        mea._cell_induction = aux["_cell_induction"]
+        return mea
+
+    jax.tree_util.register_pytree_node(MEA, _mea_tree_flatten, _mea_tree_unflatten)
 
 
 class LightArray(IO):
@@ -576,21 +643,6 @@ def electrode_array_coordinates_for_area(
     return electrode_array_coordinates(
         pitch=pitch, xs=xs, ys=ys, xoffset=xoffset, yoffset=yoffset, z=z
     )
-
-
-def electrode_potential_point_source_weights(
-    distances_um: Float[Array, "E I"],
-    *,
-    sigma_S_per_mm: float = 0.0003,
-    min_distance_um: float = 5.0,
-) -> Float[Array, "E I"]:
-    """
-    Pre-scale weights for electrode potential accumulation.
-    Returns: (1 / (4*pi*sigma_S_per_mm)) * (1 / r_mm)
-    """
-    r_mm = (np.asarray(distances_um) + float(min_distance_um)) / 1000.0
-    factor = 1.0 / (4.0 * np.pi * float(sigma_S_per_mm))
-    return factor * (1.0 / r_mm)
 
 
 if _USES_JAX:

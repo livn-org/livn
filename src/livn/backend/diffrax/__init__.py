@@ -131,17 +131,19 @@ def _env_tree_flatten(env):
     else:
         module_params, module_static = None, None
 
-    # If system is a registered JAX pytree (e.g. TrainableSystem), put it in
-    # children so its arrays are traced/differentiated. Otherwise (regular
-    # System with file handles etc.) keep it in static aux
-    flat = jax.tree_util.tree_leaves(env.system)
-    system_is_pytree = not (len(flat) == 1 and flat[0] is env.system)
+    # If system or io is a registered JAX pytree, put it in children so its arrays
+    # are traced/differentiated
+    flat_system = jax.tree_util.tree_leaves(env.system)
+    system_is_pytree = not (len(flat_system) == 1 and flat_system[0] is env.system)
+    flat_io = jax.tree_util.tree_leaves(env.io)
+    io_is_pytree = not (len(flat_io) == 1 and flat_io[0] is env.io)
 
     children = (
         module_params,
         env.key,
         env._noise,
         env.system if system_is_pytree else None,
+        env.io if io_is_pytree else None,
     )
     aux = (
         module_static,
@@ -149,7 +151,8 @@ def _env_tree_flatten(env):
         system_is_pytree,
         env._weights,
         env.model,
-        env.io,
+        None if io_is_pytree else env.io,
+        io_is_pytree,
         env.comm,
         env.subworld_size,
         env.seed,
@@ -162,14 +165,15 @@ def _env_tree_flatten(env):
 
 
 def _env_tree_unflatten(aux, children):
-    module_params, key, noise, system_child = children
+    module_params, key, noise, system_child, io_child = children
     (
         module_static,
         system_aux,
         system_is_trainable,
         weights,
         model,
-        io,
+        io_aux,
+        io_is_pytree,
         comm,
         subworld_size,
         seed,
@@ -180,6 +184,7 @@ def _env_tree_unflatten(aux, children):
     ) = aux
 
     system = system_child if system_is_trainable else system_aux
+    io = io_child if io_is_pytree else io_aux
 
     if module_params is not None and module_static is not None:
         module = eqx.combine(module_params, module_static)
