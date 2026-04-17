@@ -207,7 +207,7 @@ class Sopt(Dmosopt):
                 "resample_fraction": 1.0,
                 "surrogate_method_name": None,
                 "surrogate_method_kwargs": {},
-                "surrogate_custom_training": "dmosopt.custom_training.joint",
+                "surrogate_custom_training": "dmosopt.model_transformer.joint",
                 "surrogate_custom_training_kwargs": {},
                 "feasibility_method_name": None,
                 "feasibility_method_kwargs": {},
