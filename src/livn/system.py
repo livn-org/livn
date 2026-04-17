@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import random
 import numpy
 from functools import cached_property
@@ -29,13 +30,27 @@ if "ax" in backend():
 else:
     import numpy as np
 
+_H5_BACKEND = "pyfive"  # default
+
 try:
     import neuroh5.io  # noqa: F401
     from mpi4py import MPI as _MPI  # noqa: F401
 
-    _HAS_NEUROH5 = True
+    _H5_BACKEND = "neuroh5"
 except ImportError:
-    _HAS_NEUROH5 = False
+    pass
+
+_HSDS_CONFIG = None
+if os.environ.get("LIVN_HSDS"):
+    try:
+        import h5pyd  # noqa: F401
+
+        _HSDS_CONFIG = json.loads(os.environ["LIVN_HSDS"])
+        _H5_BACKEND = "h5pyd"
+    except (ImportError, json.JSONDecodeError):
+        pass
+
+_HAS_NEUROH5 = _H5_BACKEND == "neuroh5"
 
 
 class CellsMetaData(BaseModel):
@@ -139,7 +154,15 @@ def make(name: str = "EI1") -> "System":
     return System(system)
 
 
-def _pyfive_population_ranges(f, pop_names):
+# --- Generic H5 readers (backend-agnostic) ---
+
+
+def _h5_read_population_names(f):
+    """Read population names from an open H5 file object."""
+    return list(f["Populations"].keys())
+
+
+def _h5_population_ranges(f, pop_names):
     pops_data = f["H5Types/Populations"][:]
     ranges = {}
     for name, row in zip(pop_names, pops_data):
@@ -147,19 +170,12 @@ def _pyfive_population_ranges(f, pop_names):
     return ranges
 
 
-def _pyfive_read_population_names(filepath):
-    f = pyfive.File(filepath)
-    return list(f["Populations"].keys())
+def _h5_read_population_ranges(f):
+    pop_names = _h5_read_population_names(f)
+    return _h5_population_ranges(f, pop_names)
 
 
-def _pyfive_read_population_ranges(filepath):
-    f = pyfive.File(filepath)
-    pop_names = list(f["Populations"].keys())
-    return _pyfive_population_ranges(f, pop_names)
-
-
-def _pyfive_read_cell_attribute_info(filepath, population_names):
-    f = pyfive.File(filepath)
+def _h5_read_cell_attribute_info(f, population_names):
     result = {}
     for pop_name in population_names:
         pop_group = f[f"Populations/{pop_name}"]
@@ -172,11 +188,7 @@ def _pyfive_read_cell_attribute_info(filepath, population_names):
     return result
 
 
-def _pyfive_read_cell_attributes(filepath, population, namespace, mask=None):
-    f = pyfive.File(filepath)
-    pop_ranges = _pyfive_read_population_ranges(filepath)
-    pop_start = pop_ranges[population][0]
-
+def _h5_read_cell_attributes(f, pop_start, population, namespace, mask=None):
     ns_group = f[f"Populations/{population}/{namespace}"]
     attr_names = list(ns_group.keys())
     if mask is not None:
@@ -208,11 +220,7 @@ def _pyfive_read_cell_attributes(filepath, population, namespace, mask=None):
     return result
 
 
-def _pyfive_read_cell_attributes_tuple(filepath, population, namespace):
-    f = pyfive.File(filepath)
-    pop_ranges = _pyfive_read_population_ranges(filepath)
-    pop_start = pop_ranges[population][0]
-
+def _h5_read_cell_attributes_tuple(f, pop_start, population, namespace):
     ns_group = f[f"Populations/{population}/{namespace}"]
     attr_names = sorted(ns_group.keys())
     attr_info = {name: idx for idx, name in enumerate(attr_names)}
@@ -244,15 +252,9 @@ def _pyfive_read_cell_attributes_tuple(filepath, population, namespace):
     return items, attr_info
 
 
-def _pyfive_read_graph(filepath, pre, post, namespaces=None, population_ranges=None):
+def _h5_read_graph(f, pre_start, post_start, pre, post, namespaces=None):
     if namespaces is None:
         namespaces = []
-    if population_ranges is None:
-        population_ranges = _pyfive_read_population_ranges(filepath)
-
-    f = pyfive.File(filepath)
-    pre_start = population_ranges[pre][0]
-    post_start = population_ranges[post][0]
 
     proj_group = f[f"Projections/{post}/{pre}"]
     edges = proj_group["Edges"]
@@ -302,7 +304,44 @@ def _pyfive_read_graph(filepath, pre, post, namespaces=None, population_ranges=N
     return results
 
 
-if _HAS_NEUROH5:
+def _pyfive_open(filepath):
+    return pyfive.File(filepath)
+
+
+def _h5pyd_open(filepath):
+    import h5pyd
+
+    hsds_path = _to_hsds_domain(filepath)
+    return h5pyd.File(
+        hsds_path,
+        mode="r",
+        endpoint=_HSDS_CONFIG["endpoint"],
+        bucket=_HSDS_CONFIG.get("bucket", "/data"),
+    )
+
+
+def _to_hsds_domain(filepath):
+    """Map a local file path to an HSDS domain path.
+
+    The server's root_dir is systems/graphs/, so a local path like
+    .../systems/graphs/EI1/graph.h5 maps to the HSDS domain /EI1/graph.h5.
+    Relative paths like EI1/graph.h5 are used directly.
+    """
+    parts = pathlib.PurePosixPath(filepath).parts
+    try:
+        idx = parts.index("graphs")
+        return "/" + "/".join(parts[idx + 1 :])
+    except ValueError:
+        return "/" + filepath.lstrip("/")
+
+
+def _open_h5(filepath):
+    if _H5_BACKEND == "h5pyd":
+        return _h5pyd_open(filepath)
+    return _pyfive_open(filepath)
+
+
+if _H5_BACKEND == "neuroh5":
 
     def read_cells_meta_data(
         filepath: str, comm: Optional["MPI.Intracomm"] = None
@@ -495,16 +534,15 @@ if _HAS_NEUROH5:
 
         return projections
 
-else:
+else:  # h5pyd or pyfive — both use _open_h5 + generic readers
 
     def read_cells_meta_data(
         filepath: str, comm: Optional["MPI.Intracomm"] = None
     ) -> CellsMetaData:
-        population_names = _pyfive_read_population_names(filepath)
-        population_ranges = _pyfive_read_population_ranges(filepath)
-        cell_attribute_info = _pyfive_read_cell_attribute_info(
-            filepath, population_names
-        )
+        f = _open_h5(filepath)
+        population_names = _h5_read_population_names(f)
+        population_ranges = _h5_read_population_ranges(f)
+        cell_attribute_info = _h5_read_cell_attribute_info(f, population_names)
 
         return CellsMetaData(
             population_names=population_names,
@@ -517,8 +555,11 @@ else:
         population: types.PopulationName,
         comm: Optional["MPI.Intracomm"] = None,
     ) -> Iterator[tuple[int, tuple[float, float, float]]]:
-        items, attr_info = _pyfive_read_cell_attributes_tuple(
-            filepath, population, "Generated Coordinates"
+        f = _open_h5(filepath)
+        pop_ranges = _h5_read_population_ranges(f)
+        pop_start = pop_ranges[population][0]
+        items, attr_info = _h5_read_cell_attributes_tuple(
+            f, pop_start, population, "Generated Coordinates"
         )
         x_index = attr_info.get("X Coordinate", None)
         y_index = attr_info.get("Y Coordinate", None)
@@ -570,8 +611,11 @@ else:
             "syn_types",
             "swc_types",
         }
-        attrs = _pyfive_read_cell_attributes(
-            filepath, population, "Synapse Attributes", mask=mask
+        f = _open_h5(filepath)
+        pop_ranges = _h5_read_population_ranges(f)
+        pop_start = pop_ranges[population][0]
+        attrs = _h5_read_cell_attributes(
+            f, pop_start, population, "Synapse Attributes", mask=mask
         )
         for gid in sorted(attrs.keys()):
             if node_allocation is not None and gid not in node_allocation:
@@ -585,12 +629,18 @@ else:
         comm: Optional["MPI.Intracomm"] = None,
         population_ranges: dict[str, tuple[int, int]] | None = None,
     ) -> Iterator[tuple[int, tuple[list[int], Projection]]]:
-        results = _pyfive_read_graph(
-            filepath,
+        f = _open_h5(filepath)
+        if population_ranges is None:
+            population_ranges = _h5_read_population_ranges(f)
+        pre_start = population_ranges[pre][0]
+        post_start = population_ranges[post][0]
+        results = _h5_read_graph(
+            f,
+            pre_start,
+            post_start,
             pre,
             post,
             namespaces=["Synapses", "Connections"],
-            population_ranges=population_ranges,
         )
         yield from results
 
@@ -631,18 +681,36 @@ class NeuroH5Graph:
 
     @cached_property
     def elements(self):
+        if _H5_BACKEND == "h5pyd" and _HSDS_CONFIG:
+            return self._load_elements_http()
+        return self._load_elements_local()
+
+    def _load_elements_local(self):
         with open(self.local_directory("graph.json")) as f:
             graph = json.load(f)
+        return self._parse_elements(graph)
 
+    def _load_elements_http(self):
+        import urllib.request
+
+        endpoint = _HSDS_CONFIG["endpoint"]
+        port = int(endpoint.rsplit(":", 1)[1]) + 1
+        host = endpoint.rsplit(":", 1)[0]
+        system_name = os.path.basename(self.directory)
+        url = f"{host}:{port}/files/{system_name}/graph.json"
+        with urllib.request.urlopen(url) as resp:
+            graph = json.loads(resp.read())
+        return self._parse_elements(graph)
+
+    @staticmethod
+    def _parse_elements(graph):
         def _load_element(model):
             if "uuid" not in model:
                 return {k: _load_element(v) for k, v in model.items()}
-
             return Element(**model)
 
         for k in graph:
             graph[k] = _load_element(graph[k])
-
         return graph
 
     @property

@@ -45,21 +45,24 @@ neuroh5_required = pytest.mark.skipif(
 
 class TestPyfiveReaders:
     def test_read_population_names(self, cells_filepath):
-        from livn.system import _pyfive_read_population_names
+        from livn.system import _h5_read_population_names, _pyfive_open
 
-        names = _pyfive_read_population_names(cells_filepath)
+        f = _pyfive_open(cells_filepath)
+        names = _h5_read_population_names(f)
         assert isinstance(names, list)
         assert len(names) > 0
         assert all(isinstance(n, str) for n in names)
 
     def test_read_population_ranges(self, cells_filepath):
         from livn.system import (
-            _pyfive_read_population_names,
-            _pyfive_read_population_ranges,
+            _h5_read_population_names,
+            _h5_read_population_ranges,
+            _pyfive_open,
         )
 
-        ranges = _pyfive_read_population_ranges(cells_filepath)
-        names = _pyfive_read_population_names(cells_filepath)
+        f = _pyfive_open(cells_filepath)
+        ranges = _h5_read_population_ranges(f)
+        names = _h5_read_population_names(f)
         assert set(ranges.keys()) == set(names)
         for name, (start, count) in ranges.items():
             assert isinstance(start, int)
@@ -68,12 +71,14 @@ class TestPyfiveReaders:
 
     def test_read_cell_attribute_info(self, cells_filepath):
         from livn.system import (
-            _pyfive_read_cell_attribute_info,
-            _pyfive_read_population_names,
+            _h5_read_cell_attribute_info,
+            _h5_read_population_names,
+            _pyfive_open,
         )
 
-        names = _pyfive_read_population_names(cells_filepath)
-        info = _pyfive_read_cell_attribute_info(cells_filepath, names)
+        f = _pyfive_open(cells_filepath)
+        names = _h5_read_population_names(f)
+        info = _h5_read_cell_attribute_info(f, names)
         assert set(info.keys()) == set(names)
         for pop, namespaces in info.items():
             assert "Generated Coordinates" in namespaces
@@ -81,17 +86,20 @@ class TestPyfiveReaders:
 
     def test_read_cell_attributes_tuple(self, cells_filepath):
         from livn.system import (
-            _pyfive_read_cell_attributes_tuple,
-            _pyfive_read_population_names,
-            _pyfive_read_population_ranges,
+            _h5_read_cell_attributes_tuple,
+            _h5_read_population_names,
+            _h5_read_population_ranges,
+            _pyfive_open,
         )
 
-        names = _pyfive_read_population_names(cells_filepath)
-        ranges = _pyfive_read_population_ranges(cells_filepath)
+        f = _pyfive_open(cells_filepath)
+        names = _h5_read_population_names(f)
+        ranges = _h5_read_population_ranges(f)
 
         for pop in names:
-            items, attr_info = _pyfive_read_cell_attributes_tuple(
-                cells_filepath, pop, "Generated Coordinates"
+            pop_start = ranges[pop][0]
+            items, attr_info = _h5_read_cell_attributes_tuple(
+                f, pop_start, pop, "Generated Coordinates"
             )
             pop_start, pop_count = ranges[pop]
             assert len(items) == pop_count
@@ -103,36 +111,48 @@ class TestPyfiveReaders:
 
     def test_read_cell_attributes_dict(self, cells_filepath):
         from livn.system import (
-            _pyfive_read_cell_attributes,
-            _pyfive_read_population_names,
+            _h5_read_cell_attributes,
+            _h5_read_population_names,
+            _h5_read_population_ranges,
+            _pyfive_open,
         )
 
-        names = _pyfive_read_population_names(cells_filepath)
+        f = _pyfive_open(cells_filepath)
+        names = _h5_read_population_names(f)
+        ranges = _h5_read_population_ranges(f)
         mask = {"syn_ids", "syn_types", "swc_types"}
-        attrs = _pyfive_read_cell_attributes(
-            cells_filepath, names[0], "Synapse Attributes", mask=mask
+        pop_start = ranges[names[0]][0]
+        attrs = _h5_read_cell_attributes(
+            f, pop_start, names[0], "Synapse Attributes", mask=mask
         )
         assert len(attrs) > 0
         for gid, cell_attrs in attrs.items():
             assert set(cell_attrs.keys()) == mask
 
     def test_read_graph(self, cells_filepath, connections_filepath):
-        from livn.system import _pyfive_read_graph, _pyfive_read_population_ranges
+        from livn.system import (
+            _h5_read_graph,
+            _h5_read_population_ranges,
+            _pyfive_open,
+        )
 
-        pop_ranges = _pyfive_read_population_ranges(cells_filepath)
+        f_cells = _pyfive_open(cells_filepath)
+        pop_ranges = _h5_read_population_ranges(f_cells)
         pop_names = list(pop_ranges.keys())
 
+        f_conns = _pyfive_open(connections_filepath)
         for post in pop_names:
             for pre in pop_names:
-                results = _pyfive_read_graph(
-                    connections_filepath,
+                pre_start = pop_ranges[pre][0]
+                post_start = pop_ranges[post][0]
+                results = _h5_read_graph(
+                    f_conns,
+                    pre_start,
+                    post_start,
                     pre,
                     post,
                     namespaces=["Connections", "Synapses"],
-                    population_ranges=pop_ranges,
                 )
-                post_start = pop_ranges[post][0]
-                pre_start = pop_ranges[pre][0]
                 pre_end = pre_start + pop_ranges[pre][1]
 
                 for post_gid, (pre_gids, ns_data) in results:
@@ -148,11 +168,12 @@ class TestPyfiveVsNeuroh5:
         from mpi4py import MPI
         from neuroh5.io import read_population_names as neuroh5_read_pop_names
 
-        from livn.system import _pyfive_read_population_names
+        from livn.system import _h5_read_population_names, _pyfive_open
 
         comm = MPI.COMM_WORLD
         neuroh5_names = neuroh5_read_pop_names(cells_filepath, comm)
-        pyfive_names = _pyfive_read_population_names(cells_filepath)
+        f = _pyfive_open(cells_filepath)
+        pyfive_names = _h5_read_population_names(f)
 
         assert neuroh5_names == pyfive_names
 
@@ -160,11 +181,12 @@ class TestPyfiveVsNeuroh5:
         from mpi4py import MPI
         from neuroh5.io import read_population_ranges as neuroh5_read_pop_ranges
 
-        from livn.system import _pyfive_read_population_ranges
+        from livn.system import _h5_read_population_ranges, _pyfive_open
 
         comm = MPI.COMM_WORLD
         neuroh5_ranges, _ = neuroh5_read_pop_ranges(cells_filepath, comm)
-        pyfive_ranges = _pyfive_read_population_ranges(cells_filepath)
+        f = _pyfive_open(cells_filepath)
+        pyfive_ranges = _h5_read_population_ranges(f)
 
         assert neuroh5_ranges == pyfive_ranges
 
@@ -175,12 +197,13 @@ class TestPyfiveVsNeuroh5:
             read_population_names,
         )
 
-        from livn.system import _pyfive_read_cell_attribute_info
+        from livn.system import _h5_read_cell_attribute_info, _pyfive_open
 
         comm = MPI.COMM_WORLD
         pop_names = read_population_names(cells_filepath, comm)
         neuroh5_info = neuroh5_read_attr_info(cells_filepath, pop_names, comm=comm)
-        pyfive_info = _pyfive_read_cell_attribute_info(cells_filepath, pop_names)
+        f = _pyfive_open(cells_filepath)
+        pyfive_info = _h5_read_cell_attribute_info(f, pop_names)
 
         assert set(neuroh5_info.keys()) == set(pyfive_info.keys())
         for pop in neuroh5_info:
@@ -193,12 +216,16 @@ class TestPyfiveVsNeuroh5:
         from neuroh5.io import scatter_read_cell_attributes
 
         from livn.system import (
-            _pyfive_read_cell_attributes_tuple,
-            _pyfive_read_population_names,
+            _h5_read_cell_attributes_tuple,
+            _h5_read_population_names,
+            _h5_read_population_ranges,
+            _pyfive_open,
         )
 
         comm = MPI.COMM_WORLD
-        pop_names = _pyfive_read_population_names(cells_filepath)
+        f = _pyfive_open(cells_filepath)
+        pop_names = _h5_read_population_names(f)
+        pop_ranges = _h5_read_population_ranges(f)
 
         for pop in pop_names:
             # neuroh5
@@ -213,8 +240,9 @@ class TestPyfiveVsNeuroh5:
             neuroh5_items = list(neuroh5_iter)
 
             # pyfive
-            pyfive_items, pyfive_attr_info = _pyfive_read_cell_attributes_tuple(
-                cells_filepath, pop, "Generated Coordinates"
+            pop_start = pop_ranges[pop][0]
+            pyfive_items, pyfive_attr_info = _h5_read_cell_attributes_tuple(
+                f, pop_start, pop, "Generated Coordinates"
             )
 
             # Compare attr_info
@@ -233,12 +261,16 @@ class TestPyfiveVsNeuroh5:
         from neuroh5.io import scatter_read_cell_attributes
 
         from livn.system import (
-            _pyfive_read_cell_attributes,
-            _pyfive_read_population_names,
+            _h5_read_cell_attributes,
+            _h5_read_population_names,
+            _h5_read_population_ranges,
+            _pyfive_open,
         )
 
         comm = MPI.COMM_WORLD
-        pop_names = _pyfive_read_population_names(cells_filepath)
+        f = _pyfive_open(cells_filepath)
+        pop_names = _h5_read_population_names(f)
+        pop_ranges = _h5_read_population_ranges(f)
         mask = {
             "syn_ids",
             "syn_locs",
@@ -264,8 +296,9 @@ class TestPyfiveVsNeuroh5:
             }
 
             # pyfive
-            pyfive_items = _pyfive_read_cell_attributes(
-                cells_filepath, pop, "Synapse Attributes", mask=mask
+            pop_start = pop_ranges[pop][0]
+            pyfive_items = _h5_read_cell_attributes(
+                f, pop_start, pop, "Synapse Attributes", mask=mask
             )
 
             assert set(neuroh5_items.keys()) == set(pyfive_items.keys())
@@ -282,12 +315,18 @@ class TestPyfiveVsNeuroh5:
         from mpi4py import MPI
         from neuroh5.io import scatter_read_graph
 
-        from livn.system import _pyfive_read_graph, _pyfive_read_population_ranges
+        from livn.system import (
+            _h5_read_graph,
+            _h5_read_population_ranges,
+            _pyfive_open,
+        )
 
         comm = MPI.COMM_WORLD
-        pop_ranges = _pyfive_read_population_ranges(cells_filepath)
+        f_cells = _pyfive_open(cells_filepath)
+        pop_ranges = _h5_read_population_ranges(f_cells)
         pop_names = list(pop_ranges.keys())
 
+        f_conns = _pyfive_open(connections_filepath)
         for post in pop_names:
             for pre in pop_names:
                 # neuroh5
@@ -301,12 +340,15 @@ class TestPyfiveVsNeuroh5:
                 neuroh5_items = list(graph[post][pre])
 
                 # pyfive
-                pyfive_items = _pyfive_read_graph(
-                    connections_filepath,
+                pre_start = pop_ranges[pre][0]
+                post_start = pop_ranges[post][0]
+                pyfive_items = _h5_read_graph(
+                    f_conns,
+                    pre_start,
+                    post_start,
                     pre,
                     post,
                     namespaces=["Connections", "Synapses"],
-                    population_ranges=pop_ranges,
                 )
 
                 assert len(neuroh5_items) == len(pyfive_items), (
@@ -403,20 +445,25 @@ class TestSystemPyfiveVsNeuroh5:
     def test_coordinate_array_equivalence(self):
         from livn.system import (
             System,
-            _pyfive_read_cell_attributes_tuple,
-            _pyfive_read_population_names,
+            _h5_read_cell_attributes_tuple,
+            _h5_read_population_names,
+            _h5_read_population_ranges,
+            _pyfive_open,
         )
 
         system = System(SYSTEM_DIR)
-        pop_names = _pyfive_read_population_names(system._graph.cells_filepath)
+        f = _pyfive_open(system._graph.cells_filepath)
+        pop_names = _h5_read_population_names(f)
+        pop_ranges = _h5_read_population_ranges(f)
 
         for pop in pop_names:
             # neuroh5 path (via System)
             coords_n = system.coordinate_array(pop)
 
             # pyfive path (manual)
-            items, attr_info = _pyfive_read_cell_attributes_tuple(
-                system._graph.cells_filepath, pop, "Generated Coordinates"
+            pop_start = pop_ranges[pop][0]
+            items, attr_info = _h5_read_cell_attributes_tuple(
+                f, pop_start, pop, "Generated Coordinates"
             )
             x_i = attr_info["X Coordinate"]
             y_i = attr_info["Y Coordinate"]
@@ -432,17 +479,18 @@ class TestSystemPyfiveVsNeuroh5:
     def test_cells_meta_data_equivalence(self):
         from livn.system import (
             System,
-            _pyfive_read_cell_attribute_info,
-            _pyfive_read_population_names,
-            _pyfive_read_population_ranges,
+            _h5_read_cell_attribute_info,
+            _h5_read_population_names,
+            _h5_read_population_ranges,
+            _pyfive_open,
         )
 
         system = System(SYSTEM_DIR)
-        fp = system._graph.cells_filepath
+        f = _pyfive_open(system._graph.cells_filepath)
 
-        pop_names = _pyfive_read_population_names(fp)
-        pop_ranges = _pyfive_read_population_ranges(fp)
-        attr_info = _pyfive_read_cell_attribute_info(fp, pop_names)
+        pop_names = _h5_read_population_names(f)
+        pop_ranges = _h5_read_population_ranges(f)
+        attr_info = _h5_read_cell_attribute_info(f, pop_names)
 
         meta_n = system.cells_meta_data
         assert meta_n.population_names == pop_names
@@ -452,22 +500,28 @@ class TestSystemPyfiveVsNeuroh5:
     def test_projection_array_equivalence(self):
         from livn.system import (
             System,
-            _pyfive_read_graph,
-            _pyfive_read_population_ranges,
+            _h5_read_graph,
+            _h5_read_population_ranges,
+            _pyfive_open,
         )
 
         system = System(SYSTEM_DIR)
-        pop_ranges = _pyfive_read_population_ranges(system._graph.cells_filepath)
+        f_cells = _pyfive_open(system._graph.cells_filepath)
+        pop_ranges = _h5_read_population_ranges(f_cells)
 
+        f_conns = _pyfive_open(system._graph.connections_filepath)
         for post, v in system.connections_config["synapses"].items():
             for pre in v:
                 projs_n = system.projection_array(pre, post)
-                projs_p = _pyfive_read_graph(
-                    system._graph.connections_filepath,
+                pre_start = pop_ranges[pre][0]
+                post_start = pop_ranges[post][0]
+                projs_p = _h5_read_graph(
+                    f_conns,
+                    pre_start,
+                    post_start,
                     pre,
                     post,
                     namespaces=["Synapses", "Connections"],
-                    population_ranges=pop_ranges,
                 )
 
                 assert len(projs_n) == len(projs_p)

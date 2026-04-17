@@ -62,7 +62,7 @@ version = "0.1.18"
 requires-dist = ["click", "h5py", "mpi4py", "numpy"]
 
 [tool.uv.workspace]
-members = ["systems", "benchmarks"]
+members = ["systems", "benchmarks", "ui"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
