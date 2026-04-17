@@ -175,17 +175,23 @@ def test_mea_parallel(mpiexec_n):
         cc = np.vstack(q)
         # build reference coordinates via pyfive (no MPI needed)
         from livn.system import (
-            _pyfive_read_cell_attributes_tuple,
-            _pyfive_read_population_names,
+            _h5_read_cell_attributes_tuple,
+            _h5_read_population_names,
+            _h5_read_population_ranges,
+            _pyfive_open,
         )
 
         cells_fp = system._graph.cells_filepath
-        pop_names = _pyfive_read_population_names(cells_fp)
+        with _pyfive_open(cells_fp) as f:
+            pop_names = _h5_read_population_names(f)
+            pop_ranges = _h5_read_population_ranges(f)
         ref_parts = []
         for pop in pop_names:
-            items, attr_info = _pyfive_read_cell_attributes_tuple(
-                cells_fp, pop, "Generated Coordinates"
-            )
+            pop_start = pop_ranges[pop][0]
+            with _pyfive_open(cells_fp) as f:
+                items, attr_info = _h5_read_cell_attributes_tuple(
+                    f, pop_start, pop, "Generated Coordinates"
+                )
             x_i = attr_info["X Coordinate"]
             y_i = attr_info["Y Coordinate"]
             z_i = attr_info["Z Coordinate"]
