@@ -14,8 +14,7 @@ The WebUI requires two servers:
 livn ui server --launch
 
 # In another terminal, start the frontend
-cd ui/web
-npm run dev
+livn ui web --launch
 ```
 
 Open [http://localhost:5173](http://localhost:5173) in your browser.
@@ -49,15 +48,6 @@ env.io = MEA.from_directory(env.system.uri)
 ```
 
 Electrode positions appear as yellow wireframe cubes in the scene.
-
-### Console shortcuts
-
-| Key | Action |
-|-----|--------|
-| **Enter** | Execute code |
-| **Shift+Enter** | Insert newline (multiline input) |
-| **Up/Down** | Navigate command history |
-| **Ctrl+C** | Cancel current input |
 
 ## 3D Scene
 
