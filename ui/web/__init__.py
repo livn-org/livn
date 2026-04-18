@@ -6,6 +6,9 @@ import glob
 from machinable import Interface
 from pydantic import BaseModel
 
+_WEB_DIR = os.path.dirname(__file__)
+_REPO_ROOT = os.path.dirname(os.path.dirname(_WEB_DIR))
+
 
 class Web(Interface):
     class Config(BaseModel):
@@ -17,13 +20,13 @@ class Web(Interface):
         self.dev()
 
     def build_wheel(self):
-        repo_root = self._find_repo_root()
+        repo_root = _REPO_ROOT
         dist_dir = os.path.join(repo_root, "dist")
-        static_dir = os.path.join(os.path.dirname(__file__), "web", "static")
+        static_dir = os.path.join(_WEB_DIR, "static")
 
         # Build pure-Python wheel
         subprocess.run(
-            ["python", "-m", "build", "--wheel", "--outdir", dist_dir, repo_root],
+            ["uv", "build", "--wheel", "--out-dir", dist_dir, repo_root],
             check=True,
         )
 
@@ -33,16 +36,27 @@ class Web(Interface):
         if not wheels:
             raise RuntimeError("No wheel built")
 
-        target = os.path.join(static_dir, "livn.whl")
+        # Remove old wheels from static/
+        for old in glob.glob(os.path.join(static_dir, "livn-*.whl")):
+            os.remove(old)
+
+        wheel_name = os.path.basename(wheels[-1])
+        target = os.path.join(static_dir, wheel_name)
         shutil.copy2(wheels[-1], target)
+
+        # Write manifest so the frontend knows the wheel filename
+        import json
+
+        manifest = os.path.join(static_dir, "wheel.json")
+        with open(manifest, "w") as f:
+            json.dump({"filename": wheel_name}, f)
+
         print(f"Wheel copied to {target}")
 
     def dev(self):
-        web_dir = os.path.join(os.path.dirname(__file__), "web")
-
         # Install npm deps if needed
-        if not os.path.isdir(os.path.join(web_dir, "node_modules")):
-            subprocess.run(["npm", "install"], cwd=web_dir, check=True)
+        if not os.path.isdir(os.path.join(_WEB_DIR, "node_modules")):
+            subprocess.run(["npm", "install"], cwd=_WEB_DIR, check=True)
 
         # Start Vite dev server
         subprocess.run(
@@ -55,15 +69,5 @@ class Web(Interface):
                 "--port",
                 str(self.config.port),
             ],
-            cwd=web_dir,
+            cwd=_WEB_DIR,
         )
-
-    def _find_repo_root(self):
-        import os
-
-        d = os.path.dirname(__file__)
-        while d != "/":
-            if os.path.isfile(os.path.join(d, "pyproject.toml")):
-                return d
-            d = os.path.dirname(d)
-        raise RuntimeError("Could not find repo root")

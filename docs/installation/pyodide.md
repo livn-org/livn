@@ -4,6 +4,8 @@ livn can run directly in the browser using [Pyodide](https://pyodide.org/), a Py
 
 ::: tip
 You can try this below or in any Pyodide-powered environment such as [JupyterLite](https://jupyterlite.readthedocs.io/) or the [REPL](https://pyodide.org/en/stable/console.html).
+
+For a full browser-based experience with 3D visualization, see the [WebUI](/ui).
 :::
 
 

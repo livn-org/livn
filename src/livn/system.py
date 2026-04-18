@@ -311,13 +311,29 @@ def _pyfive_open(filepath):
 def _h5pyd_open(filepath):
     import h5pyd
 
+    hsds_config = None
+    if os.environ.get("LIVN_HSDS"):
+        try:
+            hsds_config = json.loads(os.environ["LIVN_HSDS"])
+        except json.JSONDecodeError:
+            pass
+    if hsds_config is None:
+        hsds_config = _HSDS_CONFIG
+    if hsds_config is None:
+        raise RuntimeError("HSDS not configured")
+
     hsds_path = _to_hsds_domain(filepath)
-    return h5pyd.File(
-        hsds_path,
-        mode="r",
-        endpoint=_HSDS_CONFIG["endpoint"],
-        bucket=_HSDS_CONFIG.get("bucket", "/data"),
-    )
+    kwargs = {
+        "mode": "r",
+        "endpoint": hsds_config["endpoint"],
+    }
+    if hsds_config.get("bucket"):
+        kwargs["bucket"] = hsds_config["bucket"]
+    if hsds_config.get("username"):
+        kwargs["username"] = hsds_config["username"]
+    if hsds_config.get("password"):
+        kwargs["password"] = hsds_config["password"]
+    return h5pyd.File(hsds_path, **kwargs)
 
 
 def _to_hsds_domain(filepath):
@@ -326,18 +342,32 @@ def _to_hsds_domain(filepath):
     The server's root_dir is systems/graphs/, so a local path like
     .../systems/graphs/EI1/graph.h5 maps to the HSDS domain /EI1/graph.h5.
     Relative paths like EI1/graph.h5 are used directly.
+    Absolute paths without 'graphs' (e.g. /home/pyodide/EI1/cells.h5)
+    use the last two path components as the domain.
     """
     parts = pathlib.PurePosixPath(filepath).parts
     try:
         idx = parts.index("graphs")
         return "/" + "/".join(parts[idx + 1 :])
     except ValueError:
+        # Extract system_name/filename from the end of the path
+        # e.g. /home/pyodide/EI1/cells.h5 -> /EI1/cells.h5
+        if len(parts) >= 2:
+            return "/" + "/".join(parts[-2:])
         return "/" + filepath.lstrip("/")
 
 
 def _open_h5(filepath):
-    if _H5_BACKEND == "h5pyd":
-        return _h5pyd_open(filepath)
+    # Check dynamically for late-configured HSDS (e.g. Pyodide)
+    if _H5_BACKEND == "h5pyd" or os.environ.get("LIVN_HSDS"):
+        try:
+            return _h5pyd_open(filepath)
+        except Exception as e:
+            import warnings
+
+            warnings.warn(
+                f"h5pyd open failed for {filepath}: {e}, falling back to pyfive"
+            )
     return _pyfive_open(filepath)
 
 
@@ -679,10 +709,28 @@ class NeuroH5Graph:
             return self.local_directory("graph.h5")
         return self.local_directory("connections.h5")
 
+    @staticmethod
+    def _get_hsds_config():
+        """Re-read HSDS config from env (handles late configuration in Pyodide)"""
+        if os.environ.get("LIVN_HSDS"):
+            try:
+                import h5pyd  # noqa: F401
+
+                return json.loads(os.environ["LIVN_HSDS"])
+            except (ImportError, json.JSONDecodeError):
+                pass
+        return None
+
     @cached_property
     def elements(self):
-        if _H5_BACKEND == "h5pyd" and _HSDS_CONFIG:
-            return self._load_elements_http()
+        hsds_config = self._get_hsds_config()
+        if hsds_config:
+            try:
+                return self._load_elements_http(hsds_config)
+            except Exception as e:
+                import warnings
+
+                warnings.warn(f"HSDS elements load failed: {e}, falling back to local")
         return self._load_elements_local()
 
     def _load_elements_local(self):
@@ -690,16 +738,37 @@ class NeuroH5Graph:
             graph = json.load(f)
         return self._parse_elements(graph)
 
-    def _load_elements_http(self):
-        import urllib.request
+    def _load_elements_http(self, hsds_config=None):
+        config = hsds_config or _HSDS_CONFIG
+        # Use explicit files_endpoint if provided (e.g. Vite proxy)
+        files_endpoint = config.get("files_endpoint")
+        if files_endpoint:
+            system_name = os.path.basename(self.directory)
+            url = f"{files_endpoint}/{system_name}/graph.json"
+        else:
+            import urllib.parse
 
-        endpoint = _HSDS_CONFIG["endpoint"]
-        port = int(endpoint.rsplit(":", 1)[1]) + 1
-        host = endpoint.rsplit(":", 1)[0]
-        system_name = os.path.basename(self.directory)
-        url = f"{host}:{port}/files/{system_name}/graph.json"
-        with urllib.request.urlopen(url) as resp:
-            graph = json.loads(resp.read())
+            endpoint = config["endpoint"]
+            parsed = urllib.parse.urlparse(endpoint)
+            if not parsed.port:
+                raise ValueError(
+                    f"Cannot derive file-server port from endpoint: {endpoint}"
+                )
+            file_port = parsed.port + 1
+            file_host = f"{parsed.scheme}://{parsed.hostname}:{file_port}"
+            system_name = os.path.basename(self.directory)
+            url = f"{file_host}/files/{system_name}/graph.json"
+
+        # In Pyodide, urllib doesn't work (no real sockets); use pyodide.http
+        try:
+            from pyodide.http import open_url
+
+            graph = json.loads(open_url(url).read())
+        except ImportError:
+            import urllib.request
+
+            with urllib.request.urlopen(url) as resp:
+                graph = json.loads(resp.read())
         return self._parse_elements(graph)
 
     @staticmethod
@@ -767,14 +836,31 @@ class System:
     def default_io(self, comm=None) -> "IO":
         from livn.io import MEA, IO
 
+        # Try local file first, then HTTP endpoint
+        try:
+            data = self.load_file("mea.json", comm=comm)
+            if data is not None:
+                return MEA.from_json(data, comm=comm)
+        except Exception:
+            pass
+        try:
+            data = self._load_json_file("mea.json")
+            return MEA.from_json(data)
+        except Exception:
+            pass
         try:
             return MEA.from_directory(self.uri, comm=comm)
-        except FileNotFoundError:
+        except Exception:
             return IO()
 
     def default_model(self, comm=None) -> "Model":
         model = self.load_file("model.json", None, comm=comm)
-        if model is not None:
+        if model is None:
+            try:
+                model = self._load_json_file("model.json")
+            except Exception:
+                pass
+        if model is not None and "cls" in model:
             model = import_object_by_path(model["cls"])(**model["kwargs"])
         else:
             from livn.models.rcsd import ReducedCalciumSomaDendrite
@@ -782,6 +868,29 @@ class System:
             model = ReducedCalciumSomaDendrite()
 
         return model
+
+    def _load_json_file(self, filename):
+        """Load a JSON file, trying HTTP (files_endpoint) first for Pyodide"""
+        hsds_config = self._graph._get_hsds_config()
+        if hsds_config and hsds_config.get("files_endpoint"):
+            files_endpoint = hsds_config["files_endpoint"]
+            system_name = os.path.basename(self._graph.directory)
+            url = f"{files_endpoint}/{system_name}/{filename}"
+            try:
+                from pyodide.http import open_url
+
+                resp = open_url(url)
+                text = resp.read()
+                data = json.loads(text)
+                if isinstance(data, dict) and "error" in data:
+                    raise FileNotFoundError(data["error"])
+                return data
+            except ImportError:
+                import urllib.request
+
+                with urllib.request.urlopen(url) as resp:
+                    return json.loads(resp.read())
+        raise FileNotFoundError(f"No HTTP endpoint for {filename}")
 
     def default_params(self, comm=None) -> dict | None:
         return self.load_file("params.json", None, comm=comm)
