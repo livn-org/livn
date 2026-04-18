@@ -17,15 +17,7 @@ livn ui server --launch
 livn ui web --launch
 ```
 
-Open [http://localhost:5173](http://localhost:5173) in your browser.
-
-::: tip
-If you also want to use [HSDS](/systems/hsds) for HDF5 access, start the HSDS server first:
-```bash
-livn ui server --launch  # starts both HSDS on :5101 and file server on :5102
-```
-The WebUI auto-detects HSDS on startup and configures h5pyd automatically. Without HSDS, pyfive is used as a fallback.
-:::
+Open `http://localhost:5173` in your browser.
 
 ## Using the Console
 
