@@ -1,0 +1,15 @@
+[project]
+name = "ui"
+version = "0.1.0"
+description = "Browser-based visualization for livn"
+requires-python = ">= 3.11"
+dependencies = ["machinable==4.10.6", "livn"]
+
+[project.optional-dependencies]
+server = ["hsds>=0.9", "h5pyd>=0.19", "aiohttp>=3.9"]
+
+[tool.uv.sources]
+livn = { workspace = true }
+
+[tool.setuptools]
+py-modules = []

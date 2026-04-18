@@ -430,8 +430,7 @@ class Stimulus:
         return cls(array=children[0], dt=dt, gids=gids, **meta_data)
 
 
-def _register_pytree():
-    """Register Stimulus as a JAX pytree if JAX is available."""
+if _USES_JAX:
     try:
         import jax
 
@@ -442,6 +441,3 @@ def _register_pytree():
         )
     except ImportError:
         pass
-
-
-_register_pytree()
