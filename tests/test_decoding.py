@@ -6,6 +6,7 @@ import pytest
 from livn.env import Env
 from livn.decoding import (
     Slice,
+    ChannelRecording,
     Pipe,
     MeanFiringRate,
     ActiveFraction,
@@ -128,12 +129,41 @@ class MockEnv:
         self.n_units = n_units
         self.n_channels = n_channels
         self.comm = None
+        self.calls = {"spikes": 0, "voltages": 0, "membrane_currents": 0}
+
+        class MockIO:
+            def __init__(self, n_channels):
+                self.channel_ids = np.arange(n_channels, dtype=np.int32)
+
+        self.io = MockIO(n_channels)
 
         class MockSystem:
             def __init__(self, n_units):
                 self.gids = list(range(n_units))
 
         self.system = MockSystem(n_units)
+
+    def record_spikes(self):
+        self.calls["spikes"] += 1
+
+    def record_voltage(self):
+        self.calls["voltages"] += 1
+
+    def record_membrane_current(self):
+        self.calls["membrane_currents"] += 1
+
+    def channel_recording(self, it, tt):
+        if it is None or tt is None:
+            return {}, {}
+
+        mask_even = (it % 2) == 0
+        return {
+            0: it[mask_even],
+            1: it[~mask_even],
+        }, {
+            0: tt[mask_even],
+            1: tt[~mask_even],
+        }
 
     def potential_recording(self, m):
         if m is None:
@@ -899,3 +929,66 @@ class TestArrowDataset:
         )
         ds = ad.dataset()
         assert ds is None
+
+
+class TestChannelRecording:
+    def test_setup_respects_selective_flags(self):
+        env = MockEnv(n_units=8, n_channels=2)
+        decoder = ChannelRecording(
+            duration=100,
+            spikes=True,
+            voltages=False,
+            membrane_currents=True,
+        )
+
+        decoder.setup(env)
+
+        assert env.calls["spikes"] == 1
+        assert env.calls["voltages"] == 0
+        assert env.calls["membrane_currents"] == 1
+
+    def test_call_with_spikes_and_membrane_currents(self):
+        env = MockEnv(n_units=8, n_channels=2)
+        decoder = ChannelRecording(
+            duration=100,
+            spikes=True,
+            voltages=False,
+            membrane_currents=True,
+        )
+
+        it = np.array([0, 1, 2, 3], dtype=np.int32)
+        tt = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float64)
+        mp = np.arange(20, dtype=np.float32).reshape(2, 10)
+
+        cit, ct, iv, vv, channel_ids, p = decoder(env, it, tt, None, None, None, mp)
+
+        assert iv is None
+        assert vv is None
+        assert np.array_equal(channel_ids, np.array([0, 1], dtype=np.int32))
+        assert set(cit.keys()) == {0, 1}
+        assert set(ct.keys()) == {0, 1}
+        assert p is not None
+        assert p.shape == (2, 10)
+
+    def test_call_without_spikes_or_membrane_currents(self):
+        env = MockEnv(n_units=8, n_channels=2)
+        decoder = ChannelRecording(
+            duration=100,
+            spikes=False,
+            voltages=True,
+            membrane_currents=False,
+        )
+
+        iv = np.array([0, 1], dtype=np.int32)
+        vv = np.ones((2, 5), dtype=np.float32)
+
+        cit, ct, iv_out, vv_out, channel_ids, p = decoder(
+            env, None, None, iv, vv, None, None
+        )
+
+        assert cit is None
+        assert ct is None
+        assert np.array_equal(iv_out, iv)
+        assert np.array_equal(vv_out, vv)
+        assert np.array_equal(channel_ids, np.array([0, 1], dtype=np.int32))
+        assert p is None

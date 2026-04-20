@@ -72,19 +72,42 @@ class Slice(Decoding):
 
 
 class ChannelRecording(Decoding):
+    root: int = 0
+    spikes: bool = True
+    voltages: bool = True
+    membrane_currents: bool = True
+
     def setup(self, env):
-        env.record_spikes()
+        if self.spikes:
+            env.record_spikes()
+        if self.voltages:
+            env.record_voltage()
+        if self.membrane_currents:
+            env.record_membrane_current()
 
     def __call__(self, env, it, tt, iv, vv, im, mp):
-        # per-rank electrode potential, sum-reduced for each channel [T, #channels]
-        p = P.reduce_sum(env.potential_recording(mp), all=True, comm=env.comm)
+        # Per-rank electrode potential, sum-reduced for each channel [n_channels, T].
+        if self.membrane_currents and mp is not None:
+            p = P.reduce_sum(env.potential_recording(mp), all=True, comm=env.comm)
+        else:
+            p = None
 
-        cit, ct = env.channel_recording(it, tt)
+        if self.spikes:
+            cit, ct = env.channel_recording(it, tt)
+            cit, ct = P.gather(cit, ct, comm=env.comm, root=self.root)
+        else:
+            cit, ct = None, None
 
-        cit, ct, iv, vv = P.gather(cit, ct, iv, vv, comm=env.comm)
+        if self.voltages:
+            iv, vv = P.gather(iv, vv, comm=env.comm, root=self.root)
+        else:
+            iv, vv = None, None
 
-        if P.is_root(comm=env.comm):
-            cit, ct, iv, vv = P.merge(cit, ct, iv, vv)
+        if P.is_root(comm=env.comm, root=self.root):
+            if self.spikes:
+                cit, ct = P.merge(cit, ct)
+            if self.voltages:
+                iv, vv = P.merge(iv, vv)
             return cit, ct, iv, vv, env.io.channel_ids, p
 
 
