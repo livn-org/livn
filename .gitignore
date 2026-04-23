@@ -2,7 +2,6 @@ compiled/
 storage/
 raw.githubusercontent.com/
 tests/tmp
-bio_data/
 
 *.png
 *.h5
