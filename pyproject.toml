@@ -1,0 +1,80 @@
+[project]
+name = "livn"
+version = "1.0.0"
+description = "A testbed for learning to interact with in vitro neural networks"
+authors = [
+    { name = "Frithjof Gressmann", email = "fg14@illinois.edu" },
+    { name = "Ivan Raikov", email = "ivan.g.raikov@gmail.com" },
+]
+dependencies = [
+    "pydantic>=2.11.3",
+    "pandas>=2.3.1",
+    "gymnasium>=1.2.0",
+    "pyfive>=1.1.1",
+    "scipy>=1.14.0",
+]
+readme = "README.md"
+requires-python = ">= 3.11"
+
+[project.scripts]
+livn = "livn.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.3",
+    "pytest-reportlog",
+    "ruff>=0.11.5",
+    "huggingface-hub>=0.3.1",
+]
+# backends
+neuron = [
+    "setuptools",
+    "miv-simulator @ git+https://github.com/GazzolaLab/MiV-Simulator.git@edfd2ef",
+]
+diffrax = [
+    "jax>=0.8.1; platform_system == 'Darwin'",
+    "jax[cuda]>=0.8.1; platform_system != 'Darwin'",
+    "equinox>=0.13.2",
+    "optimistix>=0.0.11",
+    "jaxtyping>=0.3.4",
+    "signax>=0.2.1",
+    "optax>=0.2.6",
+    "lineax>=0.0.8",
+    "diffrax>=0.7.0",
+]
+brian2 = ["cleosim>=0.18.1"]
+
+[tool.uv]
+override-dependencies = [
+    "jaxtyping>=0.3.2",
+    "neuroh5 @ git+https://github.com/iraikov/neuroh5.git@7179472",
+]
+no-build-isolation-package = ["neuroh5"]
+no-binary-package = ["mpi4py"]
+
+[[tool.uv.dependency-metadata]]
+name = "neuroh5"
+version = "0.1.18"
+requires-dist = ["click", "h5py", "mpi4py", "numpy"]
+
+[tool.uv.workspace]
+members = ["systems", "benchmarks", "ui"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/livn"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff.lint]
+ignore = ["F722", "F821"]
+
+[tool.setuptools]
+py-modules = []
