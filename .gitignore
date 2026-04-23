@@ -1,8 +1,7 @@
 compiled/
 storage/
 raw.githubusercontent.com/
-tests/tmp/
-biorobot/
+tests/tmp
 bio_data/
 
 *.png
