@@ -19,14 +19,6 @@
             protocol: 'LFP (θ 8 Hz + γ 40 Hz) + TTL stim @ 1 Hz',
             real: true,
         },
-        {
-            id: 'kimia-rec1',
-            name: 'Kimia – Recording 1',
-            date: '2025-08-22',
-            dur: '5 min 7 s',
-            protocol: 'TTL stimulation @ 1 Hz',
-            real: true,
-        },
     ];
 </script>
 
