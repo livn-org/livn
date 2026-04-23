@@ -1,5 +1,6 @@
 <script lang="ts">
     import { onMount, onDestroy } from "svelte";
+    import { get } from "svelte/store";
     import { initPyodide, executeCode } from "$lib/pyodide";
     import { updateStores, pendingCommand } from "$lib/stores";
 
@@ -63,7 +64,23 @@
                 terminal.writeln(msg);
             });
             ready = true;
-            terminal.write(PROMPT);
+
+            // Execute any command that was queued before we finished initializing
+            const queued = get(pendingCommand);
+            if (queued) {
+                const lines = queued.split("\n");
+                for (let i = 0; i < lines.length; i++) {
+                    terminal.write("\r\x1b[K" + (i === 0 ? PROMPT : CONTINUATION) + lines[i] + "\r\n");
+                }
+                inputBuffer = "";
+                cursorPos = 0;
+                history.push(queued);
+                historyIdx = -1;
+                pendingCommand.set(null);
+                runCode(queued);
+            } else {
+                terminal.write(PROMPT);
+            }
         } catch (e) {
             terminal.writeln(`\r\nFailed to initialize: ${e}`);
             return;

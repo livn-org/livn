@@ -96,6 +96,38 @@ The Threlte layer adds visualization-only affordances (tooltips, population togg
 1. `livn ui server --launch` — starts HSDS on `:5101` + file server on `:5102` (optional)
 2. `livn ui web --launch` — builds livn wheel into `web/static/livn.whl`, starts Vite on `:5173`
 
+## Navigation
+
+The UI has two top-level tabs in the nav bar:
+
+| Tab | First view | Second view (detail) |
+|-----|-----------|----------------------|
+| **Sim** | System selection cards (EI1, EI2, CA1d) | 3D scene + Python console + info panels |
+| **Bio** | Recording selection cards (placeholder) | Waveform panel + Setup / Data Info panels |
+
+On first load the app navigates directly to the **EI1 Sim detail** view and auto-loads the system once Pyodide is ready.
+
+### Sim detail
+
+The Sim detail page preserves the full existing visualization workflow:
+
+```python
+env = Env(predefined('EI1'))          # loaded automatically on navigation
+env.io = MEA.from_directory(...)      # type in the console to add electrodes
+```
+
+Three collapsible overlay panels appear in the top-right corner of the 3D scene:
+
+| Panel | Content |
+|-------|---------|
+| **Setup** | Culture shape, bounding-box dimensions, population counts, total neurons |
+| **Neuron Info** | First 10 neurons (GID, population, x/y/z) from `envSystem` |
+| **Stim Protocol** | Placeholder electrode, timing, and amplitude values per system |
+
+The existing viz controls (population toggles, point size, opacity, bounding box, electrodes) remain in the top-left overlay.
+
+---
+
 ## Directory Structure
 
 ```
@@ -118,24 +150,30 @@ ui/
         │   ├── stores.ts       # Svelte stores (reactive env state) + updateStores() diff
         │   ├── types.ts        # TypeScript interfaces (EnvSnapshot, SystemData, IOData, …)
         │   └── components/
-        │       ├── EnvScene.svelte   # Root scene — camera, lights, conditional rendering
-        │       ├── System.svelte     # env.system → instanced neurons + bounding box
-        │       ├── IO.svelte         # env.io → instanced wireframe electrode cubes
-        │       ├── Tooltip.svelte    # Click → neuron info panel (GID, population, coords)
-        │       ├── Console.svelte    # xterm.js Python REPL connected to Pyodide
-        │       └── StatusBar.svelte  # Backend indicator, env status, execution time
+        │       ├── NavBar.svelte         # Top nav bar — Bio / Sim tabs
+        │       ├── SimSystemList.svelte  # System selection cards (EI1, EI2, CA1d)
+        │       ├── BioRecordingList.svelte  # Recording selection cards (placeholder)
+        │       ├── BioRecordingDetail.svelte # Waveform + Setup / Data Info panels
+        │       ├── EnvScene.svelte       # Root 3D scene — camera, lights, rendering
+        │       ├── System.svelte         # env.system → instanced neurons + bounding box
+        │       ├── IO.svelte             # env.io → instanced wireframe electrode cubes
+        │       ├── Tooltip.svelte        # Click → neuron info panel (GID, population, coords)
+        │       ├── Console.svelte        # xterm.js Python REPL connected to Pyodide
+        │       └── StatusBar.svelte      # Backend indicator, env status, execution time
         └── routes/
             ├── +layout.ts      # Disables SSR/prerender (client-only SPA)
-            └── +page.svelte    # Main page: 3D scene + console + view controls
+            └── +page.svelte    # Navigation state machine + all page views
 ```
 
 ### Component → Python Mapping
 
-| Svelte component   | Renders             | Python source          |
-|---------------------|---------------------|------------------------|
-| `System.svelte`     | Neurons + bbox      | `env.system`           |
-| `IO.svelte`         | Electrodes          | `env.io` (MEA)         |
-| `Console.svelte`    | Python REPL         | Pyodide interpreter    |
+| Svelte component       | Renders                     | Python source          |
+|------------------------|-----------------------------|------------------------|
+| `System.svelte`        | Neurons + bbox              | `env.system`           |
+| `IO.svelte`            | Electrodes                  | `env.io` (MEA)         |
+| `Console.svelte`       | Python REPL                 | Pyodide interpreter    |
+| `SimSystemList.svelte` | System selection cards      | triggers `predefined()`|
+| `BioRecordingList.svelte` | Recording cards (stub)   | —                      |
 
 ## Reactive Data Flow
 

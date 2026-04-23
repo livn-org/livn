@@ -1,7 +1,9 @@
 compiled/
 storage/
 raw.githubusercontent.com/
-tests/tmp
+tests/tmp/
+biorobot/
+bio_data/
 
 *.png
 *.h5
@@ -145,3 +147,4 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+

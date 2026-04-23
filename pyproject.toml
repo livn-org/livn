@@ -33,7 +33,7 @@ dev = [
 # backends
 neuron = [
     "setuptools",
-    "miv-simulator @ git+https://github.com/GazzolaLab/MiV-Simulator.git@edfd2ef",
+    "miv-simulator @ git+https://github.com/GazzolaLab/MiV-Simulator.git@24e2654",
 ]
 diffrax = [
     "jax>=0.8.1; platform_system == 'Darwin'",
