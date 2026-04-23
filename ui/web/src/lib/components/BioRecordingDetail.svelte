@@ -36,42 +36,6 @@
             apiPath: 'demo/neural1',
             ttlCount: 60, ttlRate: '~1 Hz', ttlISI: '1.000 s (mean)',
         },
-        'kimia-rec1': {
-            kind: 'real',
-            name: 'Kimia – Recording 1',
-            date: '2025-08-22', dur: '5 min 7 s (307 s)', durS: 307,
-            protocol: 'TTL stimulation @ 1 Hz',
-            source: 'Rhythm FPGA headstage (Acquisition Board)',
-            channels: 512, sampleRate: '30,000 Hz',
-            bitVolts: '0.195 µV / bit',
-            guiVersion: 'Open Ephys 0.6.3',
-            format: 'Open Ephys Binary (.dat)',
-            path: 'bio_data/kimia/recording1',
-            apiPath: 'kimia/recording1',
-            ttlCount: 305, ttlRate: '~1 Hz', ttlISI: '1.000 s (mean)',
-        },
-        // ── Placeholder recordings ───────────────────────────────────────
-        'rec-001': {
-            kind: 'placeholder',
-            name: 'Recording 001', date: '2024-03-15', dur: '10 min',
-            protocol: 'Spontaneous activity', stimulation: 'None', amplitude: 'N/A',
-            shape: 'Circular', dimensions: '35 mm diameter', neuronTypes: 'Mixed cortical (EXC / INH)',
-        },
-        'rec-002': {
-            kind: 'placeholder',
-            name: 'Recording 002', date: '2024-03-22', dur: '15 min',
-            protocol: 'Electrical stimulation burst',
-            stimulation: 'Electrode 12, biphasic 500 µs', amplitude: '2 µA',
-            shape: 'Circular', dimensions: '35 mm diameter', neuronTypes: 'Mixed cortical (EXC / INH)',
-        },
-        'rec-003': {
-            kind: 'placeholder',
-            name: 'Recording 003', date: '2024-04-01', dur: '8 min',
-            protocol: 'Optogenetic stimulation',
-            stimulation: 'Light 473 nm, 10 Hz', amplitude: '1 mW / mm²',
-            shape: 'Rectangular', dimensions: '4 mm × 4 mm',
-            neuronTypes: 'Hippocampal (EXC / INH, ChR2)',
-        },
     };
 
     const rec = $derived(DETAILS[recordingId] ?? DETAILS['rec-001']);
