@@ -51,6 +51,9 @@ runs:
         HDF5_MPI: "ON"
         CC: mpicc
       run: |
+        # h5py's PEP 517 build deps (pkgconfig, Cython, setuptools, wheel, numpy)
+        # must be present in the venv since we're disabling build isolation.
+        uv pip install pkgconfig "Cython>=3" setuptools wheel numpy
         uv pip install --no-build-isolation --no-binary=h5py h5py
 
     - name: Install neuroh5 (no-build-isolation, needs venv on PATH for cmake)
