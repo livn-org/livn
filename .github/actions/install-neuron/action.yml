@@ -51,6 +51,13 @@ runs:
         HDF5_MPI: "ON"
         CC: mpicc
       run: |
+        # With HDF5_MPI=ON, h5py skips pkg-config and dlopen()s libhdf5
+        # directly. On macOS brew installs HDF5 outside dyld's default search
+        # path, so we point HDF5_DIR at the brew prefix. On Linux, apt's
+        # libhdf5-openmpi is on the loader path and HDF5_DIR is unnecessary.
+        if [[ "$RUNNER_OS" == "macOS" ]]; then
+          export HDF5_DIR="$(brew --prefix hdf5-mpi)"
+        fi
         # h5py's PEP 517 build deps (pkgconfig, Cython, setuptools, wheel, numpy)
         # must be present in the venv since we're disabling build isolation.
         uv pip install pkgconfig "Cython>=3" setuptools wheel numpy
