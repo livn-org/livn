@@ -1,5 +1,26 @@
 name: Install neuron deps
-description: Install Python dependencies for the NEURON backend
+description: Install Python dependencies for the NEURON backend (neuroh5 with no-build-isolation)
+
+# neuroh5 is built with no-build-isolation (configured in pyproject.toml) because
+# its build requires mpi4py, which must be compiled against the system MPI — a
+# prebuilt wheel from an isolated build env would link against the wrong MPI.
+#
+# However, no-build-isolation means neuroh5's cmake build runs against the project
+# venv, and uv does not guarantee that numpy/mpi4py are installed before neuroh5
+# is built within a single `uv sync`.
+#
+# The workaround is a three-step install:
+#   1. Sync everything except neuroh5 to create the venv
+#   2. Explicitly install neuroh5's build deps (mpi4py from source, numpy) since
+#      --no-install-package neuroh5 may skip its transitive dependencies
+#   3. Install neuroh5 via `uv pip install --no-build-isolation`
+#
+# The neuroh5 git URL is read from pyproject.toml's override-dependencies to avoid
+# duplicating the pinned commit hash.
+#
+# The entire .venv is cached to avoid rebuilding mpi4py and neuroh5 from source
+# on every run. The cache key includes the lockfile, pyproject.toml (for
+# override-dependencies), and OS so it invalidates on any dependency change.
 
 runs:
   using: composite
@@ -15,4 +36,20 @@ runs:
       if: steps.cache-venv.outputs.cache-hit != 'true'
       shell: bash
       run: |
-        uv sync --group dev --group neuron
+        uv sync --group dev --group neuron --no-install-package neuroh5
+        uv pip install --no-build-isolation mpi4py
+
+    - name: Install neuroh5 (no-build-isolation, needs venv on PATH for cmake)
+      if: steps.cache-venv.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        Python_ROOT_DIR: ${{ github.workspace }}/.venv
+        Python3_ROOT_DIR: ${{ github.workspace }}/.venv
+      run: |
+        source .venv/bin/activate
+        uv pip install --no-build-isolation neuroh5
+
+    - name: Sync venv from cache (fast, no-build packages already present)
+      if: steps.cache-venv.outputs.cache-hit == 'true'
+      shell: bash
+      run: uv sync --group dev --group neuron --no-install-package neuroh5
