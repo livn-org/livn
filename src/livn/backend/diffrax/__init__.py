@@ -23,6 +23,7 @@ class _ParallelSystem:
         self.num_neurons = num_neurons
         self.name = "ParallelSystem"
         self.populations = ["parallelized"]
+        self.gids = list(range(num_neurons))
 
     def default_io(self):
         return None
@@ -101,6 +102,7 @@ class Env(EnvProtocol):
         dt_solver = kwargs.pop("dt_solver", 0.01)
         t0 = kwargs.pop("t0", 0.0)
         y0 = kwargs.pop("y0", None)
+        key = kwargs.pop("key", self.run_key)
 
         run_kwargs = dict(
             input_current=input_current,
@@ -110,7 +112,7 @@ class Env(EnvProtocol):
             dt=dt,
             y0=y0,
             dt_solver=dt_solver,
-            key=self.run_key,
+            key=key,
             **kwargs,
         )
 
