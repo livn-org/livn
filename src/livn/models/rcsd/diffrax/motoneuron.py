@@ -413,14 +413,20 @@ class BoothRinzelKiehn(eqx.Module):
         return self.opsin_g0 * fphi * fv * (V - self.opsin_E_rev) * 1e-6  # nA
 
     def _calculate_membrane_currents(self, t, y, args=None):
-        """Calculate membrane currents for soma and dendrite.
+        """Calculate per-compartment membrane currents in microamperes
 
         Args:
             t: time
             y: state vector
             args: (I_stim_array, t_array) for array stimulus
+
+        Returns:
+            (I_mem_soma_uA, I_mem_dend_uA) per-source currents matching
+            the units expected by IO.potential_recording, mirroring
+            NEURON's i_membrane_ recording, which is per-segment
+            current rather than current density
         """
-        # area_s, area_d, g_c_s, g_c_d = self._geometry()
+        area_s, area_d, _g_c_s, _g_c_d = self._geometry()
 
         Vs, Vd, h, n, mnS, hnS, mnD, hnD, ml, CaS, CaD = y
 
@@ -461,7 +467,11 @@ class BoothRinzelKiehn(eqx.Module):
         I_mem_soma = INaS + IKS + ICaS + IleakS
         I_mem_dend = IKD + ICaD_N + ICaD_L + IleakD
 
-        return I_mem_soma, I_mem_dend
+        # Convert to per-source uA: area_*_cm2 * 1000 mA -> uA per cm2
+        I_mem_soma_uA = I_mem_soma * area_s * 1000.0
+        I_mem_dend_uA = I_mem_dend * area_d * 1000.0
+
+        return I_mem_soma_uA, I_mem_dend_uA
 
     def __call__(self, t, y: Array, args) -> Array:
         """Vector field for the Booth-Rinzel-Kiehn model
