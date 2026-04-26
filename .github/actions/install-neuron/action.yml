@@ -9,17 +9,22 @@ description: Install Python dependencies for the NEURON backend (neuroh5 with no
 # venv, and uv does not guarantee that numpy/mpi4py are installed before neuroh5
 # is built within a single `uv sync`.
 #
-# The workaround is a three-step install:
-#   1. Sync everything except neuroh5 to create the venv
-#   2. Explicitly install neuroh5's build deps (mpi4py from source, numpy) since
-#      --no-install-package neuroh5 may skip its transitive dependencies
-#   3. Install neuroh5 via `uv pip install --no-build-isolation`
+# h5py also needs special handling: when built against an MPI-enabled HDF5 (such
+# as brew's hdf5-mpi or apt's libhdf5-openmpi-dev), h5py's setup auto-detects
+# that HDF5 was compiled with MPI and pulls in <mpi.h>. On macOS, brew installs
+# mpi.h under $(brew --prefix open-mpi)/include which is not on clang's default
+# search path, so the build fails. The fix is the documented h5py-with-MPI build
+# pattern: HDF5_MPI=ON CC=mpicc, which delegates compiler flags to the MPI
+# wrapper. This requires mpi4py to already be installed.
 #
-# The neuroh5 git URL is read from pyproject.toml's override-dependencies to avoid
-# duplicating the pinned commit hash.
+# The workaround is a four-step install:
+#   1. Sync everything except neuroh5 and h5py to create the venv
+#   2. Install mpi4py from source (needed for h5py and neuroh5 builds)
+#   3. Install h5py with HDF5_MPI=ON CC=mpicc, no-build-isolation
+#   4. Install neuroh5 via `uv pip install --no-build-isolation`
 #
-# The entire .venv is cached to avoid rebuilding mpi4py and neuroh5 from source
-# on every run. The cache key includes the lockfile, pyproject.toml (for
+# The entire .venv is cached to avoid rebuilding mpi4py, h5py, and neuroh5 from
+# source on every run. The cache key includes the lockfile, pyproject.toml (for
 # override-dependencies), and OS so it invalidates on any dependency change.
 
 runs:
@@ -32,12 +37,31 @@ runs:
         path: .venv
         key: neuron-venv-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-${{ hashFiles('uv.lock', 'pyproject.toml') }}
 
-    - name: Install Python dependencies (without neuroh5)
+    - name: Install Python dependencies (without neuroh5 and h5py)
       if: steps.cache-venv.outputs.cache-hit != 'true'
       shell: bash
       run: |
-        uv sync --group dev --group neuron --no-install-package neuroh5
+        uv sync --group dev --group neuron --no-install-package neuroh5 --no-install-package h5py
         uv pip install --no-build-isolation mpi4py
+
+    - name: Install h5py with MPI support (no-build-isolation, needs mpi4py)
+      if: steps.cache-venv.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        HDF5_MPI: "ON"
+        CC: mpicc
+      run: |
+        # With HDF5_MPI=ON, h5py skips pkg-config and dlopen()s libhdf5
+        # directly. On macOS brew installs HDF5 outside dyld's default search
+        # path, so we point HDF5_DIR at the brew prefix. On Linux, apt's
+        # libhdf5-openmpi is on the loader path and HDF5_DIR is unnecessary.
+        if [[ "$RUNNER_OS" == "macOS" ]]; then
+          export HDF5_DIR="$(brew --prefix hdf5-mpi)"
+        fi
+        # h5py's PEP 517 build deps (pkgconfig, Cython, setuptools, wheel, numpy)
+        # must be present in the venv since we're disabling build isolation.
+        uv pip install pkgconfig "Cython>=3" setuptools wheel numpy
+        uv pip install --no-build-isolation --no-binary=h5py h5py
 
     - name: Install neuroh5 (no-build-isolation, needs venv on PATH for cmake)
       if: steps.cache-venv.outputs.cache-hit != 'true'
@@ -47,10 +71,9 @@ runs:
         Python3_ROOT_DIR: ${{ github.workspace }}/.venv
       run: |
         source .venv/bin/activate
-        NEUROH5_DEP=$(python -c "import tomllib; print(next(d for d in tomllib.load(open('pyproject.toml','rb'))['tool']['uv']['override-dependencies'] if 'neuroh5' in d))")
-        uv pip install --no-build-isolation "$NEUROH5_DEP"
+        uv pip install --no-build-isolation git+https://github.com/iraikov/neuroh5.git
 
     - name: Sync venv from cache (fast, no-build packages already present)
       if: steps.cache-venv.outputs.cache-hit == 'true'
       shell: bash
-      run: uv sync --group dev --group neuron --no-install-package neuroh5
+      run: uv sync --group dev --group neuron --no-install-package neuroh5 --no-install-package h5py

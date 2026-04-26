@@ -69,10 +69,15 @@ uv sync --all-packages --all-groups --all-extras
 ```
 
 ::: tip
-It is important to ensure that the `mpi4py` package links against the correct MPI version. To force a package rebuild using the currently active MPI installation, use:
+It is important to ensure that the `mpi4py`/`h5py` package links against the correct MPI version. To force a package rebuild using the currently active MPI installation, use:
 
 ```sh
 uv pip install --force-reinstall --no-cache-dir --no-binary=mpi4py mpi4py
+```
+
+To detect possibly missing environment variables, you can use:
+```
+uv run https://raw.githubusercontent.com/GazzolaLab/MiV-Simulator/refs/heads/main/configure_mpi.py
 ```
 :::
 
