@@ -52,7 +52,6 @@ brian2 = ["cleosim>=0.18.1"]
 override-dependencies = [
     "jaxtyping>=0.3.9",
     "scipy>=1.17.1",
-    "neuroh5 @ git+https://github.com/frthjf/neuroh5.git@601f842"
 ]
 
 no-build-isolation-package = ["neuroh5"]

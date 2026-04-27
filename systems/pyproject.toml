@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "miv-simulator @ git+https://github.com/GazzolaLab/MiV-Simulator.git@f279b9c",
-    "dmosopt @ git+https://github.com/iraikov/dmosopt.git@3de0ff0",
+    "dmosopt @ git+https://github.com/iraikov/dmosopt.git@3eee13c",
     "machinable==4.10.6",
     "sqlean-py>=3.47.0",
     "omegaconf==2.4.0.dev3",
