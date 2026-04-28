@@ -1,5 +1,8 @@
 import glob
+import json
 import os
+import shutil
+import uuid
 
 from huggingface_hub import HfApi
 from machinable import Component
@@ -35,7 +38,7 @@ class Raw(GatherAndMerge):
         }
 
 
-class WithouInput(Encoding):
+class WithoutInput(Encoding):
     def __call__(self, env, t_end, inputs):
         return None
 
@@ -48,9 +51,9 @@ class Sample(Component):
         samples: int | tuple[int, int] = 100
         noise: bool = True
 
-        system: str = "./systems/graphs/EI3"
+        system: str = "./systems/graphs/EI2"
         model: ObjSpec = None
-        encoding: ObjSpec = "systems.sample.WithouInput"
+        encoding: ObjSpec = "systems.sample.WithoutInput"
         decoding: ObjSpec = "systems.sample.Raw"
 
         output_directory: str = "???"
@@ -107,12 +110,18 @@ class Sample(Component):
     def count(self):
         print(len(list(glob.glob(os.path.join(self.config.output_directory, "*.p")))))
 
-    def merge(self, include_voltage: bool = False):
-        dest = os.path.join(
-            "./systems/datasets",
-            os.path.basename(self.config.system),
-            "ct-cp" + ("-cv" if include_voltage else ""),
-        )
+    def merge(
+        self,
+        include_voltage: bool = False,
+        dest: str | None = None,
+        warmup: int = 1600,
+    ):
+        if dest is None:
+            dest = os.path.join(
+                "./systems/datasets",
+                os.path.basename(self.config.system),
+                "ct-cp" + ("-cv" if include_voltage else ""),
+            )
         os.makedirs(dest, exist_ok=True)
 
         train_dir = os.path.join(dest, "train")
@@ -124,6 +133,9 @@ class Sample(Component):
         split_counts = {"train": 0, "test": 0}
 
         env = Env(self.config.system, self.model())
+
+        _meta_fs = None
+        _meta_n_channels = None
 
         for i, file_path in enumerate(
             sorted(glob.glob(os.path.join(self.config.output_directory, "*.p")))
@@ -143,7 +155,7 @@ class Sample(Component):
             data = load_file(file_path)
 
             # remove warmup
-            it, tt, iv, vv, im, mp = Slice(start=1600, stop=data["duration"])(
+            it, tt, iv, vv, im, mp = Slice(start=warmup, stop=data["duration"])(
                 env,
                 it=data["it"],
                 tt=data["tt"],
@@ -155,6 +167,10 @@ class Sample(Component):
 
             cit, ctt = env.channel_recording(it, tt)
             p = env.potential_recording(mp)
+
+            if _meta_fs is None and p is not None:
+                _meta_n_channels = int(p.shape[0])
+                _meta_fs = float(p.shape[-1] / ((data["duration"] - warmup) / 1000.0))
 
             cit_array = np.array(
                 [cit.get(k, np.array([])) for k in range(env.io.num_channels)],
@@ -193,9 +209,6 @@ class Sample(Component):
             writer.finalize()
             writer.close()
 
-        import shutil
-        import uuid
-
         for split in writers.keys():
             split_dir = train_dir if split == "train" else test_dir
             arrow_file = os.path.join(split_dir, "data-00000-of-00001.arrow")
@@ -221,10 +234,19 @@ class Sample(Component):
         dataset_dict_json = {
             "splits": {split: {"name": split} for split in writers.keys()}
         }
-        import json
 
         with open(os.path.join(dest, "dataset_dict.json"), "w") as f:
             json.dump(dataset_dict_json, f)
+
+        if _meta_fs is not None:
+            conversion_metadata = {
+                "sampling_frequency": _meta_fs,
+                "num_channels": _meta_n_channels,
+                "warmup_ms": warmup,
+                "system": self.config.system,
+            }
+            with open(os.path.join(dest, "conversion_metadata.json"), "w") as f:
+                json.dump(conversion_metadata, f, indent=2)
 
     def publish(self, repo_id: str = "livn-org/livn"):
         api = HfApi(token=os.getenv("HF_TOKEN"))
