@@ -147,4 +147,7 @@ dmypy.json
 .pyre/
 
 #testing
-tests/saketh_tests/*/
+/tests/saketh_tests/
+/tests/systems/
+/livn_experiments/
+/experiments2/
