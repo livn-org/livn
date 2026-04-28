@@ -10,6 +10,7 @@
     import BioRecordingList from "$lib/components/BioRecordingList.svelte";
     import BioRecordingDetail from "$lib/components/BioRecordingDetail.svelte";
     import { viewConfig, envSystem, pendingCommand, pyodideReady } from "$lib/stores";
+    import SystemGenerator from "$lib/components/SystemGenerator.svelte";
 
     // ── Navigation state (flat primitives avoid TS union-narrowing issues) ──
     let navTab       = $state<'bio' | 'sim' | 'build'>('sim');
@@ -269,8 +270,7 @@
                 </div>
                 <div class="build-body">
                     {#if buildSubTab === 'system'}
-                        <!-- TODO: build your own system -->
-                        <div class="todo-placeholder">Coming soon</div>
+                        <SystemGenerator />
                     {:else}
                         <!-- TODO: build your own stimulation pipeline -->
                         <div class="todo-placeholder">Coming soon</div>
@@ -474,13 +474,19 @@
     .build-body {
         flex: 1;
         display: flex;
-        align-items: center;
-        justify-content: center;
+        min-height: 0;
+        overflow: hidden;
+    }
+    .build-body > :global(*) {
+        flex: 1;
+        min-width: 0;
+        min-height: 0;
     }
     .todo-placeholder {
         color: #444;
         font-size: 14px;
         font-style: italic;
+        margin: auto;
     }
 
     /* ── Responsive ── */
