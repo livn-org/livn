@@ -7,6 +7,7 @@
     import Tooltip from "$lib/components/Tooltip.svelte";
     import NavBar from "$lib/components/NavBar.svelte";
     import SimSystemList from "$lib/components/SimSystemList.svelte";
+    import ExperimentList from "$lib/components/ExperimentList.svelte";
     import BioRecordingList from "$lib/components/BioRecordingList.svelte";
     import BioRecordingDetail from "$lib/components/BioRecordingDetail.svelte";
     import { viewConfig, envSystem, pendingCommand, pyodideReady } from "$lib/stores";
@@ -241,7 +242,14 @@
             </div>
 
         {:else if navTab === 'sim' && navPage === 'list'}
-            <SimSystemList onSelect={selectSystem} />
+            <div class="sim-list-layout">
+                <div class="sim-list-panel sim-list-divider">
+                    <SimSystemList onSelect={selectSystem} />
+                </div>
+                <div class="sim-list-panel">
+                    <ExperimentList />
+                </div>
+            </div>
 
         {:else if navTab === 'bio' && navPage === 'list'}
             <BioRecordingList onSelect={selectRecording} />
@@ -481,6 +489,22 @@
         color: #444;
         font-size: 14px;
         font-style: italic;
+    }
+
+    /* ── Sim list: two-panel split ── */
+    .sim-list-layout {
+        flex: 1;
+        display: grid;
+        grid-template-columns: 1fr 1.6fr;
+        min-height: 0;
+        overflow: hidden;
+    }
+    .sim-list-panel {
+        min-height: 0;
+        overflow-y: auto;
+    }
+    .sim-list-divider {
+        border-right: 1px solid #2a2a4a;
     }
 
     /* ── Responsive ── */

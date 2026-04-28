@@ -146,3 +146,5 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
+#testing
+tests/saketh_tests/*/

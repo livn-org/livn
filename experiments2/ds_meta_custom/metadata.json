@@ -1,0 +1,17 @@
+{
+  "duration": 300,
+  "system": {
+    "uri": "/data/EI1.h5",
+    "populations": [
+      "E",
+      "I"
+    ],
+    "n_populations": 2,
+    "n_neurons": 50
+  },
+  "encoding": {
+    "kind": "sinusoid",
+    "freq_hz": 10.0
+  },
+  "model": "FakeModel"
+}

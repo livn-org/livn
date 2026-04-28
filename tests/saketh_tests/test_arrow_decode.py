@@ -1,4 +1,6 @@
+import json
 import os
+import shutil
 
 import numpy as np
 import pytest
@@ -17,7 +19,13 @@ from livn.decoding import (
     AvalancheAnalysis,
     ArrowDataset,
 )
+import livn.decoding as _decoding_mod
 from livn.backend import backend
+
+# Absolute path of the livn_ui project root (two levels up from this file)
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+_DEFAULT_EXPERIMENT_ROOT = os.path.join(_PROJECT_ROOT, "livn_experiments")
+_EXPERIMENTS2_ROOT = os.path.join(_PROJECT_ROOT, "experiments2")
 
 class MockEnv:
     def __init__(self, n_units=100, n_channels=16):
@@ -361,3 +369,187 @@ class TestArrowDataset:
         it, tt = make_mock_spikes(5, 5, duration)
         ad(env, it, tt, None, None, None, None)
         assert os.path.isfile(os.path.join(ad.directory, "data-00000.arrow"))
+
+
+class TestRegistryAndRoots:
+    """Tests that ArrowDataset maintains the per-root experiments.json registry
+    and the global ~/.livn/roots.json across multiple experiment roots."""
+
+    @pytest.fixture(autouse=True)
+    def _require_datasets(self):
+        pytest.importorskip("datasets")
+        pytest.importorskip("pyarrow")
+
+    @pytest.fixture()
+    def roots_file(self, tmp_path, monkeypatch):
+        """Redirect the global roots file to a temp location.
+        Experiment root directories (livn_experiments, experiments2) are left on
+        disk after the test so they can be inspected."""
+        fake_roots = str(tmp_path / "roots.json")
+        monkeypatch.setattr(_decoding_mod, "_GLOBAL_ROOTS_FILE", fake_roots)
+        return fake_roots
+
+    def test_default_root_creates_livn_experiments(self, roots_file):
+        """Writing an experiment to the default root creates livn_ui/livn_experiments."""
+        env = MockEnv(n_units=5)
+        duration = 200
+        it, tt = make_mock_spikes(5, 5, duration)
+
+        ad = ArrowDataset(
+            duration=duration,
+            experiment_root=_DEFAULT_EXPERIMENT_ROOT,
+            name="exp_default",
+            voltages=False,
+            membrane_currents=False,
+        )
+        ad(env, it, tt, None, None, None, None)
+
+        assert os.path.isdir(_DEFAULT_EXPERIMENT_ROOT)
+        assert os.path.isfile(os.path.join(ad.directory, "data-00000.arrow"))
+
+        registry = json.loads(
+            open(os.path.join(_DEFAULT_EXPERIMENT_ROOT, "experiments.json")).read()
+        )
+        assert "exp_default" in registry
+        assert registry["exp_default"]["path"] == ad.directory
+
+        roots = json.loads(open(roots_file).read())
+        assert os.path.abspath(_DEFAULT_EXPERIMENT_ROOT) in roots
+
+    def test_custom_root_creates_experiments2(self, roots_file):
+        """Writing an experiment to experiments2 creates livn_ui/experiments2."""
+        env = MockEnv(n_units=5)
+        duration = 200
+        it, tt = make_mock_spikes(5, 5, duration)
+
+        ad = ArrowDataset(
+            duration=duration,
+            experiment_root=_EXPERIMENTS2_ROOT,
+            name="exp_custom",
+            voltages=False,
+            membrane_currents=False,
+        )
+        ad(env, it, tt, None, None, None, None)
+
+        assert os.path.isdir(_EXPERIMENTS2_ROOT)
+        assert os.path.isfile(os.path.join(ad.directory, "data-00000.arrow"))
+
+        registry = json.loads(
+            open(os.path.join(_EXPERIMENTS2_ROOT, "experiments.json")).read()
+        )
+        assert "exp_custom" in registry
+
+        roots = json.loads(open(roots_file).read())
+        assert os.path.abspath(_EXPERIMENTS2_ROOT) in roots
+
+    def test_both_roots_in_global_registry(self, roots_file):
+        """Both livn_experiments and experiments2 appear in the global roots.json."""
+        env = MockEnv(n_units=5)
+        duration = 200
+
+        for root, name in [
+            (_DEFAULT_EXPERIMENT_ROOT, "from_default"),
+            (_EXPERIMENTS2_ROOT, "from_experiments2"),
+        ]:
+            it, tt = make_mock_spikes(5, 5, duration)
+            ad = ArrowDataset(
+                duration=duration,
+                experiment_root=root,
+                name=name,
+                voltages=False,
+                membrane_currents=False,
+            )
+            ad(env, it, tt, None, None, None, None)
+
+        roots = json.loads(open(roots_file).read())
+        assert os.path.abspath(_DEFAULT_EXPERIMENT_ROOT) in roots
+        assert os.path.abspath(_EXPERIMENTS2_ROOT) in roots
+
+    def test_per_root_registry_tracks_multiple_experiments(self, roots_file):
+        """Per-root experiments.json accumulates entries across different experiment names."""
+        env = MockEnv(n_units=5)
+        duration = 200
+
+        names = ["alpha", "beta", "gamma"]
+        for name in names:
+            it, tt = make_mock_spikes(5, 5, duration)
+            ad = ArrowDataset(
+                duration=duration,
+                experiment_root=_DEFAULT_EXPERIMENT_ROOT,
+                name=name,
+                voltages=False,
+                membrane_currents=False,
+            )
+            ad(env, it, tt, None, None, None, None)
+
+        registry = json.loads(
+            open(os.path.join(_DEFAULT_EXPERIMENT_ROOT, "experiments.json")).read()
+        )
+        for name in names:
+            assert name in registry
+            assert "path" in registry[name]
+            assert "created_at" in registry[name]
+
+    def test_dataset_and_metadata_saved_to_experiment_folder(self, roots_file):
+        """HuggingFace dataset and metadata.json land inside the named experiment folder
+        for both livn_experiments (default root) and experiments2 (custom root)."""
+        from pydantic import BaseModel
+
+        class FakeEncoding(BaseModel):
+            kind: str = "sinusoid"
+            freq_hz: float = 10.0
+
+        class FakeSystem:
+            uri = "/data/EI1.h5"
+            populations = ["E", "I"]
+            gids = list(range(50))
+
+        class FakeModel:
+            pass
+
+        class RichEnv(MockEnv):
+            def __init__(self):
+                super().__init__(n_units=5)
+                self.system = FakeSystem()
+                self.encoding = FakeEncoding()
+                self.model = FakeModel()
+
+        env = RichEnv()
+        duration = 300
+
+        for root, name in [
+            (_DEFAULT_EXPERIMENT_ROOT, "ds_meta_default"),
+            (_EXPERIMENTS2_ROOT, "ds_meta_custom"),
+        ]:
+            it, tt = make_mock_spikes(10, 5, duration)
+            ad = ArrowDataset(
+                duration=duration,
+                experiment_root=root,
+                name=name,
+                save_dataset=True,
+                save_metadata=True,
+                voltages=False,
+                membrane_currents=False,
+            )
+            ad(env, it, tt, None, None, None, None)
+
+            # HuggingFace dataset saved inside the experiment folder
+            assert os.path.isdir(ad.dataset_path), (
+                f"dataset/ dir missing at {ad.dataset_path}"
+            )
+            reloaded = load_from_disk(ad.dataset_path)
+            assert len(reloaded) >= 1
+            assert "it" in reloaded.column_names
+            assert "tt" in reloaded.column_names
+            assert reloaded[0]["duration"] == duration
+
+            # metadata.json saved inside the experiment folder
+            meta_path = os.path.join(ad.directory, "metadata.json")
+            assert os.path.isfile(meta_path), f"metadata.json missing at {meta_path}"
+            with open(meta_path) as f:
+                meta = json.load(f)
+            assert meta["duration"] == duration
+            assert meta["system"]["uri"] == "/data/EI1.h5"
+            assert meta["system"]["populations"] == ["E", "I"]
+            assert meta["encoding"]["kind"] == "sinusoid"
+            assert meta["model"] == "FakeModel"
