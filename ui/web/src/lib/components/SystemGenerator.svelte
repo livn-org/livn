@@ -140,8 +140,49 @@
     let canvas:    HTMLCanvasElement | null = $state(null);
     let container: HTMLDivElement    | null = $state(null);
 
+    // ── View transform (plain vars — not reactive, updated by events) ───────
+    let viewPanX     = 0;
+    let viewPanY     = 0;
+    let viewZoom     = 1;
+    let viewRotation = 0;
+    let dragActive   = $state<'pan' | 'rotate' | null>(null);
+    let lastMX = 0, lastMY = 0;
+
+    function onCanvasMouseDown(e: MouseEvent) {
+        e.preventDefault();
+        lastMX = e.clientX;
+        lastMY = e.clientY;
+        dragActive = (e.button === 2 || e.shiftKey) ? 'rotate' : 'pan';
+    }
+
+    function onCanvasMouseMove(e: MouseEvent) {
+        if (!dragActive) return;
+        const dx = e.clientX - lastMX;
+        const dy = e.clientY - lastMY;
+        lastMX = e.clientX;
+        lastMY = e.clientY;
+        if (dragActive === 'pan') {
+            viewPanX += dx;
+            viewPanY += dy;
+        } else {
+            viewRotation += dx * 0.007;
+        }
+        drawPreview();
+    }
+
+    function onCanvasMouseUp() { dragActive = null; }
+
+    function onContextMenu(e: Event) { e.preventDefault(); }
+
+    function resetView() {
+        viewPanX = 0;
+        viewPanY = 0;
+        viewZoom = 1;
+        viewRotation = 0;
+        drawPreview();
+    }
+
     const PREVIEW_SAMPLE = 5000;
-    // How many neurons are shown in preview (for legend)
     const excSampled = $derived(Math.min(excCount, Math.round(PREVIEW_SAMPLE * excRatio)));
     const inhSampled = $derived(Math.min(inhCount, PREVIEW_SAMPLE - excSampled));
 
@@ -153,7 +194,6 @@
         };
     }
 
-    // Box-Muller: returns one Gaussian sample (mean=0, std=1)
     function gaussian(rand: () => number): number {
         return Math.sqrt(-2 * Math.log(rand() + 1e-12)) * Math.cos(rand() * 2 * Math.PI);
     }
@@ -173,6 +213,13 @@
         ctx.fillStyle = '#080812';
         ctx.fillRect(0, 0, W, H);
 
+        // Apply view transform (pan / zoom / rotate) around canvas centre
+        ctx.save();
+        ctx.translate(W / 2 + viewPanX, H / 2 + viewPanY);
+        ctx.rotate(viewRotation);
+        ctx.scale(viewZoom, viewZoom);
+        ctx.translate(-W / 2, -H / 2);
+
         // ── Coordinate transform ──────────────────────────────────────────
         let xmin: number, xmax: number, ymin: number, ymax: number;
         if (shape === 'rectangle') {
@@ -185,14 +232,12 @@
         }
 
         // MEA centering offset — always center MEA on culture center
-        // Preset MEA center is (700, 6300); custom grid is already culture-aligned
         const cultureCx = shape === 'rectangle' ? rectX / 2 : 0;
         const cultureCy = shape === 'rectangle' ? rectY / 2 : 0;
         const meaOx = meaMode === 'preset' ? cultureCx - 700 : 0;
         const meaOy = meaMode === 'preset' ? cultureCy - 6300 : 0;
 
-        // Asymmetric padding: extra space on the right for the legend column
-        const padL = 55, padR = 210, padT = 20, padB = 50;
+        const padL = 55, padR = 60, padT = 20, padB = 50;
         const avW = W - padL - padR;
         const avH = H - padT - padB;
         const scale = Math.min(avW / (xmax - xmin), avH / (ymax - ymin));
@@ -202,7 +247,7 @@
         const oy = padT + (avH - drawH) / 2;
 
         const tx = (x: number) => ox + (x - xmin) * scale;
-        const ty = (y: number) => oy + drawH - (y - ymin) * scale; // flip Y so +y is up
+        const ty = (y: number) => oy + drawH - (y - ymin) * scale;
 
         // ── Bounding shape ────────────────────────────────────────────────
         ctx.strokeStyle = '#2a3055';
@@ -215,7 +260,7 @@
             ctx.stroke();
         }
 
-        // ── Sample neuron positions (store arrays so we can draw connections first) ──
+        // ── Sample neuron positions ───────────────────────────────────────
         const rand = makeRng(42);
 
         function samplePt(): [number, number] {
@@ -233,34 +278,29 @@
         for (let i = 0; i < inhSampled; i++) inhPts.push(samplePt());
 
         // ── Approximate connection lines (Gaussian local connectivity) ────
-        // Mirrors generate_2d default: sigma=200µm, up to ~2500 lines
-        // We sample target offsets from N(0, sigma) directly in µm-space
-        // (equivalent to sampling from the distance-dependent probability)
-        const sigmaPx = 200 * scale; // 200 µm default in pixel space
+        const sigmaPx = 200 * scale;
         const CONN_SOURCES = Math.min(excPts.length, 350);
         const CONN_PER    = Math.ceil(2000 / Math.max(1, CONN_SOURCES));
 
-        ctx.strokeStyle = 'rgba(79, 195, 247, 0.07)'; // same hue as EXC, very faint
+        ctx.strokeStyle = 'rgba(79, 195, 247, 0.07)';
         ctx.lineWidth = 0.35;
         ctx.beginPath();
         for (let i = 0; i < CONN_SOURCES; i++) {
             const [sx, sy] = excPts[i];
             const spx = tx(sx), spy = ty(sy);
             for (let j = 0; j < CONN_PER; j++) {
-                // Gaussian offset in px (Box-Muller)
                 const dx = gaussian(rand) * sigmaPx;
                 const dy = gaussian(rand) * sigmaPx;
                 ctx.moveTo(spx, spy);
-                ctx.lineTo(spx + dx, spy + dy); // dy keeps same sign (both flipped)
+                ctx.lineTo(spx + dx, spy + dy);
             }
         }
         ctx.stroke();
 
-        // ── MEA electrodes: dot + output-radius ring + ID label ──────────
+        // ── MEA electrodes ────────────────────────────────────────────────
         if (meaCoords.length > 0 && meaCoords.length <= 4096) {
             const outputRadiusPx = 50 * scale;
 
-            // Recording radius rings
             ctx.strokeStyle = 'rgba(253, 216, 53, 0.25)';
             ctx.lineWidth = 0.4;
             ctx.beginPath();
@@ -271,7 +311,6 @@
             }
             ctx.stroke();
 
-            // Electrode dots
             ctx.fillStyle = 'rgba(253, 216, 53, 0.85)';
             ctx.strokeStyle = 'rgba(0,0,0,0.6)';
             ctx.lineWidth = 0.4;
@@ -284,7 +323,6 @@
             ctx.fill();
             ctx.stroke();
 
-            // Electrode ID numbers (only if spaced enough to read, custom mode only)
             if (meaMode === 'custom' && meaPitch * scale > 22 && meaCoords.length <= 256) {
                 ctx.fillStyle = 'rgba(150, 180, 220, 0.7)';
                 ctx.font = `${Math.max(6, Math.min(9, meaPitch * scale * 0.18))}px monospace`;
@@ -295,10 +333,9 @@
             }
         }
 
-        // ── Neuron circles (batched arc — matches system.png scatter s=5, alpha=0.7) ──
+        // ── Neuron circles ────────────────────────────────────────────────
         const dotR = Math.max(1, Math.min(2.5, drawW / 280));
 
-        // EXC
         ctx.fillStyle = 'rgba(79, 195, 247, 0.68)';
         ctx.beginPath();
         for (const [x, y] of excPts) {
@@ -308,7 +345,6 @@
         }
         ctx.fill();
 
-        // INH
         ctx.fillStyle = 'rgba(239, 83, 80, 0.75)';
         ctx.beginPath();
         for (const [x, y] of inhPts) {
@@ -317,64 +353,6 @@
             ctx.arc(cx, cy, dotR, 0, Math.PI * 2);
         }
         ctx.fill();
-
-        // ── Legend (right column — outside culture) ───────────────────────
-        // Left edge sits 8px right of the culture (half of the 15px axis gap)
-        const legX    = ox + drawW + 8;
-        const legTopY = oy + 60;
-        const legFont = 15;
-        const legLineH = 26;
-        const legDotR  = 8;
-
-        const legendItems = [
-            { color: 'rgba(79, 195, 247, 0.9)',  label: 'EXC',  sub: `${excCount.toLocaleString()} neurons` },
-            { color: 'rgba(239,  83,  80, 0.9)',  label: 'INH',  sub: `${inhCount.toLocaleString()} neurons` },
-            { color: 'rgba(253, 216, 53,  0.9)',  label: 'MEA',  sub: `${meaCount} electrodes` },
-        ];
-
-        ctx.font = `bold ${legFont}px sans-serif`;
-        legendItems.forEach(({ color, label, sub }, i) => {
-            const cy = legTopY + i * (legLineH * 2 + 8) + legDotR + 4;
-
-            // Colour dot
-            ctx.fillStyle = color;
-            ctx.beginPath();
-            ctx.arc(legX + legDotR, cy, legDotR, 0, Math.PI * 2);
-            ctx.fill();
-
-            // Bold label
-            ctx.fillStyle = '#ddd';
-            ctx.textAlign = 'left';
-            ctx.fillText(label, legX + legDotR * 2 + 6, cy + 4.5);
-
-            // Smaller sub-label on the line below
-            ctx.font = `${legFont - 1}px sans-serif`;
-            ctx.fillStyle = '#777';
-            ctx.fillText(sub, legX + legDotR * 2 + 6, cy + legLineH);
-            ctx.font = `bold ${legFont}px sans-serif`;
-        });
-
-        // ── Scale bar (bottom of legend column) ──────────────────────────
-        const spanUm = xmax - xmin;
-        const targetUm = Math.pow(10, Math.floor(Math.log10(spanUm / 4)));
-        const niceUm = [1, 2, 5, 10].map(m => m * targetUm).find(v => v * scale > 50) ?? targetUm * 10;
-        const barPx = niceUm * scale;
-        if (barPx > 30 && barPx < (padR - 20)) {
-            const bx1 = legX, bx2 = legX + barPx;
-            const by = oy + drawH - 10;
-            ctx.strokeStyle = '#555';
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(bx1, by); ctx.lineTo(bx2, by);
-            ctx.moveTo(bx1, by - 3); ctx.lineTo(bx1, by + 3);
-            ctx.moveTo(bx2, by - 3); ctx.lineTo(bx2, by + 3);
-            ctx.stroke();
-            ctx.fillStyle = '#777';
-            ctx.font = '10px monospace';
-            ctx.textAlign = 'left';
-            const barLabel = niceUm >= 1000 ? `${niceUm / 1000} mm` : `${niceUm} µm`;
-            ctx.fillText(barLabel, bx1, by - 6);
-        }
 
         // ── Axis labels ───────────────────────────────────────────────────
         ctx.fillStyle = '#888';
@@ -386,10 +364,37 @@
         ctx.rotate(-Math.PI / 2);
         ctx.fillText('Y coordinate (µm)', 0, 0);
         ctx.restore();
+
+        // Restore view transform
+        ctx.restore();
+
+        // ── Scale bar — fixed bottom-right, updates with zoom ─────────────
+        // effectiveScale accounts for current zoom so the bar shows real µm
+        const effectiveScale = scale * viewZoom;
+        const visibleSpan = (xmax - xmin) / viewZoom;
+        const sbTarget = Math.pow(10, Math.floor(Math.log10(visibleSpan / 4)));
+        const sbNice = [1, 2, 5, 10].map(m => m * sbTarget).find(v => v * effectiveScale > 50) ?? sbTarget * 10;
+        const sbPx = sbNice * effectiveScale;
+        if (sbPx > 20 && sbPx < W * 0.35) {
+            const bx2 = W - 130;
+            const bx1 = bx2 - sbPx;
+            const by  = H - 16;
+            ctx.strokeStyle = '#666';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(bx1, by); ctx.lineTo(bx2, by);
+            ctx.moveTo(bx1, by - 4); ctx.lineTo(bx1, by + 4);
+            ctx.moveTo(bx2, by - 4); ctx.lineTo(bx2, by + 4);
+            ctx.stroke();
+            ctx.fillStyle = '#999';
+            ctx.font = '11px monospace';
+            ctx.textAlign = 'center';
+            const sbLabel = sbNice >= 1000 ? `${sbNice / 1000} mm` : `${sbNice} µm`;
+            ctx.fillText(sbLabel, (bx1 + bx2) / 2, by - 8);
+        }
     }
 
     // When preset MEA is selected, auto-size culture to match the MEA footprint
-    // (1400 × 12600 µm) so the MEA is never larger than the culture by default
     $effect(() => {
         if (meaMode === 'preset') {
             shape  = 'rectangle';
@@ -408,9 +413,19 @@
 
     onMount(() => {
         const cont = container;
-        if (!cont) return;
+        const cv   = canvas;
+        if (!cont || !cv) return;
+
+        // Register wheel listener as non-passive so we can preventDefault
+        function handleWheel(e: WheelEvent) {
+            e.preventDefault();
+            const factor = e.deltaY < 0 ? 1.05 : 1 / 1.05;
+            viewZoom = Math.max(0.05, Math.min(30, viewZoom * factor));
+            drawPreview();
+        }
+        cv.addEventListener('wheel', handleWheel, { passive: false });
+
         const observer = new ResizeObserver(() => {
-            const cv = canvas;
             if (cv && cont) {
                 cv.width  = cont.clientWidth;
                 cv.height = cont.clientHeight;
@@ -418,7 +433,11 @@
             }
         });
         observer.observe(cont);
-        return () => observer.disconnect();
+
+        return () => {
+            cv.removeEventListener('wheel', handleWheel);
+            observer.disconnect();
+        };
     });
 
     // ── CLI command ─────────────────────────────────────────────────────────
@@ -575,7 +594,48 @@
 
     <!-- ── Right: live preview ─────────────────────────────────────────── -->
     <div class="preview-panel" bind:this={container}>
-        <canvas bind:this={canvas}></canvas>
+        <canvas
+            bind:this={canvas}
+            onmousedown={onCanvasMouseDown}
+            onmousemove={onCanvasMouseMove}
+            onmouseup={onCanvasMouseUp}
+            onmouseleave={onCanvasMouseUp}
+            oncontextmenu={onContextMenu}
+            style="cursor: {dragActive === 'pan' ? 'grabbing' : dragActive === 'rotate' ? 'ew-resize' : 'grab'}"
+        ></canvas>
+
+        <!-- Fixed legend overlay (stays put while canvas transforms) -->
+        <div class="legend-overlay">
+            <div class="leg-item">
+                <span class="leg-dot exc-dot"></span>
+                <div class="leg-text">
+                    <span class="leg-label">EXC</span>
+                    <span class="leg-sub">{excCount.toLocaleString()} neurons</span>
+                </div>
+            </div>
+            <div class="leg-item">
+                <span class="leg-dot inh-dot"></span>
+                <div class="leg-text">
+                    <span class="leg-label">INH</span>
+                    <span class="leg-sub">{inhCount.toLocaleString()} neurons</span>
+                </div>
+            </div>
+            <div class="leg-item">
+                <span class="leg-dot mea-dot"></span>
+                <div class="leg-text">
+                    <span class="leg-label">MEA</span>
+                    <span class="leg-sub">{meaCount} electrodes</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Home / reset button -->
+        <button class="home-btn" onclick={resetView} title="Reset pan / zoom / rotation">
+            ⌂ Reset view
+        </button>
+
+        <!-- Interaction hint -->
+        <div class="canvas-hint">drag to pan · shift+drag to rotate · scroll to zoom</div>
     </div>
 
 </div>
@@ -759,4 +819,88 @@
         height: 100%;
     }
 
+    /* ── Legend overlay ──────────────────────────────────────────────── */
+    .legend-overlay {
+        position: absolute;
+        right: 20px;
+        top: 50%;
+        transform: translateY(-50%);
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+        pointer-events: none;
+        user-select: none;
+    }
+
+    .leg-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+
+    .leg-dot {
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        flex-shrink: 0;
+    }
+
+    .exc-dot { background: rgba(79,  195, 247, 0.9); }
+    .inh-dot { background: rgba(239,  83,  80, 0.9); }
+    .mea-dot { background: rgba(253, 216,  53, 0.9); }
+
+    .leg-text {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+
+    .leg-label {
+        font-size: 15px;
+        font-weight: 700;
+        color: #ddd;
+        line-height: 1;
+    }
+
+    .leg-sub {
+        font-size: 13px;
+        color: #777;
+        line-height: 1;
+    }
+
+    /* ── Home / reset button ─────────────────────────────────────────── */
+    .home-btn {
+        position: absolute;
+        bottom: 14px;
+        right: 14px;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid #2a2a4a;
+        border-radius: 5px;
+        color: #888;
+        font-size: 12px;
+        padding: 5px 12px;
+        cursor: pointer;
+        font-family: inherit;
+        transition: background 0.15s, color 0.15s, border-color 0.15s;
+        z-index: 10;
+    }
+    .home-btn:hover {
+        background: rgba(255, 255, 255, 0.12);
+        color: #eee;
+        border-color: #444;
+    }
+
+    /* ── Interaction hint ────────────────────────────────────────────── */
+    .canvas-hint {
+        position: absolute;
+        bottom: 14px;
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: 10px;
+        color: #484860;
+        pointer-events: none;
+        user-select: none;
+        letter-spacing: 0.04em;
+        white-space: nowrap;
+    }
 </style>
