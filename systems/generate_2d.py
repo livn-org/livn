@@ -183,29 +183,24 @@ class Generate2DSystem(Component):
             return os.path.join(self.config.output_directory, "graph.json")
         return self.local_directory("graph.json")
 
-    def mea(self, pitch: float = 100, overwrite: bool = False):
+    def mea(self, pitch: float = 50, overwrite: bool = True):
         fn = os.path.join(self.config.output_directory, "mea.json")
         if not overwrite and os.path.isfile(fn):
-            raise FileExistsError("mea.json already exists.")
+            raise FileExistsError("mea.json already exists")
         z_min, z_max = self.config.z_range
-        rng = np.random.default_rng(self.config.random_seed)
-        bounds = bounding_box(
-            *(
-                import_object_by_path(self.config.area)(
-                    10_000,
-                    rng,
-                    **self.config.area_kwargs,
-                )
-            )
-        )
+
+        with open(self.graph_filepath, "r") as f:
+            graph = json.load(f)
+        area = graph["architecture"]["config"]["area"]
+        bounds = (tuple(area[0]), tuple(area[1]))
         coords = electrode_array_coordinates_for_area(
             pitch=pitch, area=bounds, z=z_min + (z_max - z_min) / 2
         )
 
         data = {
             "electrode_coordinates": coords.tolist(),
-            "input_radius": 100,
-            "output_radius": 50,
+            "input_radius": 50,
+            "output_radius": 80,
         }
 
         with open(fn, "w") as f:
