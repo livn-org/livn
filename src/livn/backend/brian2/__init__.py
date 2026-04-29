@@ -472,8 +472,21 @@ class Env(EnvProtocol):
             if isinstance(monitor, tuple):
                 # Two-compartment: (monitor_soma, monitor_dend)
                 mon_s, mon_d = monitor
-                data_s = np.array(mon_s.I_memb_s[:, start_idx:])
-                data_d = np.array(mon_d.I_memb_d[:, start_idx:])
+                # I_memb_s/I_memb_d are current densities (mA/cm^2)
+                # in the brian2 equations; convert to absolute current per
+                # section in microamperes (I[uA] = density * area_cm2 * 1e3)
+                # to follow the convention
+                pop = mon_s.source
+                area_s_cm2 = float(getattr(pop, "area_soma_cm2", 0.0))
+                area_d_cm2 = float(getattr(pop, "area_dend_cm2", 0.0))
+                if area_s_cm2 <= 0.0 or area_d_cm2 <= 0.0:
+                    raise RuntimeError(
+                        f"brian2 population {population!r} is missing "
+                        "area_soma_cm2/area_dend_cm2 attributes required "
+                        "to convert I_memb_* (mA/cm^2) to uA"
+                    )
+                data_s = np.array(mon_s.I_memb_s[:, start_idx:]) * (area_s_cm2 * 1000.0)
+                data_d = np.array(mon_d.I_memb_d[:, start_idx:]) * (area_d_cm2 * 1000.0)
                 per_pop_data[population] = (data_s, data_d)
                 lengths.append(data_s.shape[1] if data_s.ndim == 2 else 0)
             else:

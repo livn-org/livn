@@ -111,7 +111,6 @@ class ReducedCalciumSomaDendrite(Model):
                 "soma_gmax_K": 0.10458818,
                 "soma_gmax_KCa": 0.005655824,
                 "soma_gmax_Na": 0.11399703,
-                "ic_constant": -0.015656504661833687,
                 "V_rest": -57.4,
                 "V_threshold": -37.0,
             },
@@ -956,6 +955,14 @@ class ReducedCalciumSomaDendrite(Model):
             population.E_Na = 50.0
             population.E_K = -77.0
 
+            _diam = p["global_diam"]
+            _Ltot = p["Ltotal"]
+            _pp = p["pp"]
+            population.add_attribute("area_soma_cm2")
+            population.add_attribute("area_dend_cm2")
+            population.area_soma_cm2 = _m.pi * _diam * (_pp * _Ltot) * 1e-8
+            population.area_dend_cm2 = _m.pi * _diam * ((1 - _pp) * _Ltot) * 1e-8
+
         else:
             # INH = Pinsky-Rinzel
             p = self.params("PinskyRinzel-PVBC")
@@ -1120,6 +1127,14 @@ class ReducedCalciumSomaDendrite(Model):
 
             population.E_Na = 50.0
             population.E_K = -77.0
+
+            _diam = p["global_diam"]
+            _Ltot = p["Ltotal"]
+            _pp = p["pp"]
+            population.add_attribute("area_soma_cm2")
+            population.add_attribute("area_dend_cm2")
+            population.area_soma_cm2 = _m.pi * _diam * (_pp * _Ltot) * 1e-8
+            population.area_dend_cm2 = _m.pi * _diam * ((1 - _pp) * _Ltot) * 1e-8
 
         # Common: noise init
         population.g_noise_e = 0.0
