@@ -48,18 +48,17 @@ class BoothRinzelKiehn(eqx.Module):
     GK_CaS: float
     GK_CaD: float
     GCa_L: float
-    gleak: float
+    gleak: float  # soma g_pas (mho/cm^2)
+    gleak_d: float  # dend g_pas (mho/cm^2)
 
     C: float
+    cm_ratio: float  # soma cm = C * cm_ratio
     gc: float
     p: float
     Kd: float
     f: float
     alpha: float
     kca: float
-
-    Ra: float
-    area_cm2: float
 
     Vhm: float
     Sm: float
@@ -95,6 +94,19 @@ class BoothRinzelKiehn(eqx.Module):
 
     iCa_rest_S: float
     iCa_rest_D: float
+
+    # Constant balancing currents (mA/cm^2) injected into soma/dend at every
+    # timestep to mirror NEURON's constant mechanism (ic_constant,
+    # ic_constant_d) used by the BRK template to pin the cell at the
+    # tuned resting potential
+    ic_constant: float
+    ic_constant_d: float
+
+    # Resting potential used to seed init_ic mirroring NEURON's
+    # BRK template behaviour: cell.init_ic(V_rest) evaluates the
+    # ionic currents at V_rest and pins ic_constant so the
+    # quiescent membrane is balanced at that voltage
+    V_rest: float
 
     celsius: float
     cao: float
@@ -134,9 +146,11 @@ class BoothRinzelKiehn(eqx.Module):
         self.GK_CaS = 0.0005  # soma_gmax_KCa
         self.GK_CaD = 0.00015  # dend_gmax_KCa
         self.GCa_L = 0.00010  # dend_gmax_CaL
-        self.gleak = 0.0001  # soma_g_pas and dend_g_pas
+        self.gleak = 0.0001  # soma_g_pas
+        self.gleak_d = 0.0001  # dend_g_pas
 
         self.C = 3.0  # uF/cm^2 - global_cm
+        self.cm_ratio = 1.0  # NEURON BRK soma scale: soma.cm = C * cm_ratio
         self.gc = 10.5  # coupling conductance (mS/cm^2)
         self.p = 0.5  # proportion of area taken up by soma (pp)
 
@@ -145,9 +159,6 @@ class BoothRinzelKiehn(eqx.Module):
         self.f = 0.004  # percent free to bound Ca - soma_f_Caconc
         self.alpha = 1.0  # Ca removal scaling - soma_alpha_Caconc
         self.kca = 8.0  # Ca removal rate - soma_kCa_Caconc
-
-        self.Ra = 293.7  # ohm-cm
-        self.area_cm2 = 2000 * 1e-8  # 2000 um^2 converted to cm^2
 
         # Half Activation voltages (mV), Slopes (mV), Time Constants (ms)
 
@@ -192,6 +203,11 @@ class BoothRinzelKiehn(eqx.Module):
         # Resting calcium currents (computed at initialization to reproduce Ca_conc.mod behavior)
         self.iCa_rest_S = 0.0
         self.iCa_rest_D = 0.0
+
+        # NEURON's ``constant.mod`` ``ic_constant`` (mA/cm^2) -- 0 by default.
+        self.ic_constant = 0.0
+        self.ic_constant_d = 0.0
+        self.V_rest = -60.0
 
         # Temperature-related constants for GHK formulation
         self.celsius = 6.3
@@ -265,6 +281,8 @@ class BoothRinzelKiehn(eqx.Module):
             self.global_diam = float(get("global_diam"))
         if get("global_cm") is not None:
             self.C = float(get("global_cm"))
+        if get("cm_ratio") is not None:
+            self.cm_ratio = float(get("cm_ratio"))
 
         # Leak / reversal
         epas = get("e_pas", get("global_e_pas"))
@@ -287,19 +305,15 @@ class BoothRinzelKiehn(eqx.Module):
         if get("dend_gmax_CaL") is not None:
             self.GCa_L = float(get("dend_gmax_CaL"))
 
-        # Leak conductance
         soma_g_pas = get("soma_g_pas")
         dend_g_pas = get("dend_g_pas")
-        if (
-            soma_g_pas is not None
-            and dend_g_pas is not None
-            and soma_g_pas != dend_g_pas
-        ):
+        if soma_g_pas is not None:
             self.gleak = float(soma_g_pas)
+        if dend_g_pas is not None:
+            self.gleak_d = float(dend_g_pas)
         elif soma_g_pas is not None:
-            self.gleak = float(soma_g_pas)
-        elif dend_g_pas is not None:
-            self.gleak = float(dend_g_pas)
+            # Fall back to the soma value when only one was provided
+            self.gleak_d = float(soma_g_pas)
 
         # Calcium removal
         f_val = get("soma_f_Caconc", get("dend_f_Caconc"))
@@ -324,6 +338,13 @@ class BoothRinzelKiehn(eqx.Module):
         if get("E_syn_inh") is not None:
             self.E_syn_inh = float(get("E_syn_inh"))
 
+        if get("ic_constant") is not None:
+            self.ic_constant = float(get("ic_constant"))
+        if get("ic_constant_d") is not None:
+            self.ic_constant_d = float(get("ic_constant_d"))
+        if get("V_rest") is not None:
+            self.V_rest = float(get("V_rest"))
+
         # Input mode
         if get("input_mode") is not None:
             mode = get("input_mode")
@@ -336,6 +357,8 @@ class BoothRinzelKiehn(eqx.Module):
 
     def __init__(self, params: Optional[Any] = None, key=None):
         self.set_default_parameters()
+        ic_provided_s = False
+        ic_provided_d = False
         if params is not None:
             if isinstance(params, Mapping) and "BoothRinzelKiehn" in params:
                 params = params["BoothRinzelKiehn"]
@@ -348,6 +371,8 @@ class BoothRinzelKiehn(eqx.Module):
                 params = array_to_dict(params)
 
             if isinstance(params, Mapping):
+                ic_provided_s = params.get("ic_constant") is not None
+                ic_provided_d = params.get("ic_constant_d") is not None
                 self.set_parameters(params)
             else:
                 raise TypeError(
@@ -358,6 +383,12 @@ class BoothRinzelKiehn(eqx.Module):
         self.ENa = self._nernst(self.nai, self.nao, 1.0)
         self.EK = self._nernst(self.ki, self.ko, 1.0)
 
+        ic_s, _ic_d = self._init_ic_values(self.V_rest)
+        if not ic_provided_s:
+            self.ic_constant = float(ic_s)
+        if not ic_provided_d:
+            self.ic_constant_d = 0.0
+
     def _nernst(self, ci: float, co: float, valence: float) -> float:
         T_kelvin = self.celsius + 273.15
         return (
@@ -367,6 +398,47 @@ class BoothRinzelKiehn(eqx.Module):
             * math.log(co / ci)
         )
 
+    def _init_ic_values(self, V: float) -> Tuple[float, float]:
+        cai0 = 1e-5
+
+        minf = 1.0 / (1.0 + math.exp(-(V + 35.0) / 7.8))
+        hinf = 1.0 / (1.0 + math.exp((V + 55.0) / 7.0))
+        ninf = 1.0 / (1.0 + math.exp(-(V + 28.0) / 15.0))
+        mnSinf = 1.0 / (1.0 + math.exp((V + 30.0) / -5.0))
+        hnSinf = 1.0 / (1.0 + math.exp((V + 45.0) / 5.0))
+        mlinf = 1.0 / (1.0 + math.exp((V + 40.0) / -7.0))
+
+        fN = ((36.0 / 293.15) * (self.celsius + 273.15)) / 2.0
+        fL = ((25.0 / 293.15) * (self.celsius + 273.15)) / 2.0
+
+        def _ghk(v, ci, co, factor):
+            nu = v / factor
+            if abs(nu) < 1e-4:
+                efun = 1.0 - nu / 2.0
+            else:
+                efun = nu / (math.exp(nu) - 1.0)
+            return -factor * (1.0 - (ci / co) * math.exp(nu)) * efun
+
+        ghk_s = _ghk(V, cai0, self.cao, fN)
+        ghk_dN = _ghk(V, cai0, self.cao, fN)
+        ghk_dL = _ghk(V, cai0, self.cao, fL)
+
+        INaS = self.GNa * minf**3 * hinf * (V - self.ENa)
+        IKS = (self.GK_dr * ninf**4 + self.GK_CaS * cai0 / (cai0 + self.Kd)) * (
+            V - self.EK
+        )
+        ICaS = self.GCa_NS * mnSinf**2 * hnSinf * ghk_s
+        IleakS = self.gleak * (V - self.Eleak)
+
+        IKD = self.GK_CaD * cai0 / (cai0 + self.Kd) * (V - self.EK)
+        ICaD_N = self.GCa_ND * mnSinf**2 * hnSinf * ghk_dN
+        ICaD_L = self.GCa_L * mlinf * ghk_dL
+        IleakD = self.gleak_d * (V - self.Eleak)
+
+        ic_s = -(INaS + IKS + ICaS + IleakS)
+        ic_d = -(IKD + ICaD_N + ICaD_L + IleakD)
+        return ic_s, ic_d
+
     def _geometry(self) -> Tuple[Array, Array, Array, Array]:
         diam_cm = self.global_diam * 1e-4
         L_total_cm = self.Ltotal * 1e-4
@@ -374,16 +446,8 @@ class BoothRinzelKiehn(eqx.Module):
         area_s = self.p * area_total
         area_d = (1.0 - self.p) * area_total
 
-        radius_cm = diam_cm / 2.0
-        cross_area = jnp.pi * radius_cm**2
-        L_s_cm = self.p * self.Ltotal * 1e-4
-        L_d_cm = (1.0 - self.p) * self.Ltotal * 1e-4
-        R_s_half = self.Ra * (L_s_cm / 2.0) / cross_area
-        R_d_half = self.Ra * (L_d_cm / 2.0) / cross_area
-        R_axial = R_s_half + R_d_half
-
-        g_c_s = 1.0 / (R_axial * area_s)
-        g_c_d = 1.0 / (R_axial * area_d)
+        g_c_s = 2.0 * self.gc * (1.0 - self.p) / self.p * 1e-3
+        g_c_d = 2.0 * self.gc * 1e-3
 
         return area_s, area_d, g_c_s, g_c_d
 
@@ -413,25 +477,26 @@ class BoothRinzelKiehn(eqx.Module):
         return self.opsin_g0 * fphi * fv * (V - self.opsin_E_rev) * 1e-6  # nA
 
     def _calculate_membrane_currents(self, t, y, args=None):
-        """Calculate per-compartment membrane currents in microamperes
+        """Calculate per-compartment transmembrane currents in microamperes.
+
+        Mirrors NEURON's i_membrane_ (for cvode.use_fast_imem(1)),
+        which is the total transmembrane current per segment:
+
+            I_trans = I_ionic + I_cap          [mA/cm^2]
+                    = I_ionic + C_m * dV/dt
 
         Args:
             t: time
-            y: state vector
+            y: state vector (full, including any opsin states)
             args: (I_stim_array, t_array) for array stimulus
 
         Returns:
             (I_mem_soma_uA, I_mem_dend_uA) per-source currents matching
-            the units expected by IO.potential_recording, mirroring
-            NEURON's i_membrane_ recording, which is per-segment
-            current rather than current density
+            the units expected by IO.potential_recording
         """
         area_s, area_d, _g_c_s, _g_c_d = self._geometry()
 
-        Vs, Vd, h, n, mnS, hnS, mnD, hnD, ml, CaS, CaD = y
-
-        # Fast sodium activation (instantaneous)
-        minf = 1.0 / (1.0 + jnp.exp(-(Vs + 35.0) / 7.8))
+        Vs, Vd, h, n, mnS, hnS, mnD, hnD, ml, CaS, CaD = y[:11]
 
         # GHK current calculation
         def ghk(v, ci, co, factor):
@@ -450,7 +515,9 @@ class BoothRinzelKiehn(eqx.Module):
         ghk_dend_N = ghk(Vd, CaD, self.cao, fN)
         ghk_dend_L = ghk(Vd, CaD, self.cao, fL)
 
-        # Individual currents (mA/cm^2)
+        # Fast sodium activation (instantaneous)
+        minf = 1.0 / (1.0 + jnp.exp(-(Vs + 35.0) / 7.8))
+
         INaS = self.GNa * minf**3 * h * (Vs - self.ENa)
         IKS = (self.GK_dr * n**4 + self.GK_CaS * CaS / (CaS + self.Kd)) * (Vs - self.EK)
         ICaS = self.GCa_NS * mnS**2 * hnS * ghk_soma
@@ -459,13 +526,21 @@ class BoothRinzelKiehn(eqx.Module):
         IKD = self.GK_CaD * CaD / (CaD + self.Kd) * (Vd - self.EK)
         ICaD_N = self.GCa_ND * mnD**2 * hnD * ghk_dend_N
         ICaD_L = self.GCa_L * ml * ghk_dend_L
-        IleakD = self.gleak * (Vd - self.Eleak)
+        IleakD = self.gleak_d * (Vd - self.Eleak)
 
-        # Total membrane current (mA/cm^2)
-        # In NEURON, membrane current = sum of ionic currents (positive outward)
-        # and does NOT include axial/coupling currents or stimulus
-        I_mem_soma = INaS + IKS + ICaS + IleakS
-        I_mem_dend = IKD + ICaD_N + ICaD_L + IleakD
+        I_ionic_soma = INaS + IKS + ICaS + IleakS
+        I_ionic_dend = IKD + ICaD_N + ICaD_L + IleakD
+
+        dy = self.__call__(t, y, args)
+        dVs = dy[0]
+        dVd = dy[1]
+        Cs = self.C * self.cm_ratio
+        Cd = self.C
+        I_cap_soma = (Cs / 1000.0) * dVs  # mV/ms -> mA/cm^2
+        I_cap_dend = (Cd / 1000.0) * dVd
+
+        I_mem_soma = I_ionic_soma + I_cap_soma
+        I_mem_dend = I_ionic_dend + I_cap_dend
 
         # Convert to per-source uA: area_*_cm2 * 1000 mA -> uA per cm2
         I_mem_soma_uA = I_mem_soma * area_s * 1000.0
@@ -601,14 +676,27 @@ class BoothRinzelKiehn(eqx.Module):
         IKD = self.GK_CaD * CaD / (CaD + self.Kd) * (Vd - self.EK)
         ICaD_N = self.GCa_ND * mnD**2 * hnD * ghk_dend_N
         ICaD_L = self.GCa_L * ml * ghk_dend_L
-        IleakD = self.gleak * (Vd - self.Eleak)
+        IleakD = self.gleak_d * (Vd - self.Eleak)
 
         IcouplingS = g_c_s * (Vs - Vd)
         IcouplingD = g_c_d * (Vd - Vs)
 
-        scale = 1000.0 / self.C
-        dVs = scale * (Isoma - INaS - IKS - ICaS - IleakS - IcouplingS)
-        dVd = scale * (Idend - IKD - ICaD_N - ICaD_L - IleakD - IcouplingD)
+        # NEURON BRK template scales the soma capacitance by cm_ratio;
+        # use separate scales for soma and dendrite to match
+        scale_s = 1000.0 / (self.C * self.cm_ratio)
+        scale_d = 1000.0 / self.C
+
+        # ic_constant follows NEURON's outward-positive ionic-current
+        # convention (it is registered as an electrode current in the same
+        # sign as i_pas / i_ions), whereas Isoma/Idend follow the
+        # inward-positive injected-current convention used by Iapp. Hence
+        # the minus sign, matching the existing ``- INaS - ...`` terms
+        dVs = scale_s * (
+            Isoma - self.ic_constant - INaS - IKS - ICaS - IleakS - IcouplingS
+        )
+        dVd = scale_d * (
+            Idend - self.ic_constant_d - IKD - ICaD_N - ICaD_L - IleakD - IcouplingD
+        )
 
         dh = (hinf - h) / Tauh
         dn = (ninf - n) / Taun
@@ -753,6 +841,8 @@ class BoothRinzelKiehn(eqx.Module):
         def calculate_currents_at_time(t, y):
             return self._calculate_membrane_currents(t, y, stimulus_args)
 
-        i_mem_soma, i_mem_dend = jax.vmap(calculate_currents_at_time)(t_arr, ys_neural)
+        i_mem_soma, i_mem_dend = jax.vmap(calculate_currents_at_time)(
+            t_arr, solution.ys
+        )
 
         return t_arr, v_soma, v_dend, i_mem_soma, i_mem_dend, solution.ys[-1]
