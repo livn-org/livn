@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 sentinel = object()
 
-ObjSpec = Union[tuple[str, dict], str, None]
+ObjSpec = Union[tuple, list, str, None]
 
 
 def import_object_by_path(path):
@@ -29,14 +29,47 @@ def import_object_by_path(path):
     return getattr(module, obj_name)
 
 
-def import_instance(spec: ObjSpec):
+def resolve_instance(spec: "ObjSpec"):
+    """Resolve an ObjSpec as follows:
+
+        None                               -> None
+        "pkg.Foo"                          -> Foo, {}
+        ("pkg.Foo", {"a": 1})              -> Foo, {"a": 1}
+        ("pkg.Foo", {"a": 1}, {"b": 2})    -> Foo, {"a": 1, "b": 2}
+        ("pkg.Foo", {"a": 1}, {"a": 2})    -> Foo, {"a": 2}
+        (("pkg.Foo", {"a": 1}), {"b": 2})  -> Foo, {"a": 1, "b": 2}
+        (("pkg.Foo", {"a": 1}), {"a": 2})  -> Foo, {"a": 2}  (outer wins)
+
+    Dicts are merged left-to-right so that the rightmost value of a key wins.
+      The first element may itself be an ObjSpec in which case its kwargs
+      are prepended so outer overrides take effect.
+    """
     if spec is None:
         return None
     if isinstance(spec, str):
-        cls = import_object_by_path(spec)
-        return cls()
-    path, kwargs = spec
-    cls = import_object_by_path(path)
+        return import_object_by_path(spec), {}
+
+    head = spec[0]
+    dicts = list(spec[1:])
+    if isinstance(head, str):
+        cls = import_object_by_path(head)
+        base: dict = {}
+    else:
+        cls, base = resolve_instance(head)
+
+    merged = dict(base)
+    for d in dicts:
+        if d is None:
+            continue
+        merged.update(d)
+    return cls, merged
+
+
+def import_instance(spec: "ObjSpec"):
+    resolved = resolve_instance(spec)
+    if resolved is None:
+        return None
+    cls, kwargs = resolved
     return cls(**kwargs)
 
 
