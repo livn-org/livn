@@ -137,7 +137,8 @@ class BRK:
 
     def init_ic(self, v_init):
         h.finitialize(v_init)
-        self.soma.ic_constant = -(h.ina + h.ik + h.ica + h.i_pas)
+        seg = self.soma(0.5)
+        self.soma.ic_constant = -(seg.ina + seg.ik + seg.ica + seg.i_pas)
 
     def biophys(self):
         # Set global parameters

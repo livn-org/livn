@@ -826,6 +826,31 @@ class Env(EnvProtocol):
             h.secondorder = 2  # crank-nicholson
             h.dt = requested_dt
             self.pc.timeout(600.0)
+            # Mirror each cell template's init_ic(V_rest): when the
+            # template defines that method, evaluate it so the
+            # constant mechanism's `ic_constant` pins the soma at
+            # the per-celltype resting potential.  This must run before
+            # the final finitialize because init_ic itself calls
+            # h.finitialize internally
+            for pop_name, pop_cells in self.biophys_cells.items():
+                celltype_cfg = self.celltypes.get(pop_name, {})
+                mech_cfg = celltype_cfg.get("mechanism", {})
+                v_rest = None
+                for mech_params in mech_cfg.values():
+                    if isinstance(mech_params, dict) and "V_rest" in mech_params:
+                        v_rest = float(mech_params["V_rest"])
+                        break
+                if v_rest is None:
+                    continue
+                for gid, cell in pop_cells.items():
+                    target = getattr(cell, "hoc_cell", None) or getattr(
+                        cell, "cell_obj", None
+                    )
+                    if target is None:
+                        target = cell
+                    init_ic = getattr(target, "init_ic", None)
+                    if callable(init_ic):
+                        init_ic(v_rest)
             h.finitialize(h.v_init)
             h.finitialize(h.v_init)
             if verbose:
@@ -893,11 +918,10 @@ class Env(EnvProtocol):
             if idx is None:
                 continue
             arr = rec.as_numpy()
-            # Convert current density (mA/cm^2) to absolute current (μA):
-            # I_μA = (i_membrane_mA_per_cm2) * (area_cm2) * 1000
-            area_cm2 = float(self.i_area.get((int(gid), sec_id), 0.0))
-            if area_cm2 > 0.0:
-                arr = arr * area_cm2 * 1000.0
+            # i_membrane_ with cvode.use_fast_imem(1) is the absolute
+            # transmembrane current per segment in nA, not a current
+            # density so we convert to microamperes
+            arr = arr * 1e-3
             if len(arr) != T:
                 # pad or truncate to T
                 if len(arr) < T:
