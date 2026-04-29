@@ -117,7 +117,8 @@ class PRN:
 
     def init_ic(self, v_init):
         h.finitialize(v_init)
-        self.soma.ic_constant = -(h.ina + h.ik + h.i_pas)
+        seg = self.soma(0.5)
+        self.soma.ic_constant = -(seg.ina + seg.ik + seg.i_pas)
 
     def biophys(self):
         # Set global parameters
