@@ -18,6 +18,23 @@ else:
 
 
 class ReducedCalciumSomaDendrite(Model):
+    def __init__(self, input_mode: str | None = None):
+        # Optional override for the underlying neuron's stimulus
+        # interpretation; this is only needed for the JAX
+        # backend that build the compute graph at
+        # compile time
+        if input_mode is not None and input_mode not in {
+            "current_density",
+            "conductance",
+            "current",
+            "irradiance",
+        }:
+            raise ValueError(
+                f"Unknown input_mode {input_mode!r}; expected one of "
+                f"'current_density', 'conductance', 'current', 'irradiance'."
+            )
+        self.input_mode = input_mode
+
     def prepare_stimulus(self, stimulus):
         modes = {
             "extracellular",
@@ -87,7 +104,7 @@ class ReducedCalciumSomaDendrite(Model):
     # neuron
 
     def params(self, name: str):
-        return {
+        base = {
             "BoothRinzelKiehn-MN": {
                 "Ltotal": 120.0,
                 "dend_alpha_Caconc": 1,
@@ -135,6 +152,9 @@ class ReducedCalciumSomaDendrite(Model):
                 "V_threshold": -37.0,
             },
         }[name]
+        if self.input_mode is not None:
+            base = {**base, "input_mode": self.input_mode}
+        return base
 
     def neuron_template_directory(self):
         return os.path.join(os.path.dirname(__file__), "neuron", "templates")
