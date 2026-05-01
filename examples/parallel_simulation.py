@@ -1,11 +1,13 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#   "livn",
+#   "livn[neuron] @ git+https://github.com/livn-org/livn.git",
 # ]
 # ///
-
+import os
 import numpy as np
+
+os.environ["LIVN_BACKEND"] = "neuron"
 
 from livn.env import Env
 from livn.system import predefined

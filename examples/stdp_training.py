@@ -1,7 +1,7 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#   "livn",
+#   "livn[neuron] @ git+https://github.com/livn-org/livn.git",
 #   "matplotlib",
 # ]
 # ///

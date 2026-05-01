@@ -1,8 +1,7 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#   "miv_simulator @ git+https://github.com/GazzolaLab/MiV-Simulator.git@e8e417f",
-#   "livn",
+#   "livn[neuron] @ git+https://github.com/livn-org/livn.git",
 #   "huggingface_hub",
 # ]
 # ///
