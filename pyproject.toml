@@ -56,7 +56,6 @@ override-dependencies = [
     "scipy>=1.17.1",
 ]
 
-no-build-isolation-package = ["neuroh5"]
 no-binary-package = ["mpi4py", "h5py"]
 
 [[tool.uv.dependency-metadata]]
