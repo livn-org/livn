@@ -214,6 +214,56 @@ _snapshot()
     }
 }
 
+let datasetsInstalled = false;
+
+export async function loadHFDataset(
+    name: string,
+    expPath: string,
+    serverBase: string
+): Promise<void> {
+    if (!pyodide) throw new Error('Pyodide not initialized');
+
+    // 1. Fetch manifest (size-checked by server)
+    const manifestUrl = `${serverBase}/dataset_manifest?path=${encodeURIComponent(expPath)}`;
+    const mr = await fetch(manifestUrl);
+    if (!mr.ok) {
+        const body = await mr.json().catch(() => ({ error: `HTTP ${mr.status}` }));
+        throw new Error((body as { error?: string }).error ?? `HTTP ${mr.status}`);
+    }
+    const { files } = await mr.json() as { files: string[] };
+
+    // 2. Write dataset files to Pyodide FS
+    const fsDir = `/datasets/${name}`;
+    try { pyodide.FS.mkdir('/datasets'); } catch { /* exists */ }
+    try { pyodide.FS.mkdir(fsDir); } catch { /* exists */ }
+
+    for (const file of files) {
+        const fileUrl = `${serverBase}/dataset_file?path=${encodeURIComponent(expPath)}&file=${encodeURIComponent(file)}`;
+        const bytes = new Uint8Array(await (await fetch(fileUrl)).arrayBuffer());
+        pyodide.FS.writeFile(`${fsDir}/${file}`, bytes);
+    }
+
+    // 3. Ensure pyarrow and xxhash prebuilt packages are loaded
+    await pyodide.loadPackage(['pyarrow', 'xxhash']);
+
+    // 4. Install datasets if not already done (lazy, first-use only)
+    if (!datasetsInstalled) {
+        await pyodide.runPythonAsync(`
+import micropip
+await micropip.install('datasets')
+`);
+        datasetsInstalled = true;
+    }
+
+    // 5. Load from disk — no post-processing needed
+    await pyodide.runPythonAsync(`
+import datasets as _ds
+loaded_dataset = _ds.load_from_disk(${JSON.stringify(fsDir)})
+print(f"loaded_dataset ready: {loaded_dataset.num_rows} rows, features: {list(loaded_dataset.features)}")
+del _ds
+`);
+}
+
 /** Force a manual snapshot refresh and store update */
 export async function forceRefresh(): Promise<void> {
     logSnap('forceRefresh() triggered');

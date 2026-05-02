@@ -88,6 +88,19 @@ def _load_experiments() -> list[dict]:
     return experiments
 
 
+_MAX_DATASET_BYTES = 100 * 1024 * 1024  # 100 MB
+
+
+def _resolve_dataset_dir(path: str) -> tuple[str, str] | None:
+    """Return (abs_exp_path, dataset_dir) if valid, else None."""
+    experiments = _load_experiments()
+    known_paths = {e["path"] for e in experiments}
+    abs_path = os.path.realpath(path)
+    if abs_path not in known_paths:
+        return None
+    return abs_path, os.path.join(abs_path, "dataset")
+
+
 class Server(Interface):
     class Config(BaseModel):
         host: str = "localhost"
@@ -165,6 +178,56 @@ class Server(Interface):
         async def list_experiments(request):
             return web.json_response(_load_experiments())
 
+        async def dataset_manifest(request):
+            path = request.rel_url.query.get("path", "").strip()
+            if not path:
+                return web.json_response({"error": "Missing path"}, status=400)
+
+            resolved = _resolve_dataset_dir(path)
+            if resolved is None:
+                return web.json_response({"error": "Unknown experiment path"}, status=403)
+            abs_path, ds_dir = resolved
+
+            if not os.path.isdir(ds_dir):
+                return web.json_response(
+                    {"error": "No HuggingFace dataset found. Was save_dataset=True used?"},
+                    status=404,
+                )
+
+            files = [f for f in os.listdir(ds_dir) if not f.startswith(".")]
+            total_bytes = sum(os.path.getsize(os.path.join(ds_dir, f)) for f in files)
+            if total_bytes > _MAX_DATASET_BYTES:
+                mb = total_bytes / (1024 * 1024)
+                return web.json_response(
+                    {"error": f"Dataset too large ({mb:.1f} MB). Limit is 100 MB."},
+                    status=413,
+                )
+
+            return web.json_response({"files": files, "total_bytes": total_bytes})
+
+        async def dataset_file(request):
+            path = request.rel_url.query.get("path", "").strip()
+            filename = request.rel_url.query.get("file", "").strip()
+            if not path or not filename:
+                return web.Response(status=400)
+
+            # Reject any path traversal in filename
+            if "/" in filename or "\\" in filename or filename.startswith("."):
+                return web.Response(status=403)
+
+            resolved = _resolve_dataset_dir(path)
+            if resolved is None:
+                return web.Response(status=403)
+            _, ds_dir = resolved
+
+            filepath = os.path.realpath(os.path.join(ds_dir, filename))
+            if not filepath.startswith(os.path.realpath(ds_dir)):
+                return web.Response(status=403)
+            if not os.path.isfile(filepath):
+                return web.Response(status=404)
+
+            return web.FileResponse(filepath)
+
         app = web.Application()
         cors = aiohttp_cors.setup(
             app, defaults={"*": aiohttp_cors.ResourceOptions(allow_headers="*")}
@@ -178,6 +241,10 @@ class Server(Interface):
         # GET /files/{system}/{file} -> e.g. /files/EI1/graph.json
         resource = cors.add(app.router.add_resource("/files/{path:.+}"))
         cors.add(resource.add_route("GET", serve_file))
+        # GET /dataset_manifest?path=... -> {files, total_bytes}
+        cors.add(cors.add(app.router.add_resource("/dataset_manifest")).add_route("GET", dataset_manifest))
+        # GET /dataset_file?path=...&file=... -> binary file
+        cors.add(cors.add(app.router.add_resource("/dataset_file")).add_route("GET", dataset_file))
 
         port = self.config.port + port_offset
         print(f"File server at http://{self.config.host}:{port}/files/")

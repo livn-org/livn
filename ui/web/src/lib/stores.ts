@@ -45,6 +45,9 @@ export const snapshotLog = writable<string[]>([]);
 
 // Command injection: write code here and Console will execute it
 export const pendingCommand = writable<string | null>(null);
+
+export const datasetLoading = writable<boolean>(false);
+export const datasetError   = writable<string | null>(null);
 function logSnapshot(msg: string) {
     const ts = new Date().toLocaleTimeString();
     snapshotLog.update((log) => [...log.slice(-19), `[${ts}] ${msg}`]);
