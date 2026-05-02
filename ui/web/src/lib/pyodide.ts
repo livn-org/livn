@@ -244,7 +244,7 @@ export async function loadHFDataset(
     }
 
     // 3. Ensure pyarrow and xxhash prebuilt packages are loaded
-    await pyodide.loadPackage(['pyarrow', 'xxhash']);
+    await pyodide.loadPackage(['pyarrow', 'xxhash', 'lzma']);
 
     // 4. Install datasets if not already done (lazy, first-use only)
     if (!datasetsInstalled) {
@@ -255,12 +255,15 @@ await micropip.install('datasets')
         datasetsInstalled = true;
     }
 
-    // 5. Load from disk — no post-processing needed
+    // 5. Load from disk — patch out ThreadPoolExecutor first (Pyodide has no threads)
     await pyodide.runPythonAsync(`
+import tqdm.contrib.concurrent as _tcc
+_tcc.thread_map = lambda fn, *iters, **kw: list(map(fn, *iters))
+
 import datasets as _ds
 loaded_dataset = _ds.load_from_disk(${JSON.stringify(fsDir)})
 print(f"loaded_dataset ready: {loaded_dataset.num_rows} rows, features: {list(loaded_dataset.features)}")
-del _ds
+del _ds, _tcc
 `);
 }
 
