@@ -15,7 +15,7 @@
         type Intersection,
     } from "three";
     import type { SystemData, ViewConfig } from "$lib/types";
-    import { tooltip, viewConfig, envIO } from "$lib/stores";
+    import { tooltip, viewConfig, envIO, selectedNeurons, activeExperiment } from "$lib/stores";
     import { onMount, onDestroy } from "svelte";
 
     interface Props {
@@ -218,6 +218,13 @@
                     z,
                     nearestElectrode,
                 });
+
+                // Toggle multi-select when in experiment mode
+                if ($activeExperiment !== null) {
+                    selectedNeurons.update(ns =>
+                        ns.includes(gid) ? ns.filter(n => n !== gid) : [...ns, gid]
+                    );
+                }
                 return;
             }
         }
@@ -246,6 +253,29 @@
         void JSON.stringify(config.popVisibility);
         buildMeshes();
         buildBBox();
+        invalidate();
+    });
+
+    const SEL_COLOR = new Color('#ffd54f');
+
+    $effect(() => {
+        const sel = $selectedNeurons;
+        for (const mesh of meshes) {
+            const coords = popGids.get(mesh);
+            if (!coords) continue;
+            const pop = mesh.userData.population as string;
+            const defColor = new Color(POP_COLORS[pop] ?? DEFAULT_COLOR);
+            const count = Math.floor(coords.length / 4);
+            let changed = false;
+            for (let i = 0; i < count; i++) {
+                const gid = coords[i * 4];
+                mesh.setColorAt(i, sel.includes(gid) ? SEL_COLOR : defColor);
+                changed = true;
+            }
+            if (changed && mesh.instanceColor) {
+                mesh.instanceColor.needsUpdate = true;
+            }
+        }
         invalidate();
     });
 
