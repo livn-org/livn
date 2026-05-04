@@ -265,21 +265,28 @@ export async function getExpRowData(rowIdx: number, gids: number[]): Promise<Row
     if (!pyodide) throw new Error('Pyodide not initialized');
     const result = await pyodide.runPythonAsync(`
 import json as _json
+import numpy as _np
+import math as _math
 _row  = loaded_dataset[${rowIdx}]
 _gset = set(${JSON.stringify(gids)})
 _it   = list(_row.get('it') or [])
 _tt   = list(_row.get('tt') or [])
 _spk  = {g: [] for g in _gset}
 for _n, _t in zip(_it, _tt):
-    if _n in _spk:
-        _spk[_n].append(float(_t))
+    _g = int(_n)
+    if _g in _spk:
+        _tf = float(_t)
+        if not _math.isnan(_tf):
+            _spk[_g].append(_tf)
 
 _iv   = list(_row.get('iv') or [])
 _vv   = list(_row.get('vv') or [])
 _volt = {g: [] for g in _gset}
 for _idx, _g in enumerate(_iv):
-    if _g in _volt and _idx < len(_vv):
-        _volt[_g] = [float(v) for v in _vv[_idx]]
+    _gi = int(_g)
+    if _gi in _volt and _idx < len(_vv):
+        _trace = _np.nan_to_num(_np.array(_vv[_idx], dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
+        _volt[_gi] = [float(v) for v in _trace]
 
 _json.dumps({
     'duration': int(_row['duration']),
@@ -405,12 +412,13 @@ _json.dumps({
 export async function getAllRowSpikes(rowIdx: number): Promise<{ it: number[]; tt: number[]; duration: number }> {
     if (!pyodide) throw new Error('Pyodide not initialized');
     const result = await pyodide.runPythonAsync(`
-import json as _json
+import json as _json, math as _math
 _row = loaded_dataset[${rowIdx}]
+_pairs = [(int(n), float(t)) for n, t in zip(_row.get('it') or [], _row.get('tt') or []) if not _math.isnan(float(t))]
 _json.dumps({
     'duration': int(_row['duration']),
-    'it': [int(x) for x in (_row.get('it') or [])],
-    'tt': [float(x) for x in (_row.get('tt') or [])],
+    'it': [p[0] for p in _pairs],
+    'tt': [p[1] for p in _pairs],
 })
 `);
     return JSON.parse(result as string);
