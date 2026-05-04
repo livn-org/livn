@@ -121,55 +121,55 @@
         const gridStep  = norm < 1.5 ? mag : norm < 3.5 ? 2 * mag : norm < 7.5 ? 5 * mag : 10 * mag;
         const gridStart = Math.ceil(viewStart / gridStep) * gridStep;
 
+        const axisH = 18;
         for (let t = gridStart; t <= viewEnd + 0.001; t += gridStep) {
             const x = tX(t);
             ctx.strokeStyle = '#1a1a3a';
             ctx.lineWidth = 1;
-            ctx.beginPath(); ctx.moveTo(x, 20); ctx.lineTo(x, h); ctx.stroke();
-            ctx.fillStyle = '#555';
+            ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h - axisH); ctx.stroke();
+            ctx.fillStyle = '#999';
             ctx.font = '11px monospace';
-            ctx.fillText(`${Math.round(t)}ms`, x + 3, 14);
+            ctx.fillText(`${Math.round(t)}ms`, x + 3, h - 4);
         }
 
+        const plotH = h - axisH;
+
         if (chartType === 'spikes') {
-            const margin = h * 0.15;
+            const margin = plotH * 0.12;
             ctx.strokeStyle = '#4fc3f7';
             ctx.lineWidth = 2;
             for (const t of spikeTimes) {
                 if (t < viewStart || t > viewEnd) continue;
                 const x = tX(t);
-                ctx.beginPath(); ctx.moveTo(x, margin); ctx.lineTo(x, h - margin); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(x, margin); ctx.lineTo(x, plotH - margin); ctx.stroke();
             }
             const vis = spikeTimes.filter(t => t >= viewStart && t <= viewEnd).length;
-            ctx.fillStyle = '#3a3a5a';
+            ctx.fillStyle = '#555';
             ctx.font = '10px monospace';
-            ctx.fillText(`${vis} spike${vis !== 1 ? 's' : ''} in view`, w - 100, h - 6);
+            ctx.fillText(`${vis} spike${vis !== 1 ? 's' : ''} in view`, w - 110, plotH - 6);
 
         } else if (chartType === 'voltage' && voltageData.length > 0 && rowData) {
             const dt     = rowData.duration / voltageData.length;
             const vRange = vMax - vMin || 1;
-            const padT   = 24, padB = 18;
-            const plotH  = h - padT - padB;
+            const padT   = 8, padB = 8;
+            const traceH = plotH - padT - padB;
 
-            function vY(v: number) { return padT + plotH - ((v - vMin) / vRange) * plotH; }
+            function vY(v: number) { return padT + traceH - ((v - vMin) / vRange) * traceH; }
 
-            // Zero line
             if (vMin < 0 && vMax > 0) {
                 const y0 = vY(0);
                 ctx.strokeStyle = '#2a2a4a'; ctx.lineWidth = 1;
                 ctx.setLineDash([4, 4]);
                 ctx.beginPath(); ctx.moveTo(0, y0); ctx.lineTo(w, y0); ctx.stroke();
                 ctx.setLineDash([]);
-                ctx.fillStyle = '#3a3a5a'; ctx.font = '10px monospace';
+                ctx.fillStyle = '#555'; ctx.font = '10px monospace';
                 ctx.fillText('0', 4, y0 - 2);
             }
 
-            // Y labels
-            ctx.fillStyle = '#555'; ctx.font = '10px monospace';
-            ctx.fillText(`${vMax.toFixed(1)} mV`, 4, padT - 4);
-            ctx.fillText(`${vMin.toFixed(1)} mV`, 4, h - 4);
+            ctx.fillStyle = '#777'; ctx.font = '10px monospace';
+            ctx.fillText(`${vMax.toFixed(1)} mV`, 4, padT + 10);
+            ctx.fillText(`${vMin.toFixed(1)} mV`, 4, plotH - padB - 2);
 
-            // Downsample
             const iStart = Math.max(0, Math.floor(viewStart / dt));
             const iEnd   = Math.min(voltageData.length - 1, Math.ceil(viewEnd / dt));
             const step   = Math.max(1, Math.floor((iEnd - iStart) / (w * 2)));
@@ -186,18 +186,18 @@
             if (!first) ctx.stroke();
 
         } else if (chartType === 'electrode-spikes' && electrodeData) {
-            const margin = h * 0.15;
+            const margin = plotH * 0.12;
             ctx.strokeStyle = '#80cbc4';
             ctx.lineWidth = 2;
             for (const t of electrodeData.spikeTimes) {
                 if (t < viewStart || t > viewEnd) continue;
                 const x = tX(t);
-                ctx.beginPath(); ctx.moveTo(x, margin); ctx.lineTo(x, h - margin); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(x, margin); ctx.lineTo(x, plotH - margin); ctx.stroke();
             }
             const vis = electrodeData.spikeTimes.filter(t => t >= viewStart && t <= viewEnd).length;
-            ctx.fillStyle = '#3a3a5a';
+            ctx.fillStyle = '#555';
             ctx.font = '10px monospace';
-            ctx.fillText(`${vis} spike${vis !== 1 ? 's' : ''} in view`, w - 100, h - 6);
+            ctx.fillText(`${vis} spike${vis !== 1 ? 's' : ''} in view`, w - 110, plotH - 6);
 
         } else if (chartType === 'electrode-lfp' && electrodeData && electrodeData.lfp.length > 1) {
             const vs     = electrodeData.lfp;
@@ -205,14 +205,14 @@
             let eMin = vs[0], eMax = vs[0];
             for (const v of vs) { if (v < eMin) eMin = v; if (v > eMax) eMax = v; }
             const eRange = eMax - eMin || 1;
-            const padT   = 24, padB = 18;
-            const plotH  = h - padT - padB;
+            const padT   = 8, padB = 8;
+            const traceH = plotH - padT - padB;
 
-            function eY(v: number) { return padT + plotH - ((v - eMin) / eRange) * plotH; }
+            function eY(v: number) { return padT + traceH - ((v - eMin) / eRange) * traceH; }
 
-            ctx.fillStyle = '#555'; ctx.font = '10px monospace';
-            ctx.fillText(`${eMax.toFixed(2)} µV`, 4, padT - 4);
-            ctx.fillText(`${eMin.toFixed(2)} µV`, 4, h - 4);
+            ctx.fillStyle = '#777'; ctx.font = '10px monospace';
+            ctx.fillText(`${eMax.toFixed(2)} µV`, 4, padT + 10);
+            ctx.fillText(`${eMin.toFixed(2)} µV`, 4, plotH - padB - 2);
 
             const iStart = Math.max(0, Math.floor(viewStart / dt));
             const iEnd   = Math.min(vs.length - 1, Math.ceil(viewEnd / dt));
@@ -230,11 +230,15 @@
             if (!first) ctx.stroke();
         }
 
-        // Cursor line
+        // Axis separator
+        ctx.strokeStyle = '#4a4a6a'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(0, plotH); ctx.lineTo(w, plotH); ctx.stroke();
+
+        // Cursor line (only through plot area, not over axis labels)
         const cx = tX(cursor);
         if (cx >= 0 && cx <= w) {
             ctx.strokeStyle = 'rgba(255, 213, 79, 0.9)'; ctx.lineWidth = 2;
-            ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, h); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, plotH); ctx.stroke();
         }
 
         // ── Fixed-position value box (top-right, always visible) ──────────
@@ -281,10 +285,6 @@
             ctx.font = 'bold 24px monospace';
             ctx.fillText(valStr, bx + pad, by + 52);
         }
-
-        // Bottom axis
-        ctx.strokeStyle = '#333'; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.moveTo(0, h - 1); ctx.lineTo(w, h - 1); ctx.stroke();
     }
 
     // ── Zoom / pan ────────────────────────────────────────────────────────
