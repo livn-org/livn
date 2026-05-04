@@ -19,6 +19,7 @@ export async function initPyodide(onLog: (msg: string) => void): Promise<void> {
 
     onLog('Loading Pyodide runtime…');
 
+    // Register service worker to cache pyodide assets across page loads
     if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('/sw.js').catch(() => { });
     }
@@ -32,6 +33,7 @@ export async function initPyodide(onLog: (msg: string) => void): Promise<void> {
 
     onLog('Installing livn…');
     const manifest = await fetch('/wheel.json').then(r => r.json());
+    // Fetch wheel bytes in JS and write to Pyodide's virtual filesystem
     const wheelBytes = new Uint8Array(await fetch(`/${manifest.filename}`).then(r => r.arrayBuffer()));
     pyodide!.FS.writeFile(`/${manifest.filename}`, wheelBytes);
     await pyodide!.runPythonAsync(`
@@ -42,9 +44,11 @@ await micropip.install(['fsspec', 'gymnasium', 'pyfive', 'huggingface_hub', 'htt
 await micropip.install('emfs:///${manifest.filename}', deps=False)
     `);
 
+    // Mount IDBFS at /systems/graphs to persist downloaded systems across page loads
     onLog('Restoring cached systems…');
     await mountIDBFS();
 
+    // Probe HSDS
     if (await tryConfigureHSDS()) {
         onLog('HSDS backend connected');
         hsdsConnected.set(true);
@@ -59,15 +63,18 @@ await micropip.install('emfs:///${manifest.filename}', deps=False)
 }
 
 async function tryConfigureHSDS(): Promise<boolean> {
-    // proxied through Vite at /hsds/* so h5pyd requests are same-origin
+    // HSDS is proxied through Vite at /hsds/* → localhost:5101/*
+    // This makes h5pyd requests same-origin, avoiding CORS/Wasm issues.
     const params = new URLSearchParams(window.location.search);
     const directEndpoint = params.get('hsds') ?? 'http://localhost:5101';
     const proxyEndpoint = `${window.location.origin}/hsds`;
     try {
         const resp = await fetch(`${proxyEndpoint}/about`);
         if (resp.ok) {
+            // Patch Pyodide's urllib to use browser fetch, then configure h5pyd
             await pyodide!.runPythonAsync(`
 import os, json
+# Use the same-origin proxy endpoint so h5pyd requests go through Vite
 os.environ["LIVN_HSDS"] = json.dumps({
     "endpoint": "${proxyEndpoint}",
     "username": "admin",
@@ -82,36 +89,42 @@ await micropip.install('h5pyd')
             return true;
         }
     } catch {
-        // pyfive fallback
+        // HSDS not available — pyfive fallback
     }
     return false;
 }
 
+/** Mount an IndexedDB-backed FS at the systems cache directory */
 async function mountIDBFS(): Promise<void> {
     if (!pyodide || idbfsMounted) return;
     try {
         const FS = pyodide.FS;
-        // predefined() downloads systems to ./systems/graphs/ relative to cwd
+        // Pyodide cwd is /home/pyodide; predefined() downloads to ./systems/graphs/
         const base = '/home/pyodide/systems';
         const mount = `${base}/graphs`;
         try { FS.mkdir(base); } catch { /* exists */ }
         try { FS.mkdir(mount); } catch { /* exists */ }
         FS.mount(FS.filesystems.IDBFS, {}, mount);
+        // Populate from IndexedDB (true = load from persistent store)
         await new Promise<void>((resolve, reject) => {
             FS.syncfs(true, (err: Error | null) => {
                 if (err) reject(err); else resolve();
             });
         });
         idbfsMounted = true;
+        // Log what was restored
         try {
             const entries = FS.readdir(mount).filter((e: string) => e !== '.' && e !== '..');
-            if (entries.length > 0) logSnap(`IDBFS restored: ${entries.join(', ')}`);
+            if (entries.length > 0) {
+                logSnap(`IDBFS restored: ${entries.join(', ')}`);
+            }
         } catch { /* ignore */ }
     } catch (e) {
         logSnap(`IDBFS mount failed: ${String(e).slice(0, 200)}`);
     }
 }
 
+/** Flush in-memory FS changes to IndexedDB */
 async function syncFSToDisk(): Promise<void> {
     if (!pyodide || !idbfsMounted) return;
     try {
@@ -140,6 +153,7 @@ def _snapshot():
     snap = {}
     _diag = []
 
+    # System
     if hasattr(env, 'system') and env.system is not None:
         s = env.system
         coords = {}
@@ -158,6 +172,7 @@ def _snapshot():
     else:
         _diag.append('system=None')
 
+    # IO
     if hasattr(env, 'io') and env.io is not None:
         io_obj = env.io
         snap['io'] = to_js({
@@ -171,11 +186,13 @@ def _snapshot():
     else:
         _diag.append('io=None')
 
+    # Model
     if hasattr(env, 'model') and env.model is not None:
         snap['model'] = to_js({
             'type': type(env.model).__name__
         }, dict_converter=_JsObject.fromEntries)
 
+    # Return diagnostic string if snap is empty
     if not snap:
         return 'EMPTY:' + ','.join(_diag)
 
@@ -206,6 +223,7 @@ export async function loadHFDataset(
 ): Promise<void> {
     if (!pyodide) throw new Error('Pyodide not initialized');
 
+    // 1. Fetch manifest (size-checked by server)
     const manifestUrl = `${serverBase}/dataset_manifest?path=${encodeURIComponent(expPath)}`;
     const mr = await fetch(manifestUrl);
     if (!mr.ok) {
@@ -214,6 +232,7 @@ export async function loadHFDataset(
     }
     const { files } = await mr.json() as { files: string[] };
 
+    // 2. Write dataset files to Pyodide FS
     const fsDir = `/datasets/${name}`;
     try { pyodide.FS.mkdir('/datasets'); } catch { /* exists */ }
     try { pyodide.FS.mkdir(fsDir); } catch { /* exists */ }
@@ -224,8 +243,10 @@ export async function loadHFDataset(
         pyodide.FS.writeFile(`${fsDir}/${file}`, bytes);
     }
 
+    // 3. Ensure pyarrow and xxhash prebuilt packages are loaded
     await pyodide.loadPackage(['pyarrow', 'xxhash', 'lzma']);
 
+    // 4. Install datasets if not already done (lazy, first-use only)
     if (!datasetsInstalled) {
         await pyodide.runPythonAsync(`
 import micropip
@@ -234,7 +255,7 @@ await micropip.install('datasets')
         datasetsInstalled = true;
     }
 
-    // patch out ThreadPoolExecutor — Pyodide has no threads
+    // 5. Load from disk — patch out ThreadPoolExecutor first (Pyodide has no threads)
     await pyodide.runPythonAsync(`
 import tqdm.contrib.concurrent as _tcc
 _tcc.thread_map = lambda fn, *iters, **kw: list(map(fn, *iters))
@@ -424,6 +445,7 @@ _json.dumps({
     return JSON.parse(result as string);
 }
 
+/** Force a manual snapshot refresh and store update */
 export async function forceRefresh(): Promise<void> {
     logSnap('forceRefresh() triggered');
     try {
@@ -444,6 +466,7 @@ export async function executeCode(code: string): Promise<{
     lastError.set(null);
     const start = performance.now();
 
+    // Redirect stdout/stderr
     await pyodide!.runPythonAsync(`
 import sys as _sys, io as _io
 _stdout_capture = _io.StringIO()
@@ -455,6 +478,7 @@ _sys.stderr = _stderr_capture
     let error: string | null = null;
     try {
         const result = await pyodide!.runPythonAsync(code);
+        // If the code returned a value, capture its repr
         if (result !== undefined && result !== null) {
             const repr = String(result);
             if (repr && repr !== 'None') {
@@ -473,6 +497,7 @@ _stdout_capture.getvalue() + _stderr_capture.getvalue()
 		`)
     );
 
+    // Always snapshot after execution
     let snapshot: EnvSnapshot | null = null;
     let snapshotError: string | null = null;
     try {
@@ -481,12 +506,14 @@ _stdout_capture.getvalue() + _stderr_capture.getvalue()
         snapshotError = String(e);
     }
 
+    // Persist any newly downloaded system files to IndexedDB
     await syncFSToDisk();
 
     const elapsed = performance.now() - start;
     lastExecTime.set(elapsed);
     loading.set(false);
 
+    // Surface snapshot errors alongside execution errors
     if (snapshotError) {
         const msg = `\n[snapshot error] ${snapshotError}`;
         error = error ? error + msg : msg;
