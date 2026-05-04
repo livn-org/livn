@@ -23,10 +23,34 @@ from livn.decoding import ArrowDataset, _default_experiment_root
 EXP_NAMES = {"exp_small": 2, "exp_large": 5}  # name -> n_shards
 
 
+class _MockSystem:
+    uri = "mock/systems/graphs/EI1"
+    populations = ["EXC", "INH"]
+    gids = list(range(100))
+
+
+class _MockEnv:
+    system = _MockSystem()
+    model = None
+    encoding = None
+
+
 def _make_experiment(name: str, n_shards: int) -> ArrowDataset:
     """Write *n_shards* synthetic rows using the default experiment root."""
+    import shutil
     rng = np.random.default_rng(seed=42)
-    decoder = ArrowDataset(name=name, save_dataset=True, duration=250)
+    decoder = ArrowDataset(name=name, save_dataset=True, save_metadata=True, duration=250)
+    # Clean up old arrow shards and dataset so counts are deterministic
+    if os.path.isdir(decoder.directory):
+        for f in os.listdir(decoder.directory):
+            if f.startswith("data-") and f.endswith(".arrow"):
+                os.remove(os.path.join(decoder.directory, f))
+        ds_path = os.path.join(decoder.directory, "dataset")
+        if os.path.isdir(ds_path):
+            shutil.rmtree(ds_path)
+        meta_path = os.path.join(decoder.directory, "metadata.json")
+        if os.path.isfile(meta_path):
+            os.remove(meta_path)
 
     for _ in range(n_shards):
         n_spikes = int(rng.integers(5, 20))
@@ -36,6 +60,8 @@ def _make_experiment(name: str, n_shards: int) -> ArrowDataset:
             "tt": rng.uniform(0, 250, size=n_spikes).astype(np.float32),
         }
         decoder._write_shard(row)
+
+    decoder._write_metadata(_MockEnv())
 
     ds = decoder.dataset()
     assert ds is not None
@@ -101,6 +127,16 @@ def test_load_from_disk_columns(exp_paths):
     assert "it" in ds.features
     assert "tt" in ds.features
     assert "duration" in ds.features
+
+
+def test_metadata_json_exists(exp_paths):
+    for name, path in exp_paths.items():
+        meta_path = os.path.join(path, "metadata.json")
+        assert os.path.isfile(meta_path), f"metadata.json missing for {name}"
+        with open(meta_path) as f:
+            meta = json.load(f)
+        assert "system" in meta, f"metadata.json has no 'system' key for {name}"
+        assert meta["system"].get("uri"), f"metadata.json system.uri is empty for {name}"
 
 
 def test_spike_values_valid(exp_paths):

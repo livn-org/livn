@@ -19,7 +19,6 @@ export async function initPyodide(onLog: (msg: string) => void): Promise<void> {
 
     onLog('Loading Pyodide runtime…');
 
-    // Register service worker to cache pyodide assets across page loads
     if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('/sw.js').catch(() => { });
     }
@@ -33,7 +32,6 @@ export async function initPyodide(onLog: (msg: string) => void): Promise<void> {
 
     onLog('Installing livn…');
     const manifest = await fetch('/wheel.json').then(r => r.json());
-    // Fetch wheel bytes in JS and write to Pyodide's virtual filesystem
     const wheelBytes = new Uint8Array(await fetch(`/${manifest.filename}`).then(r => r.arrayBuffer()));
     pyodide!.FS.writeFile(`/${manifest.filename}`, wheelBytes);
     await pyodide!.runPythonAsync(`
@@ -44,11 +42,9 @@ await micropip.install(['fsspec', 'gymnasium', 'pyfive', 'huggingface_hub', 'htt
 await micropip.install('emfs:///${manifest.filename}', deps=False)
     `);
 
-    // Mount IDBFS at /systems/graphs to persist downloaded systems across page loads
     onLog('Restoring cached systems…');
     await mountIDBFS();
 
-    // Probe HSDS
     if (await tryConfigureHSDS()) {
         onLog('HSDS backend connected');
         hsdsConnected.set(true);
@@ -63,18 +59,15 @@ await micropip.install('emfs:///${manifest.filename}', deps=False)
 }
 
 async function tryConfigureHSDS(): Promise<boolean> {
-    // HSDS is proxied through Vite at /hsds/* → localhost:5101/*
-    // This makes h5pyd requests same-origin, avoiding CORS/Wasm issues.
+    // proxied through Vite at /hsds/* so h5pyd requests are same-origin
     const params = new URLSearchParams(window.location.search);
     const directEndpoint = params.get('hsds') ?? 'http://localhost:5101';
     const proxyEndpoint = `${window.location.origin}/hsds`;
     try {
         const resp = await fetch(`${proxyEndpoint}/about`);
         if (resp.ok) {
-            // Patch Pyodide's urllib to use browser fetch, then configure h5pyd
             await pyodide!.runPythonAsync(`
 import os, json
-# Use the same-origin proxy endpoint so h5pyd requests go through Vite
 os.environ["LIVN_HSDS"] = json.dumps({
     "endpoint": "${proxyEndpoint}",
     "username": "admin",
@@ -89,42 +82,36 @@ await micropip.install('h5pyd')
             return true;
         }
     } catch {
-        // HSDS not available — pyfive fallback
+        // pyfive fallback
     }
     return false;
 }
 
-/** Mount an IndexedDB-backed FS at the systems cache directory */
 async function mountIDBFS(): Promise<void> {
     if (!pyodide || idbfsMounted) return;
     try {
         const FS = pyodide.FS;
-        // Pyodide cwd is /home/pyodide; predefined() downloads to ./systems/graphs/
+        // predefined() downloads systems to ./systems/graphs/ relative to cwd
         const base = '/home/pyodide/systems';
         const mount = `${base}/graphs`;
         try { FS.mkdir(base); } catch { /* exists */ }
         try { FS.mkdir(mount); } catch { /* exists */ }
         FS.mount(FS.filesystems.IDBFS, {}, mount);
-        // Populate from IndexedDB (true = load from persistent store)
         await new Promise<void>((resolve, reject) => {
             FS.syncfs(true, (err: Error | null) => {
                 if (err) reject(err); else resolve();
             });
         });
         idbfsMounted = true;
-        // Log what was restored
         try {
             const entries = FS.readdir(mount).filter((e: string) => e !== '.' && e !== '..');
-            if (entries.length > 0) {
-                logSnap(`IDBFS restored: ${entries.join(', ')}`);
-            }
+            if (entries.length > 0) logSnap(`IDBFS restored: ${entries.join(', ')}`);
         } catch { /* ignore */ }
     } catch (e) {
         logSnap(`IDBFS mount failed: ${String(e).slice(0, 200)}`);
     }
 }
 
-/** Flush in-memory FS changes to IndexedDB */
 async function syncFSToDisk(): Promise<void> {
     if (!pyodide || !idbfsMounted) return;
     try {
@@ -153,7 +140,6 @@ def _snapshot():
     snap = {}
     _diag = []
 
-    # System
     if hasattr(env, 'system') and env.system is not None:
         s = env.system
         coords = {}
@@ -172,7 +158,6 @@ def _snapshot():
     else:
         _diag.append('system=None')
 
-    # IO
     if hasattr(env, 'io') and env.io is not None:
         io_obj = env.io
         snap['io'] = to_js({
@@ -186,13 +171,11 @@ def _snapshot():
     else:
         _diag.append('io=None')
 
-    # Model
     if hasattr(env, 'model') and env.model is not None:
         snap['model'] = to_js({
             'type': type(env.model).__name__
         }, dict_converter=_JsObject.fromEntries)
 
-    # Return diagnostic string if snap is empty
     if not snap:
         return 'EMPTY:' + ','.join(_diag)
 
@@ -223,7 +206,6 @@ export async function loadHFDataset(
 ): Promise<void> {
     if (!pyodide) throw new Error('Pyodide not initialized');
 
-    // 1. Fetch manifest (size-checked by server)
     const manifestUrl = `${serverBase}/dataset_manifest?path=${encodeURIComponent(expPath)}`;
     const mr = await fetch(manifestUrl);
     if (!mr.ok) {
@@ -232,7 +214,6 @@ export async function loadHFDataset(
     }
     const { files } = await mr.json() as { files: string[] };
 
-    // 2. Write dataset files to Pyodide FS
     const fsDir = `/datasets/${name}`;
     try { pyodide.FS.mkdir('/datasets'); } catch { /* exists */ }
     try { pyodide.FS.mkdir(fsDir); } catch { /* exists */ }
@@ -243,10 +224,8 @@ export async function loadHFDataset(
         pyodide.FS.writeFile(`${fsDir}/${file}`, bytes);
     }
 
-    // 3. Ensure pyarrow and xxhash prebuilt packages are loaded
     await pyodide.loadPackage(['pyarrow', 'xxhash', 'lzma']);
 
-    // 4. Install datasets if not already done (lazy, first-use only)
     if (!datasetsInstalled) {
         await pyodide.runPythonAsync(`
 import micropip
@@ -255,7 +234,7 @@ await micropip.install('datasets')
         datasetsInstalled = true;
     }
 
-    // 5. Load from disk — patch out ThreadPoolExecutor first (Pyodide has no threads)
+    // patch out ThreadPoolExecutor — Pyodide has no threads
     await pyodide.runPythonAsync(`
 import tqdm.contrib.concurrent as _tcc
 _tcc.thread_map = lambda fn, *iters, **kw: list(map(fn, *iters))
@@ -267,7 +246,176 @@ del _ds, _tcc
 `);
 }
 
-/** Force a manual snapshot refresh and store update */
+export type RowData = {
+    duration: number;
+    spikes: Record<number, number[]>;
+    voltages: Record<number, number[]>;
+};
+
+export async function loadExpSystem(sysName: string): Promise<void> {
+    if (!pyodide) throw new Error('Pyodide not initialized');
+    await pyodide.runPythonAsync(`
+from livn.env import Env
+from livn.system import predefined
+env = Env(predefined(${JSON.stringify(sysName)}))
+`);
+}
+
+export async function getExpRowData(rowIdx: number, gids: number[]): Promise<RowData> {
+    if (!pyodide) throw new Error('Pyodide not initialized');
+    const result = await pyodide.runPythonAsync(`
+import json as _json
+_row  = loaded_dataset[${rowIdx}]
+_gset = set(${JSON.stringify(gids)})
+_it   = list(_row.get('it') or [])
+_tt   = list(_row.get('tt') or [])
+_spk  = {g: [] for g in _gset}
+for _n, _t in zip(_it, _tt):
+    if _n in _spk:
+        _spk[_n].append(float(_t))
+
+_iv   = list(_row.get('iv') or [])
+_vv   = list(_row.get('vv') or [])
+_volt = {g: [] for g in _gset}
+for _idx, _g in enumerate(_iv):
+    if _g in _volt and _idx < len(_vv):
+        _volt[_g] = [float(v) for v in _vv[_idx]]
+
+_json.dumps({
+    'duration': int(_row['duration']),
+    'spikes':   {str(k): v for k, v in _spk.items()},
+    'voltages': {str(k): v for k, v in _volt.items()},
+})
+`);
+    return JSON.parse(result as string) as RowData;
+}
+
+let matplotlibReady = false;
+
+export async function exportChartPng(
+    gid: number,
+    pop: string,
+    chartType: 'spikes' | 'voltage',
+    spikes: number[],
+    voltages: number[],
+    duration: number
+): Promise<string> {
+    if (!pyodide) throw new Error('Pyodide not initialized');
+    if (!matplotlibReady) {
+        await pyodide.loadPackage('matplotlib');
+        matplotlibReady = true;
+    }
+    const result = await pyodide.runPythonAsync(`
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as _plt
+import io as _io
+import base64 as _b64
+
+_spikes   = ${JSON.stringify(spikes)}
+_voltages = ${JSON.stringify(voltages)}
+_duration = ${duration}
+_gid      = ${gid}
+_pop      = ${JSON.stringify(pop)}
+_type     = ${JSON.stringify(chartType)}
+
+_dark = '#0d0d1a'
+_fig, _ax = _plt.subplots(figsize=(10, 2.5), facecolor=_dark)
+_ax.set_facecolor(_dark)
+for _sp in _ax.spines.values(): _sp.set_color('#444')
+_ax.tick_params(colors='#888')
+_ax.set_xlabel('Time (ms)', color='#888')
+_ax.xaxis.label.set_color('#888')
+_ax.yaxis.label.set_color('#888')
+
+if _type == 'spikes':
+    _col = '#4fc3f7' if _pop == 'EXC' else '#ef5350' if _pop == 'INH' else '#aaaaaa'
+    for _t in _spikes:
+        _ax.axvline(_t, color=_col, linewidth=0.8, alpha=0.85)
+    _ax.set_xlim(0, _duration)
+    _ax.set_ylim(0, 1)
+    _ax.set_yticks([])
+    _ax.set_title(f'GID {_gid} ({_pop}) — Spikes', color='#ccc', fontsize=11)
+else:
+    import numpy as _np
+    _t_ax = _np.linspace(0, _duration, len(_voltages))
+    _ax.plot(_t_ax, _voltages, color='#ffb74d', linewidth=0.9)
+    _ax.set_xlim(0, _duration)
+    _ax.set_ylabel('mV', color='#888')
+    _ax.set_title(f'GID {_gid} ({_pop}) — Voltage', color='#ccc', fontsize=11)
+
+_plt.tight_layout()
+_buf = _io.BytesIO()
+_fig.savefig(_buf, format='png', dpi=150, bbox_inches='tight', facecolor=_dark)
+_plt.close(_fig)
+_buf.seek(0)
+_b64.b64encode(_buf.getvalue()).decode()
+`);
+    return `data:image/png;base64,${result as string}`;
+}
+
+export type ElectrodeData = {
+    duration: number;
+    hasLfp: boolean;
+    lfp: number[];
+    spikeTimes: number[];
+};
+
+export async function getElectrodeData(rowIdx: number, electrodeId: number): Promise<ElectrodeData> {
+    if (!pyodide) throw new Error('Pyodide not initialized');
+    const result = await pyodide.runPythonAsync(`
+import json as _json
+import numpy as _np
+
+_row        = loaded_dataset[${rowIdx}]
+_duration   = int(_row['duration'])
+_eid        = ${electrodeId}
+
+_it = _np.array(list(_row.get('it') or []))
+_tt = _np.array(list(_row.get('tt') or []))
+try:
+    _cit, _ct = env.channel_recording(_it, _tt)
+    _spike_times = [float(t) for t in _ct.get(int(_eid), [])]
+except Exception:
+    _spike_times = []
+
+_has_mp = bool('mp' in _row and _row['mp'] is not None and len(_row.get('mp') or []) > 0)
+_lfp = []
+if _has_mp:
+    try:
+        _mp      = _np.array(_row['mp'])
+        _lfp_all = env.potential_recording(_mp)
+        _ch_ids  = list(env.io.channel_ids)
+        _ch_idx  = _ch_ids.index(int(_eid))
+        _trace   = _np.nan_to_num(_lfp_all[_ch_idx], nan=0.0, posinf=0.0, neginf=0.0)
+        _lfp     = [float(v) for v in _trace]
+    except Exception:
+        _has_mp = False
+
+_json.dumps({
+    'duration':   _duration,
+    'hasLfp':     bool(_has_mp),
+    'lfp':        _lfp,
+    'spikeTimes': _spike_times,
+})
+`);
+    return JSON.parse(result as string) as ElectrodeData;
+}
+
+export async function getAllRowSpikes(rowIdx: number): Promise<{ it: number[]; tt: number[]; duration: number }> {
+    if (!pyodide) throw new Error('Pyodide not initialized');
+    const result = await pyodide.runPythonAsync(`
+import json as _json
+_row = loaded_dataset[${rowIdx}]
+_json.dumps({
+    'duration': int(_row['duration']),
+    'it': [int(x) for x in (_row.get('it') or [])],
+    'tt': [float(x) for x in (_row.get('tt') or [])],
+})
+`);
+    return JSON.parse(result as string);
+}
+
 export async function forceRefresh(): Promise<void> {
     logSnap('forceRefresh() triggered');
     try {
@@ -288,7 +436,6 @@ export async function executeCode(code: string): Promise<{
     lastError.set(null);
     const start = performance.now();
 
-    // Redirect stdout/stderr
     await pyodide!.runPythonAsync(`
 import sys as _sys, io as _io
 _stdout_capture = _io.StringIO()
@@ -300,7 +447,6 @@ _sys.stderr = _stderr_capture
     let error: string | null = null;
     try {
         const result = await pyodide!.runPythonAsync(code);
-        // If the code returned a value, capture its repr
         if (result !== undefined && result !== null) {
             const repr = String(result);
             if (repr && repr !== 'None') {
@@ -319,7 +465,6 @@ _stdout_capture.getvalue() + _stderr_capture.getvalue()
 		`)
     );
 
-    // Always snapshot after execution
     let snapshot: EnvSnapshot | null = null;
     let snapshotError: string | null = null;
     try {
@@ -328,14 +473,12 @@ _stdout_capture.getvalue() + _stderr_capture.getvalue()
         snapshotError = String(e);
     }
 
-    // Persist any newly downloaded system files to IndexedDB
     await syncFSToDisk();
 
     const elapsed = performance.now() - start;
     lastExecTime.set(elapsed);
     loading.set(false);
 
-    // Surface snapshot errors alongside execution errors
     if (snapshotError) {
         const msg = `\n[snapshot error] ${snapshotError}`;
         error = error ? error + msg : msg;

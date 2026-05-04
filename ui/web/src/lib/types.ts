@@ -2,25 +2,25 @@ export interface SystemData {
     name: string;
     populations: string[];
     num_neurons: number;
-    bounding_box: Float64Array; // [2×3] flattened: [xmin, ymin, zmin, xmax, ymax, zmax]
-    pop_coords: Record<string, Float64Array>; // per-pop [gid, x, y, z] interleaved
+    bounding_box: Float64Array; // [xmin, ymin, zmin, xmax, ymax, zmax]
+    pop_coords: Record<string, Float64Array>; // [gid, x, y, z] interleaved per pop
 }
 
 export interface IOData {
-    type: string; // "MEA", "LightArray", etc.
+    type: string;
     num_channels: number;
-    electrode_coordinates: Float64Array; // [n×4] flattened [id, x, y, z]
+    electrode_coordinates: Float64Array; // [id, x, y, z] interleaved
 }
 
 export interface ModelData {
-    type: string; // "RCSD", "LIF", etc.
+    type: string;
 }
 
 export interface DecodingData {
     spike_ids: Int32Array | null;
     spike_times: Float64Array | null;
     voltage_ids: Int32Array | null;
-    voltage_traces: Float64Array | null; // [n_neurons × timestep] flattened
+    voltage_traces: Float64Array | null;
     duration: number;
     dt: number;
 }
@@ -49,3 +49,20 @@ export interface TooltipData {
     z: number;
     nearestElectrode: { id: number; distance: number } | null;
 }
+
+export type ExpMeta = {
+    duration?: number;
+    system?: { uri?: string; populations?: string[]; n_neurons?: number };
+    encoding?: Record<string, unknown>;
+    model?: string;
+    recording?: { spikes?: boolean; voltages?: boolean; membrane_currents?: boolean };
+};
+
+export type Experiment = {
+    name: string;
+    root: string;
+    path: string;
+    created_at: string | null;
+    n_shards: number;
+    metadata: ExpMeta | null;
+};

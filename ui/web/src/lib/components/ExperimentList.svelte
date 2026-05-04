@@ -1,24 +1,12 @@
 <script lang="ts">
     import { datasetLoading, datasetError } from '$lib/stores';
     import { loadHFDataset } from '$lib/pyodide';
+    import type { Experiment } from '$lib/types';
 
     const FILE_SERVER = 'http://localhost:5102';
 
-    type ExpMeta = {
-        duration?: number;
-        system?: { uri?: string; populations?: string[]; n_neurons?: number };
-        encoding?: Record<string, unknown>;
-        model?: string;
-    };
-
-    type Experiment = {
-        name: string;
-        root: string;
-        path: string;
-        created_at: string | null;
-        n_shards: number;
-        metadata: ExpMeta | null;
-    };
+    interface Props { onSelect?: (exp: Experiment) => void; }
+    let { onSelect }: Props = $props();
 
     let experiments  = $state<Experiment[]>([]);
     let fetching     = $state(true);
@@ -93,6 +81,7 @@
 
         try {
             await loadHFDataset(exp.name, exp.path, FILE_SERVER);
+            onSelect?.(exp);
         } catch (e) {
             const msg = (e as Error).message;
             cardErrors = { ...cardErrors, [exp.path]: msg };

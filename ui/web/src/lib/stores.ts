@@ -1,17 +1,14 @@
 import { writable } from 'svelte/store';
-import type { SystemData, IOData, ModelData, DecodingData, ViewConfig, TooltipData, EnvSnapshot } from './types';
+import type { SystemData, IOData, ModelData, DecodingData, ViewConfig, TooltipData, EnvSnapshot, Experiment } from './types';
 
-// Pyodide state
 export const pyodideReady = writable(false);
 export const hsdsConnected = writable(false);
 
-// Env sub-states (updated by snapshotEnv after each console execution)
 export const envSystem = writable<SystemData | null>(null);
 export const envIO = writable<IOData | null>(null);
 export const envModel = writable<ModelData | null>(null);
 export const envDecoding = writable<DecodingData | null>(null);
 
-// View config (UI-only, not reflected in Python)
 export const viewConfig = writable<ViewConfig>({
     popVisibility: {},
     pointSize: 1.0,
@@ -20,12 +17,10 @@ export const viewConfig = writable<ViewConfig>({
     showElectrodes: true
 });
 
-// Console state
 export const consoleHistory = writable<string[]>([]);
 export const loading = writable(false);
 export const lastError = writable<string | null>(null);
 
-// Tooltip
 export const tooltip = writable<TooltipData>({
     visible: false,
     gid: 0,
@@ -36,18 +31,19 @@ export const tooltip = writable<TooltipData>({
     nearestElectrode: null
 });
 
-// Backend info
 export const backendInfo = writable<string>('Initializing…');
 export const lastExecTime = writable<number | null>(null);
 
-// Snapshot debug log (ring buffer, last 20 entries)
 export const snapshotLog = writable<string[]>([]);
-
-// Command injection: write code here and Console will execute it
 export const pendingCommand = writable<string | null>(null);
 
 export const datasetLoading = writable<boolean>(false);
 export const datasetError   = writable<string | null>(null);
+
+export const selectedNeurons  = writable<number[]>([]);
+export const activeExperiment = writable<Experiment | null>(null);
+export const activeExpRow     = writable<number>(0);
+export const selectedElectrode = writable<number | null>(null);
 function logSnapshot(msg: string) {
     const ts = new Date().toLocaleTimeString();
     snapshotLog.update((log) => [...log.slice(-19), `[${ts}] ${msg}`]);
