@@ -789,8 +789,14 @@ class ArrowDataset(GatherAndMerge):
         if os.path.exists(path):
             return
         os.makedirs(self.directory, exist_ok=True)
+        meta = _build_metadata(env, self.duration)
+        meta["recording"] = {
+            "spikes": self.spikes,
+            "voltages": self.voltages,
+            "membrane_currents": self.membrane_currents,
+        }
         with open(path, "w") as f:
-            json.dump(_build_metadata(env, self.duration), f, indent=2)
+            json.dump(meta, f, indent=2)
 
     def _next_shard_index(self) -> int:
         if not os.path.isdir(self.directory):

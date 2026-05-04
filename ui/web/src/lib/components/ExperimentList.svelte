@@ -1,25 +1,18 @@
 <script lang="ts">
+    import { datasetLoading, datasetError } from '$lib/stores';
+    import { loadHFDataset } from '$lib/pyodide';
+    import type { Experiment } from '$lib/types';
+
     const FILE_SERVER = 'http://localhost:5102';
 
-    type ExpMeta = {
-        duration?: number;
-        system?: { uri?: string; populations?: string[]; n_neurons?: number };
-        encoding?: Record<string, unknown>;
-        model?: string;
-    };
+    interface Props { onSelect?: (exp: Experiment) => void; }
+    let { onSelect }: Props = $props();
 
-    type Experiment = {
-        name: string;
-        root: string;
-        path: string;
-        created_at: string | null;
-        n_shards: number;
-        metadata: ExpMeta | null;
-    };
-
-    let experiments = $state<Experiment[]>([]);
-    let fetching    = $state(true);
-    let fetchError  = $state<string | null>(null);
+    let experiments  = $state<Experiment[]>([]);
+    let fetching     = $state(true);
+    let fetchError   = $state<string | null>(null);
+    let loadingPath  = $state<string | null>(null);
+    let cardErrors   = $state<Record<string, string>>({});
 
     $effect(() => {
         fetch(`${FILE_SERVER}/experiments`)
@@ -78,6 +71,26 @@
         if (!iso) return '';
         return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
     }
+
+    async function selectExperiment(exp: Experiment) {
+        if (loadingPath) return;
+        loadingPath = exp.path;
+        datasetLoading.set(true);
+        datasetError.set(null);
+        cardErrors = { ...cardErrors, [exp.path]: '' };
+
+        try {
+            await loadHFDataset(exp.name, exp.path, FILE_SERVER);
+            onSelect?.(exp);
+        } catch (e) {
+            const msg = (e as Error).message;
+            cardErrors = { ...cardErrors, [exp.path]: msg };
+            datasetError.set(msg);
+        } finally {
+            loadingPath = null;
+            datasetLoading.set(false);
+        }
+    }
 </script>
 
 <div class="exp-list">
@@ -98,7 +111,14 @@
                 </div>
                 <div class="grid">
                     {#each exps as exp (exp.path)}
-                        <div class="card">
+                        <div
+                            class="card"
+                            class:loading={loadingPath === exp.path}
+                            role="button"
+                            tabindex="0"
+                            onclick={() => selectExperiment(exp)}
+                            onkeydown={(e) => e.key === 'Enter' && selectExperiment(exp)}
+                        >
                             <div class="card-name">{exp.name}</div>
 
                             <div class="card-rows">
@@ -128,6 +148,9 @@
                                     <span class="date">{formatDate(exp.created_at)}</span>
                                 {/if}
                             </div>
+                            {#if cardErrors[exp.path]}
+                                <div class="card-error">{cardErrors[exp.path]}</div>
+                            {/if}
                         </div>
                     {/each}
                 </div>
@@ -202,11 +225,14 @@
         flex-direction: column;
         gap: 10px;
         transition: border-color 0.15s, background 0.15s;
+        cursor: pointer;
     }
     .card:hover {
         border-color: #66bb6a;
         background: #162216;
     }
+    .card.loading { opacity: 0.55; pointer-events: none; }
+    .card-error   { font-size: 10px; color: #ef5350; margin-top: 4px; }
 
     .card-name {
         font-size: 18px;
