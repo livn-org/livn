@@ -14,6 +14,7 @@
     import { viewConfig, envSystem, pendingCommand, pyodideReady, activeExperiment, selectedNeurons, activeExpRow, selectedElectrode } from "$lib/stores";
     import { loadExpSystem, forceRefresh } from "$lib/pyodide";
     import type { Experiment } from "$lib/types";
+    import MEA_generator from '$lib/components/MEA_generator.svelte';
 
     // ── Navigation state (flat primitives avoid TS union-narrowing issues) ──
     let navTab       = $state<'bio' | 'sim' | 'build'>('sim');
@@ -349,7 +350,10 @@
                 </div>
                 <div class="build-body">
                     {#if buildSubTab === 'system'}
-                        <SystemGenerator />
+                        <div class="build-grid">
+                            <SystemGenerator />
+                            <MEAGenerator />
+                        </div>
                     {:else}
                         <!-- TODO: build your own stimulation pipeline -->
                         <div class="todo-placeholder">Coming soon</div>
