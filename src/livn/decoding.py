@@ -604,24 +604,142 @@ class AvalancheAnalysis(Decoding):
         return P.broadcast(result, comm=env.comm)
 
 
+_GLOBAL_ROOTS_FILE = os.path.expanduser("~/.livn/roots.json")
+
+
+def _default_experiment_root() -> str:
+    from pathlib import Path
+
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "pyproject.toml").exists():
+            return str(parent / "livn_experiments")
+    return os.path.expanduser("~/livn_experiments")
+
+
+def _register_experiment(experiment_root: str, name: str, directory: str) -> None:
+    """Update the per-root registry and global roots list."""
+    import json
+    from datetime import datetime, timezone
+
+    # Per-root registry: {experiment_root}/experiments.json
+    os.makedirs(experiment_root, exist_ok=True)
+    registry_path = os.path.join(experiment_root, "experiments.json")
+    try:
+        with open(registry_path) as f:
+            registry = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        registry = {}
+
+    if name not in registry:
+        registry[name] = {
+            "path": directory,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        with open(registry_path, "w") as f:
+            json.dump(registry, f, indent=2)
+
+    # Global roots list: ~/.livn/roots.json
+    os.makedirs(os.path.dirname(_GLOBAL_ROOTS_FILE), exist_ok=True)
+    try:
+        with open(_GLOBAL_ROOTS_FILE) as f:
+            roots = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        roots = []
+
+    abs_root = os.path.abspath(experiment_root)
+    if abs_root not in roots:
+        roots.append(abs_root)
+        with open(_GLOBAL_ROOTS_FILE, "w") as f:
+            json.dump(roots, f, indent=2)
+
+
+def _build_metadata(env, duration: int) -> dict:
+    import json
+
+    meta = {"duration": duration}
+
+    system = getattr(env, "system", None)
+    if system is not None:
+        sys_meta = {}
+        if hasattr(system, "uri"):
+            sys_meta["uri"] = str(system.uri)
+        if hasattr(system, "populations"):
+            try:
+                pops = list(system.populations)
+                sys_meta["populations"] = pops
+                sys_meta["n_populations"] = len(pops)
+            except Exception:
+                pass
+        if hasattr(system, "gids"):
+            try:
+                sys_meta["n_neurons"] = int(len(system.gids))
+            except Exception:
+                pass
+        meta["system"] = sys_meta
+
+    encoding = getattr(env, "encoding", None)
+    if encoding is not None:
+        if hasattr(encoding, "model_dump"):
+            meta["encoding"] = encoding.model_dump()
+        else:
+            try:
+                meta["encoding"] = json.loads(json.dumps(encoding, default=str))
+            except Exception:
+                meta["encoding"] = str(encoding)
+
+    model = getattr(env, "model", None)
+    if model is not None:
+        meta["model"] = type(model).__name__
+
+    return meta
+
+
 class ArrowDataset(GatherAndMerge):
-    """Save raw simulation output to an Arrow file
+    """Save raw simulation output to an Arrow dataset
 
     Gathers and merges distributed data, then writes each decoded result as an
-    independently valid Arrow shard file.  The dataset is readable after
-    every call via `datasets.Dataset.from_file()`.
+    independently valid Arrow shard file under ``experiment_root/name/``.
+    The dataset grows with each call, forming one unified dataset across all
+    persistent run calls.
 
-    To turn written shards into a full dataset use `.dataset()`
+    ``experiment_root`` defaults to the ``LIVN_EXPERIMENT_ROOT`` environment
+    variable, falling back to ``~/livn_experiments``, so any tool or script
+    that knows the convention can locate experiment data without being told
+    the path explicitly.
 
     Args:
-        directory: Directory where the Arrow dataset is written
+        name: Subdirectory name (or path) within experiment_root for this run
+        experiment_root: Root directory for all experiments. Defaults to
+            ``LIVN_EXPERIMENT_ROOT`` env var, falling back to ``~/livn_experiments``.
+        save_dataset: If True, persist the full accumulated HuggingFace dataset
+            to ``experiment_root/name/dataset/`` after every shard write so it
+            is immediately loadable via ``datasets.load_from_disk()``
+        save_metadata: If True, append JSON columns ``system_info``,
+            ``encoding_info``, and ``model_info`` to each row, capturing the
+            env's system, encoding config, and model at call time.
         spikes: Whether to record / save spike data
         voltages: Whether to record / save voltage traces
         membrane_currents: Whether to record / save membrane currents
         root: MPI root rank for gather operations
     """
 
-    directory: str
+    name: str
+    experiment_root: str = Field(
+        default_factory=lambda: os.environ.get(
+            "LIVN_EXPERIMENT_ROOT",
+            _default_experiment_root(),
+        )
+    )
+    save_dataset: bool = False
+    save_metadata: bool = False
+
+    @property
+    def directory(self) -> str:
+        return os.path.join(self.experiment_root, self.name)
+
+    @property
+    def dataset_path(self) -> str:
+        return os.path.join(self.directory, "dataset")
 
     def __call__(self, env, it, tt, iv, vv, im, mp):
         data = super().__call__(env, it, tt, iv, vv, im, mp)
@@ -629,7 +747,6 @@ class ArrowDataset(GatherAndMerge):
             return
 
         it, tt, iv, vv, im, mp = data
-
         row = {"duration": self.duration}
         if self.spikes:
             row["it"] = it
@@ -643,21 +760,43 @@ class ArrowDataset(GatherAndMerge):
 
         self._write_shard(row)
 
+        if self.save_metadata:
+            self._write_metadata(env)
+
+        if self.save_dataset:
+            ds = self.dataset()
+            if ds is not None:
+                ds.save_to_disk(self.dataset_path)
+
         return it, tt, iv, vv, im, mp
 
     def _write_shard(self, row):
         from datasets.arrow_writer import ArrowWriter
 
         os.makedirs(self.directory, exist_ok=True)
+        _register_experiment(self.experiment_root, self.name, self.directory)
         idx = self._next_shard_index()
-        shard_path = os.path.join(
-            self.directory,
-            f"data-{idx:05d}.arrow",
-        )
+        shard_path = os.path.join(self.directory, f"data-{idx:05d}.arrow")
         writer = ArrowWriter(path=shard_path, writer_batch_size=1)
         writer.write(row)
         writer.finalize()
         writer.close()
+
+    def _write_metadata(self, env):
+        import json
+
+        path = os.path.join(self.directory, "metadata.json")
+        if os.path.exists(path):
+            return
+        os.makedirs(self.directory, exist_ok=True)
+        meta = _build_metadata(env, self.duration)
+        meta["recording"] = {
+            "spikes": self.spikes,
+            "voltages": self.voltages,
+            "membrane_currents": self.membrane_currents,
+        }
+        with open(path, "w") as f:
+            json.dump(meta, f, indent=2)
 
     def _next_shard_index(self) -> int:
         if not os.path.isdir(self.directory):
@@ -674,13 +813,16 @@ class ArrowDataset(GatherAndMerge):
         import pyarrow as pa
         from datasets import Dataset
 
+        if not os.path.isdir(self.directory):
+            return None
+
         shard_files = sorted(
             f
             for f in os.listdir(self.directory)
             if f.startswith("data-") and f.endswith(".arrow")
         )
         if not shard_files:
-            return
+            return None
 
         tables = []
         for f in shard_files:

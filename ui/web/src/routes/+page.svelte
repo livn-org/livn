@@ -7,16 +7,20 @@
     import Tooltip from "$lib/components/Tooltip.svelte";
     import NavBar from "$lib/components/NavBar.svelte";
     import SimSystemList from "$lib/components/SimSystemList.svelte";
+    import ExperimentList from "$lib/components/ExperimentList.svelte";
+    import ExperimentDataPanel from "$lib/components/ExperimentDataPanel.svelte";
     import BioRecordingList from "$lib/components/BioRecordingList.svelte";
     import BioRecordingDetail from "$lib/components/BioRecordingDetail.svelte";
-    import { viewConfig, envSystem, pendingCommand, pyodideReady } from "$lib/stores";
-    import SystemGenerator from "$lib/components/SystemGenerator.svelte"; 
+    import { viewConfig, envSystem, pendingCommand, pyodideReady, activeExperiment, selectedNeurons, activeExpRow, selectedElectrode } from "$lib/stores";
+    import { loadExpSystem, forceRefresh } from "$lib/pyodide";
+    import type { Experiment } from "$lib/types";
 
     // ── Navigation state (flat primitives avoid TS union-narrowing issues) ──
     let navTab       = $state<'bio' | 'sim' | 'build'>('sim');
-    let navPage      = $state<'list' | 'detail'>('detail');
+    let navPage      = $state<'list' | 'detail' | 'exp-detail'>('detail');
     let navSystem    = $state('EI1');
     let navRecording = $state('');
+    let navExp       = $state<Experiment | null>(null);
 
     let buildSubTab  = $state<'system' | 'stim'>('system');
 
@@ -55,6 +59,25 @@
         navTab       = 'bio';
         navPage      = 'detail';
         navRecording = recording;
+    }
+
+    async function selectExperiment(exp: Experiment) {
+        navExp  = exp;
+        navPage = 'exp-detail';
+        activeExperiment.set(exp);
+        selectedNeurons.set([]);
+        activeExpRow.set(0);
+
+        const uri = exp.metadata?.system?.uri;
+        const sysName = uri ? uri.replace(/\/$/, '').split('/').pop() : null;
+        if (sysName) {
+            try {
+                await loadExpSystem(sysName);
+                await forceRefresh();
+            } catch {
+                // ExperimentDataPanel shows warning if system fails to load
+            }
+        }
     }
 
     // ── Viz controls ──────────────────────────────────────────────────────
@@ -242,7 +265,63 @@
             </div>
 
         {:else if navTab === 'sim' && navPage === 'list'}
-            <SimSystemList onSelect={selectSystem} />
+            <div class="sim-list-layout">
+                <div class="sim-list-panel sim-list-divider">
+                    <SimSystemList onSelect={selectSystem} />
+                </div>
+                <div class="sim-list-panel">
+                    <ExperimentList onSelect={selectExperiment} />
+                </div>
+            </div>
+
+        {:else if navTab === 'sim' && navPage === 'exp-detail' && navExp}
+            <div class="exp-detail-layout">
+                <div class="scene-panel">
+                    <Canvas><EnvScene /></Canvas>
+                    <Tooltip />
+
+                    {#if system}
+                        <div class="controls">
+                            <div class="control-group">
+                                <span class="control-label">Populations</span>
+                                {#each system.populations as pop (pop)}
+                                    <label class="toggle">
+                                        <input
+                                            type="checkbox"
+                                            checked={config.popVisibility[pop] ?? true}
+                                            onchange={() => togglePop(pop)}
+                                        />
+                                        {pop}
+                                    </label>
+                                {/each}
+                            </div>
+                            <div class="control-group">
+                                <label class="slider-label">
+                                    Size
+                                    <input type="range" min="0.2" max="3" step="0.1"
+                                        value={config.pointSize} oninput={setPointSize} />
+                                </label>
+                                <label class="slider-label">
+                                    Opacity
+                                    <input type="range" min="0.1" max="1" step="0.05"
+                                        value={config.opacity} oninput={setOpacity} />
+                                </label>
+                            </div>
+                        </div>
+                    {/if}
+                </div>
+                <div class="data-panel">
+                    <ExperimentDataPanel
+                        experiment={navExp}
+                        onBack={() => {
+                            navPage = 'list';
+                            activeExperiment.set(null);
+                            selectedNeurons.set([]);
+                            selectedElectrode.set(null);
+                        }}
+                    />
+                </div>
+            </div>
 
         {:else if navTab === 'bio' && navPage === 'list'}
             <BioRecordingList onSelect={selectRecording} />
@@ -487,6 +566,40 @@
         font-size: 14px;
         font-style: italic;
         margin: auto;
+    }
+
+    /* ── Exp detail: 3D left + data right ── */
+    .exp-detail-layout {
+        flex: 1;
+        display: grid;
+        grid-template-columns: 2fr 1fr;
+        min-height: 0;
+        overflow: hidden;
+    }
+
+    .data-panel {
+        border-left: 1px solid #333;
+        background: #1a1a2e;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        overflow: hidden;
+    }
+
+    /* ── Sim list: two-panel split ── */
+    .sim-list-layout {
+        flex: 1;
+        display: grid;
+        grid-template-columns: 1fr 1.6fr;
+        min-height: 0;
+        overflow: hidden;
+    }
+    .sim-list-panel {
+        min-height: 0;
+        overflow-y: auto;
+    }
+    .sim-list-divider {
+        border-right: 1px solid #2a2a4a;
     }
 
     /* ── Responsive ── */
