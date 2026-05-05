@@ -349,8 +349,7 @@
                 </div>
                 <div class="build-body">
                     {#if buildSubTab === 'system'}
-                        <!-- TODO: build your own system -->
-                        <div class="todo-placeholder">Coming soon</div>
+                        <SystemGenerator />
                     {:else}
                         <!-- TODO: build your own stimulation pipeline -->
                         <div class="todo-placeholder">Coming soon</div>
@@ -552,15 +551,21 @@
     .build-tab:hover { color: #bbb; }
     .build-tab.active { color: #4fc3f7; border-bottom-color: #4fc3f7; }
     .build-body {
-        flex: 1;
+        flex: 1; 
         display: flex;
-        align-items: center;
-        justify-content: center;
+        min-height: 0;
+        overflow: hidden;
+    }
+    .build-body > :global(*) {   
+        flex: 1;
+        min-width: 0;
+        min-height: 0;
     }
     .todo-placeholder {
         color: #444;
         font-size: 14px;
         font-style: italic;
+        margin: auto;
     }
 
     /* ── Exp detail: 3D left + data right ── */
