@@ -107,6 +107,22 @@
     const excCount = $derived(Math.round(totalNeurons * excRatio));
     const inhCount = $derived(totalNeurons - excCount);
 
+    // Direct count inputs — updating either count adjusts total + ratio
+    function onExcCountChange(e: Event) {
+        const val = parseInt((e.target as HTMLInputElement).value);
+        if (isNaN(val) || val <= 0) return;
+        const newTotal = Math.min(50000, val + inhCount);
+        totalNeurons = newTotal;
+        excRatio = Math.max(0.01, Math.min(0.99, val / newTotal));
+    }
+    function onInhCountChange(e: Event) {
+        const val = parseInt((e.target as HTMLInputElement).value);
+        if (isNaN(val) || val <= 0) return;
+        const newTotal = Math.min(50000, excCount + val);
+        totalNeurons = newTotal;
+        excRatio = Math.max(0.01, Math.min(0.99, excCount / newTotal));
+    }
+
     function computeMEA(
         sh: string,
         rx: number, ry: number, dr: number,
@@ -139,6 +155,26 @@
     // ── Canvas preview ──────────────────────────────────────────────────────
     let canvas:    HTMLCanvasElement | null = $state(null);
     let container: HTMLDivElement    | null = $state(null);
+
+    // ── Legend drag ─────────────────────────────────────────────────────────
+    let legEl:      HTMLDivElement | null = $state(null);
+    let legX        = $state<number | null>(null); // null = CSS default position
+    let legY        = $state<number | null>(null);
+    let legDragging = $state(false);
+    let legOffX = 0, legOffY = 0;
+
+    function onLegMouseDown(e: MouseEvent) {
+        e.preventDefault();
+        const el = legEl!;
+        const elRect  = el.getBoundingClientRect();
+        const contRect = container!.getBoundingClientRect();
+        legOffX = e.clientX - elRect.left;
+        legOffY = e.clientY - elRect.top;
+        // Capture current rendered position so drag continues from where it is
+        legX = elRect.left - contRect.left;
+        legY = elRect.top  - contRect.top;
+        legDragging = true;
+    }
 
     // ── View transform (plain vars — not reactive, updated by events) ───────
     let viewPanX     = 0;
@@ -301,6 +337,16 @@
         if (meaCoords.length > 0 && meaCoords.length <= 4096) {
             const outputRadiusPx = 50 * scale;
 
+            // Semi-transparent fill inside each recording radius
+            ctx.fillStyle = 'rgba(253, 216, 53, 0.07)';
+            ctx.beginPath();
+            for (const [ex, ey] of meaCoords) {
+                const cx = tx(ex + meaOx), cy = ty(ey + meaOy);
+                ctx.moveTo(cx + outputRadiusPx, cy);
+                ctx.arc(cx, cy, outputRadiusPx, 0, Math.PI * 2);
+            }
+            ctx.fill();
+
             ctx.strokeStyle = 'rgba(253, 216, 53, 0.25)';
             ctx.lineWidth = 0.4;
             ctx.beginPath();
@@ -425,6 +471,17 @@
         }
         cv.addEventListener('wheel', handleWheel, { passive: false });
 
+        // Legend drag — track mouse globally so drag works outside the element
+        function handleLegMove(e: MouseEvent) {
+            if (!legDragging || !cont) return;
+            const contRect = cont.getBoundingClientRect();
+            legX = e.clientX - contRect.left - legOffX;
+            legY = e.clientY - contRect.top  - legOffY;
+        }
+        function handleLegUp() { legDragging = false; }
+        window.addEventListener('mousemove', handleLegMove);
+        window.addEventListener('mouseup',   handleLegUp);
+
         const observer = new ResizeObserver(() => {
             if (cv && cont) {
                 cv.width  = cont.clientWidth;
@@ -436,6 +493,8 @@
 
         return () => {
             cv.removeEventListener('wheel', handleWheel);
+            window.removeEventListener('mousemove', handleLegMove);
+            window.removeEventListener('mouseup',   handleLegUp);
             observer.disconnect();
         };
     });
@@ -483,86 +542,111 @@
             <input id="sg-name" class="text-input" type="text" bind:value={name} placeholder="my_culture" />
         </div>
 
-        <div class="field">
-            <div class="field-label">Shape</div>
-            <div class="radio-group">
-                <label class="radio">
-                    <input type="radio" bind:group={shape} value="rectangle" />
-                    Rectangle
-                </label>
-                <label class="radio">
-                    <input type="radio" bind:group={shape} value="disk" />
-                    Disk
-                </label>
-            </div>
+        <!-- ── Lab preset ───────────────────────────────────────────── -->
+        <div class="form-section">
+            <div class="section-heading">Lab preset</div>
+            <label class="radio">
+                <input
+                    type="checkbox"
+                    checked={meaMode === 'preset'}
+                    onchange={(e) => { meaMode = e.currentTarget.checked ? 'preset' : 'custom'; }}
+                />
+                512_rhd_V2
+            </label>
+            {#if meaMode === 'preset'}
+                <div class="preset-info">
+                    Culture auto-set to 1400 × 12600 µm &nbsp;·&nbsp; 512 electrodes, 200 µm pitch
+                </div>
+            {/if}
         </div>
 
-        {#if shape === 'rectangle'}
+        <!-- ── Culture shape ─────────────────────────────────────────── -->
+        <div class="form-section">
+            <div class="section-heading">Culture</div>
+            <div class="field">
+                <div class="field-label">Shape</div>
+                <div class="radio-group">
+                    <label class="radio" class:disabled={meaMode === 'preset'}>
+                        <input type="radio" bind:group={shape} value="rectangle" disabled={meaMode === 'preset'} />
+                        Rectangle
+                    </label>
+                    <label class="radio" class:disabled={meaMode === 'preset'}>
+                        <input type="radio" bind:group={shape} value="disk" disabled={meaMode === 'preset'} />
+                        Disk
+                    </label>
+                </div>
+            </div>
+
+            {#if shape === 'rectangle'}
+                <div class="field-row">
+                    <div class="field">
+                        <label class="field-label" for="sg-rect-x">Width (µm)</label>
+                        <input id="sg-rect-x" class="num-input" type="number" bind:value={rectX}
+                            min="100" max="20000" step="100" disabled={meaMode === 'preset'} />
+                    </div>
+                    <div class="field">
+                        <label class="field-label" for="sg-rect-y">Height (µm)</label>
+                        <input id="sg-rect-y" class="num-input" type="number" bind:value={rectY}
+                            min="100" max="20000" step="100" disabled={meaMode === 'preset'} />
+                    </div>
+                </div>
+            {:else}
+                <div class="field">
+                    <label class="field-label" for="sg-radius">Radius (µm)</label>
+                    <input id="sg-radius" class="num-input" type="number" bind:value={diskRadius}
+                        min="100" max="10000" step="100" disabled={meaMode === 'preset'} />
+                </div>
+            {/if}
+        </div>
+
+        <!-- ── Neurons ───────────────────────────────────────────────── -->
+        <div class="form-section">
+            <div class="section-heading">Neurons</div>
+            <div class="field">
+                <label class="field-label" for="sg-neurons">
+                    Total
+                    <span class="field-val">{totalNeurons.toLocaleString()}</span>
+                </label>
+                <input id="sg-neurons" type="range" bind:value={totalNeurons}
+                    min="100" max="50000" step="100" />
+            </div>
+
+            <div class="field">
+                <label class="field-label" for="sg-exc-ratio">
+                    EXC / INH ratio
+                    <span class="field-val">
+                        {(excRatio * 100).toFixed(0)}% / {((1 - excRatio) * 100).toFixed(0)}%
+                    </span>
+                </label>
+                <input id="sg-exc-ratio" type="range" bind:value={excRatio}
+                    min="0.01" max="0.99" step="0.01" />
+            </div>
+
             <div class="field-row">
                 <div class="field">
-                    <label class="field-label" for="sg-rect-x">Width (µm)</label>
-                    <input id="sg-rect-x" class="num-input" type="number" bind:value={rectX}
-                        min="100" max="20000" step="100" />
+                    <label class="field-label" for="sg-exc-count">EXC count</label>
+                    <input id="sg-exc-count" class="num-input" type="number"
+                        value={excCount} min="1" max="49999" step="1"
+                        onchange={onExcCountChange} />
                 </div>
                 <div class="field">
-                    <label class="field-label" for="sg-rect-y">Height (µm)</label>
-                    <input id="sg-rect-y" class="num-input" type="number" bind:value={rectY}
-                        min="100" max="20000" step="100" />
+                    <label class="field-label" for="sg-inh-count">INH count</label>
+                    <input id="sg-inh-count" class="num-input" type="number"
+                        value={inhCount} min="1" max="49999" step="1"
+                        onchange={onInhCountChange} />
                 </div>
             </div>
-        {:else}
-            <div class="field">
-                <label class="field-label" for="sg-radius">Radius (µm)</label>
-                <input id="sg-radius" class="num-input" type="number" bind:value={diskRadius}
-                    min="100" max="10000" step="100" />
-            </div>
-        {/if}
-
-        <div class="field">
-            <label class="field-label" for="sg-neurons">
-                Total neurons
-                <span class="field-val">{totalNeurons.toLocaleString()}</span>
-            </label>
-            <input id="sg-neurons" type="range" bind:value={totalNeurons}
-                min="100" max="50000" step="100" />
         </div>
 
-        <div class="field">
-            <label class="field-label" for="sg-exc-ratio">
-                EXC / INH split
-                <span class="field-val">
-                    {(excRatio * 100).toFixed(0)}% / {((1 - excRatio) * 100).toFixed(0)}%
-                </span>
-            </label>
-            <input id="sg-exc-ratio" type="range" bind:value={excRatio}
-                min="0.5" max="0.95" step="0.05" />
-        </div>
-
-        <div class="field">
-            <div class="field-label">Electrode array (MEA)</div>
-            <div class="radio-group">
-                <label class="radio">
-                    <input type="radio" bind:group={meaMode} value="custom" />
-                    Custom grid
-                </label>
-                <label class="radio">
-                    <input type="radio" bind:group={meaMode} value="preset" />
-                    Lab preset (512 electrodes)
-                </label>
-            </div>
-        </div>
-
-        {#if meaMode === 'custom'}
+        <!-- ── Electrode array (MEA) ─────────────────────────────────── -->
+        <div class="form-section">
+            <div class="section-heading">Electrode array (MEA)</div>
             <div class="field">
                 <label class="field-label" for="sg-pitch">Electrode spacing (MEA pitch) (µm)</label>
                 <input id="sg-pitch" class="num-input" type="number" bind:value={meaPitch}
-                    min="50" max="1000" step="50" />
+                    min="50" max="1000" step="50" disabled={meaMode === 'preset'} />
             </div>
-        {:else}
-            <div class="preset-info">
-                512_long_mea_6x_V2 &nbsp;·&nbsp; 8 × 64 grid &nbsp;·&nbsp; 200 µm pitch
-            </div>
-        {/if}
+        </div>
 
         <!-- Stats -->
         <div class="stats">
@@ -605,7 +689,16 @@
         ></canvas>
 
         <!-- Fixed legend overlay (stays put while canvas transforms) -->
-        <div class="legend-overlay">
+        <div
+            class="legend-overlay"
+            class:leg-dragging={legDragging}
+            bind:this={legEl}
+            onmousedown={onLegMouseDown}
+            role="button"
+            aria-label="Drag to move legend"
+            tabindex="0"
+            style={legX !== null ? `left: ${legX}px; top: ${legY}px; right: auto; transform: none;` : ''}
+        >
             <div class="leg-item">
                 <span class="leg-dot exc-dot"></span>
                 <div class="leg-text">
@@ -692,6 +785,23 @@
         font-weight: 700;
     }
 
+    /* ── Form sections ───────────────────────────────────────────────── */
+    .form-section {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        border-top: 1px solid #1a1a30;
+        padding-top: 12px;
+    }
+
+    .section-heading {
+        font-size: 10px;
+        font-weight: 700;
+        color: #555;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+    }
+
     .text-input,
     .num-input {
         background: #111126;
@@ -707,6 +817,15 @@
     .text-input:focus,
     .num-input:focus {
         border-color: #4fc3f7;
+    }
+    .text-input:disabled,
+    .num-input:disabled {
+        opacity: 0.35;
+        cursor: not-allowed;
+    }
+    .radio.disabled {
+        opacity: 0.35;
+        cursor: not-allowed;
     }
 
     input[type="range"] {
@@ -828,8 +947,16 @@
         display: flex;
         flex-direction: column;
         gap: 20px;
-        pointer-events: none;
         user-select: none;
+        background: rgba(8, 8, 18, 0.82);
+        border: 1px solid #252540;
+        border-radius: 8px;
+        padding: 14px 16px;
+        cursor: grab;
+        z-index: 20;
+    }
+    .legend-overlay.leg-dragging {
+        cursor: grabbing;
     }
 
     .leg-item {

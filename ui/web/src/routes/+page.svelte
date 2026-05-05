@@ -10,7 +10,7 @@
     import BioRecordingList from "$lib/components/BioRecordingList.svelte";
     import BioRecordingDetail from "$lib/components/BioRecordingDetail.svelte";
     import { viewConfig, envSystem, pendingCommand, pyodideReady } from "$lib/stores";
-    import SystemGenerator from "$lib/components/SystemGenerator.svelte";
+    import SystemGenerator from "$lib/components/SystemGenerator.svelte"; 
 
     // ── Navigation state (flat primitives avoid TS union-narrowing issues) ──
     let navTab       = $state<'bio' | 'sim' | 'build'>('sim');
@@ -472,12 +472,12 @@
     .build-tab:hover { color: #bbb; }
     .build-tab.active { color: #4fc3f7; border-bottom-color: #4fc3f7; }
     .build-body {
-        flex: 1;
+        flex: 1; 
         display: flex;
         min-height: 0;
         overflow: hidden;
     }
-    .build-body > :global(*) {
+    .build-body > :global(*) {   
         flex: 1;
         min-width: 0;
         min-height: 0;
