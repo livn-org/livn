@@ -219,6 +219,15 @@ class Env(EnvProtocol):
         self._opsin_callback_registered = False
         self._opsin_step_index = 0
 
+        # Refractory spike-source filters (gid -> dict with 'filter', 'in_nc', 'out_nc')
+        self._spike_filter_refs: dict[int, dict] = {}
+        if hasattr(self.model, "neuron_refractory_period"):
+            self._refractory_period = float(
+                self.model.neuron_refractory_period()
+            )
+        else:
+            self._refractory_period = 2.0
+
     @property
     def voltage_recording_dt(self) -> float:
         if self.v_recs_dt:
@@ -372,6 +381,57 @@ class Env(EnvProtocol):
         if rank == 0:
             logger.info(f"*** Gap junctions created in {self.connectgjstime:.02f} s")
 
+    def _install_spike_filter(self, cell) -> None:
+        src_nc = getattr(cell, "spike_detector", None)
+        if src_nc is None:
+            return  # artificial cells / hoc cells without a precomputed detector
+
+        threshold = float(src_nc.threshold)
+        delay = float(src_nc.delay)
+        weight = float(src_nc.weight[0])
+
+        # Locate the soma section the original detector watched
+        soma_sec = None
+        soma_attr = getattr(cell, "soma", None)
+        if soma_attr:
+            soma_node = soma_attr[0] if isinstance(soma_attr, list) else soma_attr
+            soma_sec = getattr(soma_node, "section", soma_node)
+        if soma_sec is None:
+            hoc_cell = getattr(cell, "hoc_cell", None) or getattr(
+                cell, "cell_obj", None
+            )
+            soma_sec = getattr(hoc_cell, "soma", None)
+            if isinstance(soma_sec, list):
+                soma_sec = soma_sec[0]
+        if soma_sec is None:
+            raise RuntimeError(
+                f"_install_spike_filter: cannot find soma section for gid {cell.gid}"
+            )
+
+        spike_filter = h.SpikeFilter()
+        spike_filter.tref = float(self._refractory_period)
+
+        in_nc = h.NetCon(soma_sec(0.5)._ref_v, spike_filter, sec=soma_sec)
+        in_nc.threshold = threshold
+        in_nc.delay = delay
+        in_nc.weight[0] = weight
+
+        out_nc = h.NetCon(spike_filter, None)
+        out_nc.delay = max(2.0 * 0.025, 1e-3)
+        out_nc.weight[0] = 1.0
+
+        # Replace the cell's detector so register_cell binds pc.cell /
+        # pc.spike_record to the filtered output instead of the raw threshold
+        # NetCon. The original src_nc loses its only Python ref and is GC'd,
+        # which detaches its watch on _ref_v
+        cell.spike_detector = out_nc
+
+        self._spike_filter_refs[int(cell.gid)] = {
+            "filter": spike_filter,
+            "in_nc": in_nc,
+            "out_nc": out_nc,
+        }
+
     def _make_cells(self, cell_selection=None):
         rank = self.rank
         nhosts = int(self.pc.nhost())
@@ -506,6 +566,7 @@ class Env(EnvProtocol):
                     soma_xyz = cells.get_soma_xyz(tree, self.SWC_Types)
                     cell.position(soma_xyz[0], soma_xyz[1], soma_xyz[2])
 
+                    self._install_spike_filter(cell)
                     cells.register_cell(compat, pop_name, gid, cell)
                     num_cells += 1
                 del trees
@@ -574,6 +635,7 @@ class Env(EnvProtocol):
                     else:
                         cell = cells.make_hoc_cell(compat, pop_name, gid)
                     cell.position(cell_x, cell_y, cell_z)
+                    self._install_spike_filter(cell)
                     cells.register_cell(compat, pop_name, gid, cell)
                     num_cells += 1
             else:
@@ -591,6 +653,12 @@ class Env(EnvProtocol):
             )
 
         self.node_allocation = set(self.gidset)
+
+        if self.rank == 0 and self._spike_filter_refs:
+            logger.info(
+                f"*** SpikeFilter installed on {len(self._spike_filter_refs)} cells "
+                f"(tref = {self._refractory_period:.2f} ms)"
+            )
 
     def _load_connections(self):
         synapses = self.system.connections_config["synapses"]
@@ -730,7 +798,19 @@ class Env(EnvProtocol):
 
                 section_id = count % sections_per_neuron
 
-                cell = self.pc.gid2cell(gid)
+                # pc.gid2cell returns the source object of the NetCon
+                # registered with pc.cell. For biophysical cells we wrap
+                # the somatic detector in a SpikeFilter ARTIFICIAL_CELL
+                # (see _install_spike_filter), so gid2cell would return
+                # the filter rather than the biophys cell. Look up the
+                # underlying cell via self.cells instead
+                cell = None
+                for pop_cells in self.cells.values():
+                    if gid in pop_cells:
+                        cell = pop_cells[gid]
+                        break
+                if cell is None:
+                    cell = self.pc.gid2cell(gid)
                 if "VecStim" in getattr(cell, "hname", lambda: "")():
                     # artificial STIM cell
                     print(
@@ -1853,6 +1933,10 @@ class Env(EnvProtocol):
         stim_vectors = getattr(self, "_stimulus_vectors", None)
         if stim_vectors is not None:
             stim_vectors.clear()
+
+        spike_filter_refs = getattr(self, "_spike_filter_refs", None)
+        if spike_filter_refs is not None:
+            spike_filter_refs.clear()
 
         gidset = getattr(self, "gidset", None)
         if gidset is not None:

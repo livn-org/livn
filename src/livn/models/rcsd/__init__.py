@@ -18,7 +18,11 @@ else:
 
 
 class ReducedCalciumSomaDendrite(Model):
-    def __init__(self, input_mode: str | None = None):
+    def __init__(
+        self,
+        input_mode: str | None = None,
+        refractory_period: float = 2.0,
+    ):
         # Optional override for the underlying neuron's stimulus
         # interpretation; this is only needed for the JAX
         # backend that build the compute graph at
@@ -34,6 +38,11 @@ class ReducedCalciumSomaDendrite(Model):
                 f"'current_density', 'conductance', 'current', 'irradiance'."
             )
         self.input_mode = input_mode
+        if refractory_period < 0:
+            raise ValueError(
+                f"refractory_period must be >= 0, got {refractory_period}"
+            )
+        self.refractory_period = float(refractory_period)
 
     def prepare_stimulus(self, stimulus):
         modes = {
@@ -161,6 +170,9 @@ class ReducedCalciumSomaDendrite(Model):
 
     def neuron_mechanisms_directory(self):
         return os.path.join(os.path.dirname(__file__), "neuron", "mechanisms")
+
+    def neuron_refractory_period(self) -> float:
+        return self.refractory_period
 
     def neuron_celltypes(self, celltypes):
         if "EXC" in celltypes:
