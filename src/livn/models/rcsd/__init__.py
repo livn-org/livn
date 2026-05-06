@@ -39,9 +39,7 @@ class ReducedCalciumSomaDendrite(Model):
             )
         self.input_mode = input_mode
         if refractory_period < 0:
-            raise ValueError(
-                f"refractory_period must be >= 0, got {refractory_period}"
-            )
+            raise ValueError(f"refractory_period must be >= 0, got {refractory_period}")
         self.refractory_period = float(refractory_period)
 
     def prepare_stimulus(self, stimulus):
@@ -400,12 +398,12 @@ class ReducedCalciumSomaDendrite(Model):
                 "tau_i": 28.50772476196289,
             },
             "EI2": {
-                "g_e0": 1.4662606716156006,
-                "g_i0": 0.9061993360519409,
-                "std_e": 0.47152602672576904,
-                "std_i": 0.1969195306301117,
-                "tau_e": 17.493135452270508,
-                "tau_i": 7.105101585388184,
+                "g_e0": 3.409418821334839,
+                "g_i0": 1.0573457479476929,
+                "std_e": 0.49486637115478516,
+                "std_i": 0.23988725244998932,
+                "tau_e": 31.219661712646484,
+                "tau_i": 16.700607299804688,
             },
             "EI3": {},
             "EI4": {},
@@ -422,12 +420,12 @@ class ReducedCalciumSomaDendrite(Model):
                 "INH_INH-soma-GABA_A-weight": 8.710510071227473,
             },
             "EI2": {
-                "EXC_EXC-hillock-AMPA-weight": 0.0010000000254350994,
-                "EXC_EXC-hillock-NMDA-weight": 0.00398131980116756,
-                "EXC_INH-hillock-AMPA-weight": 12.114758587424397,
-                "EXC_INH-hillock-NMDA-weight": 0.31300935167465127,
-                "INH_EXC-soma-GABA_A-weight": 0.5000229360632054,
-                "INH_INH-soma-GABA_A-weight": 5.83084802642212,
+                "EXC_EXC-hillock-AMPA-weight": 0.8598201979147386,
+                "EXC_EXC-hillock-NMDA-weight": 1.2337499089211241,
+                "EXC_INH-hillock-AMPA-weight": 1.1851855878120792,
+                "EXC_INH-hillock-NMDA-weight": 0.056837208512839466,
+                "INH_EXC-soma-GABA_A-weight": 1.5785464331652075,
+                "INH_INH-soma-GABA_A-weight": 4.262910407764182,
             },
             "EI3": {},
             "EI4": {},
