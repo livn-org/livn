@@ -20,6 +20,10 @@ class Tune(Interface):
         target: str = "systems.targets.EI.Spontaneous"
         trials: int = 1
         nprocs_per_worker: int = 1
+        n_initial: int = 10
+        population_size: int = 100
+        num_generations: int = 10
+        n_epochs: int = 25
 
     def launch(self):
         target = import_object_by_path(self.config.target)()
@@ -35,10 +39,10 @@ class Tune(Interface):
                         "target": self.config.target,
                         "trials": self.config.trials,
                     },
-                    "n_epochs": 25,
-                    "n_initial": 100,
-                    "population_size": 100,
-                    "num_generations": 10,
+                    "n_epochs": self.config.n_epochs,
+                    "n_initial": self.config.initial,
+                    "population_size": self.config.population_size,
+                    "num_generations": self.config.num_generations,
                 },
                 "nprocs_per_worker": self.config.nprocs_per_worker,
             },
