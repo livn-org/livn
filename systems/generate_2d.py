@@ -227,16 +227,10 @@ class Generate2DSystem(Component):
             raise FileExistsError("lightarray.json already exists.")
 
         if fiber_coordinates is None:
-            rng = np.random.default_rng(self.config.random_seed)
-            bounds = bounding_box(
-                *(
-                    import_object_by_path(self.config.area)(
-                        10_000,
-                        rng,
-                        **self.config.area_kwargs,
-                    )
-                )
-            )
+            with open(self.graph_filepath, "r") as f:
+                graph = json.load(f)
+            area = graph["architecture"]["config"]["area"]
+            bounds = (tuple(area[0]), tuple(area[1]))
             (xmin, ymin), (xmax, ymax) = bounds
             fiber_coordinates = [
                 [0, (xmin + xmax) / 2, (ymin + ymax) / 2, -fiber_height_um]
@@ -824,17 +818,21 @@ class Generate2DSystem(Component):
                 with open(mea_path, "r") as f:
                     mea = json.load(f)
                 coords = np.asarray(mea.get("electrode_coordinates", []), dtype=float)
+                print(len(coords), " channels")
                 if coords.size:
                     ax.scatter(
                         coords[:, 1],
                         coords[:, 2],
-                        s=1,
-                        c="tab:blue",
+                        s=10,
+                        c="green",
                         edgecolors="black",
                         linewidths=0.4,
                         zorder=3,
                     )
                     for electrode_id, x, y, _ in coords:
+                        if electrode_id % (len(coords) // 20) > 0:
+                            continue
+
                         ax.annotate(
                             str(int(electrode_id)),
                             (x, y),
