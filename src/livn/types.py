@@ -126,7 +126,9 @@ class Env(Protocol):
         """Transforms channel inputs into neural inputs"""
         return self.io.cell_stimulus(
             self.system.transform_coordinates(
-                self.model.stimulus_coordinates, all=False
+                self.model.stimulus_coordinates,
+                populations=self.active_populations(),
+                all=False,
             ),
             channel_inputs,
         )
@@ -138,7 +140,7 @@ class Env(Protocol):
     ) -> tuple[dict[int, Array], ...]:
         """Transforms neural recordings identified by their gids into per channel recordings"""
         return self.io.channel_recording(
-            self.system.neuron_coordinates, ii, *recordings
+            self.active_neuron_coordinates(), ii, *recordings
         )
 
     def init(self) -> Self:
@@ -198,10 +200,29 @@ class Env(Protocol):
 
         return self
 
+    def active_populations(self) -> list[str]:
+        ignored: set[str] = set()
+        model = getattr(self, "model", None)
+        if model is not None and hasattr(model, "ignored_populations"):
+            ignored = set(model.ignored_populations())
+        return [p for p in self.system.populations if p not in ignored]
+
+    def active_neuron_coordinates(self):
+        active = self.active_populations()
+        if list(active) == list(self.system.populations):
+            return self.system.neuron_coordinates
+        import numpy as _np
+
+        return _np.vstack([self.system.coordinate_array(p, all=False) for p in active])
+
+    def active_gids(self):
+        coords = self.active_neuron_coordinates()
+        return coords[:, 0].astype(int)
+
     def record_spikes(self, population: str | list | tuple | None = None) -> Self:
         """Enable spike recording for population"""
         if population is None:
-            population = self.system.populations
+            population = self.active_populations()
         if isinstance(population, (list, tuple)):
             for p in population:
                 self.record_spikes(p)
@@ -218,7 +239,7 @@ class Env(Protocol):
     ) -> Self:
         """Enable voltage recording for population"""
         if population is None:
-            population = self.system.populations
+            population = self.active_populations()
         if isinstance(population, (list, tuple)):
             for p in population:
                 self.record_voltage(p, dt=dt)
@@ -235,7 +256,7 @@ class Env(Protocol):
     ) -> Self:
         """Enable membrane current recording for population"""
         if population is None:
-            population = self.system.populations
+            population = self.active_populations()
         if isinstance(population, (list, tuple)):
             for p in population:
                 self.record_membrane_current(p, dt=dt)
@@ -316,7 +337,9 @@ class Env(Protocol):
 
     def recording_distances(self):
         neuron_coordinates = self.system.transform_coordinates(
-            self.model.recording_coordinates, all=False
+            self.model.recording_coordinates,
+            populations=self.active_populations(),
+            all=False,
         )
         return self.io.distances(neuron_coordinates)
 
@@ -384,6 +407,10 @@ class Model(Protocol):
 
     def prepare_stimulus(self, stimulus: "Stimulus") -> "Stimulus":
         return stimulus
+
+    def ignored_populations(self) -> set[str]:
+        """Populations that backends should skip when instantiating cells/connections."""
+        return set()
 
     def apply_defaults(self, env, weights: bool = True, noise: bool = True):
         if weights:

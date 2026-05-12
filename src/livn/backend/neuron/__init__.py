@@ -222,9 +222,7 @@ class Env(EnvProtocol):
         # Refractory spike-source filters (gid -> dict with 'filter', 'in_nc', 'out_nc')
         self._spike_filter_refs: dict[int, dict] = {}
         if hasattr(self.model, "neuron_refractory_period"):
-            self._refractory_period = float(
-                self.model.neuron_refractory_period()
-            )
+            self._refractory_period = float(self.model.neuron_refractory_period())
         else:
             self._refractory_period = 2.0
 
@@ -309,6 +307,13 @@ class Env(EnvProtocol):
         celltypes = to_dict(self.system.synapses_config["cell_types"])
 
         self.model.neuron_celltypes(celltypes)
+
+        ignored = set()
+        if hasattr(self.model, "ignored_populations"):
+            ignored = set(self.model.ignored_populations())
+        for k in list(celltypes.keys()):
+            if k in ignored:
+                del celltypes[k]
 
         typenames = sorted(celltypes.keys())
         for k in typenames:
@@ -693,6 +698,16 @@ class Env(EnvProtocol):
         projection_dict = self.comm.bcast(projection_dict, root=0)
         comm0.Free()
 
+        ignored = set()
+        if hasattr(self.model, "ignored_populations"):
+            ignored = set(self.model.ignored_populations())
+        if ignored:
+            projection_dict = {
+                dst: [src for src in srcs if src not in ignored]
+                for dst, srcs in projection_dict.items()
+                if dst not in ignored
+            }
+
         self.input_sources = {
             pop_name: set() for pop_name in self.cells_meta_data["celltypes"].keys()
         }
@@ -780,9 +795,9 @@ class Env(EnvProtocol):
 
         if stimulus is not None and not is_irradiance:
             if stimulus.gids is None:
-                stimulus.gids = self.system.gids
+                stimulus.gids = self.active_gids()
 
-            sections_per_neuron = len(stimulus) // len(self.system.neuron_coordinates)
+            sections_per_neuron = len(stimulus) // len(self.active_neuron_coordinates())
 
             start_step = int(round(current_time / stimulus.dt))
             if not math.isclose(
@@ -985,7 +1000,7 @@ class Env(EnvProtocol):
         if len(self.i_recs) == 0:
             return ii, tt, iv, v, None, None
 
-        gids = self.system.gids
+        gids = self.active_gids()
         sections_per_neuron = len(self.i_recs) // len(gids)
         gid_to_index = {int(g): idx for idx, g in enumerate(gids)}
         any_rec = next(iter(self.i_recs.values()))
@@ -1071,9 +1086,9 @@ class Env(EnvProtocol):
         phi_stimulus = stimulus.convert_to("photon_flux")
 
         if phi_stimulus.gids is None:
-            phi_stimulus.gids = self.system.gids
+            phi_stimulus.gids = self.active_gids()
 
-        sections_per_neuron = len(phi_stimulus) // len(self.system.neuron_coordinates)
+        sections_per_neuron = len(phi_stimulus) // len(self.active_neuron_coordinates())
 
         start_step = int(round(current_time / phi_stimulus.dt))
 
@@ -1178,11 +1193,21 @@ class Env(EnvProtocol):
 
     def set_weights(self, weights):
         params = []
+        dropped = []
         for k, v in weights.items():
             try:
                 params.append((SynapticParam.from_string(k), v))
-            except ValueError:
-                pass
+            except ValueError as e:
+                dropped.append((k, str(e)))
+        if dropped and self.rank == 0:
+            print(
+                f"[set_weights] dropped {len(dropped)} keys: {dropped[:3]}", flush=True
+            )
+        if self.rank == 0:
+            print(
+                f"[set_weights] applying {len(params)} params (e.g. {[(p[0].model_dump(), p[1]) for p in params[:2]]})",
+                flush=True,
+            )
 
         self.this.__dict__.update({"phenotype_dict": {}, "cache_queries": True})
         update_network_params(self.this, params)
@@ -1192,8 +1217,13 @@ class Env(EnvProtocol):
     def set_noise(self, noise: dict):
         if not hasattr(self.model, "neuron_noise_mechanism"):
             if self.rank == 0:
-                print(f"Model {self.model} does not support noise setter")
+                print(
+                    f"[set_noise] Model {self.model} does not support noise setter, skipping {len(noise)} params",
+                    flush=True,
+                )
             return self
+        if self.rank == 0:
+            print(f"[set_noise] applying {noise}", flush=True)
 
         for population, pop_cells in self.cells.items():
             for gid, cell in pop_cells.items():
