@@ -22,6 +22,7 @@ class ReducedCalciumSomaDendrite(Model):
         self,
         input_mode: str | None = None,
         refractory_period: float = 2.0,
+        implicit_inhibition: bool = True,
     ):
         # Optional override for the underlying neuron's stimulus
         # interpretation; this is only needed for the JAX
@@ -41,6 +42,12 @@ class ReducedCalciumSomaDendrite(Model):
         if refractory_period < 0:
             raise ValueError(f"refractory_period must be >= 0, got {refractory_period}")
         self.refractory_period = float(refractory_period)
+        self.implicit_inhibition = bool(implicit_inhibition)
+
+    def ignored_populations(self) -> set[str]:
+        if self.implicit_inhibition:
+            return {"INH"}
+        return set()
 
     def prepare_stimulus(self, stimulus):
         modes = {
@@ -397,6 +404,14 @@ class ReducedCalciumSomaDendrite(Model):
                 "tau_e": 33.00786209106445,
                 "tau_i": 28.50772476196289,
             },
+            "E1": {
+                "g_e0": 1.506250023841858,
+                "g_i0": 0.7896875143051147,
+                "std_e": 0.37934374809265137,
+                "std_i": 0.1980062574148178,
+                "tau_e": 17.818750381469727,
+                "tau_i": 14.5625,
+            },
             "EI2": {
                 "g_e0": 3.409418821334839,
                 "g_i0": 1.0573457479476929,
@@ -405,9 +420,19 @@ class ReducedCalciumSomaDendrite(Model):
                 "tau_e": 31.219661712646484,
                 "tau_i": 16.700607299804688,
             },
+            "E2": {
+                "g_e0": 1.506250023841858,
+                "g_i0": 0.7896875143051147,
+                "std_e": 0.37934374809265137,
+                "std_i": 0.1980062574148178,
+                "tau_e": 17.818750381469727,
+                "tau_i": 14.5625,
+            },
             "EI3": {},
+            "E3": {},
             "EI4": {},
-        }[system]
+            "E4": {},
+        }[system.replace("I", "") if self.implicit_inhibition else system]
 
     def neuron_default_weights(self, system: str):
         return {
@@ -419,6 +444,10 @@ class ReducedCalciumSomaDendrite(Model):
                 "INH_EXC-soma-GABA_A-weight": 9.406616405134113,
                 "INH_INH-soma-GABA_A-weight": 8.710510071227473,
             },
+            "E1": {
+                "EXC_EXC-hillock-AMPA-weight": 6.662631778468774,
+                "EXC_EXC-hillock-NMDA-weight": 0.08212027818954581,
+            },
             "EI2": {
                 "EXC_EXC-hillock-AMPA-weight": 0.8598201979147386,
                 "EXC_EXC-hillock-NMDA-weight": 1.2337499089211241,
@@ -427,9 +456,15 @@ class ReducedCalciumSomaDendrite(Model):
                 "INH_EXC-soma-GABA_A-weight": 1.5785464331652075,
                 "INH_INH-soma-GABA_A-weight": 4.262910407764182,
             },
+            "E2": {
+                "EXC_EXC-hillock-AMPA-weight": 6.662631778468774,
+                "EXC_EXC-hillock-NMDA-weight": 0.08212027818954581,
+            },
             "EI3": {},
+            "E3": {},
             "EI4": {},
-        }[system]
+            "E4": {},
+        }[system.replace("I", "") if self.implicit_inhibition else system]
 
     # diffrax
 
@@ -437,7 +472,7 @@ class ReducedCalciumSomaDendrite(Model):
         from livn.models.rcsd.diffrax.culture import MotoneuronCulture
 
         return MotoneuronCulture(
-            num_neurons=len(env.system.gids),
+            num_neurons=len(env.active_gids()),
             params=self.params("BoothRinzelKiehn-MN"),
             key=key,
         )

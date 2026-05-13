@@ -159,7 +159,12 @@ class TestBrian2Variables:
 @_brian2_only
 class TestBrian2Synapses:
     def test_mechanism_synapses_created(self):
-        env = Env("systems/graphs/EI1").init()
+        from livn.models.rcsd import ReducedCalciumSomaDendrite
+
+        env = Env(
+            "systems/graphs/EI1",
+            model=ReducedCalciumSomaDendrite(implicit_inhibition=False),
+        ).init()
         try:
             ampa_keys = [k for k in env._synapses if len(k) == 3 and k[2] == "AMPA"]
             assert len(ampa_keys) > 0, "No AMPA synapses found"
@@ -291,7 +296,12 @@ class TestEnablePlasticity:
 
     @_neuron_only
     def test_per_population_config(self):
-        env = Env("systems/graphs/EI1").init()
+        from livn.models.rcsd import ReducedCalciumSomaDendrite
+
+        env = Env(
+            "systems/graphs/EI1",
+            model=ReducedCalciumSomaDendrite(implicit_inhibition=False),
+        ).init()
         try:
             env.apply_model_defaults()
 
@@ -321,7 +331,12 @@ class TestEnablePlasticity:
 
     @_neuron_only
     def test_enable_includes_inhibitory(self):
-        env = Env("systems/graphs/EI1").init()
+        from livn.models.rcsd import ReducedCalciumSomaDendrite
+
+        env = Env(
+            "systems/graphs/EI1",
+            model=ReducedCalciumSomaDendrite(implicit_inhibition=False),
+        ).init()
         try:
             env.apply_model_defaults()
             env.enable_plasticity()
