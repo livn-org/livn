@@ -132,6 +132,7 @@ class Env(EnvProtocol):
         self.comm = comm
         self.subworld_size = subworld_size
 
+        self.duration = None
         self.encoding = None
         self.decoding = None
 
@@ -781,6 +782,7 @@ class Env(EnvProtocol):
         dt: float | None = None,
         **kwargs,
     ):
+        self.duration = duration
         current_time = self.t
 
         if stimulus is not None:
@@ -1028,6 +1030,8 @@ class Env(EnvProtocol):
             currents[idx * sections_per_neuron + sec_id, :] = arr
             im[idx * sections_per_neuron + sec_id] = gid
 
+        self.duration = None
+
         return ii, tt, iv, v, im, currents
 
     def _ensure_stimulus_buffer(self, state: dict, target_length: int) -> None:
@@ -1202,11 +1206,6 @@ class Env(EnvProtocol):
         if dropped and self.rank == 0:
             print(
                 f"[set_weights] dropped {len(dropped)} keys: {dropped[:3]}", flush=True
-            )
-        if self.rank == 0:
-            print(
-                f"[set_weights] applying {len(params)} params (e.g. {[(p[0].model_dump(), p[1]) for p in params[:2]]})",
-                flush=True,
             )
 
         self.this.__dict__.update({"phenotype_dict": {}, "cache_queries": True})

@@ -6,12 +6,15 @@
 # ///
 import os
 import numpy as np
+import matplotlib.pyplot as plt
 
 os.environ["LIVN_BACKEND"] = "neuron"
 
 from livn.env import Env
+from livn.env.logging import with_progress_logging
 from livn.system import predefined
 from livn.utils import P
+
 
 env = Env(predefined("EI1")).init()
 
@@ -22,7 +25,7 @@ env.record_membrane_current()
 
 
 warmup = 0
-trial_length = 1000
+trial_length = 30_000
 t_stim = 500
 t_end = warmup + trial_length
 
@@ -34,7 +37,7 @@ for r in range(20):
         inputs[warmup + t_stim + r, c] = 1.5
 stimulus = env.cell_stimulus(inputs)
 
-it, t, iv, v, im, mm = env.run(t_end, stimulus=stimulus)
+it, t, iv, v, im, mm = with_progress_logging(env).run(t_end, stimulus=stimulus)
 
 # per-rank electrode potential, sum-reduced
 p = P.reduce_sum(env.potential_recording(mm), all=True)
@@ -44,10 +47,10 @@ t_end = t_end - warmup
 
 cit, ct = env.channel_recording(it, t)
 
-cit, ct, iv, v = P.gather(cit, ct, iv, v)
+it, t, cit, ct, iv, v = P.gather(it, t, cit, ct, iv, v)
 
 if P.is_root():
-    cit, ct, iv, v = P.merge(cit, ct, iv, v)
+    it, t, cit, ct, iv, v = P.merge(it, t, cit, ct, iv, v)
 
     per_channel_firing_rate = {
         key: np.nan_to_num(
@@ -63,8 +66,6 @@ if P.is_root():
     ]
     rate_mean = np.mean(rates)
     rate_std = np.std(rates)
-
-    import matplotlib.pyplot as plt
 
     fig = plt.figure(figsize=(12, 6))
 
@@ -101,3 +102,13 @@ if P.is_root():
         plt.legend(ncol=2)
     plt.tight_layout()
     plt.savefig("potentials.png")
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.scatter(t, it, s=30, marker="|", linewidths=1.2, color="black")
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Neuron gid")
+    ax.set_title("Spike raster plot")
+    ax.set_yticks(np.unique(it))
+    ax.grid(True, axis="x", alpha=0.3)
+    plt.tight_layout()
+    fig.savefig("raster.png")
