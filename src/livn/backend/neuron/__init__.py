@@ -169,6 +169,7 @@ class Env(EnvProtocol):
         self.template_dict = {}
 
         self._flucts = {}
+        self._noise_state: dict = {}
 
         # --- Simulator
         self.template_directory = self.model.neuron_template_directory()
@@ -1222,6 +1223,11 @@ class Env(EnvProtocol):
                 )
             return self
 
+        # Merge with previously-applied noise so partial updates do not
+        # silently reset unspecified parameters to function defaults
+        self._noise_state.update(noise)
+        merged = dict(self._noise_state)
+
         for population, pop_cells in self.cells.items():
             for gid, cell in pop_cells.items():
                 if not (self.pc.gid_exists(gid)):
@@ -1236,7 +1242,9 @@ class Env(EnvProtocol):
                         fluct, state = self.model.neuron_noise_mechanism(sec(0.5))
                         self._flucts[f"{gid}-{idx}"] = (fluct, state)
 
-                    self.model.neuron_noise_configure(population, fluct, state, **noise)
+                    self.model.neuron_noise_configure(
+                        population, fluct, state, **merged
+                    )
 
                     h.pop_section()
 
