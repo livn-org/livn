@@ -195,8 +195,10 @@ class Env(Protocol):
             else:
                 weights[k] = v
 
-        self.set_weights(weights)
-        self.set_noise(noise)
+        if weights:
+            self.set_weights(weights)
+        if noise:
+            self.set_noise(noise)
 
         return self
 

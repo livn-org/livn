@@ -1221,8 +1221,6 @@ class Env(EnvProtocol):
                     flush=True,
                 )
             return self
-        if self.rank == 0:
-            print(f"[set_noise] applying {noise}", flush=True)
 
         for population, pop_cells in self.cells.items():
             for gid, cell in pop_cells.items():
