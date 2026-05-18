@@ -9,9 +9,9 @@ class Run(Component):
     class Config(BaseModel):
         model_config = ConfigDict(extra="forbid")
 
-        system: str = "systems/graphs/S1"
+        system: str = "systems/graphs/EI1"
         model: ObjSpec = None
-        decoding: ObjSpec = ("livn.types.Decoding", {"duration": 100})
+        decoding: ObjSpec = ("livn.decoding.GatherAndMerge", {"duration": 60_000})
         encoding: ObjSpec = None
 
     def __call__(self):
@@ -25,7 +25,7 @@ class Run(Component):
 
         response = env(decoding=decoding, encoding=encoding)
         if response is not None:
-            self.save_file(f"response_{P.rank()}.p", response)
+            print(self.save_file(f"response_{P.rank()}.p", response), flush=True)
 
     def on_write_meta_data(self):
         return P.rank() == 0

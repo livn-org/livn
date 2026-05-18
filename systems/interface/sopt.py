@@ -1,17 +1,15 @@
-import importlib
 import os
 from functools import partial
 
 import numpy as np
 from dmosopt import config
 from machinable import Project
-from machinable.utils import find_subclass_in_module
 from mpi4py import MPI
 from pydantic import Field
 
 from livn import io
 from livn.env import Env
-from livn.types import Model
+from livn.utils import import_instance
 
 _, Dmosopt = (
     Project(os.path.dirname(os.path.dirname(__file__)))
@@ -92,10 +90,6 @@ def feature_dtypes(c):
     return [(f, np.float32) for f in objective_names(c)]
 
 
-def get_model(model):
-    return find_subclass_in_module(importlib.import_module(model), base_class=Model)()
-
-
 def obj_fun_init(
     system,
     model,
@@ -106,18 +100,18 @@ def obj_fun_init(
 ):
     env = Env(
         system,
-        model=get_model(model) if model is not None else None,
+        model=import_instance(model),
         io=io.MEA.from_json(os.path.join(system, "mea.json"), comm=False),
         comm=worker.merged_comm,
         subworld_size=subworld_size,
     )
     env.init()
-    env.record_spikes()
-    env.record_membrane_current()
 
     live_envs.append(env)
 
-    target = config.import_object_by_path(target)()
+    target = import_instance(target)
+
+    env = target.init(env)
 
     return partial(obj_fun, env=env, target=target, trials=trials)
 
@@ -125,7 +119,7 @@ def obj_fun_init(
 def controller_init(system, model, target, subworld_size):
     env = Env(
         system,
-        model=get_model(model) if model is not None else None,
+        model=import_instance(model),
         io=io.MEA.from_json(os.path.join(system, "mea.json"), comm=False),
         subworld_size=subworld_size,
     )

@@ -306,6 +306,381 @@ class ActiveFraction(Decoding):
         return P.broadcast(result, comm=env.comm)
 
 
+class PopulationRateMetrics(Decoding):
+    """Population spike-count statistics in fixed-width bins.
+
+    Returns dict with:
+        mean_count
+        std_count
+        coefficient_of_variation (= std/mean)
+        fano_factor (= var/mean)
+        bin_size
+        n_bins
+    """
+
+    bin_size: float = 100.0
+
+    def __call__(self, env, it, tt, iv, vv, im, mp):
+        local_spikes = tt.tolist() if tt is not None else []
+        all_spikes = P.gather(local_spikes, comm=env.comm)
+
+        result = None
+        if P.is_root(comm=env.comm):
+            merged: list = []
+            if all_spikes:
+                for s in all_spikes:
+                    merged.extend(s)
+
+            duration = float(self.duration)
+            n_bins = max(2, int(duration / self.bin_size))
+            if merged:
+                counts, _ = np.histogram(merged, bins=n_bins, range=(0.0, duration))
+                mean_c = float(counts.mean())
+                std_c = float(counts.std())
+                cv = std_c / mean_c if mean_c > 0 else 0.0
+                fano = (std_c**2) / mean_c if mean_c > 0 else 0.0
+            else:
+                mean_c = std_c = cv = fano = 0.0
+
+            result = {
+                "mean_count": float(mean_c),
+                "std_count": float(std_c),
+                "coefficient_of_variation": float(cv),
+                "fano_factor": float(fano),
+                "bin_size": float(self.bin_size),
+                "n_bins": int(n_bins),
+            }
+
+        return P.broadcast(result, comm=env.comm)
+
+
+class ISICV(Decoding):
+    """Mean per-unit interspike-interval coefficient of variation.
+
+    Returns dict with:
+        isi_cv (mean across units with >= min_spikes_per_unit)
+        n_units_used
+    """
+
+    min_spikes_per_unit: int = 5
+
+    def __call__(self, env, it, tt, iv, vv, im, mp):
+        local_it = it.tolist() if it is not None else []
+        local_tt = tt.tolist() if tt is not None else []
+        all_it = P.gather(local_it, comm=env.comm)
+        all_tt = P.gather(local_tt, comm=env.comm)
+
+        result = None
+        if P.is_root(comm=env.comm):
+            merged_it: list = []
+            merged_tt: list = []
+            if all_it and all_tt:
+                for ii, ts in zip(all_it, all_tt):
+                    merged_it.extend(ii)
+                    merged_tt.extend(ts)
+
+            isi_cvs: list = []
+            if merged_tt:
+                merged_it_arr = np.asarray(merged_it)
+                merged_tt_arr = np.asarray(merged_tt)
+                unit_ids, inv = np.unique(merged_it_arr, return_inverse=True)
+                order = np.argsort(merged_tt_arr)
+                t_sorted = merged_tt_arr[order]
+                inv_sorted = inv[order]
+                for u_idx in range(len(unit_ids)):
+                    ts = t_sorted[inv_sorted == u_idx]
+                    if len(ts) >= self.min_spikes_per_unit:
+                        isi = np.diff(ts)
+                        if isi.mean() > 0:
+                            isi_cvs.append(float(isi.std() / isi.mean()))
+
+            result = {
+                "isi_cv": float(np.mean(isi_cvs)) if isi_cvs else 0.0,
+                "n_units_used": int(len(isi_cvs)),
+            }
+
+        return P.broadcast(result, comm=env.comm)
+
+
+class PopulationAutocorrTau(Decoding):
+    """Integral autocorrelation timescale of population spike train.
+
+    Estimates tau from the normalized positive-lag ACF of population spike
+    counts in `bin_size` bins, using the integral-timescale formula
+    ``tau = bin_size * (1 + 2 * sum(positive_lags))`` truncated at the first
+    non-positive lag and clamped to ``[bin_size, max_lag]``.
+
+    Use a `bin_size` that is small relative to the expected timescale so
+    short-time autocorrelation is actually resolvable.
+
+    Returns dict with:
+        pop_autocorr_tau
+        bin_size
+        max_lag
+    """
+
+    bin_size: float = 10.0
+    max_lag: float = 5000.0
+
+    def __call__(self, env, it, tt, iv, vv, im, mp):
+        local_spikes = tt.tolist() if tt is not None else []
+        all_spikes = P.gather(local_spikes, comm=env.comm)
+
+        result = None
+        if P.is_root(comm=env.comm):
+            merged = []
+            if all_spikes:
+                for s in all_spikes:
+                    merged.extend(s)
+
+            duration = float(self.duration)
+            tau = float(self.bin_size)
+            n_bins = max(2, int(duration / self.bin_size))
+            if merged and n_bins > 8:
+                counts, _ = np.histogram(merged, bins=n_bins, range=(0.0, duration))
+                mean_c = float(counts.mean())
+                std_c = float(counts.std())
+                if std_c > 0:
+                    x = counts.astype(np.float64) - mean_c
+                    n = len(x)
+                    fft_len = 1 << int(np.ceil(np.log2(2 * n)))
+                    F = np.fft.rfft(x, n=fft_len)
+                    acf_full = np.fft.irfft(F * np.conj(F), n=fft_len)[:n]
+                    acf = acf_full / acf_full[0]
+                    max_lag = min(n - 1, int(self.max_lag / self.bin_size))
+                    pos = acf[1 : max_lag + 1]
+                    nonpos = np.where(pos <= 0)[0]
+                    cutoff = int(nonpos[0]) if len(nonpos) > 0 else len(pos)
+                    if cutoff > 0:
+                        tau = float(self.bin_size * (1.0 + 2.0 * pos[:cutoff].sum()))
+                    tau = float(np.clip(tau, self.bin_size, self.max_lag))
+
+            result = {
+                "pop_autocorr_tau": float(tau),
+                "bin_size": float(self.bin_size),
+                "max_lag": float(self.max_lag),
+            }
+
+        return P.broadcast(result, comm=env.comm)
+
+
+class BurstRate(Decoding):
+    """Network burst rate (Hz) via robust threshold on binned counts.
+
+    A bin is flagged as a burst when its spike count exceeds
+    ``max(median + mad_k * 1.4826 * MAD, max(min_floor, min_floor_fraction * n_units))``.
+    Contiguous bursting bins are collapsed into a single burst event.
+
+    Returns dict with:
+        burst_rate_hz
+        n_bursts
+        threshold
+    """
+
+    bin_size: float = 50.0
+    mad_k: float = 5.0
+    min_floor_fraction: float = 0.15
+    min_floor: float = 3.0
+
+    def __call__(self, env, it, tt, iv, vv, im, mp):
+        local_it = it.tolist() if it is not None else []
+        local_tt = tt.tolist() if tt is not None else []
+        all_it = P.gather(local_it, comm=env.comm)
+        all_tt = P.gather(local_tt, comm=env.comm)
+
+        result = None
+        if P.is_root(comm=env.comm):
+            merged_it: list = []
+            merged_tt: list = []
+            if all_it and all_tt:
+                for ii, ts in zip(all_it, all_tt):
+                    merged_it.extend(ii)
+                    merged_tt.extend(ts)
+
+            duration = float(self.duration)
+            burst_rate = 0.0
+            n_bursts = 0
+            threshold = 0.0
+            if merged_tt:
+                n_units = max(1, len(set(merged_it)))
+                n_bins = max(1, int(duration / self.bin_size))
+                counts, _ = np.histogram(merged_tt, bins=n_bins, range=(0.0, duration))
+                median = float(np.median(counts))
+                mad = float(np.median(np.abs(counts - median))) or 1.0
+                robust_t = median + self.mad_k * 1.4826 * mad
+                floor = max(self.min_floor, self.min_floor_fraction * n_units)
+                threshold = max(robust_t, floor)
+                burst_bins = counts >= threshold
+                n_bursts = int(
+                    np.sum(np.diff(np.concatenate([[False], burst_bins, [False]])) == 1)
+                )
+                burst_rate = n_bursts / (duration / 1000.0)
+
+            result = {
+                "burst_rate_hz": float(burst_rate),
+                "n_bursts": int(n_bursts),
+                "threshold": float(threshold),
+            }
+
+        return P.broadcast(result, comm=env.comm)
+
+
+class PeakSynchrony(Decoding):
+    """Peak fraction of active units co-firing in a single `bin_size` bin.
+
+    Returns dict with:
+        max_synchronous_peak
+        max_bin_count
+        n_active_units
+    """
+
+    bin_size: float = 2.0
+
+    def __call__(self, env, it, tt, iv, vv, im, mp):
+        local_it = it.tolist() if it is not None else []
+        local_tt = tt.tolist() if tt is not None else []
+        all_it = P.gather(local_it, comm=env.comm)
+        all_tt = P.gather(local_tt, comm=env.comm)
+
+        result = None
+        if P.is_root(comm=env.comm):
+            merged_it: list = []
+            merged_tt: list = []
+            if all_it and all_tt:
+                for ii, ts in zip(all_it, all_tt):
+                    merged_it.extend(ii)
+                    merged_tt.extend(ts)
+
+            duration = float(self.duration)
+            peak = 0.0
+            max_count = 0
+            n_active = 0
+            if merged_tt:
+                n_active = len(set(merged_it))
+                n_bins = max(1, int(duration / self.bin_size))
+                counts, _ = np.histogram(merged_tt, bins=n_bins, range=(0.0, duration))
+                max_count = int(np.max(counts))
+                if n_active > 0:
+                    peak = float(max_count) / float(n_active)
+
+            result = {
+                "max_synchronous_peak": float(peak),
+                "max_bin_count": int(max_count),
+                "n_active_units": int(n_active),
+            }
+
+        return P.broadcast(result, comm=env.comm)
+
+
+class PairwiseChannelCorrelation(Decoding):
+    """Mean pairwise Pearson correlation across per-unit binned spike counts.
+
+    Returns dict with:
+        mean_pairwise_correlation
+        n_pairs
+    """
+
+    bin_size: float = 20.0
+    min_units: int = 2
+
+    def __call__(self, env, it, tt, iv, vv, im, mp):
+        local_it = it.tolist() if it is not None else []
+        local_tt = tt.tolist() if tt is not None else []
+        all_it = P.gather(local_it, comm=env.comm)
+        all_tt = P.gather(local_tt, comm=env.comm)
+
+        result = None
+        if P.is_root(comm=env.comm):
+            merged_it: list = []
+            merged_tt: list = []
+            if all_it and all_tt:
+                for ii, ts in zip(all_it, all_tt):
+                    merged_it.extend(ii)
+                    merged_tt.extend(ts)
+
+            duration = float(self.duration)
+            mean_corr = 0.0
+            n_pairs = 0
+            if merged_tt:
+                merged_it_arr = np.asarray(merged_it)
+                merged_tt_arr = np.asarray(merged_tt)
+                n_bins = max(1, int(duration / self.bin_size))
+                unit_ids = np.unique(merged_it_arr)
+                rows = []
+                for uid in unit_ids:
+                    ts = merged_tt_arr[merged_it_arr == uid]
+                    counts, _ = np.histogram(ts, bins=n_bins, range=(0.0, duration))
+                    rows.append(counts)
+                if len(rows) >= self.min_units:
+                    M = np.asarray(rows, dtype=np.float64)
+                    stds = M.std(axis=1)
+                    valid = stds > 0
+                    if int(valid.sum()) >= self.min_units:
+                        Mv = M[valid]
+                        Mv = (Mv - Mv.mean(axis=1, keepdims=True)) / Mv.std(
+                            axis=1, keepdims=True
+                        )
+                        C = (Mv @ Mv.T) / Mv.shape[1]
+                        iu = np.triu_indices(C.shape[0], k=1)
+                        if iu[0].size > 0:
+                            mean_corr = float(np.mean(C[iu]))
+                            n_pairs = int(iu[0].size)
+
+            result = {
+                "mean_pairwise_correlation": float(mean_corr),
+                "n_pairs": int(n_pairs),
+            }
+
+        return P.broadcast(result, comm=env.comm)
+
+
+class PerUnitFiringRate(Decoding):
+    """Per-unit firing rates (Hz) and summary statistics.
+
+    Returns dict with:
+        per_unit_rates_hz
+        max_rate_hz
+        min_rate_hz
+        mean_rate_hz
+        rate_cv
+        n_units
+    """
+
+    def __call__(self, env, it, tt, iv, vv, im, mp):
+        local_it = it.tolist() if it is not None else []
+        all_it = P.gather(local_it, comm=env.comm)
+
+        result = None
+        if P.is_root(comm=env.comm):
+            merged: list = []
+            if all_it:
+                for ii in all_it:
+                    merged.extend(ii)
+
+            duration_s = float(self.duration) / 1000.0
+            rates: dict = {}
+            if merged:
+                arr = np.asarray(merged)
+                uids, counts = np.unique(arr, return_counts=True)
+                rates = {int(u): float(c / duration_s) for u, c in zip(uids, counts)}
+
+            rate_arr = np.asarray(list(rates.values())) if rates else np.array([])
+            result = {
+                "per_unit_rates_hz": rates,
+                "max_rate_hz": float(rate_arr.max()) if rate_arr.size else 0.0,
+                "min_rate_hz": float(rate_arr.min()) if rate_arr.size else 0.0,
+                "mean_rate_hz": (float(rate_arr.mean()) if rate_arr.size else 0.0),
+                "rate_cv": (
+                    float(rate_arr.std() / rate_arr.mean())
+                    if rate_arr.size and rate_arr.mean() > 0
+                    else 0.0
+                ),
+                "n_units": int(rate_arr.size),
+            }
+
+        return P.broadcast(result, comm=env.comm)
+
+
 class Stability(Decoding):
     tail_window: float = 1000.0
     max_rate_hz: float = 20.0

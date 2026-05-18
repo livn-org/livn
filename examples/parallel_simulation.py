@@ -70,9 +70,7 @@ if P.is_root():
     fig = plt.figure(figsize=(12, 6))
 
     for channel in cit:
-        i = cit[channel]
-        t = ct[channel]
-        plt.plot(t, i, ".", ms=1, label=channel)
+        plt.plot(ct[channel], cit[channel], ".", ms=1, label=channel)
 
     plt.legend()
     plt.ylabel("Channel")
@@ -107,7 +105,7 @@ if P.is_root():
     ax.scatter(t, it, s=30, marker="|", linewidths=1.2, color="black")
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Neuron gid")
-    ax.set_title("Spike raster plot")
+    ax.set_title("Spike raster MFR=" + str(len(t) / len(set(it.tolist()))))
     ax.set_yticks(np.unique(it))
     ax.grid(True, axis="x", alpha=0.3)
     plt.tight_layout()

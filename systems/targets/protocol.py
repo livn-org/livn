@@ -1,25 +1,17 @@
 import math
-from typing import Any, Callable
+from typing import Any
 
 
 class TuningTargets:
-    _transforms: dict[str, Callable[[float, bool], float]]
-    _search_space: dict[str, list[float]]
-
-    def __init__(self):
-        self._transforms = {}
-        self._search_space = {}
-        self._prepare_search_space()
-
-    def _prepare_search_space(self) -> None:
+    def _space_metadata(self, model=None) -> tuple:
         raw_space = {
-            **self._weight_space(),
-            **self._noise_space(),
-            **self._protocol_space(),
+            **self._weight_space(model),
+            **self._noise_space(model),
+            **self._protocol_space(model),
         }
 
-        self._transforms = {}
-        self._search_space = {}
+        transforms = {}
+        search_space = {}
 
         for name, bounds in raw_space.items():
             if len(bounds) == 2:
@@ -36,8 +28,10 @@ class TuningTargets:
                     f"Bounds must be [min, max] or [min, max, transform_fn], got {bounds}"
                 )
 
-            self._transforms[name] = transform_fn
-            self._search_space[name] = [transform_fn(low), transform_fn(high)]
+            transforms[name] = transform_fn
+            search_space[name] = [transform_fn(low), transform_fn(high)]
+
+        return transforms, search_space
 
     @staticmethod
     def transform_identity(x: float, inverse: bool = False) -> float:
@@ -64,7 +58,7 @@ class TuningTargets:
             return max(0.0, 10**x - 1.0)
         return math.log10(x + 1.0)
 
-    def _weight_space(self, populations: list[str] | None = None) -> dict[str, list]:
+    def _weight_space(self, model) -> dict[str, list]:
         """Define weight parameter bounds.
 
         Override in subclasses to define weight parameters.
@@ -75,7 +69,7 @@ class TuningTargets:
         """
         return {}
 
-    def _noise_space(self) -> dict[str, list]:
+    def _noise_space(self, model) -> dict[str, list]:
         """Define noise parameter bounds.
 
         Override in subclasses to define noise parameters.
@@ -86,7 +80,7 @@ class TuningTargets:
         """
         return {}
 
-    def _protocol_space(self) -> dict[str, list]:
+    def _protocol_space(self, model) -> dict[str, list]:
         """Define protocol-specific parameter bounds.
 
         Override in subclasses for protocol-specific parameters.
@@ -97,17 +91,41 @@ class TuningTargets:
         """
         return {}
 
-    def search_space(self) -> dict[str, list[float]]:
+    def init(self, env):
+        return env
+
+    def search_space(self, model=None) -> dict[str, list[float]]:
         """Return the transformed search space for optimization.
 
-        Returns the precomputed search space with forward transforms applied to bounds.
+        Computes the search space with forward transforms applied to bounds.
 
         Returns:
             Dictionary mapping parameter names to [transformed_min, transformed_max].
         """
-        return self._search_space
+        _, search_space = self._space_metadata(model)
+        return search_space
 
-    def transform_params(self, params: dict[str, Any]) -> dict[str, Any]:
+    def decode_params(self, params: dict[str, Any], model=None) -> dict[str, Any]:
+        """Decode parameters from optimization space to the natural domain.
+
+        Args:
+            params: Dictionary of parameter values in optimization space.
+
+        Returns:
+            Dictionary of decoded parameters in the natural domain.
+        """
+        transforms, _ = self._space_metadata(model)
+
+        decoded = {}
+        for name, value in params.items():
+            if name in transforms:
+                decoded[name] = transforms[name](float(value), inverse=True)
+            else:
+                decoded[name] = value
+
+        return decoded
+
+    def transform_params(self, params: dict[str, Any], model=None) -> dict[str, Any]:
         """Transform parameters from optimization space and apply set_params.
 
         Decodes parameters using inverse transforms, then passes them through
@@ -119,16 +137,8 @@ class TuningTargets:
         Returns:
             Dictionary of remaining parameters in natural domain.
         """
-        # Apply inverse transforms
-        decoded = {}
-        for name, value in params.items():
-            if name in self._transforms:
-                decoded[name] = self._transforms[name](float(value), inverse=True)
-            else:
-                decoded[name] = value
-
         # Pass through set_params to consume protocol-specific parameters
-        return self.set_params(decoded)
+        return self.set_params(self.decode_params(params, model=model))
 
     def set_params(self, params: dict[str, Any]) -> dict[str, Any]:
         """Set protocol parameters from a dictionary.
