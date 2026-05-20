@@ -115,6 +115,16 @@ class ReducedCalciumSomaDendrite(Model):
     ) -> types.Float[types.Array, "n_stim_coords ixyz=4"]:
         return self.stimulus_coordinates(neuron_coordinates, population=population)
 
+    def expand_stimulus_currents(
+        self,
+        currents: types.Float[types.Array, "batch timestep n_neurons"],
+    ) -> types.Float[types.Array, "batch timestep n_stimulus_coords"]:
+        """Interleave [soma_curr, 0, soma_curr, 0, ...] for BRK soma-only drive."""
+        zeros = np.zeros_like(currents)
+        stacked = np.stack([currents, zeros], axis=-1)  # [..., n_neurons, 2]
+        new_shape = currents.shape[:-1] + (currents.shape[-1] * 2,)
+        return stacked.reshape(new_shape)
+
     # neuron
 
     def params(self, name: str):

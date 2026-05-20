@@ -407,6 +407,18 @@ class Model(Protocol):
     ) -> Float[Array, "n_channels n_neurons"]:
         return gain
 
+    def expand_stimulus_currents(
+        self,
+        currents: Float[Array, "batch timestep n_neurons"],
+    ) -> Float[Array, "batch timestep n_stimulus_coords"]:
+        """Expand per-neuron currents to per-stimulus-coordinate currents.
+
+        Mirrors ``reduce_source_gain`` on the stimulus side.  The default
+        implementation is identity (one stimulus coordinate per neuron).
+        Override for multi-compartment models.
+        """
+        return currents
+
     def prepare_stimulus(self, stimulus: "Stimulus") -> "Stimulus":
         return stimulus
 
