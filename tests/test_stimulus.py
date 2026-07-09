@@ -2,15 +2,10 @@ import numpy as np
 import pytest
 
 from livn.stimulus import Stimulus
+from livn.policy import BiphasicPulsePolicy, MonophasicPulsePolicy
 
 
 class TestStimulus:
-    def test_init_default(self):
-        stim = Stimulus()
-        assert stim.array is None
-        assert stim.dt == 1.0
-        assert stim.gids is None
-
     def test_init_with_array(self):
         arr = np.zeros((100, 10), dtype=np.float32)
         stim = Stimulus(arr, dt=0.1)
@@ -20,20 +15,22 @@ class TestStimulus:
 
     def test_init_negative_dt_raises(self):
         with pytest.raises(ValueError, match="dt must be positive"):
-            Stimulus(dt=-1.0)
+            Stimulus(np.zeros((1, 1)), dt=-1.0)
 
     def test_init_zero_dt_raises(self):
         with pytest.raises(ValueError, match="dt must be positive"):
-            Stimulus(dt=0.0)
+            Stimulus(np.zeros((1, 1)), dt=0.0)
 
-    def test_init_with_metadata(self):
-        stim = Stimulus(foo="bar", baz=123)
-        assert stim.meta_data["foo"] == "bar"
-        assert stim.meta_data["baz"] == 123
+    def test_init_input_mode_and_units(self):
+        arr = np.zeros((10, 4), dtype=np.float32)
+        stim = Stimulus(arr, input_mode="current", units="nA")
+        assert stim.input_mode == "current"
+        assert stim.units == "nA"
 
-    def test_duration_empty(self):
-        stim = Stimulus()
-        assert stim.duration == 0.0
+    def test_init_extra_metadata(self):
+        arr = np.zeros((10, 4), dtype=np.float32)
+        stim = Stimulus(arr, wavelength_nm=473.0)
+        assert stim.extra["wavelength_nm"] == 473.0
 
     def test_duration_with_array(self):
         arr = np.zeros((100, 10), dtype=np.float32)
@@ -51,14 +48,13 @@ class TestStimulus:
         assert len(stim) == 64
 
     def test_from_arg_stimulus(self):
-        original = Stimulus(dt=0.5)
+        arr = np.zeros((10, 2), dtype=np.float32)
+        original = Stimulus(arr, dt=0.5)
         result = Stimulus.from_arg(original)
         assert result is original
 
     def test_from_arg_none(self):
-        result = Stimulus.from_arg(None)
-        assert isinstance(result, Stimulus)
-        assert result.array is None
+        assert Stimulus.from_arg(None) is None
 
     def test_from_arg_array(self):
         arr = np.zeros((100, 10), dtype=np.float32)
@@ -82,43 +78,60 @@ class TestStimulus:
         with pytest.raises(ValueError, match="Invalid stimulus"):
             Stimulus.from_arg("invalid")
 
+    def test_from_conductance(self):
+        arr = np.random.rand(100, 5).astype(np.float32)
+        stim = Stimulus.from_conductance(arr, dt=0.1)
+        assert stim.input_mode == "conductance"
+        assert stim.units == "uS"
+
+    def test_from_current(self):
+        arr = np.random.rand(100, 5).astype(np.float32)
+        stim = Stimulus.from_current(arr, dt=0.1)
+        assert stim.input_mode == "current"
+        assert stim.units == "nA"
+
+    def test_from_irradiance_extra(self):
+        arr = np.random.rand(100, 3).astype(np.float32)
+        stim = Stimulus.from_irradiance(arr, dt=0.1, wavelength_nm=561.0)
+        assert stim.input_mode == "irradiance"
+        assert stim.extra["wavelength_nm"] == 561.0
+
 
 class TestBiphasicPulse:
     def test_single_pulse_default(self):
-        stim = Stimulus.biphasic_pulse(n_channels=64, channels=[0])
+        policy = BiphasicPulsePolicy(n_channels=64, channels=[0])
+        arr = policy()
 
-        assert stim.array is not None
-        assert stim.array.shape[1] == 64
-        assert stim.dt == 0.05
-
-        assert stim.meta_data["kind"] == "biphasic_pulse"
-        assert stim.meta_data["pulse_times"] == [0.0]
-        assert stim.meta_data["amplitude"] == 1.5
-        assert stim.meta_data["channels"] == [0]
-        assert stim.meta_data["cathodic_first"] is True
+        assert arr is not None
+        assert arr.shape[1] == 64
+        assert policy.dt == 0.05
+        assert policy.pulse_times == [0.0]
+        assert policy.amplitude == 1.5
+        assert policy.channels.tolist() == [0]
+        assert policy.cathodic_first is True
 
     def test_single_pulse_duration(self):
-        """Test single pulse duration calculation."""
-        stim = Stimulus.biphasic_pulse(
+        policy = BiphasicPulsePolicy(
             n_channels=64,
             channels=[0],
             phase_duration=0.2,
             interphase_gap=0.05,
         )
-        assert stim.duration == pytest.approx(0.45, rel=0.1)
+        arr = policy()
+        assert arr.shape[0] * policy.dt == pytest.approx(0.45, rel=0.1)
 
     def test_pulse_train(self):
-        stim = Stimulus.biphasic_pulse(
+        policy = BiphasicPulsePolicy(
             n_channels=64,
             channels=[0],
             pulse_times=[0, 10, 20, 30, 40],
         )
-
-        assert len(stim.meta_data["pulse_times"]) == 5
-        assert stim.duration == pytest.approx(40.45, rel=0.1)
+        assert len(policy.pulse_times) == 5
+        arr = policy()
+        assert arr.shape[0] * policy.dt == pytest.approx(40.45, rel=0.1)
 
     def test_cathodic_phase(self):
-        stim = Stimulus.biphasic_pulse(
+        policy = BiphasicPulsePolicy(
             n_channels=4,
             channels=[0],
             amplitude=1.0,
@@ -127,8 +140,7 @@ class TestBiphasicPulse:
             interphase_gap=0.1,
             cathodic_first=True,
         )
-
-        arr = stim.array
+        arr = policy()
         first_phase_values = arr[0:2, 0]
         assert np.all(first_phase_values < 0)
 
@@ -136,7 +148,7 @@ class TestBiphasicPulse:
         second_phase_values = arr[second_phase_start : second_phase_start + 2, 0]
         assert np.all(second_phase_values > 0)
 
-        stim = Stimulus.biphasic_pulse(
+        policy2 = BiphasicPulsePolicy(
             n_channels=4,
             channels=[0],
             amplitude=1.0,
@@ -145,121 +157,111 @@ class TestBiphasicPulse:
             interphase_gap=0.1,
             cathodic_first=False,
         )
-
-        arr = stim.array
-        first_phase_values = arr[0:2, 0]
-        assert np.all(first_phase_values > 0)
-
-        second_phase_start = int((0.2 + 0.1) / 0.1)
-        second_phase_values = arr[second_phase_start : second_phase_start + 2, 0]
-        assert np.all(second_phase_values < 0)
+        arr2 = policy2()
+        assert np.all(arr2[0:2, 0] > 0)
+        assert np.all(arr2[second_phase_start : second_phase_start + 2, 0] < 0)
 
     def test_multiple_channels(self):
-        stim = Stimulus.biphasic_pulse(
+        arr = BiphasicPulsePolicy(
             n_channels=64,
             channels=[0, 1, 2, 3],
             amplitude=2.0,
-        )
-
-        arr = stim.array
-        assert np.any(arr[:, 0] != 0)
-        assert np.any(arr[:, 1] != 0)
-        assert np.any(arr[:, 2] != 0)
-        assert np.any(arr[:, 3] != 0)
-
+        )()
+        for c in range(4):
+            assert np.any(arr[:, c] != 0)
         assert np.all(arr[:, 4] == 0)
         assert np.all(arr[:, 63] == 0)
 
     def test_amplitude_scaling(self):
-        stim1 = Stimulus.biphasic_pulse(n_channels=4, channels=[0], amplitude=1.0)
-        stim2 = Stimulus.biphasic_pulse(n_channels=4, channels=[0], amplitude=2.0)
-
-        max1 = np.abs(stim1.array).max()
-        max2 = np.abs(stim2.array).max()
-
-        assert max2 == pytest.approx(2 * max1)
+        arr1 = BiphasicPulsePolicy(n_channels=4, channels=[0], amplitude=1.0)()
+        arr2 = BiphasicPulsePolicy(n_channels=4, channels=[0], amplitude=2.0)()
+        assert np.abs(arr2).max() == pytest.approx(2 * np.abs(arr1).max())
 
     def test_charge_balance(self):
-        stim = Stimulus.biphasic_pulse(
+        arr = BiphasicPulsePolicy(
             n_channels=4,
             channels=[0],
             amplitude=1.5,
             phase_duration=0.2,
             interphase_gap=0.05,
-        )
-        total_charge = np.sum(stim.array[:, 0])
-        assert total_charge == pytest.approx(0.0, abs=1e-6)
+        )()
+        assert np.sum(arr[:, 0]) == pytest.approx(0.0, abs=1e-6)
 
     def test_numpy_array_channels(self):
         channels = np.array([0, 1, 2])
-        stim = Stimulus.biphasic_pulse(n_channels=64, channels=channels)
-
-        assert stim.meta_data["channels"] == [0, 1, 2]
-        assert np.any(stim.array[:, 0] != 0)
-        assert np.any(stim.array[:, 1] != 0)
-        assert np.any(stim.array[:, 2] != 0)
+        policy = BiphasicPulsePolicy(n_channels=64, channels=channels)
+        arr = policy()
+        assert policy.channels.tolist() == [0, 1, 2]
+        for c in range(3):
+            assert np.any(arr[:, c] != 0)
 
     def test_custom_dt(self):
-        stim = Stimulus.biphasic_pulse(
-            n_channels=4,
-            channels=[0],
-            dt=0.01,
-        )
-        assert stim.dt == 0.01
-        assert stim.array.shape[0] > 10
+        policy = BiphasicPulsePolicy(n_channels=4, channels=[0], dt=0.01)
+        arr = policy()
+        assert policy.dt == 0.01
+        assert arr.shape[0] > 10
 
     def test_interphase_gap(self):
-        stim = Stimulus.biphasic_pulse(
+        policy = BiphasicPulsePolicy(
             n_channels=4,
             channels=[0],
             dt=0.05,
             phase_duration=0.2,
             interphase_gap=0.1,  # 2 steps at dt=0.05
         )
-
-        arr = stim.array
+        arr = policy()
         gap_start = int(0.2 / 0.05)
         gap_end = int((0.2 + 0.1) / 0.05)
-        gap_values = arr[gap_start:gap_end, 0]
-        assert np.all(gap_values == 0)
+        assert np.all(arr[gap_start:gap_end, 0] == 0)
+
+    def test_serialize_roundtrip(self):
+        policy = BiphasicPulsePolicy(
+            n_channels=8,
+            channels=[2, 3],
+            amplitude=2.0,
+            phase_duration=0.3,
+            interphase_gap=0.1,
+            pulse_times=[0.0, 20.0],
+            dt=0.05,
+            cathodic_first=False,
+        )
+        restored = BiphasicPulsePolicy.from_json(policy.as_json())
+        np.testing.assert_array_equal(policy(), restored())
 
 
 class TestMonophasicPulse:
     def test_single_pulse_defaults(self):
-        stim = Stimulus.monophasic_pulse(n_channels=64, channels=[0])
+        policy = MonophasicPulsePolicy(n_channels=64, channels=[0])
+        arr = policy()
 
-        assert stim.array is not None
-        assert stim.array.shape[1] == 64
-        assert stim.dt == 1.0
-        assert stim.meta_data["kind"] == "monophasic_pulse"
-        assert stim.meta_data["pulse_times"] == [0.0]
-        assert stim.meta_data["pulse_width"] == 1.0
-        assert stim.meta_data["channels"] == [0]
+        assert arr is not None
+        assert arr.shape[1] == 64
+        assert policy.dt == 1.0
+        assert policy.pulse_times == [0.0]
+        assert policy.pulse_width == 1.0
+        assert policy.channels.tolist() == [0]
 
     def test_single_pulse_duration(self):
-        stim = Stimulus.monophasic_pulse(
-            n_channels=4,
-            channels=[0],
-            pulse_width=10.0,
-            dt=1.0,
+        policy = MonophasicPulsePolicy(
+            n_channels=4, channels=[0], pulse_width=10.0, dt=1.0
         )
-        assert stim.duration == pytest.approx(10.0)
+        arr = policy()
+        assert arr.shape[0] * policy.dt == pytest.approx(10.0)
 
     def test_pulse_waveform_shape(self):
-        stim = Stimulus.monophasic_pulse(
+        arr = MonophasicPulsePolicy(
             n_channels=4,
             channels=[0],
             amplitude=2.0,
             pulse_width=5.0,
             pulse_times=[0.0],
             dt=1.0,
-        )
-        arr = stim.array
+        )()
         assert np.all(arr[0:5, 0] == pytest.approx(2.0))
         assert np.all(arr[:, 1:] == 0)
 
     def test_pulse_train_multiple_times(self):
-        stim = Stimulus.monophasic_pulse(
+        policy = MonophasicPulsePolicy(
             n_channels=4,
             channels=[0],
             amplitude=1.0,
@@ -267,81 +269,76 @@ class TestMonophasicPulse:
             pulse_times=[0.0, 25.0, 50.0],
             dt=1.0,
         )
-        assert len(stim.meta_data["pulse_times"]) == 3
-        assert stim.duration == pytest.approx(55.0)
-        arr = stim.array
+        assert len(policy.pulse_times) == 3
+        arr = policy()
+        assert arr.shape[0] * policy.dt == pytest.approx(55.0)
         for onset in [0, 25, 50]:
             assert np.all(arr[onset : onset + 5, 0] == pytest.approx(1.0))
-        # gaps between pulses should be zero
         assert np.all(arr[5:25, 0] == 0)
 
     def test_multiple_channels_scalar_amplitude(self):
-        stim = Stimulus.monophasic_pulse(
-            n_channels=64,
-            channels=[0, 1, 2, 3],
-            amplitude=1.5,
-        )
-        arr = stim.array
+        arr = MonophasicPulsePolicy(
+            n_channels=64, channels=[0, 1, 2, 3], amplitude=1.5
+        )()
         for c in range(4):
             assert np.any(arr[:, c] != 0)
         assert np.all(arr[:, 4] == 0)
         assert np.all(arr[:, 63] == 0)
 
     def test_per_channel_amplitude(self):
-        stim = Stimulus.monophasic_pulse(
+        arr = MonophasicPulsePolicy(
             n_channels=4,
             channels=[0, 1, 2],
             amplitude=[1.0, 2.0, 3.0],
             pulse_width=5.0,
             dt=1.0,
-        )
-        arr = stim.array
+        )()
         assert arr[0, 0] == pytest.approx(1.0)
         assert arr[0, 1] == pytest.approx(2.0)
         assert arr[0, 2] == pytest.approx(3.0)
-        assert stim.meta_data["amplitude"] == pytest.approx([1.0, 2.0, 3.0])
 
     def test_zero_amplitude_channel_suppressed(self):
-        stim = Stimulus.monophasic_pulse(
-            n_channels=4,
-            channels=[0, 1],
-            amplitude=[1.0, 0.0],
-            pulse_width=5.0,
-            dt=1.0,
-        )
-        arr = stim.array
+        arr = MonophasicPulsePolicy(
+            n_channels=4, channels=[0, 1], amplitude=[1.0, 0.0], pulse_width=5.0, dt=1.0
+        )()
         assert np.any(arr[:, 0] != 0)
         assert np.all(arr[:, 1] == 0)
 
     def test_numpy_array_channels(self):
         channels = np.array([2, 5])
-        stim = Stimulus.monophasic_pulse(n_channels=16, channels=channels)
-        assert stim.meta_data["channels"] == [2, 5]
-        assert np.any(stim.array[:, 2] != 0)
-        assert np.any(stim.array[:, 5] != 0)
-        assert np.all(stim.array[:, 0] == 0)
+        policy = MonophasicPulsePolicy(n_channels=16, channels=channels)
+        arr = policy()
+        assert policy.channels.tolist() == [2, 5]
+        assert np.any(arr[:, 2] != 0)
+        assert np.any(arr[:, 5] != 0)
+        assert np.all(arr[:, 0] == 0)
 
     def test_custom_dt(self):
-        stim = Stimulus.monophasic_pulse(
-            n_channels=4,
-            channels=[0],
-            pulse_width=0.2,
-            dt=0.05,
+        policy = MonophasicPulsePolicy(
+            n_channels=4, channels=[0], pulse_width=0.2, dt=0.05
         )
-        assert stim.dt == 0.05
+        arr = policy()
+        assert policy.dt == 0.05
         # 0.2 ms / 0.05 ms = 4
-        assert np.sum(stim.array[:, 0] != 0) == 4
+        assert np.sum(arr[:, 0] != 0) == 4
 
     def test_unstimulated_channels_zero(self):
-        stim = Stimulus.monophasic_pulse(
-            n_channels=16,
-            channels=[3],
-            amplitude=2.0,
-        )
-        arr = stim.array
+        arr = MonophasicPulsePolicy(n_channels=16, channels=[3], amplitude=2.0)()
         for c in range(16):
             if c != 3:
                 assert np.all(arr[:, c] == 0)
+
+    def test_serialize_roundtrip(self):
+        policy = MonophasicPulsePolicy(
+            n_channels=4,
+            channels=[0, 2],
+            amplitude=[1.5, 3.0],
+            pulse_width=5.0,
+            pulse_times=[0.0, 30.0],
+            dt=0.5,
+        )
+        restored = MonophasicPulsePolicy.from_json(policy.as_json())
+        np.testing.assert_array_equal(policy(), restored())
 
 
 class TestStimulusJax:

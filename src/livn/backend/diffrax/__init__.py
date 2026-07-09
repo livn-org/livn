@@ -96,8 +96,7 @@ class Env(EnvProtocol):
         input_current = None
         if stimulus is not None:
             arr = stimulus.to_array(duration, dt)
-            if arr is not None:
-                input_current = jnp.array(arr)
+            input_current = jnp.array(arr)
 
         dt_solver = kwargs.pop("dt_solver", 0.01)
         t0 = kwargs.pop("t0", 0.0)

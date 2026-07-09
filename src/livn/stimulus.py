@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from livn.types import Array, Float, Int
@@ -19,31 +19,25 @@ else:
 class Stimulus:
     def __init__(
         self,
-        array: Float[Array, "timestep n_gids"] | None = None,
+        array: Float[Array, "timestep n_gids"],
         dt: float = 1.0,
         gids: Int[Array, "n_gids"] | None = None,
-        **meta_data,
+        input_mode: str = "extracellular",
+        units: str | None = None,
+        **extra,
     ):
         self.array = array
         if dt <= 0:
             raise ValueError("Stimulus dt must be positive")
         self.dt = dt
         self.gids = gids
-        self.meta_data = meta_data
+        self.input_mode = input_mode
+        self.units = units
+        self.extra = extra
 
     @property
     def duration(self) -> float:
-        if self.array is None:
-            return 0.0
         return self.array.shape[0] * self.dt
-
-    @property
-    def input_mode(
-        self,
-    ) -> Literal[
-        "extracellular", "current", "current_density", "conductance", "irradiance"
-    ]:
-        return self.meta_data.get("input_mode", "extracellular")
 
     def __iter__(self):
         yield from zip(self.gids, self.array.T)
@@ -52,12 +46,12 @@ class Stimulus:
         return self.array.shape[-1]
 
     @classmethod
-    def from_arg(cls, stimulus) -> "Stimulus":
+    def from_arg(cls, stimulus) -> "Stimulus | None":
+        if stimulus is None:
+            return None
+
         if isinstance(stimulus, cls):
             return stimulus
-
-        if stimulus is None:
-            return cls()
 
         if hasattr(stimulus, "shape"):
             return cls(stimulus)
@@ -71,145 +65,12 @@ class Stimulus:
         raise ValueError("Invalid stimulus", stimulus)
 
     @classmethod
-    def biphasic_pulse(
-        cls,
-        n_channels: int,
-        channels: list[int] | np.ndarray,
-        amplitude: float = 1.5,
-        phase_duration: float = 0.2,
-        interphase_gap: float = 0.05,
-        pulse_times: list[float] | None = None,
-        dt: float = 0.05,
-        cathodic_first: bool = True,
-    ) -> "Stimulus":
-        """Generate charge-balanced biphasic waveform for MEA stimulation
-
-        Args:
-            n_channels: Total number of MEA channels (io.num_channels)
-            channels: Indices of channels to stimulate
-            amplitude: Current amplitude in uA
-            phase_duration: Duration of each phase in ms (default: 0.2ms = 200us)
-            interphase_gap: Gap between cathodic and anodic phases in ms (default: 0.05ms = 50us).
-            pulse_times: Onset times for each pulse in ms, e.g. [0.0, 50.0] creates a paired-pulse at 50ms interval (default: [0.0])
-            dt: Timestep (default: 0.05ms = 50us).
-            cathodic_first: If True, cathodic (negative) phase first
-        """
-        if pulse_times is None:
-            pulse_times = [0.0]
-
-        channels = np.asarray(channels)
-        pulse_times = np.asarray(pulse_times)
-
-        single_pulse_duration = phase_duration + interphase_gap + phase_duration
-        total_duration = pulse_times[-1] + single_pulse_duration
-
-        n_steps = int(np.ceil(total_duration / dt))
-        inputs = np.zeros((n_steps, n_channels), dtype=np.float32)
-
-        phase1_steps = int(phase_duration / dt)
-        gap_steps = int(interphase_gap / dt)
-        phase2_steps = int(phase_duration / dt)
-
-        phase1_amp = -amplitude if cathodic_first else amplitude
-        phase2_amp = amplitude if cathodic_first else -amplitude
-
-        for pulse_onset in pulse_times:
-            onset_step = int(pulse_onset / dt)
-
-            phase1_start = onset_step
-            phase1_end = onset_step + phase1_steps
-            if _USES_JAX:
-                inputs = inputs.at[phase1_start:phase1_end, channels].set(phase1_amp)
-            else:
-                inputs[phase1_start:phase1_end, channels] = phase1_amp
-
-            phase2_start = onset_step + phase1_steps + gap_steps
-            phase2_end = phase2_start + phase2_steps
-            if phase2_end <= n_steps:
-                if _USES_JAX:
-                    inputs = inputs.at[phase2_start:phase2_end, channels].set(
-                        phase2_amp
-                    )
-                else:
-                    inputs[phase2_start:phase2_end, channels] = phase2_amp
-
-        return cls(
-            array=inputs,
-            dt=dt,
-            # metadata
-            kind="biphasic_pulse",
-            pulse_times=pulse_times.tolist(),
-            phase_duration=phase_duration,
-            interphase_gap=interphase_gap,
-            amplitude=amplitude,
-            channels=channels.tolist(),
-            cathodic_first=cathodic_first,
-        )
-
-    @classmethod
-    def monophasic_pulse(
-        cls,
-        n_channels: int,
-        channels: list[int] | np.ndarray,
-        amplitude: float | list[float] | np.ndarray = 1.5,
-        pulse_width: float = 1.0,
-        pulse_times: list[float] | None = None,
-        dt: float = 1.0,
-    ) -> "Stimulus":
-        """Generate a periodic rectangular pulse train for MEA stimulation
-
-        Args:
-            n_channels: Total number of MEA channels (io.num_channels)
-            channels: Indices of channels to stimulate
-            amplitude: Current amplitude in uA. Scalar applies to all channels;
-                array of length len(channels) sets a per-channel amplitude
-            pulse_width: Duration of each rectangular pulse
-            pulse_times: Onset times for each pulse (default None = [0.0])
-            dt: Timestep
-        """
-        if pulse_times is None:
-            pulse_times = [0.0]
-
-        channels = np.asarray(channels)
-        pulse_times = np.asarray(pulse_times, dtype=float)
-        amplitudes = np.broadcast_to(
-            np.asarray(amplitude, dtype=np.float32), channels.shape
-        ).copy()
-
-        total_duration = pulse_times[-1] + pulse_width
-        n_steps = int(np.ceil(total_duration / dt))
-        inputs = np.zeros((n_steps, n_channels), dtype=np.float32)
-
-        pulse_steps = int(pulse_width / dt)
-
-        for pulse_onset in pulse_times:
-            onset_step = int(pulse_onset / dt)
-            pulse_end = min(onset_step + pulse_steps, n_steps)
-            for ch, amp in zip(channels, amplitudes):
-                if amp > 0.0:
-                    if _USES_JAX:
-                        inputs = inputs.at[onset_step:pulse_end, ch].set(float(amp))
-                    else:
-                        inputs[onset_step:pulse_end, ch] = amp
-
-        return cls(
-            array=inputs,
-            dt=dt,
-            # metadata
-            kind="monophasic_pulse",
-            pulse_times=pulse_times.tolist(),
-            pulse_width=pulse_width,
-            amplitude=amplitudes.tolist(),
-            channels=channels.tolist(),
-        )
-
-    @classmethod
     def from_conductance(
         cls,
         conductance: Float[Array, "timestep n_gids"],
         dt: float = 0.1,
         gids: Int[Array, "n_gids"] | None = None,
-        **meta_data,
+        **extra,
     ) -> "Stimulus":
         """Create stimulus from synaptic conductance values
 
@@ -217,11 +78,16 @@ class Stimulus:
             conductance: in uS
             dt: Time step in ms
             gids: Neuron GIDs
-            **meta_data: Additional metadata
+            **extra: Additional metadata
         """
-        meta_data["input_mode"] = "conductance"
-        meta_data["units"] = "uS"
-        return cls(array=conductance, dt=dt, gids=gids, **meta_data)
+        return cls(
+            array=conductance,
+            dt=dt,
+            gids=gids,
+            input_mode="conductance",
+            units="uS",
+            **extra,
+        )
 
     @classmethod
     def from_current(
@@ -229,7 +95,7 @@ class Stimulus:
         current: Float[Array, "timestep n_gids"],
         dt: float = 0.1,
         gids: Int[Array, "n_gids"] | None = None,
-        **meta_data,
+        **extra,
     ) -> "Stimulus":
         """Create stimulus from direct current injection
 
@@ -237,11 +103,11 @@ class Stimulus:
             current: Current values in nA
             dt: Time step in ms
             gids: Neuron GIDs
-            **meta_data: Additional metadata
+            **extra: Additional metadata
         """
-        meta_data["input_mode"] = "current"
-        meta_data["units"] = "nA"
-        return cls(array=current, dt=dt, gids=gids, **meta_data)
+        return cls(
+            array=current, dt=dt, gids=gids, input_mode="current", units="nA", **extra
+        )
 
     @classmethod
     def from_current_density(
@@ -249,7 +115,7 @@ class Stimulus:
         current_density: Float[Array, "timestep n_gids"],
         dt: float = 0.1,
         gids: Int[Array, "n_gids"] | None = None,
-        **meta_data,
+        **extra,
     ) -> "Stimulus":
         """Create stimulus from current density
 
@@ -257,11 +123,16 @@ class Stimulus:
             current_density: Current density values in mA/cm2
             dt: Time step in ms
             gids: Neuron GIDs
-            **meta_data: Additional metadata
+            **extra: Additional metadata
         """
-        meta_data["input_mode"] = "current_density"
-        meta_data["units"] = "mA/cm2"
-        return cls(array=current_density, dt=dt, gids=gids, **meta_data)
+        return cls(
+            array=current_density,
+            dt=dt,
+            gids=gids,
+            input_mode="current_density",
+            units="mA/cm2",
+            **extra,
+        )
 
     @classmethod
     def from_extracellular(
@@ -269,11 +140,16 @@ class Stimulus:
         voltage: Float[Array, "timestep n_gids"],
         dt: float = 0.1,
         gids: Int[Array, "n_gids"] | None = None,
-        **meta_data,
+        **extra,
     ) -> "Stimulus":
-        meta_data["input_mode"] = "extracellular"
-        meta_data["units"] = "mV"
-        return cls(array=voltage, dt=dt, gids=gids, **meta_data)
+        return cls(
+            array=voltage,
+            dt=dt,
+            gids=gids,
+            input_mode="extracellular",
+            units="mV",
+            **extra,
+        )
 
     @classmethod
     def from_irradiance(
@@ -281,16 +157,22 @@ class Stimulus:
         irradiance: Float[Array, "timestep n_gids"],
         dt: float = 0.1,
         gids: Int[Array, "n_gids"] | None = None,
-        **meta_data,
+        **extra,
     ) -> "Stimulus":
         """Optical stimulus as irradiance at each neuron (mW/mm^2).
 
         Args:
             irradiance: Light power density at each neuron, shape [timestep, n_gids].
+            **extra: Additional metadata, e.g. wavelength_nm=473.0.
         """
-        meta_data["input_mode"] = "irradiance"
-        meta_data["units"] = "mW/mm2"
-        return cls(array=irradiance, dt=dt, gids=gids, **meta_data)
+        return cls(
+            array=irradiance,
+            dt=dt,
+            gids=gids,
+            input_mode="irradiance",
+            units="mW/mm2",
+            **extra,
+        )
 
     def convert_to(self, target_units: str) -> "Stimulus":
         """Convert stimulus to equivalent units
@@ -299,13 +181,13 @@ class Stimulus:
             "mW/mm2" -> "photon_flux"  (irradiance -> photons/s/mm^2)
             "photon_flux" -> "mW/mm2"  (photons/s/mm^2 -> irradiance)
 
-        Wavelength is read from meta_data["wavelength_nm"]
+        Wavelength is read from extra["wavelength_nm"]
         """
-        current_units = self.meta_data.get("units")
+        current_units = self.units
         if current_units == target_units:
             return self
 
-        wavelength_nm = self.meta_data.get("wavelength_nm", 473.0)
+        wavelength_nm = self.extra.get("wavelength_nm", 473.0)
         E_photon = 6.626e-34 * 3e8 / (wavelength_nm * 1e-9) * 1e3  # mW*s
 
         if current_units == "mW/mm2" and target_units == "photon_flux":
@@ -317,8 +199,14 @@ class Stimulus:
                 f"No conversion from '{current_units}' to '{target_units}'"
             )
 
-        meta = {**self.meta_data, "units": target_units}
-        return Stimulus(array=converted, dt=self.dt, gids=self.gids, **meta)
+        return Stimulus(
+            array=converted,
+            dt=self.dt,
+            gids=self.gids,
+            input_mode=self.input_mode,
+            units=target_units,
+            **self.extra,
+        )
 
     @staticmethod
     def align_gids(
@@ -326,9 +214,6 @@ class Stimulus:
         all_gids: Int[Array, "n_total_gids"],
     ) -> "Stimulus":
         """Expand stimulus array to cover all_gids, zero-padding missing neurons"""
-        if stimulus.array is None:
-            return stimulus
-
         if stimulus.gids is None:
             assert stimulus.array.shape[-1] == len(all_gids), (
                 f"Stimulus has {stimulus.array.shape[-1]} columns but system has "
@@ -351,7 +236,12 @@ class Stimulus:
                 expanded[:, sys_idx] += stimulus.array[:, col_idx]
 
         return Stimulus(
-            array=expanded, dt=stimulus.dt, gids=all_gids, **stimulus.meta_data
+            array=expanded,
+            dt=stimulus.dt,
+            gids=all_gids,
+            input_mode=stimulus.input_mode,
+            units=stimulus.units,
+            **stimulus.extra,
         )
 
     @staticmethod
@@ -361,7 +251,7 @@ class Stimulus:
         duration: float,
     ) -> "Stimulus":
         """Resample stimulus to a common dt via linear interpolation"""
-        if stimulus.array is None or np.isclose(stimulus.dt, target_dt):
+        if np.isclose(stimulus.dt, target_dt):
             return stimulus
 
         n_target_steps = int(round(duration / target_dt))
@@ -375,18 +265,20 @@ class Stimulus:
             axis=-1,
         )
         return Stimulus(
-            array=resampled, dt=target_dt, gids=stimulus.gids, **stimulus.meta_data
+            array=resampled,
+            dt=target_dt,
+            gids=stimulus.gids,
+            input_mode=stimulus.input_mode,
+            units=stimulus.units,
+            **stimulus.extra,
         )
 
     def to_array(self, duration: float, dt: float):
         """Resample and pad/trim to simulation time grid.
 
-        Returns an array with ``int(duration / dt) + 1`` rows, or None when no waveform data is present.
+        Returns an array with ``int(duration / dt) + 1`` rows.
         Compatible with JAX tracers inside JIT.
         """
-        if self.array is None:
-            return None
-
         arr = np.asarray(self.array)
         expected_steps = int(duration / dt) + 1
         original_ndim = arr.ndim
@@ -421,13 +313,20 @@ class Stimulus:
 
     def tree_flatten(self):
         children = [self.array]
-        aux = (self.dt, self.gids, self.meta_data)
+        aux = (self.dt, self.gids, self.input_mode, self.units, self.extra)
         return children, aux
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        dt, gids, meta_data = aux
-        return cls(array=children[0], dt=dt, gids=gids, **meta_data)
+        dt, gids, input_mode, units, extra = aux
+        return cls(
+            array=children[0],
+            dt=dt,
+            gids=gids,
+            input_mode=input_mode,
+            units=units,
+            **extra,
+        )
 
 
 if _USES_JAX:

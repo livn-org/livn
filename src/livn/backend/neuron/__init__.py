@@ -791,9 +791,6 @@ class Env(EnvProtocol):
                 stimulus = Stimulus.from_arg(stimulus)
             stimulus = self.model.prepare_stimulus(stimulus)
 
-        if stimulus is not None and stimulus.array is None:
-            stimulus = None
-
         is_irradiance = stimulus is not None and stimulus.input_mode == "irradiance"
 
         if stimulus is not None and not is_irradiance:

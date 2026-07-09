@@ -377,7 +377,7 @@ class Env(EnvProtocol):
                 stimulus = Stimulus.from_arg(stimulus)
             stimulus = self.model.prepare_stimulus(stimulus)
 
-        if stimulus is None or stimulus.array is None:
+        if stimulus is None:
             stimulus = Stimulus(
                 array=np.zeros(
                     [
@@ -398,7 +398,12 @@ class Env(EnvProtocol):
                     sys_idx = gid_to_idx.get(int(gid))
                     if sys_idx is not None:
                         expanded[:, sys_idx] += stimulus.array[:, col_idx]
-                stimulus = Stimulus(array=expanded, dt=stimulus.dt)
+                stimulus = Stimulus(
+                    array=expanded,
+                    dt=stimulus.dt,
+                    input_mode=stimulus.input_mode,
+                    units=stimulus.units,
+                )
 
         # Check for stimulus dt consistency across continued runs
         if not hasattr(self, "_stimulus_dt"):
@@ -412,7 +417,12 @@ class Env(EnvProtocol):
         pad_rows = max(0, int(round(self.t / stimulus.dt)))
         if pad_rows > 0:
             padding = np.zeros((pad_rows, stimulus.array.shape[1]))
-            stimulus.array = np.vstack((padding, stimulus.array))
+            stimulus = Stimulus(
+                array=np.vstack((padding, stimulus.array)),
+                dt=stimulus.dt,
+                input_mode=stimulus.input_mode,
+                units=stimulus.units,
+            )
 
         t_start = self.t
         self._network.run(
