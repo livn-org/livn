@@ -189,6 +189,34 @@ class ReducedCalciumSomaDendrite(Model):
     def neuron_refractory_period(self) -> float:
         return self.refractory_period
 
+    def neuron_cells(self):
+        from livn.backend.neuron.cells import ReducedCell
+        from livn.models.rcsd.neuron.templates.BRK import BRK
+        from livn.models.rcsd.neuron.templates.PRN import PRN
+
+        brk_params = self.params("BoothRinzelKiehn-MN")
+        prn_params = self.params("PinskyRinzel-PVBC")
+
+        def make_exc(morphology=None):
+            cell = BRK({"BoothRinzelKiehn": brk_params})
+            return ReducedCell(
+                cell,
+                threshold=brk_params["V_threshold"],
+                v_rest=brk_params["V_rest"],
+                dend_type="hillock",
+            )
+
+        def make_inh(morphology=None):
+            cell = PRN({"PinskyRinzel": prn_params})
+            return ReducedCell(
+                cell,
+                threshold=prn_params["V_threshold"],
+                v_rest=prn_params["V_rest"],
+                dend_type="hillock",
+            )
+
+        return {"EXC": make_exc, "INH": make_inh}
+
     def neuron_celltypes(self, celltypes):
         if "EXC" in celltypes:
             celltypes["EXC"]["template class"] = (

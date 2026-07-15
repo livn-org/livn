@@ -618,47 +618,39 @@ class Env(EnvProtocol):
         return weights
 
     def normalize_weights(self, target=None):
-        from collections import defaultdict
+        from livn.weights import normalize_weights
 
-        per_neuron = defaultdict(list)  # post_gid -> [(S, syn_idx, w_min, w_max)]
-
+        weight, w_min, w_max, group = [], [], [], []
+        refs = []  # (S, syn_idx)
+        group_ids: dict[tuple, int] = {}
         for key, S in self._iter_stdp_synapses():
             if len(S) == 0:
                 continue
+            pop = key[0]
+            w_arr = np.array(S.w_plastic[:])
             j_arr = np.array(S.j[:])
-            w_min_arr = np.array(S.w_min[:])
-            w_max_arr = np.array(S.w_max[:])
+            wmin_arr = np.array(S.w_min[:])
+            wmax_arr = np.array(S.w_max[:])
             for idx in range(len(S)):
-                per_neuron[(key[0], int(j_arr[idx]))].append(
-                    (S, idx, float(w_min_arr[idx]), float(w_max_arr[idx]))
-                )
+                gid = group_ids.setdefault((pop, int(j_arr[idx])), len(group_ids))
+                weight.append(float(w_arr[idx]))
+                w_min.append(float(wmin_arr[idx]))
+                w_max.append(float(wmax_arr[idx]))
+                group.append(gid)
+                refs.append((S, idx))
 
-        for (pop, j), conns in per_neuron.items():
-            t = target if target is not None else float(len(conns))
+        if not refs:
+            return self
 
-            free = list(conns)
-            clamped_sum = 0.0
-            for _ in range(20):
-                free_sum = sum(float(S.w_plastic[idx]) for S, idx, _, _ in free)
-                remaining = t - clamped_sum
-                if free_sum <= 0 or abs(free_sum - remaining) < 1e-12:
-                    break
-                scale = remaining / free_sum
-                next_free = []
-                for S, idx, w_min, w_max in free:
-                    new_w = float(S.w_plastic[idx]) * scale
-                    if new_w >= w_max:
-                        S.w_plastic[idx] = w_max
-                        clamped_sum += w_max
-                    elif new_w <= w_min:
-                        S.w_plastic[idx] = w_min
-                        clamped_sum += w_min
-                    else:
-                        S.w_plastic[idx] = new_w
-                        next_free.append((S, idx, w_min, w_max))
-                if len(next_free) == len(free):
-                    break
-                free = next_free
+        new_w = normalize_weights(
+            np.asarray(weight),
+            np.asarray(w_min),
+            np.asarray(w_max),
+            np.asarray(group),
+            target=target,
+        )
+        for (S, idx), w in zip(refs, new_w):
+            S.w_plastic[idx] = float(w)
 
         return self
 

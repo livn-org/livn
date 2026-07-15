@@ -1,104 +1,28 @@
-import gc
+from __future__ import annotations
+
 import logging
 import math
 import os
-import time
 from collections import defaultdict
-from typing import TYPE_CHECKING, Union, Self
+from typing import TYPE_CHECKING, Self, Union
 
 import numpy as np
-from machinable.config import to_dict
-from miv_simulator import config
-from miv_simulator.network import (
-    connect_cells,
-    connect_gjs,
-)
-from miv_simulator.optimization import update_network_params
-from miv_simulator.synapses import SynapseManager
-from miv_simulator.utils import ExprClosure, from_yaml
-from miv_simulator.utils import neuron as neuron_utils
-from miv_simulator.utils.neuron import configure_hoc, HocObject
-from miv_simulator import cells
-from mpi4py import MPI
-from neuroh5.io import (
-    read_cell_attribute_selection,
-    read_projection_names,
-    read_cell_attribute_info,
-    read_tree_selection,
-    scatter_read_cell_attributes,
-    scatter_read_cell_attribute_selection,
-    scatter_read_trees,
-)
-from neuron import h
 
+from livn.backend.neuron import mechanisms
+from livn.backend.neuron.cells import CellBuilder
+from livn.backend.neuron.synapses import SynapseBuilder
 from livn.stimulus import Stimulus
 from livn.types import Env as EnvProtocol
-from livn.types import SynapticParam
-from livn.utils import DotDict, import_object_by_path
 
 if TYPE_CHECKING:
+    from mpi4py import MPI
+
     from livn.io import IO
     from livn.system import System
     from livn.types import Model
 
-
-if hasattr(h, "nrnmpi_init"):
-    h.nrnmpi_init()
-
-
 logger = logging.getLogger(__name__)
-
 logger.setLevel(os.getenv("LIVN_NEURON_LOGGING", "WARNING"))
-logging.getLogger("miv_simulator").setLevel(
-    os.getenv("LIVN_MIV_SIMULATOR_LOGGING", "WARNING")
-)
-
-
-class _Compat:
-    def __init__(self, env):
-        self.__dict__.update(
-            {
-                "_env": env,
-                "dt": 0.025,
-                "dataset_path": None,
-                "dataset_prefix": "",
-                "datasetName": "",
-                "recording_profile": None,
-                "model_config": {
-                    "Random Seeds": {
-                        "Intracellular Recording Sample": env.seed,
-                    }
-                },
-                "gapjunctions_file_path": None,
-                "gapjunctions": None,
-            }
-        )
-
-    def __getattr__(self, name):
-        return getattr(self.__dict__["_env"], name)
-
-    def __setattr__(self, name, value):
-        if name in (
-            "dt",
-            "dataset_path",
-            "dataset_prefix",
-            "datasetName",
-            "recording_profile",
-            "model_config",
-            "gapjunctions_file_path",
-            "gapjunctions",
-        ):
-            self.__dict__[name] = value
-        else:
-            setattr(self.__dict__["_env"], name, value)
-
-
-class _Cell(cells.BiophysCell):
-    def position(self, x: float, y: float, z: float) -> None:
-        target = self.hoc_cell if self.hoc_cell is not None else self.cell_obj
-        if target is None or not hasattr(target, "position"):
-            raise RuntimeError("cell has no position()")
-        target.position(x, y, z)
 
 
 class Env(EnvProtocol):
@@ -106,675 +30,321 @@ class Env(EnvProtocol):
         self,
         system: Union["System", str],
         model: Union["Model", None] = None,
-        io: Union["IO"] = None,
+        io: Union["IO", None] = None,
         seed: int | None = 123,
-        comm: MPI.Intracomm | None = None,
+        comm: "MPI.Intracomm | None" = None,
         subworld_size: int | None = None,
     ):
+        from mpi4py import MPI
+
         from livn.system import System
 
         self.seed = seed
-
+        self._select_spec = None
+        self._select_method = "first"
+        self._selection: dict[str, object] | None = None
+        self._selected_gids: set[int] | None = None
         self.system = (
             system if not isinstance(system, str) else System(system, comm=comm)
         )
-        if model is None:
-            model = self.system.default_model()
-        self.model = model
-        if io is None:
-            io = self.system.default_io()
-        self.io = io
-
-        self._closed = False
-
-        if comm is None:
-            comm = MPI.COMM_WORLD
-        self.comm = comm
+        self.model = model if model is not None else self.system.default_model()
+        self.io = io if io is not None else self.system.default_io()
+        self.comm = comm if comm is not None else MPI.COMM_WORLD
         self.subworld_size = subworld_size
+        self.store_kind = "auto"
 
-        self.duration = None
         self.encoding = None
         self.decoding = None
+        self.duration = None
 
-        # --- Resources
-
-        self.gidset = set()
-        self.node_allocation = None  # node rank map
-
-        # --- Statistics
-
-        self.mkcellstime = -0.0
-        self.connectgjstime = -0.0
-        self.connectcellstime = -0.0
-        self.psolvetime = -0.0
-
-        # --- Graph
-
-        self.cells = defaultdict(lambda: dict())
-        self.artificial_cells = defaultdict(lambda: dict())
-        self.biophys_cells = defaultdict(lambda: dict())
-        self.spike_onset_delay = {}
-        self.recording_sets = {}
-        self.synapse_manager = None
-        self.edge_count = defaultdict(dict)
-        self.syns_set = defaultdict(set)
-
-        # --- State
-        self.cells_meta_data = None
-        self.connections_meta_data = None
-        self.input_sources = None
-
-        # --- Compat
-
-        self.template_dict = {}
-
-        self._flucts = {}
-        self._noise_state: dict = {}
-
-        # --- Simulator
-        self.template_directory = self.model.neuron_template_directory()
-        self.mechanisms_directory = self.model.neuron_mechanisms_directory()
-        configure_hoc(
-            template_directory=self.template_directory,
-            mechanisms_directory=self.mechanisms_directory,
-        )
-
-        self.pc = h.pc
+        self._h = mechanisms.configure(self.model.neuron_mechanisms_directory())
+        self.pc = self._h.pc
+        if subworld_size is not None:
+            self.pc.subworlds(subworld_size)
+        # Read rank AFTER subworlds() so pc.id()/nhost() are subworld-local.
+        # gid registration (set_gid2node) must use the subworld-local rank.
         self.rank = int(self.pc.id())
 
-        if self.subworld_size is not None:
-            self.pc.subworlds(subworld_size)
+        # graph state
+        self.cells: dict[str, dict[int, object]] = {}
+        self._detectors: dict[int, dict] = {}  # gid -> {filter,in_nc,out_nc}
+        self.syn = None
+        self.conn = None
+        self._input_vecstims: dict[int, object] = {}
+        self._input_spike_vecs: dict[int, object] = {}
+        self._pop_code: dict[str, int] = {}
+        self._mech_code: dict[str, int] = {}
+        self._sectype_code: dict[str, int] = {}
+        self._mech_id_to_name: dict[int, str] = {}
+        self._wplastic_slot: dict[str, int] = {}
+        self._stdp_syn_rows = np.empty(0, dtype=np.int64)
+        self._stdp_conn_rows = np.empty(0, dtype=np.int64)
 
-        # Spike time of all cells on this host
-        self.t_vec = h.Vector()
-        # Ids of spike times on this host
-        self.id_vec = h.Vector()
-        # Timestamps of intracellular traces on this host
-        self.t_rec = h.Vector()
-
-        self.v_recs = {}
-        self.v_recs_dt = {}
-
-        # Membrane current recordings per gid
-        self.i_recs = {}
-        self.i_recs_dt = {}
-        self.i_area = {}  # membrane surface area (cm^2) for absolute current conversion
-
-        # Synaptic weight recordings (STDP)
-        self.w_recs = {}  # (gid, syn_id, mech_name) -> h.Vector
-        self.w_recs_dt = {}  # population -> dt
+        # plasticity / noise / weight-recording state
         self._plasticity_enabled = False
-        self._weight_rec_dt = 0.1  # default recording dt
-        self._weight_nc_refs = {}  # (gid, syn_id, mech_name) -> NetCon
+        self._flucts: dict[str, tuple] = {}
+        self._noise_state: dict = {}
+        self.w_recs: dict[tuple, object] = {}
+        self._weight_nc_refs: dict[tuple, object] = {}
+        self._weight_rec_dt = 0.1
         self._weight_recording_active = False
-        self._w_rec_times = None  # h.Vector of timestamps
+        self._w_rec_times = None
 
-        self.t = 0
+        # recording buffers (spike times/ids on this host, per-(gid, sec) traces)
+        self.t_vec = self._h.Vector()
+        self.id_vec = self._h.Vector()
+        self._spike_gids: set[int] = set()
+        self.v_recs: dict[tuple[int, int], object] = {}
+        self.v_dt: dict[str, float] = {}
+        self.i_recs: dict[tuple[int, int], object] = {}
+        self.i_dt: dict[str, float] = {}
+
+        # sim state
+        self.t = 0.0
         self._dt: float | None = None
-        self._stimulus_vectors: dict[tuple[int, int], dict] = {}
-        self._stimulus_callback_registered = False
-        self._stimulus_step_index = 0
+        # dt whose 2*dt floor is currently applied to the NetCon delays (the
+        # builder pre-applies DEFAULT_DT; re-applied only when run() uses another)
+        from livn.backend.neuron.synapses import DEFAULT_DT
 
-        # Opsin state
-        self._opsin_refs: dict[tuple[int, int], object] = {}
-        self._opsin_stimulus_vectors: dict[tuple[int, int], dict] = {}
-        self._opsin_callback_registered = False
-        self._opsin_step_index = 0
+        self._delay_floor_dt: float = DEFAULT_DT
+        self._closed = False
 
-        # Refractory spike-source filters (gid -> dict with 'filter', 'in_nc', 'out_nc')
-        self._spike_filter_refs: dict[int, dict] = {}
-        if hasattr(self.model, "neuron_refractory_period"):
-            self._refractory_period = float(self.model.neuron_refractory_period())
-        else:
-            self._refractory_period = 2.0
+        self._refractory_period = (
+            float(self.model.neuron_refractory_period())
+            if hasattr(self.model, "neuron_refractory_period")
+            else 2.0
+        )
 
-    @property
-    def voltage_recording_dt(self) -> float:
-        if self.v_recs_dt:
-            return next(iter(self.v_recs_dt.values()))
-        return super().voltage_recording_dt
+        # extracellular stimulus block
+        self._stim_segments: list = []
+        self._stim_block: np.ndarray | None = None
+        self._stim_dt: float | None = None
+        self._stim_step = 0
+        self._stim_registered = False
 
-    @property
-    def membrane_current_recording_dt(self) -> float:
-        """Recording time step for membrane current traces in ms"""
-        if self.i_recs_dt:
-            return next(iter(self.i_recs_dt.values()))
-        return super().membrane_current_recording_dt
+        # opsin (irradiance) stimulus block
+        self._opsin_refs: dict[tuple[int, int], object] = {}  # (gid, sec_id) -> pp
+        self._opsin_pps: list = []
+        self._opsin_block: np.ndarray | None = None
+        self._opsin_dt: float | None = None
+        self._opsin_step = 0
+        self._opsin_registered = False
 
-    def init(self):
-        self._load_cells()
-        self._load_connections()
-        self._insert_opsins()
-
-        # disable defaultdicts
-        self.cells = dict(self.cells)
-        self.artificial_cells = dict(self.artificial_cells)
-        self.biophys_cells = dict(self.biophys_cells)
-        self.edge_count = dict(self.edge_count)
-        self.syns_set = dict(self.syns_set)
-
-        self.pc.set_maxstep(10)
-
+    def selection(self, select, method: str = "first") -> Self:
+        if self.cells:
+            raise RuntimeError("selection() must be called before init()")
+        self._select_spec = select
+        self._select_method = method
         return self
 
-    def _insert_opsins(self):
+    def init(self) -> Self:
+        self.pc.gid_clear()
+        builder = CellBuilder(self.system, self.model, self.pc, self.comm)
+
+        ignored = (
+            set(self.model.ignored_populations())
+            if hasattr(self.model, "ignored_populations")
+            else set()
+        )
+        # only populations with a cell factory are simulated biophysically while
+        # any other source population is driven as an external VecStim input
+        factories = set(self.model.neuron_cells().keys())
+        buildable = [
+            p for p in self.system.populations if p not in ignored and p in factories
+        ]
+        self._resolve_selection(buildable)
+
+        for pop in buildable:
+            sel = None
+            if self._selection is not None:
+                sel = set(int(g) for g in self._selection.get(pop, []))
+            cells = builder.build_local(pop, selection=sel)
+            self.cells[pop] = cells
+            for gid, cell in cells.items():
+                self._register_cell(gid, cell)
+
+        self._h.define_shape()
+
+        simulated_pops = set(buildable)
+        sb = SynapseBuilder(
+            self.system,
+            self.model,
+            self.pc,
+            self.comm,
+            store=self.store_kind,
+            selected_gids=self._selected_gids,
+            simulated_pops=simulated_pops,
+            io_size=int(self.pc.nhost()),
+        )
+        (
+            self.syn,
+            self.conn,
+            self._pop_code,
+            self._mech_code,
+            self._sectype_code,
+            self._input_vecstims,
+        ) = sb.build(self.cells)
+        self.store_kind = sb.store_kind  # resolved value when store="auto"
+        self._index_plastic_synapses()
+        self._insert_opsins()
+
+        self.pc.set_maxstep(10)
+        return self
+
+    def _insert_opsins(self) -> None:
+        """Insert opsin point processes on the sections named by the model.
+
+        Enabled when the model exposes ``neuron_opsin_config()`` though the opsins sit
+        idle (``phi = 0``) until an ``input_mode="irradiance"`` stimulus drives them.
+        """
         if not hasattr(self.model, "neuron_opsin_config"):
             return
-
-        opsin_cfg = self.model.neuron_opsin_config()
-        if opsin_cfg is None:
+        cfg = self.model.neuron_opsin_config()
+        if not cfg:
             return
-
-        mech_name = opsin_cfg.get("mechanism", "RhO3c")
-        populations = opsin_cfg.get("populations", list(self.cells.keys()))
-        target_sections = opsin_cfg.get("sections", ["soma"])
-        params = opsin_cfg.get("params", {})
+        mech_name = cfg.get("mechanism", "RhO3c")
+        populations = cfg.get("populations", list(self.cells.keys()))
+        target_sections = set(cfg.get("sections", ["soma"]))
+        params = cfg.get("params", {})
+        mech = getattr(self._h, mech_name, None)
+        if mech is None:
+            logger.warning("opsin mechanism %s not available", mech_name)
+            return
 
         for pop in populations:
             for gid, cell in self.cells.get(pop, {}).items():
-                if not self.pc.gid_exists(gid):
+                sections = getattr(cell, "sections", None)
+                if sections is None:
                     continue
-                if not hasattr(cell, "sections"):
-                    continue
-                for sec_id, sec in enumerate(cell.sections):
+                for sec_id, sec in enumerate(sections):
                     sec_name = sec.name().split(".")[-1]
                     if sec_name not in target_sections:
                         continue
-
-                    pp = getattr(h, mech_name)(sec(0.5))
-                    for param_name, value in params.items():
-                        setattr(pp, param_name, value)
-
+                    pp = mech(sec(0.5))
+                    for pname, value in params.items():
+                        setattr(pp, pname, value)
                     self._opsin_refs[(int(gid), sec_id)] = pp
 
-    def _load_cells(self):
-        filepath = self.system.files["cells"]
-        io_size: int = 1
+    def _index_plastic_synapses(self) -> None:
+        """Precompute which mechanisms and rows are plastic / have a w_plastic slot"""
+        rules = self.model.neuron_synapse_rules()
+        self._mech_id_to_name = {v: k for k, v in self._mech_code.items()}
+        self._wplastic_slot: dict[str, int] = {}
+        plastic_ids: set[int] = set()
+        for name, mid in self._mech_code.items():
+            netcon_params = rules.get(name, {}).get("netcon_params", {})
+            if "w_plastic" in netcon_params:
+                self._wplastic_slot[name] = int(netcon_params["w_plastic"])
+                plastic_ids.add(mid)
 
-        if self.rank == 0:
-            logger.info("*** Creating cells...")
-        st = time.time()
-
-        try:
-            self.pc.gid_clear()
-        except Exception:
-            logger.debug(
-                "ParallelContext gid_clear before cell load failed", exc_info=True
+        if self.syn is not None and self.syn.size:
+            self._stdp_syn_rows = np.flatnonzero(
+                np.isin(self.syn.mech_id, list(plastic_ids))
             )
-
-        rank = self.comm.Get_rank()
-
-        population_ranges = self.system.cells_meta_data.population_ranges
-
-        celltypes = to_dict(self.system.synapses_config["cell_types"])
-
-        self.model.neuron_celltypes(celltypes)
-
-        ignored = set()
-        if hasattr(self.model, "ignored_populations"):
-            ignored = set(self.model.ignored_populations())
-        for k in list(celltypes.keys()):
-            if k in ignored:
-                del celltypes[k]
-
-        typenames = sorted(celltypes.keys())
-        for k in typenames:
-            population_range = population_ranges.get(k, None)
-            if population_range is not None:
-                celltypes[k]["start"] = population_ranges[k][0]
-                celltypes[k]["num"] = population_ranges[k][1]
-
-                if "mechanism" in celltypes[k]:
-                    mech_dict = celltypes[k]["mechanism"]
-                    if isinstance(mech_dict, str):
-                        if rank == 0:
-                            mech_dict = from_yaml(mech_dict)
-                        mech_dict = self.comm.bcast(mech_dict, root=0)
-                    celltypes[k]["mech_dict"] = mech_dict
-                    celltypes[k]["mech_file_path"] = "$mechanism"
-
-                if "synapses" in celltypes[k]:
-                    synapses_dict = celltypes[k]["synapses"]
-                    if "weights" in synapses_dict:
-                        weights_config = synapses_dict["weights"]
-                        if isinstance(weights_config, list):
-                            weights_dicts = weights_config
-                        else:
-                            weights_dicts = [weights_config]
-                        for weights_dict in weights_dicts:
-                            if "expr" in weights_dict:
-                                expr = weights_dict["expr"]
-                                parameter = weights_dict["parameter"]
-                                const = weights_dict.get("const", {})
-                                clos = ExprClosure(parameter, expr, const)
-                                weights_dict["closure"] = clos
-                        synapses_dict["weights"] = weights_dicts
-
-        self.cells_meta_data = {
-            "source": filepath,
-            "cell_attribute_info": self.system.cells_meta_data.cell_attribute_info,
-            "population_ranges": population_ranges,
-            "population_names": self.system.cells_meta_data.population_names,
-            "celltypes": celltypes,
-        }
-
-        self.celltypes = celltypes
-        self.cell_attribute_info = self.system.cells_meta_data.cell_attribute_info
-        self.data_file_path = filepath
-        self.coordinates_ns = "Generated Coordinates"
-        self.SWC_Types = config.SWCTypesDef.__members__
-        self.io_size = io_size
-        self.template_paths = [self.template_directory]
-
-        if self.system.name == "CA1d":
-            self._make_cells(cell_selection={"PYR": [48041]})
         else:
-            self._make_cells()
-
-        self.mkcellstime = time.time() - st
-        if self.rank == 0:
-            logger.info(f"*** Cells created in {self.mkcellstime:.02f} s")
-        local_num_cells = sum(len(cells) for cells in self.cells.values())
-
-        logger.info(f"*** Rank {self.rank} created {local_num_cells} cells")
-
-        st = time.time()
-
-        compat = _Compat(self)
-        connect_gjs(compat)
-
-        self.pc.setup_transfer()
-        self.connectgjstime = time.time() - st
-        if rank == 0:
-            logger.info(f"*** Gap junctions created in {self.connectgjstime:.02f} s")
-
-    def _install_spike_filter(self, cell) -> None:
-        src_nc = getattr(cell, "spike_detector", None)
-        if src_nc is None:
-            return  # artificial cells / hoc cells without a precomputed detector
-
-        threshold = float(src_nc.threshold)
-        delay = float(src_nc.delay)
-        weight = float(src_nc.weight[0])
-
-        # Locate the soma section the original detector watched
-        soma_sec = None
-        soma_attr = getattr(cell, "soma", None)
-        if soma_attr:
-            soma_node = soma_attr[0] if isinstance(soma_attr, list) else soma_attr
-            soma_sec = getattr(soma_node, "section", soma_node)
-        if soma_sec is None:
-            hoc_cell = getattr(cell, "hoc_cell", None) or getattr(
-                cell, "cell_obj", None
+            self._stdp_syn_rows = np.empty(0, dtype=np.int64)
+        if self.conn is not None and self.conn.size:
+            self._stdp_conn_rows = np.flatnonzero(
+                np.isin(self.conn.mech_id, list(plastic_ids))
             )
-            soma_sec = getattr(hoc_cell, "soma", None)
-            if isinstance(soma_sec, list):
-                soma_sec = soma_sec[0]
-        if soma_sec is None:
-            raise RuntimeError(
-                f"_install_spike_filter: cannot find soma section for gid {cell.gid}"
-            )
-
-        spike_filter = h.SpikeFilter()
-        spike_filter.tref = float(self._refractory_period)
-
-        in_nc = h.NetCon(soma_sec(0.5)._ref_v, spike_filter, sec=soma_sec)
-        in_nc.threshold = threshold
-        in_nc.delay = delay
-        in_nc.weight[0] = weight
-
-        out_nc = h.NetCon(spike_filter, None)
-        out_nc.delay = max(2.0 * 0.025, 1e-3)
-        out_nc.weight[0] = 1.0
-
-        # Replace the cell's detector so register_cell binds pc.cell /
-        # pc.spike_record to the filtered output instead of the raw threshold
-        # NetCon. The original src_nc loses its only Python ref and is GC'd,
-        # which detaches its watch on _ref_v
-        cell.spike_detector = out_nc
-
-        self._spike_filter_refs[int(cell.gid)] = {
-            "filter": spike_filter,
-            "in_nc": in_nc,
-            "out_nc": out_nc,
-        }
-
-    def _make_cells(self, cell_selection=None):
-        rank = self.rank
-        nhosts = int(self.pc.nhost())
-        compat = _Compat(self)
-
-        if cell_selection is not None:
-            pop_names = sorted(cell_selection.keys())
         else:
-            pop_names = sorted(self.celltypes.keys())
+            self._stdp_conn_rows = np.empty(0, dtype=np.int64)
 
-        for pop_name in pop_names:
-            if cell_selection is None:
-                self.pc.barrier()
-
-            if rank == 0:
-                logger.info(f"*** Creating population {pop_name}")
-
-            template_name = self.celltypes[pop_name].get("template", None)
-
-            mech_dict = None
-            if "mech_file_path" in self.celltypes[pop_name]:
-                mech_dict = self.celltypes[pop_name]["mech_dict"]
-
-            # resolve cell constructor
-            reduced_cons = None
-            if template_name and template_name.startswith("@"):
-                # custom @-template constructor
-                self.template_dict[pop_name] = None
-
-                def _make_custom_cell(target):
-                    def _cell(gid, pop_name, env, mech_dict):
-                        cell = env.biophys_cells[pop_name][gid] = _Cell(
-                            gid=gid,
-                            population_name=pop_name,
-                            cell_obj=import_object_by_path(target[1:])(),
-                            mech_dict=mech_dict,
-                            env=env,
-                        )
-                        return cell
-
-                    return _cell
-
-                reduced_cons = _make_custom_cell(template_name)
-            else:
-                # legacy HOC/template path
-                template_class = neuron_utils.load_cell_template(
-                    compat, pop_name, bcast_template=True
-                )
-                if cell_selection is None:
-                    reduced_cons = cells.get_reduced_cell_constructor(template_name)
-
-            num_cells = 0
-
-            if (pop_name in self.cell_attribute_info) and (
-                "Trees" in self.cell_attribute_info[pop_name]
-            ):
-                if rank == 0:
-                    logger.info(f"*** Reading trees for population {pop_name}")
-
-                if cell_selection is not None:
-                    gid_range = [
-                        gid for gid in cell_selection[pop_name] if gid % nhosts == rank
-                    ]
-                    (trees, _) = read_tree_selection(
-                        self.data_file_path, pop_name, gid_range, comm=self.comm
-                    )
-                else:
-                    if self.node_allocation is None:
-                        (trees, _) = scatter_read_trees(
-                            self.data_file_path,
-                            pop_name,
-                            comm=self.comm,
-                            io_size=self.io_size,
-                        )
-                    else:
-                        (trees, _) = scatter_read_trees(
-                            self.data_file_path,
-                            pop_name,
-                            comm=self.comm,
-                            io_size=self.io_size,
-                            node_allocation=self.node_allocation,
-                        )
-
-                if rank == 0:
-                    logger.info(f"*** Done reading trees for population {pop_name}")
-
-                first_gid = None
-                for i, (gid, tree) in enumerate(trees):
-                    if rank == 0:
-                        logger.info(f"*** Creating {pop_name} gid {gid}")
-                    if first_gid is None:
-                        first_gid = gid
-
-                    if reduced_cons:
-                        cell = reduced_cons(
-                            gid=gid, pop_name=pop_name, env=compat, mech_dict=mech_dict
-                        )
-                    elif cell_selection is not None and template_class is not None:
-                        if isinstance(template_class, HocObject):
-                            hoc_cell = cells.make_hoc_cell(
-                                compat, pop_name, gid, neurotree_dict=tree
-                            )
-                            if mech_dict is None:
-                                cell = hoc_cell
-                            else:
-                                cell = cells.make_biophys_cell(
-                                    gid=gid,
-                                    population_name=pop_name,
-                                    hoc_cell=hoc_cell,
-                                    env=compat,
-                                    tree_dict=tree,
-                                    mech_dict=mech_dict,
-                                )
-                        else:
-                            cell_obj = template_class()
-                            cell = cells.make_biophys_cell(
-                                gid=gid,
-                                population_name=pop_name,
-                                cell_obj=cell_obj,
-                                env=compat,
-                                mech_dict=mech_dict,
-                            )
-                    else:
-                        cell = cells.make_biophys_cell(
-                            gid=gid,
-                            population_name=pop_name,
-                            env=compat,
-                            tree_dict=tree,
-                            mech_dict=mech_dict,
-                        )
-
-                    soma_xyz = cells.get_soma_xyz(tree, self.SWC_Types)
-                    cell.position(soma_xyz[0], soma_xyz[1], soma_xyz[2])
-
-                    self._install_spike_filter(cell)
-                    cells.register_cell(compat, pop_name, gid, cell)
-                    num_cells += 1
-                del trees
-
-            elif (pop_name in self.cell_attribute_info) and (
-                self.coordinates_ns in self.cell_attribute_info[pop_name]
-            ):
-                if rank == 0:
-                    logger.info(f"*** Reading coordinates for population {pop_name}")
-
-                if cell_selection is not None:
-                    gid_range = [
-                        gid for gid in cell_selection[pop_name] if gid % nhosts == rank
-                    ]
-                    coords_iter, coords_attr_info = read_cell_attribute_selection(
-                        self.data_file_path,
-                        pop_name,
-                        selection=gid_range,
-                        namespace=self.coordinates_ns,
-                        comm=self.comm,
-                        return_type="tuple",
-                    )
-                else:
-                    if self.node_allocation is None:
-                        cell_attr_dict = scatter_read_cell_attributes(
-                            self.data_file_path,
-                            pop_name,
-                            namespaces=[self.coordinates_ns],
-                            comm=self.comm,
-                            io_size=self.io_size,
-                            return_type="tuple",
-                        )
-                    else:
-                        cell_attr_dict = scatter_read_cell_attributes(
-                            self.data_file_path,
-                            pop_name,
-                            namespaces=[self.coordinates_ns],
-                            node_allocation=self.node_allocation,
-                            comm=self.comm,
-                            io_size=self.io_size,
-                            return_type="tuple",
-                        )
-                    coords_iter, coords_attr_info = cell_attr_dict[self.coordinates_ns]
-
-                if rank == 0:
-                    logger.info(
-                        f"*** Done reading coordinates for population {pop_name}"
-                    )
-
-                x_index = coords_attr_info.get("X Coordinate", None)
-                y_index = coords_attr_info.get("Y Coordinate", None)
-                z_index = coords_attr_info.get("Z Coordinate", None)
-
-                for i, (gid, cell_coords) in enumerate(coords_iter):
-                    if rank == 0:
-                        logger.info(f"*** Creating {pop_name} gid {gid}")
-
-                    cell_x = cell_coords[x_index][0]
-                    cell_y = cell_coords[y_index][0]
-                    cell_z = cell_coords[z_index][0]
-
-                    if reduced_cons:
-                        cell = reduced_cons(
-                            gid=gid, pop_name=pop_name, env=compat, mech_dict=mech_dict
-                        )
-                    else:
-                        cell = cells.make_hoc_cell(compat, pop_name, gid)
-                    cell.position(cell_x, cell_y, cell_z)
-                    self._install_spike_filter(cell)
-                    cells.register_cell(compat, pop_name, gid, cell)
-                    num_cells += 1
-            else:
-                raise RuntimeError(
-                    f"_make_cells: unknown cell configuration type "
-                    f"for cell type {pop_name}"
-                )
-
-            h.define_shape()
-
-            self.recording_sets[pop_name] = set()
-
-            logger.info(
-                f"*** Rank {rank}: Created {num_cells} cells from population {pop_name}"
-            )
-
-        self.node_allocation = set(self.gidset)
-
-        if self.rank == 0 and self._spike_filter_refs:
-            logger.info(
-                f"*** SpikeFilter installed on {len(self._spike_filter_refs)} cells "
-                f"(tref = {self._refractory_period:.2f} ms)"
-            )
-
-    def _load_connections(self):
-        synapses = self.system.connections_config["synapses"]
-        filepath = self.system.files["connections"]
-        cell_filepath = self.system.files["cells"]
-        io_size: int = 1
-
-        microcircuit_inputs = False
-        if hasattr(self.model, "neuron_microcircuit_inputs"):
-            microcircuit_inputs = self.model.neuron_microcircuit_inputs()
-        if not self.cells_meta_data:
-            raise RuntimeError("Please load the cells first using load_cells()")
-
-        st = time.time()
-        if self.rank == 0:
-            logger.info("*** Creating connections:")
-
-        rank = self.comm.Get_rank()
-        if rank == 0:
-            color = 1
+    def _resolve_selection(self, buildable: list[str]) -> None:
+        self._selection = self.system.selection(
+            self._select_spec,
+            populations=buildable,
+            seed=self.seed,
+            method=self._select_method,
+        )
+        if self._selection is None:
+            self._selected_gids = None
         else:
-            color = 0
-        comm0 = self.comm.Split(color, 0)
-
-        projection_dict = None
-        if rank == 0:
-            projection_dict = defaultdict(list)
-            for src, dst in read_projection_names(filepath, comm=comm0):
-                projection_dict[dst].append(src)
-            projection_dict = dict(projection_dict)
-            logger.info(f"projection_dict = {str(projection_dict)}")
-        projection_dict = self.comm.bcast(projection_dict, root=0)
-        comm0.Free()
-
-        ignored = set()
-        if hasattr(self.model, "ignored_populations"):
-            ignored = set(self.model.ignored_populations())
-        if ignored:
-            projection_dict = {
-                dst: [src for src in srcs if src not in ignored]
-                for dst, srcs in projection_dict.items()
-                if dst not in ignored
+            self._selected_gids = {
+                int(g) for gids in self._selection.values() for g in gids
             }
 
-        self.input_sources = {
-            pop_name: set() for pop_name in self.cells_meta_data["celltypes"].keys()
-        }
+    def _register_cell(self, gid: int, cell) -> None:
+        """Register the gid with a spike detector.
 
-        class _binding:
-            pass
+        When the model requests a refractory period and the ``SpikeFilter``
+        mechanism is available, the somatic threshold detector is routed through
+        it, otherwise a plain threshold NetCon is used.
+        """
+        h = self._h
+        self.pc.set_gid2node(gid, self.rank)
 
-        self.this = this = _binding()
-        this.__dict__.update(
-            {
-                "pc": self.pc,
-                "connectivity_file_path": filepath,
-                "forest_file_path": cell_filepath,
-                "io_size": io_size,
-                "comm": self.comm,
-                "node_allocation": self.node_allocation,
-                "edge_count": self.edge_count,
-                "biophys_cells": self.biophys_cells,
-                "gidset": self.gidset,
-                "recording_sets": self.recording_sets,
-                "microcircuit_inputs": microcircuit_inputs,
-                "microcircuit_input_sources": self.input_sources,
-                "spike_input_attribute_info": None,
-                "cell_selection": None,
-                "netclamp_config": None,
-                "use_cell_attr_gen": True,
-                "cell_attr_gen_cache_size": 4,
-                "cleanup": False,
-                "projection_dict": projection_dict,
-                "Populations": self.system.connections_config["population_definitions"],
-                "layers": self.system.connections_config["layer_definitions"],
-                "connection_config": DotDict.create(synapses),
-                "connection_velocity": defaultdict(lambda: 250),
-                "SWC_Types": config.SWCTypesDef.__members__,
-                "celltypes": self.cells_meta_data["celltypes"],
-                "cells": self.cells,
-                "artificial_cells": self.artificial_cells,
-                "dt": 0.025,  # TODO: hoist into run
-                "t_vec": self.t_vec,
-                "id_vec": self.id_vec,
-                "t_rec": self.t_rec,
+        soma_seg = cell.spike_source()
+        soma_sec = soma_seg.sec
+
+        use_filter = self._refractory_period > 0 and hasattr(h, "SpikeFilter")
+        if use_filter:
+            spike_filter = h.SpikeFilter()
+            spike_filter.tref = float(self._refractory_period)
+            in_nc = h.NetCon(soma_sec(0.5)._ref_v, spike_filter, sec=soma_sec)
+            in_nc.threshold = float(cell.threshold)
+            in_nc.delay = 0.0
+            in_nc.weight[0] = 1.0
+            out_nc = h.NetCon(spike_filter, None)
+            out_nc.delay = max(2.0 * 0.025, 1e-3)
+            out_nc.weight[0] = 1.0
+            self.pc.cell(gid, out_nc)
+            self._detectors[gid] = {
+                "filter": spike_filter,
+                "in_nc": in_nc,
+                "out_nc": out_nc,
             }
-        )
-        self.synapse_manager = SynapseManager(
-            this,
-            self.model.neuron_synapse_mechanisms(),
-            self.model.neuron_synapse_rules(),
-        )
-        this.__dict__["synapse_manager"] = self.synapse_manager
+        else:
+            det = h.NetCon(soma_sec(0.5)._ref_v, None, sec=soma_sec)
+            det.threshold = float(cell.threshold)
+            self.pc.cell(gid, det)
+            self._detectors[gid] = {"out_nc": det}
 
-        connect_cells(this)
+    def active_populations(self) -> list[str]:
+        ignored: set[str] = set()
+        if hasattr(self.model, "ignored_populations"):
+            ignored = set(self.model.ignored_populations())
+        return [p for p in self.system.populations if p not in ignored]
 
-        self.input_sources = this.microcircuit_input_sources
-        self.node_allocation = this.node_allocation
+    def _record_spikes(self, population: str) -> Self:
+        for gid in self.cells.get(population, {}):
+            gid = int(gid)
+            if gid in self._spike_gids:
+                continue
+            self.pc.spike_record(gid, self.t_vec, self.id_vec)
+            self._spike_gids.add(gid)
+        return self
 
-        self.pc.set_maxstep(10.0)
+    def _record_voltage(self, population: str, dt: float) -> Self:
+        self.v_dt[population] = dt
+        for gid, cell in self.cells.get(population, {}).items():
+            for sec_id, sec in enumerate(cell.sections):
+                vec = self._h.Vector()
+                vec.record(sec(0.5)._ref_v, dt)
+                self.v_recs[(int(gid), sec_id)] = vec
+        return self
 
-        self.connectcellstime = time.time() - st
+    def _record_membrane_current(self, population: str, dt: float) -> Self:
+        cells = self.cells.get(population, {})
+        if not cells:
+            return self  # enabling fast_imem with no sections asserts in psolve
+        self._h.cvode.use_fast_imem(1)
+        self.i_dt[population] = dt
+        for gid, cell in cells.items():
+            for sec_id, sec in enumerate(cell.sections):
+                vec = self._h.Vector()
+                vec.record(sec(0.5)._ref_i_membrane_, dt)
+                self.i_recs[(int(gid), sec_id)] = vec
+        return self
 
-        if self.rank == 0:
-            logger.info(
-                f"*** Done creating connections: time = {self.connectcellstime:.02f} s"
-            )
-        edge_count = int(sum(self.edge_count[dest] for dest in self.edge_count))
-        logger.info(f"*** Rank {rank} created {edge_count} connections")
+    def clear_recordings(self) -> Self:
+        self.t_vec.resize(0)
+        self.id_vec.resize(0)
+        for vec in self.v_recs.values():
+            vec.resize(0)
+        for vec in self.i_recs.values():
+            vec.resize(0)
+        return self
 
     def run(
         self,
@@ -783,6 +353,7 @@ class Env(EnvProtocol):
         dt: float | None = None,
         **kwargs,
     ):
+        h = self._h
         self.duration = duration
         current_time = self.t
 
@@ -790,696 +361,459 @@ class Env(EnvProtocol):
             if not isinstance(stimulus, Stimulus):
                 stimulus = Stimulus.from_arg(stimulus)
             stimulus = self.model.prepare_stimulus(stimulus)
-
-        is_irradiance = stimulus is not None and stimulus.input_mode == "irradiance"
-
-        if stimulus is not None and not is_irradiance:
-            if stimulus.gids is None:
-                stimulus.gids = self.active_gids()
-
-            sections_per_neuron = len(stimulus) // len(self.active_neuron_coordinates())
-
-            start_step = int(round(current_time / stimulus.dt))
-            if not math.isclose(
-                start_step * stimulus.dt, current_time, rel_tol=0.0, abs_tol=1e-9
-            ):
-                raise ValueError(
-                    "Stimulus duration must align with dt when continuing runs"
-                )
-
-            for count, (gid, st) in enumerate(stimulus):
-                if not (self.pc.gid_exists(gid)):
-                    continue
-
-                section_id = count % sections_per_neuron
-
-                # pc.gid2cell returns the source object of the NetCon
-                # registered with pc.cell. For biophysical cells we wrap
-                # the somatic detector in a SpikeFilter ARTIFICIAL_CELL
-                # (see _install_spike_filter), so gid2cell would return
-                # the filter rather than the biophys cell. Look up the
-                # underlying cell via self.cells instead
-                cell = None
-                for pop_cells in self.cells.values():
-                    if gid in pop_cells:
-                        cell = pop_cells[gid]
-                        break
-                if cell is None:
-                    cell = self.pc.gid2cell(gid)
-                if "VecStim" in getattr(cell, "hname", lambda: "")():
-                    # artificial STIM cell
-                    print(
-                        f"Warning: Cell {gid} is a VecStim cell; use play() to induce spikes. Skipping stimulus ..."
-                    )
-                    continue
-
-                sec = cell.sections[section_id]
-                sec.push()
-                has_extracellular = h.ismembrane("extracellular")
-                h.pop_section()
-
-                if not has_extracellular:
-                    continue
-
-                key = (int(gid), section_id)
-                state = self._stimulus_vectors.get(key)
-                target = sec(0.5)
-
-                if state is None:
-                    state = {
-                        "segment": target,
-                        "dt": stimulus.dt,
-                        "buffer": np.zeros(0, dtype=np.float64),
-                        "length": 0,
-                    }
-                    self._stimulus_vectors[key] = state
-                else:
-                    if not math.isclose(
-                        state["dt"], stimulus.dt, rel_tol=0.0, abs_tol=1e-12
-                    ):
-                        raise ValueError(
-                            f"Stimulus dt mismatch for gid {gid}; call clear() before rerunning"
-                        )
-
-                scheduled = state["length"]
-                if start_step < scheduled:
-                    raise ValueError(
-                        f"Stimulus for gid {gid} overlaps existing schedule; call clear() first"
-                    )
-
-                if start_step > scheduled:
-                    self._ensure_stimulus_buffer(state, start_step)
-                    state["length"] = start_step
-
-                if len(st) > 0:
-                    values = np.asarray(st, dtype=np.float64)
-                    end_step = start_step + len(values)
-                    self._ensure_stimulus_buffer(state, end_step)
-                    state["buffer"][start_step:end_step] = values
-                    state["length"] = end_step
-        if stimulus is not None and not is_irradiance and self._stimulus_vectors:
-            self._ensure_stimulus_callback()
-
-        if is_irradiance:
-            self._setup_opsin_stimulus(stimulus, current_time)
+            if stimulus.input_mode == "irradiance":
+                self._setup_opsin_stimulus(stimulus, current_time)
+            else:
+                self._setup_extracellular(stimulus, current_time)
 
         first_run = self.t == 0
-
-        stored_dt = self._dt
-        requested_dt = dt if dt is not None else stored_dt
-        if requested_dt is None:
-            requested_dt = 0.025
-
-        if not first_run and stored_dt is not None:
-            if abs(requested_dt - stored_dt) > 1e-12:
-                raise ValueError(
-                    "Cannot change dt during a running simulation; call clear() first."
-                )
-            requested_dt = stored_dt
-
+        requested_dt = (
+            dt if dt is not None else (self._dt if self._dt is not None else 0.025)
+        )
+        if (
+            not first_run
+            and self._dt is not None
+            and abs(requested_dt - self._dt) > 1e-12
+        ):
+            raise ValueError("Cannot change dt mid-simulation; call clear() first.")
         if first_run:
             self._dt = requested_dt
-
-        if self._dt is not None:
-            self._stimulus_step_index = int(round(current_time / self._dt))
-
-        verbose = self.rank == 0 and kwargs.get("verbose", True)
-
-        if verbose:
-            if first_run:
-                logger.info("*** finitialize")
-            else:
-                logger.info(f"*** Continuing run from t={self.t:.2f} ms")
-
-        self.t_rec.record(h._ref_t)
+            self._apply_delay_floor(requested_dt)
+        self._stim_step = int(round(current_time / self._dt))
+        self._opsin_step = int(round(current_time / self._dt))
 
         self.clear_recordings()
 
         if first_run:
             h.v_init = -75.0
             h.stdinit()
-            h.secondorder = 2  # crank-nicholson
+            h.secondorder = 2
             h.dt = requested_dt
             self.pc.timeout(600.0)
-            # Mirror each cell template's init_ic(V_rest): when the
-            # template defines that method, evaluate it so the
-            # constant mechanism's `ic_constant` pins the soma at
-            # the per-celltype resting potential.  This must run before
-            # the final finitialize because init_ic itself calls
-            # h.finitialize internally
-            for pop_name, pop_cells in self.biophys_cells.items():
-                celltype_cfg = self.celltypes.get(pop_name, {})
-                mech_cfg = celltype_cfg.get("mechanism", {})
-                v_rest = None
-                for mech_params in mech_cfg.values():
-                    if isinstance(mech_params, dict) and "V_rest" in mech_params:
-                        v_rest = float(mech_params["V_rest"])
-                        break
-                if v_rest is None:
-                    continue
-                for gid, cell in pop_cells.items():
-                    target = getattr(cell, "hoc_cell", None) or getattr(
-                        cell, "cell_obj", None
-                    )
-                    if target is None:
-                        target = cell
-                    init_ic = getattr(target, "init_ic", None)
-                    if callable(init_ic):
-                        init_ic(v_rest)
+            self._apply_init_ic()
             h.finitialize(h.v_init)
             h.finitialize(h.v_init)
-            if verbose:
-                logger.info("*** Completed finitialize")
         else:
             self.pc.timeout(600.0)
 
         target_time = self.t + duration
-
-        if verbose:
-            logger.info(f"*** Simulating {duration} ms (target t={target_time:.2f} ms)")
-
-        q = time.time()
         if self._weight_recording_active and self._weight_nc_refs:
             w_dt = self._weight_rec_dt
             while h.t < target_time - w_dt / 2:
-                next_t = min(h.t + w_dt, target_time)
-                self.pc.psolve(next_t)
+                self.pc.psolve(min(h.t + w_dt, target_time))
                 self._sample_weights()
             if h.t < target_time - 1e-6:
                 self.pc.psolve(target_time)
         else:
             self.pc.psolve(target_time)
-        self.psolvetime = time.time() - q
-
         self.t = target_time
 
-        if verbose:
-            logger.info(f"*** Done simulating within {self.psolvetime:.2f} s")
-
-        # collect spikes
-        tt = np.array(self.t_vec.as_numpy(), copy=True)
-        if current_time != 0.0 and tt.size > 0:
-            tt -= current_time
-            tt[tt < 0.0] = 0.0
-        ii = np.asarray(self.id_vec.as_numpy(), dtype=np.uint32)
-
-        # collect voltages
-        if len(self.v_recs) > 0:
-            iv = []
-            v = []
-            for (gid, sec_id), rec in self.v_recs.items():
-                iv.append(gid)
-                v.append(rec.as_numpy())
-            iv = np.asarray(iv, dtype=np.uint32)
-            v = np.array(v, dtype=np.float32)
-        else:
-            iv = None
-            v = None
-
-        # collect membrane currents
-        if len(self.i_recs) == 0:
-            return ii, tt, iv, v, None, None
-
-        gids = self.active_gids()
-        sections_per_neuron = len(self.i_recs) // len(gids)
-        gid_to_index = {int(g): idx for idx, g in enumerate(gids)}
-        any_rec = next(iter(self.i_recs.values()))
-        T = len(any_rec)
-        currents = np.zeros((len(self.i_recs), T), dtype=np.float32)
-        im = np.ones([len(self.i_recs)], dtype=np.int32) * -1
-
-        for (gid, sec_id), rec in self.i_recs.items():
-            idx = gid_to_index.get(int(gid))
-            if idx is None:
-                continue
-            arr = rec.as_numpy()
-            # i_membrane_ with cvode.use_fast_imem(1) is the absolute
-            # transmembrane current per segment in nA, not a current
-            # density so we convert to microamperes
-            arr = arr * 1e-3
-            if len(arr) != T:
-                # pad or truncate to T
-                if len(arr) < T:
-                    pad = np.zeros(T, dtype=np.float32)
-                    pad[: len(arr)] = arr
-                    arr = pad
-                else:
-                    arr = arr[:T]
-            currents[idx * sections_per_neuron + sec_id, :] = arr
-            im[idx * sections_per_neuron + sec_id] = gid
-
+        result = self._collect(self.active_gids(), current_time)
         self.duration = None
+        return result
 
-        return ii, tt, iv, v, im, currents
+    def _collect(self, active_gids, current_time: float):
+        """Assemble recorded buffers into the (it, tt, iv, v, im, mp) format."""
+        tt = np.array(self.t_vec.as_numpy(), copy=True)
+        ii = np.asarray(self.id_vec.as_numpy(), dtype=np.uint32)
+        if current_time != 0.0 and tt.size > 0:
+            tt = tt - current_time
+            tt[tt < 0.0] = 0.0
 
-    def _ensure_stimulus_buffer(self, state: dict, target_length: int) -> None:
-        current_length = len(state.get("buffer", []))
-        if target_length <= current_length:
-            return
-
-        extra = target_length - current_length
-        if current_length == 0:
-            state["buffer"] = np.zeros(target_length, dtype=np.float64)
-        else:
-            pad = np.zeros(extra, dtype=np.float64)
-            state["buffer"] = np.concatenate([state["buffer"], pad])
-
-    def _ensure_stimulus_callback(self) -> None:
-        if self._stimulus_callback_registered:
-            return
-
-        cvode = h.CVode()
-        cvode.extra_scatter_gather(0, self._update_stimulus_values)
-        self._stimulus_callback_registered = True
-
-    def _update_stimulus_values(self) -> None:
-        if not self._stimulus_vectors:
-            return
-
-        if self._dt is not None:
-            current_time = self._stimulus_step_index * self._dt
-        else:
-            current_time = float(h.t)
-        for state in self._stimulus_vectors.values():
-            buffer = state["buffer"]
-            if buffer.size == 0:
-                value = 0.0
-            else:
-                dt = state["dt"]
-                if dt <= 0:
-                    value = buffer[-1]
-                else:
-                    idx = int(current_time / dt)
-                    if idx < buffer.size:
-                        value = buffer[idx]
-                    else:
-                        value = buffer[-1]
-            state["segment"].e_extracellular = float(value)
-        if self._dt is not None:
-            self._stimulus_step_index += 1
-
-    def _setup_opsin_stimulus(self, stimulus, current_time):
-        if not self._opsin_refs:
-            raise ValueError(
-                "Stimulus has input_mode='irradiance' but no opsins are "
-                "attached. Configure opsin in the model."
+        if self.v_recs:
+            iv = np.asarray([gid for (gid, _sec) in self.v_recs], dtype=np.uint32)
+            v = np.array(
+                [rec.as_numpy() for rec in self.v_recs.values()], dtype=np.float32
             )
+        else:
+            iv = v = None
 
-        phi_stimulus = stimulus.convert_to("photon_flux")
+        im = mp = None
+        if self.i_recs and len(active_gids):
+            gid_to_index = {int(g): i for i, g in enumerate(active_gids)}
+            spn = max(1, len(self.i_recs) // len(active_gids))  # sections per neuron
+            # i_membrane_ (fast_imem) is absolute nA per segment -> microampere;
+            # pack into a [n_neurons*spn, T] matrix in active_gids order
+            T = max((len(rec) for rec in self.i_recs.values()), default=0)
+            if T:
+                rows = len(active_gids) * spn
+                mp = np.zeros((rows, T), dtype=np.float32)
+                im = np.full(rows, -1, dtype=np.int32)
+                for (gid, sec_id), rec in self.i_recs.items():
+                    idx = gid_to_index.get(int(gid))
+                    if idx is None:
+                        continue
+                    row = idx * spn + int(sec_id)
+                    if row >= rows:
+                        continue
+                    arr = np.asarray(rec.as_numpy(), dtype=np.float32) * 1e-3
+                    n = min(arr.shape[0], T)
+                    mp[row, :n] = arr[:n]
+                    im[row] = gid
 
-        if phi_stimulus.gids is None:
-            phi_stimulus.gids = self.active_gids()
+        return ii, tt, iv, v, im, mp
 
-        sections_per_neuron = len(phi_stimulus) // len(self.active_neuron_coordinates())
+    def _apply_delay_floor(self, dt: float) -> None:
+        """Ensure every NetCon delay is >= 2*dt."""
+        if self.conn is None or self.conn.size == 0:
+            return
+        if abs(dt - self._delay_floor_dt) <= 1e-12:
+            # builder pre-applies the default floor, so only needed if different dt
+            return
+        floor = 2.0 * dt
+        phys = self.conn.delay  # physical delays (float32[C])
+        store = self.conn.store
+        for i in range(self.conn.size):
+            d = float(phys[i])
+            store.get(i).delay = d if d > floor else floor
+        self._delay_floor_dt = dt
 
-        start_step = int(round(current_time / phi_stimulus.dt))
+    def _apply_init_ic(self) -> None:
+        """Pin each cell's resting current via its ``init_ic``.
 
-        for count, (gid, st) in enumerate(phi_stimulus):
+        Each ``init_ic`` calls ``h.finitialize`` internally, which is a
+        collective in parallel NEURON. Ranks own different numbers of cells, so
+        we pad to the global maximum with balancing ``finitialize`` calls to keep
+        the collective count identical across ranks (otherwise psolve deadlocks).
+        """
+        ic_cells = [
+            cell
+            for cells in self.cells.values()
+            for cell in cells.values()
+            if callable(getattr(cell, "init_ic", None))
+        ]
+        local_n = len(ic_cells)
+
+        n_iter = local_n
+        if int(self.pc.nhost()) > 1 and self.comm is not None:
+            from mpi4py import MPI
+
+            n_iter = self.comm.allreduce(local_n, op=MPI.MAX)
+
+        for i in range(n_iter):
+            if i < local_n:
+                ic_cells[i].init_ic()
+            else:
+                # balancing collective call (state reset only; ic params persist
+                # and the final finitialize in run() re-initializes)
+                self._h.finitialize(self._h.v_init)
+
+    def _setup_extracellular(self, stimulus: Stimulus, current_time: float) -> None:
+        n_neurons = len(self.active_neuron_coordinates())
+        if stimulus.gids is None:
+            stimulus.gids = self.active_gids()
+        sections_per_neuron = max(1, len(stimulus) // max(1, n_neurons))
+
+        if self._stim_dt is None:
+            self._stim_dt = stimulus.dt
+        elif not math.isclose(self._stim_dt, stimulus.dt, rel_tol=0.0, abs_tol=1e-12):
+            raise ValueError("Stimulus dt mismatch; call clear() before rerunning")
+
+        start_step = int(round(current_time / stimulus.dt))
+
+        # Collect (segment, values) for sections that carry an extracellular
+        # mechanism, then size the block once.
+        pending: list[tuple[object, np.ndarray]] = []
+        for count, (gid, series) in enumerate(stimulus):
+            gid = int(gid)
             if not self.pc.gid_exists(gid):
                 continue
-
             section_id = count % sections_per_neuron
-            key = (int(gid), section_id)
-
-            if key not in self._opsin_refs:
+            cell = self._find_cell(gid)
+            if cell is None or section_id >= len(cell.sections):
                 continue
+            sec = cell.sections[section_id]
+            sec.push()
+            has_extracellular = self._h.ismembrane("extracellular")
+            self._h.pop_section()
+            if not has_extracellular:
+                continue
+            pending.append((sec(0.5), np.asarray(series, dtype=np.float64)))
 
-            phi_array = np.asarray(st, dtype=np.float64)
-
-            state = self._opsin_stimulus_vectors.get(key)
-            if state is None:
-                state = {
-                    "pp": self._opsin_refs[key],
-                    "dt": phi_stimulus.dt,
-                    "buffer": np.zeros(0, dtype=np.float64),
-                    "length": 0,
-                }
-                self._opsin_stimulus_vectors[key] = state
-
-            scheduled = state["length"]
-            if start_step > scheduled:
-                self._ensure_stimulus_buffer(state, start_step)
-                state["length"] = start_step
-
-            if len(phi_array) > 0:
-                end_step = start_step + len(phi_array)
-                self._ensure_stimulus_buffer(state, end_step)
-                state["buffer"][start_step:end_step] = phi_array
-                state["length"] = end_step
-
-        if self._opsin_stimulus_vectors:
-            self._ensure_opsin_callback()
-
-    def _ensure_opsin_callback(self) -> None:
-        if self._opsin_callback_registered:
+        if not pending:
             return
 
-        cvode = h.CVode()
-        cvode.extra_scatter_gather(0, self._update_opsin_phi)
-        self._opsin_callback_registered = True
+        end_step = start_step + max(len(v) for _seg, v in pending)
+        base_segs = len(self._stim_segments)
+        block = np.zeros((base_segs + len(pending), end_step), dtype=np.float64)
+        if self._stim_block is not None:
+            block[:base_segs, : self._stim_block.shape[1]] = self._stim_block
+        for j, (seg, values) in enumerate(pending):
+            self._stim_segments.append(seg)
+            block[base_segs + j, start_step : start_step + len(values)] = values
+        self._stim_block = block
+
+        if not self._stim_registered:
+            self._h.cvode.extra_scatter_gather(0, self._update_extracellular)
+            self._stim_registered = True
+
+    def _update_extracellular(self) -> None:
+        block = self._stim_block
+        if block is None or self._closed or not self._stim_segments:
+            return
+        # block columns are at stimulus dt; map the current sim step (sim dt)
+        # to real time, then to a stimulus-resolution column index.
+        current_time = self._stim_step * (self._dt or 0.025)
+        idx = int(current_time / self._stim_dt) if self._stim_dt else 0
+        if idx >= block.shape[1]:
+            idx = block.shape[1] - 1
+        col = block[:, idx]
+        for i, seg in enumerate(self._stim_segments):
+            seg.e_extracellular = float(col[i])
+        self._stim_step += 1
+
+    def _setup_opsin_stimulus(self, stimulus: Stimulus, current_time: float) -> None:
+        if not self._opsin_refs:
+            raise ValueError(
+                "Stimulus has input_mode='irradiance' but no opsins are attached; "
+                "configure the model's neuron_opsin_config()."
+            )
+        phi_stim = stimulus.convert_to("photon_flux")
+        if phi_stim.gids is None:
+            phi_stim.gids = self.active_gids()
+        n_neurons = len(self.active_neuron_coordinates())
+        sections_per_neuron = max(1, len(phi_stim) // max(1, n_neurons))
+
+        if self._opsin_dt is None:
+            self._opsin_dt = phi_stim.dt
+        elif not math.isclose(self._opsin_dt, phi_stim.dt, rel_tol=0.0, abs_tol=1e-12):
+            raise ValueError("Stimulus dt mismatch; call clear() before rerunning")
+
+        start_step = int(round(current_time / phi_stim.dt))
+
+        pending: list[tuple[object, np.ndarray]] = []
+        for count, (gid, series) in enumerate(phi_stim):
+            gid = int(gid)
+            section_id = count % sections_per_neuron
+            pp = self._opsin_refs.get((gid, section_id))
+            if pp is None:
+                continue
+            pending.append((pp, np.asarray(series, dtype=np.float64)))
+
+        if not pending:
+            return
+
+        end_step = start_step + max(len(v) for _pp, v in pending)
+        base = len(self._opsin_pps)
+        block = np.zeros((base + len(pending), end_step), dtype=np.float64)
+        if self._opsin_block is not None:
+            block[:base, : self._opsin_block.shape[1]] = self._opsin_block
+        for j, (pp, values) in enumerate(pending):
+            self._opsin_pps.append(pp)
+            block[base + j, start_step : start_step + len(values)] = values
+        self._opsin_block = block
+
+        if not self._opsin_registered:
+            self._h.cvode.extra_scatter_gather(0, self._update_opsin_phi)
+            self._opsin_registered = True
 
     def _update_opsin_phi(self) -> None:
-        if not self._opsin_stimulus_vectors:
+        block = self._opsin_block
+        if block is None or self._closed or not self._opsin_pps:
             return
+        current_time = self._opsin_step * (self._dt or 0.025)
+        idx = int(current_time / self._opsin_dt) if self._opsin_dt else 0
+        if idx >= block.shape[1]:
+            idx = block.shape[1] - 1
+        col = block[:, idx]
+        for i, pp in enumerate(self._opsin_pps):
+            pp.phi = float(col[i])
+        self._opsin_step += 1
 
-        if self._dt is not None:
-            current_time = self._opsin_step_index * self._dt
-        else:
-            current_time = float(h.t)
+    def _find_cell(self, gid: int):
+        for cells in self.cells.values():
+            if gid in cells:
+                return cells[gid]
+        return None
 
-        for state in self._opsin_stimulus_vectors.values():
-            buffer = state["buffer"]
-            if buffer.size == 0:
-                phi = 0.0
-            else:
-                dt = state["dt"]
-                if dt <= 0:
-                    phi = buffer[-1]
-                else:
-                    idx = int(current_time / dt)
-                    if idx < buffer.size:
-                        phi = buffer[idx]
-                    else:
-                        phi = buffer[-1]
-            state["pp"].phi = float(phi)
+    def set_weights(self, weights: dict) -> Self:
+        from livn.types import SynapticParam
 
-        if self._dt is not None:
-            self._opsin_step_index += 1
-
-    def clear_recordings(self) -> Self:
-        self.t_vec.resize(0)
-        self.id_vec.resize(0)
-        self.t_rec.resize(0)
-        for v_rec in self.v_recs.values():
-            v_rec.resize(0)
-        for i_rec in self.i_recs.values():
-            i_rec.resize(0)
-        # w_recs need to accumulate across consecutive run() calls so they are only freed in clear()
-
-        return self
-
-    def clear(self):
-        self.clear_recordings()
-        for w_rec in self.w_recs.values():
-            w_rec.resize(0)
-        if self._w_rec_times is not None:
-            self._w_rec_times.resize(0)
-        self.t = 0
-        self._dt = None
-        self._stimulus_step_index = 0
-        self._stimulus_vectors.clear()
-        self._opsin_step_index = 0
-        self._opsin_stimulus_vectors.clear()
-
-        return self
-
-    def set_weights(self, weights):
-        params = []
-        dropped = []
-        for k, v in weights.items():
+        if self.conn is None or self.conn.size == 0:
+            return self
+        for key, val in weights.items():
             try:
-                params.append((SynapticParam.from_string(k), v))
-            except ValueError as e:
-                dropped.append((k, str(e)))
-        if dropped and self.rank == 0:
-            print(
-                f"[set_weights] dropped {len(dropped)} keys: {dropped[:3]}", flush=True
+                p = SynapticParam.from_string(key)
+            except ValueError:
+                continue
+            mask = np.ones(self.conn.size, dtype=bool)
+            if p.population is not None and p.population in self._pop_code:
+                mask &= self.conn.post_pop == self._pop_code[p.population]
+            if p.source is not None and p.source in self._pop_code:
+                mask &= self.conn.pre_pop == self._pop_code[p.source]
+            if p.syn_name is not None:
+                mech_name = self.model.neuron_synapse_mechanisms().get(
+                    p.syn_name, p.syn_name
+                )
+                if mech_name in self._mech_code:
+                    mask &= self.conn.mech_id == self._mech_code[mech_name]
+            if p.sec_type is not None:
+                if p.sec_type in self._sectype_code:
+                    mask &= self.conn.dest_sectype == self._sectype_code[p.sec_type]
+                else:
+                    # sec_type names a destination section that this network
+                    # has no synapses on -> selects nothing
+                    mask &= False
+            idx = np.flatnonzero(mask)
+            self.conn.weight[idx] = val
+            for i in idx:
+                nc = self.conn.store.get(int(i))
+                nc.weight[int(self.conn.wslot[i])] = val
+        return self
+
+    def get_weights(self) -> dict:
+        weights: dict[tuple, float] = {}
+        for gid, syn_id, mech_name, pp, nc in self._iter_stdp_connections():
+            slot = self._wplastic_slot.get(mech_name, 2)
+            weights[(int(gid), int(syn_id), mech_name)] = float(nc.weight[slot])
+        return weights
+
+    def normalize_weights(self, target: float | None = None) -> Self:
+        from livn.weights import normalize_weights
+
+        rows = []
+        weight, w_min, w_max, group = [], [], [], []
+        for gid, syn_id, mech_name, pp, nc in self._iter_stdp_connections():
+            slot = self._wplastic_slot.get(mech_name, 2)
+            rows.append((nc, slot))
+            weight.append(float(nc.weight[slot]))
+            w_min.append(float(pp.w_min))
+            w_max.append(float(pp.w_max))
+            group.append(int(gid))
+        if not rows:
+            return self
+        new_w = normalize_weights(
+            np.asarray(weight),
+            np.asarray(w_min),
+            np.asarray(w_max),
+            np.asarray(group),
+            target=target,
+        )
+        for (nc, slot), w in zip(rows, new_w):
+            nc.weight[slot] = float(w)
+        return self
+
+    def record_weights(self, dt: float = 0.1) -> Self:
+        h = self._h
+        self._weight_rec_dt = dt
+        self._weight_nc_refs = {}
+        for gid, syn_id, mech_name, pp, nc in self._iter_stdp_connections():
+            slot = self._wplastic_slot.get(mech_name, 2)
+            key = (int(gid), int(syn_id), mech_name)
+            self._weight_nc_refs[key] = (nc, slot)
+            self.w_recs.setdefault(key, h.Vector())
+        if self._w_rec_times is None:
+            self._w_rec_times = h.Vector()
+        self._weight_recording_active = True
+        return self
+
+    def _sample_weights(self) -> None:
+        if self._w_rec_times is not None:
+            self._w_rec_times.append(float(self._h.t))
+        for key, (nc, slot) in self._weight_nc_refs.items():
+            self.w_recs[key].append(float(nc.weight[slot]))
+
+    def _iter_stdp_point_processes(self):
+        if self.syn is None:
+            return
+        for row in self._stdp_syn_rows:
+            row = int(row)
+            pp = self.syn.store.get(row)
+            name = self._mech_id_to_name.get(int(self.syn.mech_id[row]))
+            yield int(self.syn.post_gid[row]), int(self.syn.syn_id[row]), name, pp
+
+    def _iter_stdp_connections(self):
+        if self.conn is None:
+            return
+        for row in self._stdp_conn_rows:
+            row = int(row)
+            syn_row = int(self.conn.syn_row[row])
+            pp = self.syn.store.get(syn_row)
+            nc = self.conn.store.get(row)
+            name = self._mech_id_to_name.get(int(self.conn.mech_id[row]))
+            yield (
+                int(self.syn.post_gid[syn_row]),
+                int(self.syn.syn_id[syn_row]),
+                name,
+                pp,
+                nc,
             )
 
-        self.this.__dict__.update({"phenotype_dict": {}, "cache_queries": True})
-        update_network_params(self.this, params)
-
-        return self
-
-    def set_noise(self, noise: dict):
-        if not hasattr(self.model, "neuron_noise_mechanism"):
-            if self.rank == 0:
-                print(
-                    f"[set_noise] Model {self.model} does not support noise setter, skipping {len(noise)} params",
-                    flush=True,
-                )
-            return self
-
-        # Merge with previously-applied noise so partial updates do not
-        # silently reset unspecified parameters to function defaults
-        self._noise_state.update(noise)
-        merged = dict(self._noise_state)
-
-        for population, pop_cells in self.cells.items():
-            for gid, cell in pop_cells.items():
-                if not (self.pc.gid_exists(gid)):
-                    continue
-                secs = []
-                if hasattr(cell, "sections"):
-                    secs = cell.sections
-                for idx, sec in enumerate(secs):
-                    sec.push()
-                    fluct, state = self._flucts.get(f"{gid}-{idx}", (None, None))
-                    if fluct is None:
-                        fluct, state = self.model.neuron_noise_mechanism(sec(0.5))
-                        self._flucts[f"{gid}-{idx}"] = (fluct, state)
-
-                    self.model.neuron_noise_configure(
-                        population, fluct, state, **merged
-                    )
-
-                    h.pop_section()
-
-        return self
-
-    def _iter_stdp_point_processes(self):  # -> (gid, syn_id, mech_name, point_process)
-        """Iterates over all StdpLinExp2Syn/StdpLinExp2SynNMDA point processes"""
-        if self.synapse_manager is None:
-            return
-
-        for gid, syn_dict in self.synapse_manager.pps_dict.items():
-            for syn_id, pps in syn_dict.items():
-                for mech_key, pp in pps.mech.items():
-                    if pp is not None and hasattr(pp, "plasticity_on"):
-                        try:
-                            name = pp.hname().split("[")[0]
-                        except Exception:
-                            name = str(mech_key)
-                        yield gid, syn_id, name, pp
-
-    def _iter_stdp_connections(
-        self,
-    ):  # ->  (gid, syn_id, mech_name, point_process, netcon)
-        """Iterates over every STDP connection in the network"""
-        if self.synapse_manager is None:
-            return
-        for gid, syn_dict in self.synapse_manager.pps_dict.items():
-            for syn_id, pps in syn_dict.items():
-                for mech_key, pp in pps.mech.items():
-                    if pp is not None and hasattr(pp, "plasticity_on"):
-                        nc = pps.netcon.get(mech_key)
-                        if nc is not None:
-                            try:
-                                name = pp.hname().split("[")[0]
-                            except Exception:
-                                name = str(mech_key)
-                            yield gid, syn_id, name, pp, nc
-
-    def enable_plasticity(self, config=None) -> Self:
-        """Enable spike-timing dependent plasticity on synapses
-
-        Parameters
-        ----------
-        config : dict, optional
-            Either a flat ``{param: value}`` dict applied to all synapses,
-            or a nested ``{population_name: {param: value}}`` dict where
-            each group targets specific mechanism types defined by
-            ``model.neuron_plasticity_mechanism_groups()``
-
-            When None, uses ``neuron_plasticity_defaults()``
-        """
+    def enable_plasticity(self, config: dict | None = None) -> Self:
         if config is None:
-            if hasattr(self.model, "neuron_plasticity_defaults"):
-                config = self.model.neuron_plasticity_defaults()
-            else:
-                config = {}
+            config = (
+                self.model.neuron_plasticity_defaults()
+                if hasattr(self.model, "neuron_plasticity_defaults")
+                else {}
+            )
 
-        per_population = config and isinstance(next(iter(config.values())), dict)
-
-        mech_to_group = {}
+        per_population = bool(config) and isinstance(next(iter(config.values())), dict)
+        mech_to_group: dict[str, str] = {}
         if per_population and hasattr(self.model, "neuron_plasticity_mechanism_groups"):
             for group, mechs in self.model.neuron_plasticity_mechanism_groups().items():
                 for m in mechs:
                     mech_to_group[m] = group
 
-        count = 0
         for gid, syn_id, mech_name, pp in self._iter_stdp_point_processes():
             if per_population:
                 group = mech_to_group.get(mech_name)
                 group_config = config.get(group, {}) if group else {}
             else:
                 group_config = config
-
             for param, value in group_config.items():
                 if hasattr(pp, param):
                     setattr(pp, param, value)
             pp.plasticity_on = 1
-            count += 1
 
         self._plasticity_enabled = True
-
-        if self.rank == 0:
-            logger.info(f"*** Enabled STDP on {count} synapses")
-
         return self
 
-    def disable_plasticity(self):
-        """Disable STDP on synapses / freeze weights"""
+    def disable_plasticity(self) -> Self:
         for gid, syn_id, mech_name, pp in self._iter_stdp_point_processes():
             pp.plasticity_on = 0
-
         self._plasticity_enabled = False
-
-        if self.rank == 0:
-            logger.info("*** Disabled STDP (weights frozen)")
-
         return self
 
-    def get_weights(self) -> dict[tuple, float]:  # gid, syn_id, mech_name -> weight
-        """Returns current synaptic weights of all plastic synapses"""
-        weights = {}
-        for gid, syn_id, mech_name, pp, nc in self._iter_stdp_connections():
-            weights[(int(gid), int(syn_id), mech_name)] = float(nc.weight[2])
-        return weights
+    def set_noise(self, noise: dict) -> Self:
+        if not hasattr(self.model, "neuron_noise_mechanism"):
+            return self
+        self._noise_state.update(noise)
+        merged = dict(self._noise_state)
+        for population, cells in self.cells.items():
+            for gid, cell in cells.items():
+                for idx, sec in enumerate(cell.sections):
+                    sec.push()
+                    key = f"{gid}-{idx}"
+                    fluct, state = self._flucts.get(key, (None, None))
+                    if fluct is None:
+                        fluct, state = self.model.neuron_noise_mechanism(sec(0.5))
+                        self._flucts[key] = (fluct, state)
+                    self.model.neuron_noise_configure(
+                        population, fluct, state, **merged
+                    )
+                    self._h.pop_section()
+        return self
 
-    def normalize_weights(self, target: float | None = None) -> Self:
-        """Synaptic scaling to normalize incoming weights per neuron (Turrigiano, 2008)
+    @property
+    def input_gids(self) -> list[int]:
+        """Gids of external input sources wired into the local network."""
+        return sorted(self._input_vecstims.keys())
 
-        Parameters
-        ----------
-        target : float, optional
-            Desired sum of incoming weights for each neuron. When ``None``, the target
-            is set to the number of incoming STDP connections for that neuron
-            (i.e. the sum that would result if every weight were 1.0)
+    def play_input_spikes(self, spikes: dict) -> Self:
+        """Play spike trains into external input sources.
+
+        ``spikes`` maps an input source gid to a sequence of spike times (ms).
+        Only gids that project onto local cells (i.e. in ``input_gids``) have a
+        VecStim to receive them; others are ignored. Replaces any previously
+        played train for that gid.
         """
-        per_neuron: dict[int, list] = defaultdict(list)  # (nc, w_min, w_max)
-        for gid, syn_id, mech_name, pp, nc in self._iter_stdp_connections():
-            per_neuron[int(gid)].append((nc, float(pp.w_min), float(pp.w_max)))
-
-        scaled_neurons = 0
-        for gid, conns in per_neuron.items():
-            t = target if target is not None else float(len(conns))
-
-            # Iterative normalization where clamped weights are fixed,
-            # and the remaining budget is redistributed among free
-            free = list(conns)
-            clamped_sum = 0.0
-            for _ in range(20):  # should converge quickly
-                free_sum = sum(nc.weight[2] for nc, _, _ in free)
-                remaining = t - clamped_sum
-                if free_sum <= 0 or abs(free_sum - remaining) < 1e-12:
-                    break
-                scale = remaining / free_sum
-                next_free = []
-                for nc, w_min, w_max in free:
-                    new_w = nc.weight[2] * scale
-                    if new_w >= w_max:
-                        nc.weight[2] = w_max
-                        clamped_sum += w_max
-                    elif new_w <= w_min:
-                        nc.weight[2] = w_min
-                        clamped_sum += w_min
-                    else:
-                        nc.weight[2] = new_w
-                        next_free.append((nc, w_min, w_max))
-                if len(next_free) == len(free):
-                    break
-                free = next_free
-            scaled_neurons += 1
-
-        if self.rank == 0:
-            logger.info(
-                f"*** Synaptic scaling applied to {scaled_neurons} neurons "
-                f"({sum(len(v) for v in per_neuron.values())} connections)"
-            )
-
-        return self
-
-    def record_weights(self, dt: float = 0.1) -> Self:
-        """Record weight evolution of all plastic connections."""
-        self._weight_rec_dt = dt
-        self._weight_nc_refs = {}
-
-        for gid, syn_id, mech_name, pp, nc in self._iter_stdp_connections():
-            key = (int(gid), int(syn_id), mech_name)
-            self._weight_nc_refs[key] = nc
-            if key not in self.w_recs:
-                self.w_recs[key] = h.Vector()
-
-        if self._w_rec_times is None:
-            self._w_rec_times = h.Vector()
-
-        self._weight_recording_active = True
-
-        if self.rank == 0:
-            logger.info(
-                f"*** Recording weights for {len(self._weight_nc_refs)} STDP connections (dt={dt} ms)"
-            )
-
-        return self
-
-    def _sample_weights(self):
-        t = float(h.t)
-        if self._w_rec_times is not None:
-            self._w_rec_times.append(t)
-        for key, nc in self._weight_nc_refs.items():
-            self.w_recs[key].append(float(nc.weight[2]))
-
-    def _record_voltage(self, population: str, dt: float) -> "Env":
-        if population not in self.cells:
-            logger.info(
-                f"Rank {self.rank} has no cells; try reducing the number of ranks."
-            )
-            return
-
-        self.v_recs_dt[population] = dt
-
-        for gid, cell in self.cells[population].items():
-            if not (self.pc.gid_exists(gid)):
+        for gid, times in spikes.items():
+            vs = self._input_vecstims.get(int(gid))
+            if vs is None:
                 continue
-
-            if "VecStim" in getattr(cell, "hname", lambda: "")():
-                continue
-
-            for sec_id, sec in enumerate(cell.sections):
-                self.v_recs[(int(gid), sec_id)] = h.Vector()
-                self.v_recs[(int(gid), sec_id)].record(sec(0.5)._ref_v, dt)
-
-        return self
-
-    def _record_membrane_current(self, population: str, dt: float) -> "Env":
-        """Record transmembrane current (i_membrane) at soma midpoint for each cell"""
-        if population not in self.cells:
-            logger.info(
-                f"Rank {self.rank} has no cells; try reducing the number of ranks."
-            )
-            return
-
-        try:
-            h.cvode.use_fast_imem(1)
-        except Exception:
-            pass
-
-        self.i_recs_dt[population] = dt
-
-        for gid, cell in self.cells[population].items():
-            if not (self.pc.gid_exists(gid)):
-                continue
-
-            if "VecStim" in getattr(cell, "hname", lambda: "")():
-                continue
-
-            for sec_id, sec in enumerate(cell.sections):
-                self.i_recs[(int(gid), sec_id)] = h.Vector()
-                self.i_recs[(int(gid), sec_id)].record(sec(0.5)._ref_i_membrane_, dt)
-                area_um2 = h.area(0.5, sec=sec)
-                self.i_area[(int(gid), sec_id)] = float(area_um2) * 1e-8
-
+            vec = self._h.Vector(np.asarray(times, dtype=np.float64))
+            self._input_spike_vecs[int(gid)] = vec  # keep alive
+            vs.play(vec)
         return self
 
     def apply_stimulus_from_h5(
@@ -1487,551 +821,154 @@ class Env(EnvProtocol):
         filepath: str,
         namespace: str,
         attribute: str = "Spike Train",
-        onset: int = 0,
+        onset: float = 0.0,
         io_size: int = 1,
         microcircuit_inputs: bool = True,
         n_trials: int = 1,
         equilibration_duration: float = 250.0,
-    ):
-        rank = self.comm.Get_rank()
+    ) -> Self:
+        """Play spike trains read from an H5 file into external input sources.
 
-        if rank == 0:
-            logger.info(f"*** Stimulus onset is {onset} ms")
+        Reads ``attribute`` from ``namespace`` for each input population and
+        plays the trains (shifted by ``equilibration_duration + onset``) into the
+        matching VecStim sources. Only sources wired into the local network
+        (``input_gids``) are populated, so this composes with ``selection()``.
+        """
+        from neuroh5.io import scatter_read_cell_attribute_selection
 
-        if rank == 0:
-            color = 1
-        else:
-            color = 0
-        comm0 = self.comm.Split(color, 0)
+        local = set(self._input_vecstims.keys())
 
-        spike_input_attribute_info = None
-        if rank == 0:
-            spike_input_attribute_info = read_cell_attribute_info(
-                filepath,
-                sorted(self.system.connections_config["population_definitions"].keys()),
-                comm=comm0,
-            )
+        by_pop: dict[str, list[int]] = defaultdict(list)
+        ranges = self.system.cells_meta_data.population_ranges
+        for gid in local:
+            for pop, (start, count) in ranges.items():
+                if start <= gid < start + count:
+                    by_pop[pop].append(gid)
+                    break
 
-        spike_input_attribute_info = self.comm.bcast(spike_input_attribute_info, root=0)
-        comm0.Free()
-
-        celltypes = self.cells_meta_data["celltypes"]
-        input_file_path = self.system.files["cells"]
-
-        trial_index_attr = "Trial Index"
-        trial_dur_attr = "Trial Duration"
-
-        # VecStim populations
-        for pop_name in sorted(celltypes.keys()):
-            if "spike train" not in celltypes[pop_name]:
-                continue
-
-            vecstim_namespace = celltypes[pop_name]["spike train"].get("namespace")
-            vecstim_attr = celltypes[pop_name]["spike train"].get("attribute")
-
-            has_vecstim = False
-            vecstim_source_loc = []
-
-            if spike_input_attribute_info is not None:
-                if pop_name in spike_input_attribute_info:
-                    if namespace in spike_input_attribute_info[pop_name]:
-                        has_vecstim = True
-                        vecstim_source_loc.append((filepath, namespace, attribute))
-
-            if self.system.cells_meta_data.cell_attribute_info is not None:
-                if vecstim_namespace is not None:
-                    if pop_name in self.system.cells_meta_data.cell_attribute_info:
-                        if (
-                            vecstim_namespace
-                            in self.system.cells_meta_data.cell_attribute_info[pop_name]
-                        ):
-                            has_vecstim = True
-                            vecstim_source_loc.append(
-                                (input_file_path, vecstim_namespace, vecstim_attr)
-                            )
-
-            if not has_vecstim:
-                continue
-
-            for input_path, input_ns, input_attr in vecstim_source_loc:
-                if rank == 0:
-                    logger.info(
-                        f"*** Initializing stimulus population {pop_name} from input path {input_path} namespace {input_ns}"
-                    )
-
-                if self.node_allocation is None:
-                    cell_vecstim_dict = scatter_read_cell_attributes(
-                        input_path,
-                        pop_name,
-                        namespaces=[input_ns],
-                        mask={
-                            input_attr,
-                            vecstim_attr,
-                            trial_index_attr,
-                            trial_dur_attr,
-                        },
-                        comm=self.comm,
-                        io_size=io_size,
-                        return_type="tuple",
-                    )
-                    vecstim_iter, vecstim_attr_info = cell_vecstim_dict[input_ns]
-                else:
-                    selection = list(self.artificial_cells.get(pop_name, {}).keys())
-                    (
-                        vecstim_iter,
-                        vecstim_attr_info,
-                    ) = scatter_read_cell_attribute_selection(
-                        input_path,
-                        pop_name,
-                        selection,
-                        namespace=input_ns,
-                        mask={
-                            input_attr,
-                            vecstim_attr,
-                            trial_index_attr,
-                            trial_dur_attr,
-                        },
-                        comm=self.comm,
-                        io_size=io_size,
-                        return_type="tuple",
-                    )
-
-                vecstim_attr_index = vecstim_attr_info.get(vecstim_attr, None)
-                trial_index_attr_index = vecstim_attr_info.get(trial_index_attr, None)
-                trial_dur_attr_index = vecstim_attr_info.get(trial_dur_attr, None)
-
-                for gid, vecstim_tuple in vecstim_iter:
-                    if not self.pc.gid_exists(gid):
-                        continue
-
-                    cell = self.artificial_cells[pop_name][gid]
-
-                    spiketrain = vecstim_tuple[vecstim_attr_index]
-                    trial_duration = None
-                    trial_index = None
-                    if trial_index_attr_index is not None:
-                        trial_index = vecstim_tuple[trial_index_attr_index]
-                        trial_duration = vecstim_tuple[trial_dur_attr_index]
-
-                    if len(spiketrain) > 0:
-                        spiketrain = self._merge_spiketrain_trials(
-                            spiketrain,
-                            trial_index,
-                            trial_duration,
-                            n_trials,
-                        )
-                        spiketrain += equilibration_duration + onset
-
-                        if len(spiketrain) > 0:
-                            cell.play(h.Vector(spiketrain.astype(np.float64)))
-                            if rank == 0:
-                                logger.info(
-                                    f"*** Spike train for {pop_name} gid {gid} is of length {len(spiketrain)} ({spiketrain[0]} : {spiketrain[-1]} ms)"
-                                )
-
-        gc.collect()
-
-        if microcircuit_inputs and self.input_sources is not None:
-            for pop_name in sorted(self.input_sources.keys()):
-                gid_range = self.input_sources.get(pop_name, set())
-                this_gid_range = gid_range
-
-                has_spike_train = False
-                spike_input_source_loc = []
-
-                if spike_input_attribute_info is not None:
-                    if pop_name in spike_input_attribute_info:
-                        if namespace in spike_input_attribute_info[pop_name]:
-                            has_spike_train = True
-                            spike_input_source_loc.append((filepath, namespace))
-
-                if self.system.cells_meta_data.cell_attribute_info is not None:
-                    if pop_name in self.system.cells_meta_data.cell_attribute_info:
-                        if (
-                            namespace
-                            in self.system.cells_meta_data.cell_attribute_info[pop_name]
-                        ):
-                            has_spike_train = True
-                            spike_input_source_loc.append((input_file_path, namespace))
-
-                if rank == 0:
-                    logger.info(
-                        f"*** Initializing input source {pop_name} from locations {spike_input_source_loc}"
-                    )
-
-                if has_spike_train:
-                    vecstim_attr_set = {"t", trial_index_attr, trial_dur_attr}
-                    if attribute is not None:
-                        vecstim_attr_set.add(attribute)
-                    if pop_name in celltypes:
-                        if "spike train" in celltypes[pop_name]:
-                            vecstim_attr_set.add(
-                                celltypes[pop_name]["spike train"]["attribute"]
-                            )
-
-                    cell_spikes_items = []
-                    for input_path, input_ns in spike_input_source_loc:
-                        item = scatter_read_cell_attribute_selection(
-                            input_path,
-                            pop_name,
-                            list(this_gid_range),
-                            namespace=input_ns,
-                            mask=vecstim_attr_set,
-                            comm=self.comm,
-                            io_size=io_size,
-                            return_type="tuple",
-                        )
-                        cell_spikes_items.append(item)
-
-                    for cell_spikes_iter, cell_spikes_attr_info in cell_spikes_items:
-                        if len(cell_spikes_attr_info) == 0:
-                            continue
-
-                        trial_index_attr_index = cell_spikes_attr_info.get(
-                            trial_index_attr, None
-                        )
-                        trial_dur_attr_index = cell_spikes_attr_info.get(
-                            trial_dur_attr, None
-                        )
-
-                        if (attribute is not None) and (
-                            attribute in cell_spikes_attr_info
-                        ):
-                            spike_train_attr_index = cell_spikes_attr_info.get(
-                                attribute, None
-                            )
-                        elif "t" in cell_spikes_attr_info.keys():
-                            spike_train_attr_index = cell_spikes_attr_info.get(
-                                "t", None
-                            )
-                        elif "Spike Train" in cell_spikes_attr_info.keys():
-                            spike_train_attr_index = cell_spikes_attr_info.get(
-                                "Spike Train", None
-                            )
-                        elif len(this_gid_range) > 0:
-                            raise RuntimeError(
-                                f"apply_stimulus_from_h5: unable to determine spike train attribute for population {pop_name} in spike input file {filepath}; "
-                                f"namespace {namespace}; attr keys {list(cell_spikes_attr_info.keys())}"
-                            )
-                        else:
-                            continue
-
-                        for gid, cell_spikes_tuple in cell_spikes_iter:
-                            if not self.pc.gid_exists(gid):
-                                continue
-                            if gid not in self.artificial_cells[pop_name]:
-                                logger.warning(
-                                    f"apply_stimulus_from_h5: Rank {rank}: gid {gid} not in artificial_cells[{pop_name}]"
-                                )
-                                continue
-
-                            input_cell = self.artificial_cells[pop_name][gid]
-
-                            spiketrain = cell_spikes_tuple[spike_train_attr_index]
-                            trial_index = None
-                            trial_duration = None
-                            if trial_index_attr_index is not None:
-                                trial_index = cell_spikes_tuple[trial_index_attr_index]
-                                trial_duration = cell_spikes_tuple[trial_dur_attr_index]
-
-                            if len(spiketrain) > 0:
-                                spiketrain = self._merge_spiketrain_trials(
-                                    spiketrain,
-                                    trial_index,
-                                    trial_duration,
-                                    n_trials,
-                                )
-                                spiketrain += equilibration_duration + onset
-
-                                if len(spiketrain) > 0:
-                                    input_cell.play(
-                                        h.Vector(spiketrain.astype(np.float64))
-                                    )
-                                    if rank == 0:
-                                        logger.info(
-                                            f"*** Spike train for {pop_name} gid {gid} is of length {len(spiketrain)} ({spiketrain[0]} : {spiketrain[-1]} ms)"
-                                        )
-                else:
-                    if rank == 0 and len(this_gid_range) > 0:
-                        logger.warning(
-                            f"No spike train data found for population {pop_name} in spike input file {filepath}; "
-                            f"namespace: {namespace}"
-                        )
-
-        gc.collect()
-
-        return self
-
-    @staticmethod
-    def _merge_spiketrain_trials(
-        spiketrain: np.ndarray,
-        trial_index: np.ndarray,
-        trial_duration: np.ndarray,
-        n_trials: int,
-    ) -> np.ndarray:
-        if (trial_index is not None) and (trial_duration is not None):
-            trial_spiketrains = []
-            for trial_i in range(n_trials):
-                trial_spiketrain_i = spiketrain[np.where(trial_index == trial_i)[0]]
-                trial_spiketrain_i += np.sum(trial_duration[:trial_i])
-                trial_spiketrains.append(trial_spiketrain_i)
-            spiketrain = np.concatenate(trial_spiketrains)
-        spiketrain.sort()
-        return spiketrain
-
-    def legacy(self, **kwargs):
-        class _binding:
-            pass
-
-        this = _binding()
-
-        attrs = {
-            "_wrapped": self,
-            "pc": self.pc,
-            "comm": self.comm,
-            "node_allocation": self.node_allocation,
-            "cells": self.cells,
-            "artificial_cells": self.artificial_cells,
-            "biophys_cells": self.biophys_cells,
-            "recording_sets": self.recording_sets,
-            "t_vec": self.t_vec,
-            "id_vec": self.id_vec,
-            "t_rec": self.t_rec,
-            "gidset": self.gidset,
-            "spike_onset_delay": self.spike_onset_delay,
-            "template_dict": self.template_dict,
-            "SWC_Types": config.SWCTypesDef.__members__,
-            "template_paths": [self.template_directory],
-            "model_config": {
-                "Random Seeds": {"Intracellular Recording Sample": self.seed}
-            },
-            "coordinates_ns": "Generated Coordinates",
-            "gapjunctions_file_path": None,
-            "gapjunctions": None,
-            "recording_profile": None,
-            "datasetName": "",
-            "dataset_path": None,
-            "dataset_prefix": "",
-            "edge_count": self.edge_count,
-            "microcircuit_input_sources": self.input_sources,
-            "synapse_manager": self.synapse_manager,
-            "phenotype_dict": {},
-            "max_walltime_hours": 0.5,
-            "results_write_time": 0,
-            "cache_queries": False,
-            "globals": {},
-            "optlptbal": None,
-            "optldbal": None,
-            "profile_memory": False,
-            "LFP_config": {},
-            "simtime": None,
-            "use_coreneuron": False,
-            "v_init": -75.0,
-            "checkpoint_interval": None,
-            "nrn_timeout": 600.0,
-            "mkcellstime": self.mkcellstime,
-            "connectgjstime": self.connectgjstime,
-            "connectcellstime": self.connectcellstime,
-            "psolvetime": self.psolvetime,
-            "stimulus_config": {
-                "Equilibration Duration": 250.0,
-                "Temporal Resolution": 50.0,
-            },
-            "stimulus_onset": 0,
-            "spike_input_namespaces": [],
-            "spike_input_path": None,
-            "n_trials": 1,
-            "spike_input_attr": None,
-            "io_size": 1,
-            "dt": 0.025,
-            "spike_input_attribute_info": None,
-            "cell_selection": None,
-            "analysis_config": {
-                "Firing Rate Inference": {
-                    "BAKS Beta": 0.4196905892734352,
-                    "Temporal Resolution": 10.0,
-                    "Pad Duration": 1000.0,
-                    "BAKS Alpha": 4.7725100028345535,
-                },
-                "Mutual Information": {"Spatial Resolution": 5.0},
-                "Place Fields": {"Minimum Width": 10.0, "Minimum Rate": 1.0},
-            },
-            "netclamp_config": None,
-            "use_cell_attr_gen": True,
-            "cell_attr_gen_cache_size": 4,
-            "cleanup": False,
-        }
-
-        if self.system:
-            if hasattr(self.system, "files"):
-                attrs["data_file_path"] = self.system.files.get("cells")
-                attrs["connectivity_file_path"] = self.system.files.get("connections")
-                attrs["forest_file_path"] = self.system.files.get("cells")
-
-            if hasattr(self.system, "cells_meta_data"):
-                attrs["cell_attribute_info"] = (
-                    self.system.cells_meta_data.cell_attribute_info
-                )
-
-            if hasattr(self.system, "connections_config"):
-                attrs["Populations"] = self.system.connections_config.get(
-                    "population_definitions"
-                )
-                attrs["layers"] = self.system.connections_config.get(
-                    "layer_definitions"
-                )
-                if "synapses" in self.system.connections_config:
-                    attrs["connection_config"] = DotDict.create(
-                        self.system.connections_config["synapses"]
-                    )
-
-        if self.cells_meta_data:
-            attrs["celltypes"] = self.cells_meta_data.get("celltypes")
-
-        if "microcircuit_inputs" not in kwargs:
-            microcircuit_inputs = False
-            if hasattr(self.model, "neuron_microcircuit_inputs"):
-                microcircuit_inputs = self.model.neuron_microcircuit_inputs()
-            attrs["microcircuit_inputs"] = microcircuit_inputs
-
-        if "projection_dict" not in kwargs:
-            attrs["projection_dict"] = None
-
-        if "connection_velocity" not in kwargs:
-            attrs["connection_velocity"] = defaultdict(lambda: 250)
-
-        attrs.update(kwargs)
-
-        this.__dict__.update(attrs)
-
-        return this
-
-    def _release_cell_container(self, container):
-        if not container:
-            return
-        for pop_name, gid_map in list(container.items()):
-            for gid, cell in list(gid_map.items()):
-                try:
-                    if hasattr(cell, "spike_detector"):
-                        cell.spike_detector = None
-                    if hasattr(cell, "hoc_cell"):
-                        cell.hoc_cell = None
-                    if hasattr(cell, "cell_obj"):
-                        cell.cell_obj = None
-                    if hasattr(cell, "sections"):
-                        cell.sections = None
-                except Exception:
-                    logger.debug(
-                        "Failed to release NEURON references for %s gid %s",
-                        pop_name,
-                        gid,
-                        exc_info=True,
-                    )
-            gid_map.clear()
-        container.clear()
-
-    def close(self):
-        if getattr(self, "_closed", False):
-            return
-
-        self._closed = True
-
-        syn_manager = getattr(self, "synapse_manager", None)
-        if syn_manager is not None and hasattr(syn_manager, "clear"):
+        shift = float(equilibration_duration) + float(onset)
+        # Every rank must call the (collective) scatter read for the same set of
+        # populations in the same order, even if it owns no gids there.
+        syn_cfg = self.system.connections_config["synapses"]
+        input_pops = sorted({pre for post in syn_cfg for pre in syn_cfg[post]})
+        for pop in input_pops:
+            gids = by_pop.get(pop, [])
             try:
-                syn_manager.clear()
+                it, info = scatter_read_cell_attribute_selection(
+                    filepath,
+                    pop,
+                    sorted(gids),
+                    namespace=namespace,
+                    mask={attribute},
+                    comm=self.comm,
+                    io_size=io_size,
+                    return_type="tuple",
+                )
             except Exception:
-                logger.debug("Failed to clear synapse manager", exc_info=True)
-        self.synapse_manager = None
-
-        self._release_cell_container(getattr(self, "cells", None))
-        self._release_cell_container(getattr(self, "biophys_cells", None))
-        self._release_cell_container(getattr(self, "artificial_cells", None))
-
-        for attr_name in (
-            "syns_set",
-            "edge_count",
-            "recording_sets",
-            "v_recs",
-            "v_recs_dt",
-            "i_recs",
-            "i_recs_dt",
-            "i_area",
-        ):
-            mapping = getattr(self, attr_name, None)
-            if mapping is not None:
-                mapping.clear()
-
-        stim_vectors = getattr(self, "_stimulus_vectors", None)
-        if stim_vectors is not None:
-            stim_vectors.clear()
-
-        spike_filter_refs = getattr(self, "_spike_filter_refs", None)
-        if spike_filter_refs is not None:
-            spike_filter_refs.clear()
-
-        gidset = getattr(self, "gidset", None)
-        if gidset is not None:
-            gidset.clear()
-        flucts = getattr(self, "_flucts", None)
-        if flucts is not None:
-            flucts.clear()
-        template_dict = getattr(self, "template_dict", None)
-        if template_dict is not None:
-            template_dict.clear()
-
-        for vec_name in ("t_vec", "id_vec", "t_rec"):
-            vec = getattr(self, vec_name, None)
-            if vec is not None:
-                try:
-                    vec.resize(0)
-                except Exception:
-                    logger.debug("Failed to resize %s", vec_name, exc_info=True)
-
-        if hasattr(self, "cells_meta_data"):
-            self.cells_meta_data = None
-        if hasattr(self, "connections_meta_data"):
-            self.connections_meta_data = None
-        if hasattr(self, "input_sources"):
-            self.input_sources = None
-        if hasattr(self, "this"):
-            self.this = None
-        if hasattr(self, "node_allocation"):
-            self.node_allocation = None
-
-        pc = getattr(self, "pc", None)
-        if pc is not None:
-            try:
-                pc.gid_clear()
-            except Exception:
-                logger.debug("ParallelContext gid_clear failure", exc_info=True)
-        self.pc = None
-
-        try:
-            secs = list(h.allsec())
-        except Exception:
-            secs = []
-        for sec in reversed(secs):
-            try:
-                h.delete_section(sec=sec)
-            except Exception:
-                sec_name = "<unknown>"
-                try:
-                    sec_name = sec.hname()
-                except Exception:
-                    pass
                 logger.debug(
-                    "Unable to delete section %s during teardown",
-                    sec_name,
-                    exc_info=True,
+                    "no spike input for %s in %s", pop, filepath, exc_info=True
                 )
-
-        gc.collect()
-
+                continue
+            attr_idx = info.get(attribute)
+            if attr_idx is None:
+                continue
+            spikes = {}
+            for gid, data in it:
+                train = np.asarray(data[attr_idx], dtype=np.float64)
+                if train.size:
+                    spikes[int(gid)] = train + shift
+            self.play_input_spikes(spikes)
         return self
 
-    def __del__(self):
+    def _unregister_stim_callback(self) -> None:
+        """Detach the cvode stimulus callbacks (extracellular + opsin).
+
+        Essential on teardown as a callback left registered keeps firing after
+        this env's sections are deleted, which crashes any later env's psolve.
+        """
+        if self._stim_registered:
+            try:
+                self._h.cvode.extra_scatter_gather_remove(self._update_extracellular)
+            except Exception:
+                logger.debug("failed to remove extracellular callback", exc_info=True)
+            self._stim_registered = False
+        if self._opsin_registered:
+            try:
+                self._h.cvode.extra_scatter_gather_remove(self._update_opsin_phi)
+            except Exception:
+                logger.debug("failed to remove opsin callback", exc_info=True)
+            self._opsin_registered = False
+
+    def clear(self) -> Self:
+        self.clear_recordings()
+        for vec in self.w_recs.values():
+            vec.resize(0)
+        if self._w_rec_times is not None:
+            self._w_rec_times.resize(0)
+        self._unregister_stim_callback()
+        self.t = 0.0
+        self._dt = None
+        self._stim_segments = []
+        self._stim_block = None
+        self._stim_dt = None
+        self._stim_step = 0
+        self._opsin_pps = []
+        self._opsin_block = None
+        self._opsin_dt = None
+        self._opsin_step = 0
+        return self
+
+    def close(self) -> Self:
+        if self._closed:
+            return self
+        self._closed = True
+        import gc
+
+        # Detach the cvode callbacks before any section they reference is freed.
+        self._unregister_stim_callback()
+        self._stim_segments = []
+        self._stim_block = None
+        self._opsin_pps = []
+        self._opsin_block = None
+        self._opsin_refs.clear()
+
+        # Drop every NEURON reference that points at this env's sections, so
+        # deleting the cells does not leave dangling recorders / point
+        # processes / NetCons that would crash a later env's psolve. A recording
+        # Vector detaches from its _ref_ pointer when deallocated, so clearing the
+        # dicts (and the GC below) is what stops the recording.
         try:
-            self.close()
+            self.t_vec.resize(0)
+            self.id_vec.resize(0)
         except Exception:
             pass
+        self.v_recs.clear()
+        self.i_recs.clear()
+        if self.syn is not None:
+            self.syn.store.clear()
+        if self.conn is not None:
+            self.conn.store.clear()
+        self.syn = None
+        self.conn = None
+        self.w_recs.clear()
+        self._weight_nc_refs.clear()
+        self._flucts.clear()
+        self._detectors.clear()
+        self._input_vecstims.clear()
+        self._input_spike_vecs.clear()
+
+        # Drop cells (Python-managed sections delete on GC), then explicitly
+        # delete any sections that survive, then release gids.
+        self.cells.clear()
+        gc.collect()
+        try:
+            for sec in list(self._h.allsec()):
+                self._h.delete_section(sec=sec)
+        except Exception:
+            logger.debug("section teardown failed", exc_info=True)
+        try:
+            self.pc.gid_clear()
+        except Exception:
+            pass
+        gc.collect()
+        return self

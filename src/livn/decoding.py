@@ -681,6 +681,45 @@ class PerUnitFiringRate(Decoding):
         return P.broadcast(result, comm=env.comm)
 
 
+class PopulationFiringRates(Decoding):
+    """Mean firing rate (Hz) per simulated population.
+
+    Buckets spike gids by ``system.cells_meta_data.population_ranges`` and divides
+    each population's spike count by (simulated cells in that population x seconds).
+    The denominator uses env.cells, so it is correct under ``selection()``
+    subsampling. Returns ``{"rates_hz": {pop: Hz}}``.
+    """
+
+    def __call__(self, env, it, tt, iv, vv, im, mp):
+        ranges = env.system.cells_meta_data.population_ranges
+        pops = sorted(ranges, key=lambda p: ranges[p][0])  # ascending start gid
+        starts = np.array([ranges[p][0] for p in pops], dtype=np.int64)
+        ends = np.array([ranges[p][0] + ranges[p][1] for p in pops], dtype=np.int64)
+
+        # local spike counts per population (vectorized gid -> population bucket)
+        spikes = np.zeros(len(pops), dtype=np.int64)
+        if it is not None and tt is not None and len(it):
+            gids = np.asarray(it, dtype=np.int64)
+            idx = np.searchsorted(starts, gids, side="right") - 1
+            valid = (idx >= 0) & (gids < ends[idx])
+            spikes += np.bincount(idx[valid], minlength=len(pops))
+
+        # local simulated cell count per population (correct under selection())
+        cells = np.array([len(env.cells.get(p, {})) for p in pops], dtype=np.int64)
+
+        # reduce both across ranks in one Allreduce
+        spikes, cells = P.reduce_sum(spikes, cells, all=True, comm=env.comm)
+
+        duration_s = float(self.duration) / 1000.0
+        return {
+            "rates_hz": {
+                p: float(s / (c * duration_s + 1e-9))
+                for p, s, c in zip(pops, spikes, cells)
+                if c > 0
+            }
+        }
+
+
 class Stability(Decoding):
     tail_window: float = 1000.0
     max_rate_hz: float = 20.0

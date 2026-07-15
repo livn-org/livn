@@ -148,6 +148,18 @@ class Env(Protocol):
         ...
         return self
 
+    def selection(self, select, method: str = "first") -> Self:
+        """Restrict which cells are instantiated before ``init()``.
+
+        ``select`` may be an int (total cell count, allocated across populations
+        in proportion to their size), a float (fraction of each population), or a
+        dict mapping population names to a count, fraction, or explicit gid list.
+        ``method`` is ``"first"`` (contiguous gid block) or ``"random"``.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support cell subselection"
+        )
+
     def set_weights(self, weights: dict) -> Self:
         """Set the synaptic weights"""
         ...

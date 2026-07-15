@@ -6,7 +6,7 @@ import pathlib
 import random
 import numpy
 from functools import cached_property
-from typing import TYPE_CHECKING, Callable, Iterator, Optional, Any
+from typing import TYPE_CHECKING, Callable, Iterator, Optional, Any, Sequence
 
 from pydantic import BaseModel
 import pyfive
@@ -974,6 +974,104 @@ class System:
     @property
     def populations(self):
         return self.cells_meta_data.population_names
+
+    def selection(
+        self,
+        spec,
+        populations: "Sequence[str] | None" = None,
+        seed: int | None = 123,
+        method: str = "first",
+    ) -> "dict[str, np.ndarray] | None":
+        """Resolve a cell subselection of this system's graph.
+
+        This picks a small, representative subset from the contiguous 
+        per-population gid ranges so no cell/coordinate data is read;
+        the result is deterministic and identical on every MPI rank.
+
+        Parameters
+        ----------
+        spec :
+            - ``None`` -> no subselection (returns ``None``; build everything).
+            - ``int N`` -> ``N`` cells total, allocated across populations in
+              proportion to their size (preserves population ratios).
+            - ``float f`` in (0, 1] -> fraction ``f`` of each population.
+            - ``dict`` -> per-population override; each value may be an ``int``
+              count, a ``float`` fraction, or an explicit sequence of gids.
+        populations :
+            Populations eligible for selection; defaults to all of the system's.
+        seed :
+            Seed for ``method="random"`` (ignored by ``method="first"``).
+        method :
+            ``"first"`` (contiguous gid block, default) or ``"random"`` (seeded
+            sample). Contiguous blocks preserve local connectivity because these
+            systems assign gids in spatially-structured order.
+
+        Returns
+        -------
+        ``{population: np.ndarray[gid]}`` or ``None``.
+        """
+        if spec is None:
+            return None
+
+        ranges = self.cells_meta_data.population_ranges
+        if populations is None:
+            populations = self.populations
+        pops = [p for p in populations if p in ranges]
+
+        counts: dict[str, int] = {}
+        explicit: dict[str, np.ndarray] = {}
+
+        def _frac_count(f: float, size: int) -> int:
+            if f <= 0:
+                return 0
+            if f >= 1:
+                return size
+            return max(1, int(round(f * size)))
+
+        if isinstance(spec, dict):
+            for p in pops:
+                if p not in spec:
+                    continue
+                v = spec[p]
+                if isinstance(v, (list, tuple, np.ndarray)):
+                    explicit[p] = np.asarray(sorted(int(g) for g in v), dtype=np.int64)
+                elif isinstance(v, float):
+                    counts[p] = _frac_count(v, ranges[p][1])
+                else:
+                    counts[p] = min(int(v), ranges[p][1])
+        elif isinstance(spec, float):
+            for p in pops:
+                counts[p] = _frac_count(spec, ranges[p][1])
+        elif isinstance(spec, int):
+            total_size = sum(ranges[p][1] for p in pops)
+            if total_size == 0:
+                return {}
+            for p in pops:
+                counts[p] = min(
+                    ranges[p][1], int(round(spec * ranges[p][1] / total_size))
+                )
+        else:
+            raise TypeError(f"unsupported selection spec: {type(spec).__name__}")
+
+        rng = np.random.default_rng(seed)
+        out: dict[str, np.ndarray] = {}
+        for p in pops:
+            if p in explicit:
+                out[p] = explicit[p]
+                continue
+            k = counts.get(p, 0)
+            if k <= 0:
+                continue
+            start, count = ranges[p]
+            k = min(k, count)
+            if method == "random":
+                gids = np.sort(
+                    rng.choice(count, size=k, replace=False).astype(np.int64) + start
+                )
+            else:  # "first" -> contiguous block
+                gids = np.arange(start, start + k, dtype=np.int64)
+            out[p] = gids
+        return out
 
     @property
     def neuron_coordinates(self) -> types.Float[types.Array, "n_coords ixyz=4"]:

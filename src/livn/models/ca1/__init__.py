@@ -102,6 +102,19 @@ class PinskyRinzel(Model):
     def neuron_mechanisms_directory(self):
         return os.path.join(os.path.dirname(__file__), "neuron", "mechanisms")
 
+    def neuron_cells(self):
+        from livn.backend.neuron.cells import MorphologyCell
+        from livn.models.ca1.neuron.templates.PyramidalCellBilash import (
+            PyramidalCell,
+        )
+
+        def make_pyr(morphology=None):
+            return MorphologyCell.from_template(
+                PyramidalCell(), threshold=-20.0, v_rest=-65.0
+            )
+
+        return {"PYR": make_pyr}
+
     def neuron_celltypes(self, celltypes):
         params = self.neuron_cell_config()
         for k in celltypes:
