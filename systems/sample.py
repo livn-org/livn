@@ -5,7 +5,7 @@ import shutil
 import uuid
 
 from huggingface_hub import HfApi
-from machinable import Component
+from machinable import Interface
 from machinable.utils import load_file, save_file, random_str
 from pydantic import BaseModel, ConfigDict
 from livn.utils import ObjSpec, import_instance, P
@@ -43,7 +43,7 @@ class WithoutInput(Encoding):
         return None
 
 
-class Sample(Component):
+class Sample(Interface):
     class Config(BaseModel):
         model_config = ConfigDict(extra="forbid")
 

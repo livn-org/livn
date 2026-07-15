@@ -1,18 +1,24 @@
+# Cache
 compiled/
 storage/
 raw.githubusercontent.com/
 tests/tmp
+visualization/node_modules
+.ruff_cache
 
+# Binaries
 *.png
 *.h5
 *.p
 *.pkl
 
-systems/datasets
+
+# machinable
+.machinable.sqlite
+.machinable.sqlite-wal
+.machinable.sqlite-shm
 systems/interface/remotes
 benchmarks/interface/remotes
-
-.ruff_cache
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -22,8 +28,6 @@ __pycache__/
 
 # C extensions
 *.so
-
-visualization/node_modules
 
 # Distribution / packaging
 .Python

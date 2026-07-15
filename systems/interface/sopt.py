@@ -14,7 +14,7 @@ from livn.utils import import_instance
 _, Dmosopt = (
     Project(os.path.dirname(os.path.dirname(__file__)))
     .provider()
-    .on_resolve_element("interface.dmosopt")
+    .on_resolve_interface("interface.dmosopt")
 )
 
 live_envs = []
@@ -73,21 +73,32 @@ class Evaluation:
 
 
 def objective_names(c):
-    target = config.import_object_by_path(
-        c.config.dopt_params.obj_fun_init_args.target
-    )()
+    target = import_instance(c.config.dopt_params.obj_fun_init_args.target)
     return target.objective_names()
 
 
 def constraint_names(c):
-    target = config.import_object_by_path(
-        c.config.dopt_params.obj_fun_init_args.target
-    )()
+    target = import_instance(c.config.dopt_params.obj_fun_init_args.target)
     return target.constraint_names()
 
 
 def feature_dtypes(c):
     return [(f, np.float32) for f in objective_names(c)]
+
+
+def _build_env(target, system, model, comm, subworld_size):
+    model = import_instance(model)
+    if hasattr(target, "build_env"):
+        return target.build_env(system, model, comm=comm, subworld_size=subworld_size)
+    env = Env(
+        system,
+        model=model,
+        io=io.MEA.from_json(os.path.join(system, "mea.json"), comm=False),
+        comm=comm,
+        subworld_size=subworld_size,
+    )
+    env.init()
+    return target.init(env)
 
 
 def obj_fun_init(
@@ -98,32 +109,15 @@ def obj_fun_init(
     subworld_size,
     worker=None,
 ):
-    env = Env(
-        system,
-        model=import_instance(model),
-        io=io.MEA.from_json(os.path.join(system, "mea.json"), comm=False),
-        comm=worker.merged_comm,
-        subworld_size=subworld_size,
-    )
-    env.init()
-
-    live_envs.append(env)
-
     target = import_instance(target)
-
-    env = target.init(env)
-
+    env = _build_env(target, system, model, worker.merged_comm, subworld_size)
+    live_envs.append(env)
     return partial(obj_fun, env=env, target=target, trials=trials)
 
 
 def controller_init(system, model, target, subworld_size):
-    env = Env(
-        system,
-        model=import_instance(model),
-        io=io.MEA.from_json(os.path.join(system, "mea.json"), comm=False),
-        subworld_size=subworld_size,
-    )
-
+    target = import_instance(target)
+    env = _build_env(target, system, model, None, subworld_size)
     live_envs.append(env)
 
 

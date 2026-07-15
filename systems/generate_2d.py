@@ -5,7 +5,7 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
-from machinable import Component
+from machinable import Interface
 from machinable.utils import save_file
 from pydantic import BaseModel, Field, model_validator
 from typing import Dict, Optional
@@ -127,7 +127,7 @@ class SynapseRecord(BaseModel):
         return syn_id
 
 
-class Generate2DSystem(Component):
+class Generate2DSystem(Interface):
     class Config(BaseModel):
         area: str = Field(default="systems.generate_2d.rectangle")
         area_kwargs: dict = Field(default_factory=dict)

@@ -984,7 +984,7 @@ class System:
     ) -> "dict[str, np.ndarray] | None":
         """Resolve a cell subselection of this system's graph.
 
-        This picks a small, representative subset from the contiguous 
+        This picks a small, representative subset from the contiguous
         per-population gid ranges so no cell/coordinate data is read;
         the result is deterministic and identical on every MPI rank.
 
