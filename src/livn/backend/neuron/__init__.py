@@ -57,7 +57,14 @@ class Env(EnvProtocol):
         self.decoding = None
         self.duration = None
 
-        self._h = mechanisms.configure(self.model.neuron_mechanisms_directory())
+        # Compile mechanisms
+        mech_dir = self.model.neuron_mechanisms_directory()
+        if mech_dir is not None:
+            if self.comm.Get_rank() == 0:
+                mechanisms.compile_mechanisms(mech_dir)
+            if self.comm.Get_size() > 1:
+                self.comm.Barrier()
+        self._h = mechanisms.configure(mech_dir)
         self.pc = self._h.pc
         if subworld_size is not None:
             self.pc.subworlds(subworld_size)

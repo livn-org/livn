@@ -2,53 +2,109 @@ from __future__ import annotations
 
 import glob
 import hashlib
+import logging
 import os
 import shutil
 import subprocess
+import tempfile
+
+logger = logging.getLogger(__name__)
 
 _loaded: dict[str, str] = {}
 _hoc_configured = False
+
+
+def _is_complete(compiled: str) -> bool:
+    return os.path.isfile(os.path.join(compiled, ".livn_nrnivmodl_ok"))
+
+
+def _atomic_compile(compiled: str, contents: dict[str, str]) -> None:
+    """Compile ``contents`` into ``compiled`` via a private temp dir + atomic rename.
+
+    nrnivmodl runs in a per-process temp directory and a completion marker
+    is written and the finished build is moved into place with a single
+    atomic rename. A process that loses the publish race discards.
+    """
+    if not shutil.which("nrnivmodl"):
+        raise ModuleNotFoundError("nrnivmodl not found on PATH")
+    parent = os.path.dirname(compiled)
+    os.makedirs(parent, exist_ok=True)
+    tmp = tempfile.mkdtemp(prefix=os.path.basename(compiled) + ".tmp.", dir=parent)
+    try:
+        for m, data in contents.items():
+            with open(os.path.join(tmp, os.path.basename(m)), "w") as f:
+                f.write(data)
+        subprocess.run(["nrnivmodl"], cwd=tmp, check=True)
+        open(os.path.join(tmp, ".livn_nrnivmodl_ok"), "w").close()
+        try:
+            os.rename(tmp, compiled)  # atomic publish
+            tmp = None
+        except OSError:
+            pass  # another process published first; fall through to cleanup
+    finally:
+        if tmp is not None and os.path.isdir(tmp):
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 def compile_mechanisms(directory: str, force: bool = False) -> str:
     """Compile the ``.mod`` files under ``directory`` (cached by content hash).
 
     Returns the directory that ``neuron.load_mechanisms`` should be pointed at.
-    Compilation happens at most once per unique set of mechanism sources; the
-    result is reused across processes and runs.
     """
     src = os.path.abspath(directory)
     if not os.path.isdir(src):
         raise FileNotFoundError(f"Mechanism directory does not exist: {src}")
 
-    output_path = os.path.join(src, "compiled")
     mod_files = [
         f
         for f in glob.glob(os.path.join(src, "**/*.mod"), recursive=True)
-        if output_path not in f
+        if f"{os.sep}compiled{os.sep}" not in f
     ]
 
     digest = hashlib.sha256()
     contents: dict[str, str] = {}
-    for m in sorted(mod_files, key=lambda x: x.replace(src, "")):
+    seen: dict[str, str] = {}
+    collisions: dict[str, list[str]] = {}
+    # nrnivmodl compiles a flat directory, so files are copied in by basename;
+    # sort by basename (then path) for a stable hash and to detect basename
+    # collisions (which would silently overwrite each other).
+    for m in sorted(mod_files, key=lambda x: (os.path.basename(x), x)):
         with open(m) as fh:
             data = fh.read()
+        base = os.path.basename(m)
+        digest.update(base.encode())
         digest.update(data.encode())
         contents[m] = data
+        if base in seen:
+            collisions.setdefault(base, [seen[base]]).append(m)
+        seen[base] = m
 
-    compiled = os.path.join(output_path, digest.hexdigest())
+    if collisions:
+        logger.warning(
+            "Mechanism directory %s has %d colliding .mod basename(s); flat "
+            "compilation keeps only one of each, so conflated variants may be "
+            "dropped: %s",
+            src,
+            len(collisions),
+            collisions,
+        )
+
+    compiled = os.path.join(src, "compiled", digest.hexdigest())
 
     if force and os.path.isdir(compiled):
         shutil.rmtree(compiled)
 
-    if not os.path.isdir(compiled):
-        if not shutil.which("nrnivmodl"):
-            raise ModuleNotFoundError("nrnivmodl not found on PATH")
-        os.makedirs(compiled)
-        for m, data in contents.items():
-            with open(os.path.join(compiled, os.path.basename(m)), "w") as f:
-                f.write(data)
-        subprocess.run(["nrnivmodl"], cwd=compiled, check=True)
+    if os.path.isdir(compiled) and not _is_complete(compiled):
+        aside = f"{compiled}.stale.{os.getpid()}"
+        try:
+            os.rename(compiled, aside)
+        except OSError:
+            aside = None
+        if aside and os.path.isdir(aside):
+            shutil.rmtree(aside, ignore_errors=True)
+
+    if not (os.path.isdir(compiled) and _is_complete(compiled)):
+        _atomic_compile(compiled, contents)
 
     return compiled
 
