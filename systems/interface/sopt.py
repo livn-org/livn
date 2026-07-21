@@ -116,8 +116,12 @@ def obj_fun_init(
 
 
 def controller_init(system, model, target, subworld_size):
+    # The distwq controller is a lone rank (not part of any worker group), so it
+    # must build its env on COMM_SELF. Passing None would default to COMM_WORLD,
+    # whose collectives (e.g. the mechanism-compile barrier in Env.__init__) then
+    # block forever waiting for worker ranks that are busy on their own comms.
     target = import_instance(target)
-    env = _build_env(target, system, model, None, subworld_size)
+    env = _build_env(target, system, model, MPI.COMM_SELF, subworld_size)
     live_envs.append(env)
 
 
@@ -165,7 +169,7 @@ class Sopt(Dmosopt):
                 "opt_id": "default",
                 "obj_fun_init_name": "interface.sopt.obj_fun_init",
                 "obj_fun_init_args": {
-                    "system": "???",
+                    # system: injected at dispatch
                     "model": "???",
                     "target": "???",
                     "subworld_size": "${...nprocs_per_worker}",
@@ -177,7 +181,6 @@ class Sopt(Dmosopt):
                 "controller_init_fun_name": "interface.sopt.controller_init",
                 "controller_init_fun_args": {
                     "subworld_size": "${...nprocs_per_worker}",
-                    "system": "${..obj_fun_init_args.system}",
                     "model": "${..obj_fun_init_args.model}",
                     "target": "${..obj_fun_init_args.target}",
                 },

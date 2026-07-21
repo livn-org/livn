@@ -11,10 +11,10 @@ class Systems(Project):
     #         ], c
 
     def on_resolve_remotes(self):
-        version = "443884463fc2bec3b072d21492d7524f36bccc8d"
-        src = f"url+https://raw.githubusercontent.com/machinable-org/machinable/{version}/docs/examples"
+        version = "85fc17f32babf2858c18104c64e1aac6ad991363"
+        src = f"url+https://raw.githubusercontent.com/machinable-org/machinable/{version}/integrations"
         return {
-            "slurm": src + "/slurm-execution/slurm.py",
-            "mpi": src + "/mpi-execution/mpi.py",
-            "interface.dmosopt": src + "/dmosopt-component/dmosopt.py",
+            "slurm": src + "/slurm/slurm.py",
+            "mpi": src + "/mpi/mpi.py",
+            "interface.dmosopt": src + "/dmosopt/dmosopt.py",
         }
