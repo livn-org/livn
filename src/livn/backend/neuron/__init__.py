@@ -108,6 +108,9 @@ class Env(EnvProtocol):
 
         # sim state
         self.t = 0.0
+        # membrane potential the simulation initializes from at the next
+        # (re)initialization; see the ``v_init`` property
+        self._v_init = -75.0
         self._dt: float | None = None
         # dt whose 2*dt floor is currently applied to the NetCon delays (the
         # builder pre-applies DEFAULT_DT; re-applied only when run() uses another)
@@ -121,6 +124,13 @@ class Env(EnvProtocol):
             if hasattr(self.model, "neuron_refractory_period")
             else 2.0
         )
+
+        self._celsius = (
+            float(self.model.neuron_celsius())
+            if hasattr(self.model, "neuron_celsius")
+            else 36.0
+        )
+        self._h.celsius = self._celsius
 
         # extracellular stimulus block
         self._stim_segments: list = []
@@ -136,6 +146,14 @@ class Env(EnvProtocol):
         self._opsin_dt: float | None = None
         self._opsin_step = 0
         self._opsin_registered = False
+
+        # current-clamp (IClamp) stimulus block with one IClamp on the soma per gid,
+        # amplitude (nA) updated per step like the extracellular block
+        self._iclamp_pps: list = []
+        self._iclamp_block: np.ndarray | None = None
+        self._iclamp_dt: float | None = None
+        self._iclamp_step = 0
+        self._iclamp_registered = False
 
     def selection(self, select, method: str = "first") -> Self:
         if self.cells:
@@ -370,6 +388,8 @@ class Env(EnvProtocol):
             stimulus = self.model.prepare_stimulus(stimulus)
             if stimulus.input_mode == "irradiance":
                 self._setup_opsin_stimulus(stimulus, current_time)
+            elif stimulus.input_mode == "current":
+                self._setup_iclamp(stimulus, current_time)
             else:
                 self._setup_extracellular(stimulus, current_time)
 
@@ -388,11 +408,13 @@ class Env(EnvProtocol):
             self._apply_delay_floor(requested_dt)
         self._stim_step = int(round(current_time / self._dt))
         self._opsin_step = int(round(current_time / self._dt))
+        self._iclamp_step = int(round(current_time / self._dt))
 
         self.clear_recordings()
 
         if first_run:
-            h.v_init = -75.0
+            h.celsius = self._celsius
+            h.v_init = self._v_init
             h.stdinit()
             h.secondorder = 2
             h.dt = requested_dt
@@ -568,6 +590,41 @@ class Env(EnvProtocol):
         for i, seg in enumerate(self._stim_segments):
             seg.e_extracellular = float(col[i])
         self._stim_step += 1
+
+    def _soma_seg(self, cell):
+        """Middle segment of the cell's soma section (fallback: first section)."""
+        for sec in getattr(cell, "sections", []):
+            if sec.name().split(".")[-1] == "soma":
+                return sec(0.5)
+        return cell.sections[0](0.5)
+
+    def _setup_iclamp(self, stimulus: Stimulus, current_time: float) -> None:
+        """Attach an IClamp on each stimulated cell's soma and play its amplitude
+        (nA) time series into ``IClamp.amp`` via ``Vector.play``.
+
+        ``Vector.play`` handles the stimulus->sim time mapping natively (re-armed
+        by ``finitialize`` at each run start), so the step timing is exact without
+        a manual per-step callback."""
+        if stimulus.gids is None:
+            stimulus.gids = self.active_gids()
+        h = self._h
+
+        for gid, series in stimulus:
+            gid = int(gid)
+            if not self.pc.gid_exists(gid):
+                continue
+            cell = self._find_cell(gid)
+            if cell is None:
+                continue
+            series = np.asarray(series, dtype=np.float64)
+            ic = h.IClamp(self._soma_seg(cell))
+            ic.delay = 0.0
+            ic.dur = 1e9  # amp is driven by the played vector
+            amp_vec = h.Vector(series)
+            t_vec = h.Vector(current_time + np.arange(series.size) * stimulus.dt)
+            amp_vec.play(ic._ref_amp, t_vec, True)  # continuous (interpolated)
+            # keep ic + vectors alive for the run
+            self._iclamp_pps.append((ic, amp_vec, t_vec))
 
     def _setup_opsin_stimulus(self, stimulus: Stimulus, current_time: float) -> None:
         if not self._opsin_refs:
@@ -802,6 +859,47 @@ class Env(EnvProtocol):
         return self
 
     @property
+    def v_init(self) -> float:
+        """Membrane potential (mV) the simulation initializes from."""
+        return self._v_init
+
+    @v_init.setter
+    def v_init(self, value: float) -> None:
+        if self.t != 0.0:
+            raise RuntimeError(
+                "v_init only takes effect at initialization and cannot be changed "
+                "after the simulation has started; call clear() to reset first."
+            )
+        self._v_init = float(value)
+
+    @staticmethod
+    def _recorded_dt(dts: dict[str, float], default: float) -> float:
+        """Resolve a single recording dt from a per-population map.
+
+        Returns the common dt if all populations agree, the finest (min) dt if
+        they differ, or ``default`` if nothing has been recorded yet.
+        """
+        if not dts:
+            return default
+        vals = set(dts.values())
+        return next(iter(vals)) if len(vals) == 1 else min(vals)
+
+    @property
+    def voltage_recording_dt(self) -> float:
+        """Recording dt (ms) for voltage traces.
+
+        Reflects the ``dt`` passed to ``record_voltage`` (0.1 ms until anything
+        is recorded), rather than a fixed constant.
+        """
+        return self._recorded_dt(self.v_dt, 0.1)
+
+    @property
+    def membrane_current_recording_dt(self) -> float:
+        """Recording dt (ms) for membrane-current traces (see
+        ``voltage_recording_dt``)."""
+        return self._recorded_dt(self.i_dt, 0.1)
+
+    @property
     def input_gids(self) -> list[int]:
         """Gids of external input sources wired into the local network."""
         return sorted(self._input_vecstims.keys())
@@ -905,6 +1003,7 @@ class Env(EnvProtocol):
             except Exception:
                 logger.debug("failed to remove opsin callback", exc_info=True)
             self._opsin_registered = False
+        # IClamp uses Vector.play (no cvode callback); nothing to unregister
 
     def clear(self) -> Self:
         self.clear_recordings()
@@ -923,6 +1022,10 @@ class Env(EnvProtocol):
         self._opsin_block = None
         self._opsin_dt = None
         self._opsin_step = 0
+        self._iclamp_pps = []
+        self._iclamp_block = None
+        self._iclamp_dt = None
+        self._iclamp_step = 0
         return self
 
     def close(self) -> Self:
