@@ -23,6 +23,7 @@ class ReducedCalciumSomaDendrite(Model):
         input_mode: str | None = None,
         refractory_period: float = 2.0,
         implicit_inhibition: bool = True,
+        renshaw_phenotype: str = "invitro",
     ):
         # Optional override for the underlying neuron's stimulus
         # interpretation; this is only needed for the JAX
@@ -43,6 +44,19 @@ class ReducedCalciumSomaDendrite(Model):
             raise ValueError(f"refractory_period must be >= 0, got {refractory_period}")
         self.refractory_period = float(refractory_period)
         self.implicit_inhibition = bool(implicit_inhibition)
+        if renshaw_phenotype not in ("invitro", "perry"):
+            raise ValueError(
+                f"renshaw_phenotype must be 'invitro' or 'perry', got "
+                f"{renshaw_phenotype!r}"
+            )
+        # which tuned V1In Renshaw parameter set the INH population uses
+        self.renshaw_phenotype = renshaw_phenotype
+
+    def _inh_params_name(self) -> str:
+        return {
+            "invitro": "V1In-Renshaw-InVitro",
+            "perry": "V1In-Renshaw-Perry",
+        }[self.renshaw_phenotype]
 
     def ignored_populations(self) -> set[str]:
         if self.implicit_inhibition:
@@ -175,6 +189,38 @@ class ReducedCalciumSomaDendrite(Model):
                 "V_rest": -60.0,
                 "V_threshold": -37.0,
             },
+            "V1In-Renshaw-Perry": {
+                "global_diam": 16.41730499267578,
+                "global_cm": 1.0470783710479736,
+                "e_pas": -71.58283233642578,
+                "soma_g_pas": 3.894238398061134e-05,
+                "soma_gmax_Na": 0.05239470303058624,
+                "soma_gmax_K": 0.14435352385044098,
+                "soma_gmax_Ka": 0.015866799280047417,
+                "soma_gmax_KCa": 0.0021941864397376776,
+                "soma_gmax_CaN": 0.01926092617213726,
+                "soma_f_Caconc": 0.002321670763194561,
+                "soma_alpha_Caconc": 4.400171279907227,
+                "soma_kCa_Caconc": 24.27430534362793,
+                "V_rest": -50.5,
+                "V_threshold": -30.8,
+            },
+            "V1In-Renshaw-InVitro": {
+                "global_diam": 19.411474227905273,
+                "global_cm": 0.9462705254554749,
+                "e_pas": -67.66380310058594,
+                "soma_g_pas": 4.035637903143652e-05,
+                "soma_gmax_Na": 0.08557455986738205,
+                "soma_gmax_K": 0.09600003063678741,
+                "soma_gmax_Ka": 0.0059051355347037315,
+                "soma_gmax_KCa": 0.002114551141858101,
+                "soma_gmax_CaN": 0.0016945463139563799,
+                "soma_f_Caconc": 0.01990448124706745,
+                "soma_alpha_Caconc": 4.453778266906738,
+                "soma_kCa_Caconc": 8.111538887023926,
+                "V_rest": -60.0,
+                "V_threshold": -50.0,
+            },
         }[name]
         if self.input_mode is not None:
             base = {**base, "input_mode": self.input_mode}
@@ -192,10 +238,10 @@ class ReducedCalciumSomaDendrite(Model):
     def neuron_cells(self):
         from livn.backend.neuron.cells import ReducedCell
         from livn.models.rcsd.neuron.templates.BRK import BRK
-        from livn.models.rcsd.neuron.templates.PRN import PRN
+        from livn.models.rcsd.neuron.templates.V1In import V1In
 
         brk_params = self.params("BoothRinzelKiehn-MN")
-        prn_params = self.params("PinskyRinzel-PVBC")
+        inh_params = self.params(self._inh_params_name())
 
         def make_exc(morphology=None):
             cell = BRK({"BoothRinzelKiehn": brk_params})
@@ -207,11 +253,11 @@ class ReducedCalciumSomaDendrite(Model):
             )
 
         def make_inh(morphology=None):
-            cell = PRN({"PinskyRinzel": prn_params})
+            cell = V1In(inh_params)
             return ReducedCell(
                 cell,
-                threshold=prn_params["V_threshold"],
-                v_rest=prn_params["V_rest"],
+                threshold=inh_params["V_threshold"],
+                v_rest=inh_params["V_rest"],
                 dend_type="hillock",
             )
 
@@ -229,12 +275,11 @@ class ReducedCalciumSomaDendrite(Model):
 
         if "INH" in celltypes:
             celltypes["INH"]["template class"] = (
-                "livn.models.rcsd.neuron.templates.PRN.PRN"
+                "livn.models.rcsd.neuron.templates.V1In.V1In"
             )
             celltypes["INH"]["template"] = "@" + celltypes["INH"]["template class"]
-            celltypes["INH"]["mechanism"] = {
-                "PinskyRinzel": self.params("PinskyRinzel-PVBC")
-            }
+            # V1In takes a flat param dict (not a nested {mech: params})
+            celltypes["INH"]["mechanism"] = self.params(self._inh_params_name())
 
     def neuron_synapse_mechanisms(self):
         return {
@@ -393,14 +438,23 @@ class ReducedCalciumSomaDendrite(Model):
         mechanism.E_e = E_e
         mechanism.E_i = E_i
 
-        if is_soma:
-            # inhibition only
+        if is_soma and population == "INH":
+            # The V1In Renshaw INH cell is single-compartment: its soma is the only
+            # site, so it must carry BOTH the excitatory and inhibitory background.
+            # With the soma-only inhibitory split below it would be pinned near E_i
+            # (-75 mV) and never fire.
+            mechanism.std_e = std_e
+            mechanism.g_e0 = g_e0
+            mechanism.std_i = std_i
+            mechanism.g_i0 = g_i0
+        elif is_soma:
+            # two-compartment EXC: inhibition on the soma
             mechanism.std_e = 0
             mechanism.g_e0 = 0
             mechanism.std_i = std_i
             mechanism.g_i0 = g_i0
         else:
-            # excitation only
+            # two-compartment EXC: excitation on the dendrite
             mechanism.std_e = std_e
             mechanism.g_e0 = g_e0
             mechanism.std_i = 0
