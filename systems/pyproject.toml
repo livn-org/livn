@@ -9,8 +9,8 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "dmosopt @ git+https://github.com/iraikov/dmosopt.git@e42d279",
-    "machinable @ git+https://github.com/machinable-org/machinable.git",
+    "dmosopt @ git+https://github.com/iraikov/dmosopt.git@299bd79",
+    "machinable @ git+https://github.com/machinable-org/machinable.git@98c6b54",
     "sqlean-py>=3.47.0",
     "livn[neuron]",
     "pandas>=2.3.1",

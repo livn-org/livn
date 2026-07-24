@@ -1,7 +1,7 @@
 [project]
 dependencies = [
     "livn",
-    "machinable @ git+https://github.com/machinable-org/machinable.git",
+    "machinable @ git+https://github.com/machinable-org/machinable.git@98c6b54",
 ]
 name = "ui"
 version = "0.1.0"

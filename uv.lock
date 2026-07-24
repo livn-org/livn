@@ -923,7 +923,7 @@ wheels = [
 [[package]]
 name = "dmosopt"
 version = "0.9.3"
-source = { git = "https://github.com/iraikov/dmosopt.git?rev=e42d279#e42d2794077b5a2f0599df0cf0095441791b7a02" }
+source = { git = "https://github.com/iraikov/dmosopt.git?rev=299bd79#299bd790cdbc530536ef97d824b993022286c9f6" }
 dependencies = [
     { name = "distwq" },
     { name = "h5py" },
@@ -1830,13 +1830,14 @@ dev = [
 [[package]]
 name = "machinable"
 version = "5.0.0"
-source = { git = "https://github.com/machinable-org/machinable.git#4ac6a4d43fee15345d93e35f08fdcc716d8b77b0" }
+source = { git = "https://github.com/machinable-org/machinable.git?rev=98c6b54#98c6b541524b9e043a38bfb6ea65482694508a4e" }
 dependencies = [
     { name = "arrow" },
     { name = "cloudpickle" },
     { name = "dill" },
     { name = "flatten-dict" },
     { name = "omegaconf" },
+    { name = "pathspec" },
     { name = "pydantic" },
 ]
 
@@ -2942,6 +2943,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pathspec"
+version = "1.1.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5a/82/42f767fc1c1143d6fd36efb827202a2d997a375e160a71eb2888a925aac1/pathspec-1.1.1.tar.gz", hash = "sha256:17db5ecd524104a120e173814c90367a96a98d07c45b2e10c2f3919fff91bf5a", size = 135180, upload-time = "2026-04-27T01:46:08.907Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f1/d9/7fb5aa316bc299258e68c73ba3bddbc499654a07f151cba08f6153988714/pathspec-1.1.1-py3-none-any.whl", hash = "sha256:a00ce642f577bf7f473932318056212bc4f8bfdf53128c78bbd5af0b9b20b189", size = 57328, upload-time = "2026-04-27T01:46:07.06Z" },
+]
+
+[[package]]
 name = "pillow"
 version = "12.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3875,11 +3885,11 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "dmosopt", git = "https://github.com/iraikov/dmosopt.git?rev=e42d279" },
+    { name = "dmosopt", git = "https://github.com/iraikov/dmosopt.git?rev=299bd79" },
     { name = "huggingface-hub", specifier = ">=0.3.1" },
     { name = "keras", specifier = "==3.13.0" },
     { name = "livn", extras = ["neuron"], editable = "." },
-    { name = "machinable", git = "https://github.com/machinable-org/machinable.git" },
+    { name = "machinable", git = "https://github.com/machinable-org/machinable.git?rev=98c6b54" },
     { name = "pandas", specifier = ">=2.3.1" },
     { name = "sqlean-py", specifier = ">=3.47.0" },
 ]
@@ -4077,7 +4087,7 @@ requires-dist = [
     { name = "h5pyd", marker = "extra == 'server'", specifier = ">=0.19" },
     { name = "hsds", marker = "extra == 'server'", specifier = ">=0.9" },
     { name = "livn", editable = "." },
-    { name = "machinable", git = "https://github.com/machinable-org/machinable.git" },
+    { name = "machinable", git = "https://github.com/machinable-org/machinable.git?rev=98c6b54" },
 ]
 provides-extras = ["server"]
 
