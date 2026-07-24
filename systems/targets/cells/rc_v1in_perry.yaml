@@ -1,0 +1,77 @@
+# Renshaw cell -- NEONATAL / in-vivo-like phenotype.
+# All intrinsic-property targets from Perry et al. 2015
+# Connectivity: Hoang et al. 2018
+# Membrane tau is an estimate (Perry reports AHP kinetics, not membrane tau).
+Celltype: RenshawCell
+Template: livn.models.rcsd.neuron.templates.V1In.V1In
+Numerics:
+  adaptive: False
+  use_coreneuron: True
+  t0: 0
+  tstop: 2000
+  dt: 0.0125
+  record_dt: 0.01
+  v_init: -60.0
+Record:
+  soma: ['V']
+Targets:
+  Rin:
+    # Perry 2015: 233.1 +/- 11 MOhm (P0-P11; age-dependent ~155-245)
+    I: [-50.0]
+    I_factor: 1.0e-3
+    upper: [270.0]
+    lower: [200.0]
+    t: [250, 1250]
+  tau0:
+    # estimate (Perry reports slow AHP kinetics, not membrane tau)
+    I: [-0.01]
+    upper: [22.0]
+    lower: [10.0]
+    t: [250, 1250]
+  threshold: -30.8   # Perry 2015 AP threshold -30.8 +/- 0.9 mV
+  V_hold:
+    val: -60.0        # Perry clamped for Rin at -60 mV
+    I: 0
+  V_rest:
+    val: -50.5        # Perry RMP -50.5 +/- 0.4 mV
+    I: 0
+  f_I:
+    # Perry 2015 Fig 6C control (steady-state) f-I; Perry stepped current from rest,
+    # so the sweeps are held at RMP (V_hold below). 150 pA -> 26.4 Hz is explicit;
+    # the other points are read from Fig 6C. Bands ~+/-30% (f-I lower-confidence).
+    I: [50, 100, 150, 200, 250]
+    I_factor: 1.0e-3
+    mean:  [20.0, 26.0, 26.0, 31.0, 36.0]
+    lower: [12.0, 18.0, 18.0, 22.0, 27.0]
+    upper: [28.0, 34.0, 34.0, 40.0, 45.0]
+    t: [500, 1500]
+    V_hold: -50.5      # RMP -- Perry stepped f-I from rest
+  spike_amp:
+    # Perry 2015 AP amplitude 69.7 +/- 2.0 mV (n=58)
+    upper: [80.0, 80.0, 80.0, 80.0, 80.0]
+    lower: [60.0, 60.0, 60.0, 60.0, 60.0]
+  spike_adaptation:
+    # Perry: initial doublet ~51 Hz -> steady ~26 Hz (adapts); last/first ISI ~1.3-2.0
+    upper: [2.2, 2.2, 2.2, 2.2, 2.2]
+    lower: [1.0, 1.0, 1.0, 1.0, 1.0]
+    t: [500, 1500]
+
+# All biophysical parameters are searched (nothing fixed). cm and e_pas are kept
+# to physiologically narrow ranges; the rest span their plausible ranges.
+Parameters: {}
+
+Space:
+  # geometry / passive
+  global_diam:   [15.0, 45.0]
+  global_cm:     [0.9, 1.1]
+  e_pas:         [-75.0, -65.0]
+  soma_g_pas:    [3.0e-5, 2.0e-4]
+  # active conductances
+  soma_gmax_Na:  [0.05, 0.30]
+  soma_gmax_K:   [0.02, 0.15]
+  soma_gmax_Ka:  [0.0, 0.1]
+  soma_gmax_KCa: [1.0e-5, 3.0e-3]
+  soma_gmax_CaN: [0.0, 0.02]
+  soma_f_Caconc:     [1.0e-3, 2.0e-2]
+  soma_alpha_Caconc: [0.2, 5.0]
+  soma_kCa_Caconc:   [1.0, 30.0]
