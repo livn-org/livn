@@ -430,3 +430,82 @@ class Spontaneous(TuningTargets):
         )
 
         return result
+
+    def rank_solutions(self, best):
+        import pandas as pd
+
+        features_df = best.get("f")
+        if not (
+            isinstance(features_df, pd.DataFrame)
+            and {"mfr", "branching_ratio"}.issubset(features_df.columns)
+        ):
+            return best
+
+        c_df, y_df = best.get("c"), best.get("y")
+
+        def feat(name, default=0.0):
+            if name in features_df.columns:
+                return features_df[name].astype(float).fillna(default)
+            return pd.Series(default, index=features_df.index)
+
+        def con(name, default=0.0):
+            if isinstance(c_df, pd.DataFrame) and name in c_df.columns:
+                return c_df[name].astype(float).fillna(default)
+            return pd.Series(default, index=features_df.index)
+
+        eps = 1e-3
+        mfr = feat("mfr", 0.0)
+        obj = (
+            y_df.sum(axis=1).fillna(1e6)
+            if isinstance(y_df, pd.DataFrame)
+            else pd.Series(0.0, index=features_df.index)
+        )
+        score = (
+            5.0
+            * pd.Series(
+                np.log((mfr.clip(lower=0.0).to_numpy() + eps) / (1.0 + eps)) ** 2,
+                index=features_df.index,
+            )
+            + 2.0 * feat("isi_cv", 0.0).sub(1.2).abs()
+            + 5.0 * (1.0 - feat("active_fraction", 0.0)).clip(lower=0.0)
+            + 2.0 * feat("branching_ratio", 0.0).sub(1.0).abs()
+            + 2.0 * -con("active_fraction_floor", -1.0)
+            + 4.0 * -con("synchrony", -1.0)
+            + 5.0 * -con("max_synchronous_peak", -1.0)
+            + 2.0 * -con("pop_autocorr_tau_band", -1.0)
+            + 2.0 * -con("burst_rate_cap", -1.0)
+            + 3.0 * -con("branching_ratio_band", -1.0)
+            + 3.0 * -con("avalanche_r2", -1.0)
+            + 0.5 * obj
+        ).sort_values()
+
+        order = score.index
+        return {
+            k: (
+                v.loc[order].reset_index(drop=True)
+                if isinstance(v, pd.DataFrame)
+                else v
+            )
+            for k, v in best.items()
+        }
+
+    def describe_params(self, decoded):
+        env_params = self.set_params(dict(decoded))
+        weights = {
+            k: v
+            for k, v in env_params.items()
+            if "-weight" in k and not k.startswith("noise-")
+        }
+        noise_keys = {"std_e", "std_i", "g_e0", "g_i0", "tau_e", "tau_i"}
+        noise = {
+            k.replace("noise-", "", 1): v
+            for k, v in env_params.items()
+            if k.startswith("noise-") and k.replace("noise-", "", 1) in noise_keys
+        }
+        protocol = {k: v for k, v in decoded.items() if k not in env_params}
+        return {
+            "All decoded params": dict(decoded),
+            "Weights (neuron_default_weights)": weights,
+            "Noise (neuron_default_noise)": noise,
+            "Protocol-specific params": protocol,
+        }
