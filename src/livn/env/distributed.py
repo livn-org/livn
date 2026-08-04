@@ -16,8 +16,9 @@ from livn.io import IO
 from livn.types import Env as EnvProtocol
 
 if TYPE_CHECKING:
+    from livn.run import Run
     from livn.stimulus import Stimulus
-    from livn.types import Array, Float, Int, Model
+    from livn.types import Array, Float, Model
 
 world_comm = MPI.COMM_WORLD
 size = world_comm.size
@@ -240,14 +241,7 @@ class DistributedEnv(EnvProtocol):
         stimulus: Optional["Stimulus"] = None,
         dt: float = 0.025,
         **kwargs,
-    ) -> tuple[
-        Int[Array, "n_spiking_neuron_ids"] | None,
-        Float[Array, "n_spiking_neuron_times"] | None,
-        Int[Array, "n_voltage_neuron_ids"] | None,
-        Float[Array, "neuron_ids voltages"] | None,
-        Int[Array, "n_membrane_current_neuron_ids"] | None,
-        Float[Array, "neuron_ids membrane_currents"] | None,
-    ]:
+    ) -> "Run":
         raise NotImplementedError("Please use __call__ instead")
 
     def __call__(self, decoding, inputs=None, encoding=None, **kwargs):

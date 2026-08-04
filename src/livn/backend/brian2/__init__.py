@@ -5,6 +5,7 @@ import brian2 as b2
 import numpy as np
 from numpy.random import RandomState
 
+from livn.run import Run
 from livn.stimulus import Stimulus
 from livn.types import Env as EnvProtocol
 from livn.types import SynapticParam
@@ -80,7 +81,7 @@ class Env(EnvProtocol):
 
     @property
     def population_ranges(self):
-        return self.system.cells_meta_data.population_ranges
+        return self.system.population_ranges
 
     def init(self):
         import logging
@@ -467,14 +468,20 @@ class Env(EnvProtocol):
             ii.append(np.asarray(monitor.source.gids)[monitor.i[ts >= t_start]])
             tt.append(ts[ts >= t_start] - t_start)
 
+        run = (
+            Run(t0=t_start, duration=duration)
+            .add_spikes(concat(ii), concat(tt))
+            .add_voltage(concat(gids), concat(vv), dt=self.voltage_recording_dt)
+        )
+
         # membrane currents aligned to global gid order if enabled
         if len(self._membrane_monitors) == 0:
-            return concat(ii), concat(tt), concat(gids), concat(vv), None, None
+            return run
 
         # [T, n_neurons] matrix aligned to active neuron coordinates
         coords = self.active_neuron_coordinates()
         if coords is None or len(coords) == 0:
-            return concat(ii), concat(tt), concat(gids), concat(vv), None, None
+            return run
 
         all_gids = np.asarray(coords)[:, 0].astype(np.uint32)
         gid_to_index = {int(g): idx for idx, g in enumerate(all_gids)}
@@ -519,7 +526,7 @@ class Env(EnvProtocol):
 
         T = int(max(lengths) if lengths else 0)
         if T == 0:
-            return concat(ii), concat(tt), concat(gids), concat(vv), None, None
+            return run
 
         n_neurons = int(len(all_gids))
         currents = np.zeros((n_neurons * sections_per_neuron, T), dtype=np.float32)
@@ -565,7 +572,9 @@ class Env(EnvProtocol):
                         series = series[:T]
                     currents[idx, :] = series
 
-        return concat(ii), concat(tt), concat(gids), concat(vv), all_gids, currents
+        return run.add_current(
+            all_gids, currents, dt=self.membrane_current_recording_dt
+        )
 
     def _iter_stdp_synapses(self):
         for key, S in self._synapses.items():

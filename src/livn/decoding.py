@@ -684,14 +684,14 @@ class PerUnitFiringRate(Decoding):
 class PopulationFiringRates(Decoding):
     """Mean firing rate (Hz) per simulated population.
 
-    Buckets spike gids by ``system.cells_meta_data.population_ranges`` and divides
+    Buckets spike gids by ``system.population_ranges`` and divides
     each population's spike count by (simulated cells in that population x seconds).
     The denominator uses env.cells, so it is correct under ``selection()``
     subsampling. Returns ``{"rates_hz": {pop: Hz}}``.
     """
 
     def __call__(self, env, it, tt, iv, vv, im, mp):
-        ranges = env.system.cells_meta_data.population_ranges
+        ranges = env.system.population_ranges
         pops = sorted(ranges, key=lambda p: ranges[p][0])  # ascending start gid
         starts = np.array([ranges[p][0] for p in pops], dtype=np.int64)
         ends = np.array([ranges[p][0] + ranges[p][1] for p in pops], dtype=np.int64)

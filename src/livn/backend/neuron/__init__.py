@@ -11,6 +11,7 @@ import numpy as np
 from livn.backend.neuron import mechanisms
 from livn.backend.neuron.cells import CellBuilder
 from livn.backend.neuron.synapses import SynapseBuilder
+from livn.run import Run
 from livn.stimulus import Stimulus
 from livn.types import Env as EnvProtocol
 
@@ -440,9 +441,15 @@ class Env(EnvProtocol):
             self.pc.psolve(target_time)
         self.t = target_time
 
-        result = self._collect(self.active_gids(), current_time)
+        ii, tt, iv, v, im, mp = self._collect(self.active_gids(), current_time)
         self.duration = None
-        return result
+
+        return (
+            Run(t0=current_time, duration=duration)
+            .add_spikes(ii, tt)
+            .add_voltage(iv, v, dt=self.voltage_recording_dt)
+            .add_current(im, mp, dt=self.membrane_current_recording_dt)
+        )
 
     def _collect(self, active_gids, current_time: float):
         """Assemble recorded buffers into the (it, tt, iv, v, im, mp) format."""
@@ -947,7 +954,7 @@ class Env(EnvProtocol):
         local = set(self._input_vecstims.keys())
 
         by_pop: dict[str, list[int]] = defaultdict(list)
-        ranges = self.system.cells_meta_data.population_ranges
+        ranges = self.system.population_ranges
         for gid in local:
             for pop, (start, count) in ranges.items():
                 if start <= gid < start + count:

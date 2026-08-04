@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional, Union, Tuple
+from typing import TYPE_CHECKING, Optional, Union
 
+from livn.run import Run
 from livn.types import Env as EnvProtocol
 
 
@@ -11,7 +12,7 @@ if TYPE_CHECKING:
     from livn.io import IO
     from livn.system import System
     from livn.stimulus import Stimulus
-    from livn.types import Model, Int, Float, Array
+    from livn.types import Model
 
 
 class Env(EnvProtocol):
@@ -48,14 +49,7 @@ class Env(EnvProtocol):
         stimulus: Optional["Stimulus"] = None,
         dt: float = 0.025,
         **kwargs,
-    ) -> Tuple[
-        Int[Array, "n_spiking_neuron_ids"] | None,
-        Float[Array, "n_spiking_neuron_times"] | None,
-        Int[Array, "n_voltage_neuron_ids"] | None,
-        Float[Array, "n_neurons timestep"] | None,
-        Int[Array, "n_membrane_current_neuron_ids"] | None,
-        Float[Array, "n_neurons timestep"] | None,
-    ]:
+    ) -> Run:
         print("No LIVN_BACKEND selected, returning None")
 
-        return None, None, None, None, None, None
+        return Run(t0=self.t, duration=duration)

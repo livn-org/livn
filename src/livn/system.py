@@ -1080,6 +1080,10 @@ class System:
         return self._cells_meta_data
 
     @property
+    def population_ranges(self):
+        return self.cells_meta_data.population_ranges
+
+    @property
     def populations(self):
         return self.cells_meta_data.population_names
 
@@ -1415,6 +1419,10 @@ class ParallelSystem:
         if default is sentinel:
             raise FileNotFoundError(f"{self!r} has no files ({filepath})")
         return default
+
+    @property
+    def population_ranges(self) -> dict[types.PopulationName, tuple[int, int]]:
+        return self.cells_meta_data.population_ranges
 
     @property
     def populations(self) -> list[types.PopulationName]:

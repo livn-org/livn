@@ -209,6 +209,18 @@ def test_env_continued_runs(mpiexec_n, subworld):
     second_run = env.run(total_duration - split, stimulus=second_stimulus)
 
     continued_outputs = _combine_run_outputs(first_run, second_run, offset=split)
+
+    concatenated = first_run.concat(second_run)
+    assert concatenated.t0 == first_run.t0
+    assert concatenated.duration == total_duration
+    for combined, from_concat in zip(continued_outputs, concatenated):
+        if combined is None or from_concat is None:
+            assert combined is from_concat
+        else:
+            np.testing.assert_allclose(
+                np.asarray(combined), np.asarray(from_concat), rtol=1e-6, atol=1e-6
+            )
+
     continued_potential = None
     if continued_outputs[5] is not None:
         continued_potential = P.reduce_sum(

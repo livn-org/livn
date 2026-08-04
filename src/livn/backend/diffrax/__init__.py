@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import equinox as eqx
 
+from livn.run import Run
 from livn.stimulus import Stimulus
 from livn.types import Env as EnvProtocol
 
@@ -100,7 +101,12 @@ class Env(EnvProtocol):
 
         it, tt, iv, v, im, mp, yT = self.module.run(**run_kwargs)
 
-        return it, tt, iv, v, im, mp
+        return (
+            Run(t0=t0, duration=duration)
+            .add_spikes(it, tt)
+            .add_voltage(iv, v, dt=dt)
+            .add_current(im, mp, dt=dt)
+        )
 
     def clear_recordings(self):
         return self

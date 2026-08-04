@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from torch import TorchTensor
 
     from livn.io import IO
+    from livn.run import Run
     from livn.stimulus import Stimulus
     from livn.system import CellsMetaData, Projection
     from livn.types import Model
@@ -118,6 +119,9 @@ class System(Protocol):
 
     cells_meta_data: "CellsMetaData"
     """Population names, gid ranges and per-population attribute info"""
+
+    population_ranges: dict[PopulationName, Tuple[int, int]]
+    """``{population: (start_gid, count)}``, from ``cells_meta_data``"""
 
     connections_config: dict
     """``{"synapses": {post: {pre: config}}}`` or empty when unconnected"""
@@ -362,24 +366,19 @@ class Env(Protocol):
         stimulus: Optional["Stimulus"] = None,
         dt: float = 0.025,
         **kwargs,
-    ) -> Tuple[
-        Int[Array, "n_spiking_neuron_ids"] | None,
-        Float[Array, "n_spiking_neuron_times"] | None,
-        Int[Array, "n_voltage_neuron_ids"] | None,
-        Float[Array, "n_neurons timestep"] | None,
-        Int[Array, "n_membrane_current_neuron_ids"] | None,
-        Float[Array, "n_neurons timestep"] | None,
-    ]:
+    ) -> "Run":
         """Run the simulation
 
         Returns:
-            Tuple of:
-            - Spiking neuron ids
-            - Spike times
-            - Voltage recording neuron ids
-            - Voltage traces with shape [n_neurons, timestep]
-            - Membrane current recording neuron ids
-            - Membrane current traces with shape [n_neurons, timestep]
+            A :class:`~livn.run.Run` exposing:
+            - ``spike_ids``: Spiking neuron ids
+            - ``spike_times``: Spike times
+            - ``voltage_ids``: Voltage recording neuron ids
+            - ``voltage``: Voltage traces with shape [n_neurons, timestep]
+            - ``current_ids``: Membrane current recording neuron ids
+            - ``current``: Membrane current traces with shape [n_neurons, timestep]
+
+            It also unpacks as a six-tuple in exactly that order.
         """
         ...
 

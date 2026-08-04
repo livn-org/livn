@@ -26,6 +26,7 @@ A backend module must export an `Env` class that implements the [`Env` protocol]
 # my_package/backend.py
 
 from livn.types import Env as EnvProtocol
+from livn.run import Run
 from livn.stimulus import Stimulus
 
 class Env(EnvProtocol):
@@ -38,8 +39,13 @@ class Env(EnvProtocol):
         return self
 
     def run(self, duration, stimulus=None, dt=0.025, **kwargs):
-        # Run simulation, return (spike_ids, spike_times, voltage_ids, voltages, current_ids, currents)
-        ...
+        # Run the simulation and assemble the recordings into a Run
+        return (
+            Run(t0=t_start, duration=duration)
+            .add_spikes(spike_ids, spike_times)
+            .add_voltage(voltage_ids, voltages, dt=self.voltage_recording_dt)
+            .add_current(current_ids, currents, dt=self.membrane_current_recording_dt)
+        )
 
     def record_spikes(self, population=None):
         ...
@@ -55,6 +61,20 @@ class Env(EnvProtocol):
 ::: tip
 Your backend can reuse `livn.types`, `livn.stimulus`, `livn.system`, etc., only the simulation engine needs to be custom.
 :::
+
+### What `run` must return
+
+`run` returns a [`Run`](/guide/concepts/env#running-a-simulation). `add_spikes` / `add_voltage` / `add_current` cover the three standard channels and are a no-op when the recording was never enabled, so there is nothing to branch on. They are thin wrappers over `add`, which is what you use for anything else your model records:
+
+```python
+from livn.run import Run
+
+run = Run(t0=t_start, duration=duration)
+run = run.add_spikes(spike_ids, spike_times)
+run = run.add("threshold", threshold_ids, thresholds, dt=0.1)
+```
+
+A channel that was never added reads back as `None`, so it allocates nothing. Times are stored relative to `t0`, meaning the spike times of a continued run start at zero again.
 
 ## What you may rely on from `system`
 

@@ -37,19 +37,17 @@ print(f" {len(weights_before)} STDP-capable synapses")
 print(f"Phase 2: Training ({TRAINING_MS} ms, STDP + synaptic scaling)")
 env.enable_plasticity()
 
-it_train_all, t_train_all = [], []
-iv_train_all, v_train_all = [], []
+training = None
 remaining = TRAINING_MS
 while remaining > 0:
     chunk = min(100, remaining)
-    it_chunk, t_chunk, iv_chunk, v_chunk, *_ = env.run(chunk)
-    it_train_all.append(np.asarray(it_chunk))
-    t_train_all.append(np.asarray(t_chunk))
+    run = env.run(chunk)
+    training = run if training is None else training.concat(run)
     env.normalize_weights()
     remaining -= chunk
 
-it_train = np.concatenate(it_train_all) if it_train_all else np.array([])
-t_train = np.concatenate(t_train_all) if t_train_all else np.array([])
+it_train = training.spike_ids
+t_train = training.spike_times
 
 weights_after_training = env.get_weights()
 

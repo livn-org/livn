@@ -65,5 +65,7 @@ def test_recompile_and_smoke(case, mpiexec_n):
     env.record_spikes()
     result = env.run(100.0, root_only=False)
 
-    assert isinstance(result, tuple) and len(result) == 6
+    assert len(result) == 6
+    it, tt, _iv, _v, _im, _mp = result
+    assert it is result.spike_ids and tt is result.spike_times
     assert env.t >= 100.0

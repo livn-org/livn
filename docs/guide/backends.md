@@ -77,6 +77,8 @@ env = make("EI2")
 # Gradients through the simulation are now available
 ```
 
+Under this backend the [`Run`](/guide/concepts/env#running-a-simulation) returned by `env.run()` is a registered pytree, so it can cross a `jit`, `vmap` or `grad` boundary as a return value. Its arrays are the leaves while `t0`, `duration` and `dt` are static metadata and must be concrete values rather than tracers.
+
 See the [Differentiable Simulation](/examples/differentiable) example for a full walkthrough.
 
 ## NEURON
