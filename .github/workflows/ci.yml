@@ -17,8 +17,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
-      - run: uvx ruff format --check
-      - run: uvx ruff check
+      - run: uv run --frozen --only-group dev ruff format --check
+      - run: uv run --frozen --only-group dev ruff check
 
   download-ei1:
     runs-on: ubuntu-latest
