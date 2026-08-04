@@ -90,3 +90,16 @@ class Env(EnvProtocol):
         self.io = io if io is not None else self.system.default_io()
 ```
 
+What the resolved object guarantees is the [`System` protocol](/guide/concepts/system):
+
+| member | |
+|---|---|
+| `name`, `num_neurons`, `gids` | identity and size |
+| `populations`, `population_ranges`, `population_count(p)` | population layout |
+| `neuron_coordinates`, `coordinate_array(p)`, `transform_coordinates(f)` | geometry |
+| `connections_config`, `projection_array(pre, post)`, `connectivity_matrix()` | connectivity, empty for an unconnected system |
+| `default_io()`, `default_model()` | what `Env` falls back to |
+| `selection(spec)` | cell subselection |
+
+Anything else a concrete system exposes is an implementation detail of that class and not something to rely on.
+

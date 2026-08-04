@@ -1083,6 +1083,9 @@ class System:
     def population_ranges(self):
         return self.cells_meta_data.population_ranges
 
+    def population_count(self, population: types.PopulationName) -> int:
+        return self.cells_meta_data.population_count(population)
+
     @property
     def populations(self):
         return self.cells_meta_data.population_names
@@ -1423,6 +1426,9 @@ class ParallelSystem:
     @property
     def population_ranges(self) -> dict[types.PopulationName, tuple[int, int]]:
         return self.cells_meta_data.population_ranges
+
+    def population_count(self, population: types.PopulationName) -> int:
+        return self.cells_meta_data.population_count(population)
 
     @property
     def populations(self) -> list[types.PopulationName]:

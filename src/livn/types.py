@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from livn.io import IO
     from livn.run import Run
     from livn.stimulus import Stimulus
-    from livn.system import CellsMetaData, Projection
+    from livn.system import Projection
     from livn.types import Model
 
     Array = Union[TorchTensor, ndarray, JaxArray, TfTensor]
@@ -117,17 +117,18 @@ class System(Protocol):
     gids: Int[Array, "n_neurons"]
     """Global cell ids across all populations"""
 
-    cells_meta_data: "CellsMetaData"
-    """Population names, gid ranges and per-population attribute info"""
-
     population_ranges: dict[PopulationName, Tuple[int, int]]
-    """``{population: (start_gid, count)}``, from ``cells_meta_data``"""
+    """``{population: (start_gid, count)}`` for every population"""
 
     connections_config: dict
     """``{"synapses": {post: {pre: config}}}`` or empty when unconnected"""
 
     neuron_coordinates: Float[Array, "n_neurons ixyz=4"]
     """``[gid, x, y, z]`` rows for every cell"""
+
+    def population_count(self, population: PopulationName) -> int:
+        """Number of cells in one population"""
+        ...
 
     def default_io(self, comm: Optional["MPI.Intracomm"] = None) -> "IO":
         """IO device to use when the environment is constructed without one"""

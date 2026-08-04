@@ -154,7 +154,7 @@ def test_distributed_env_attribute_access(mpiexec_n):
     num_channels_pre = env.io.num_channels
     assert num_channels_pre > 0
 
-    assert env.system.cells_meta_data is not None
+    assert len(env.system.population_ranges) > 0
     assert len(env.system.populations) > 0
     assert env.system.num_neurons > 0
 

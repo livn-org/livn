@@ -401,7 +401,7 @@ class TestSystemWithPyfive:
             coords = system.coordinate_array(pop)
             assert coords.ndim == 2
             assert coords.shape[1] == 4  # gid, x, y, z
-            assert coords.shape[0] == system.cells_meta_data.population_count(pop)
+            assert coords.shape[0] == system.population_count(pop)
 
     def test_neuron_coordinates(self):
         from livn.system import System
@@ -574,7 +574,7 @@ class TestParallelSystem:
         assert system.populations == ["EXC", "INH"]
         assert system.num_neurons == 8
         # gids run contiguously in the order the populations were given
-        assert system.cells_meta_data.population_ranges == {
+        assert system.population_ranges == {
             "EXC": (0, 3),
             "INH": (3, 5),
         }

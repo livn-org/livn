@@ -105,11 +105,11 @@ class Env(EnvProtocol):
         ignored = set()
         if hasattr(self.model, "ignored_populations"):
             ignored = set(self.model.ignored_populations())
-        population_ranges = self.system.cells_meta_data.population_ranges
-        for population_name in self.system.cells_meta_data.population_names:
+        population_ranges = self.system.population_ranges
+        for population_name in self.system.populations:
             if population_name in ignored:
                 continue
-            n = self.system.cells_meta_data.population_count(population_name)
+            n = self.system.population_count(population_name)
             offset = population_ranges[population_name][0]
             coordinates = self.system.coordinate_array(population_name)
 
@@ -149,7 +149,7 @@ class Env(EnvProtocol):
             for pre, synapse in v.items():
                 if pre in ignored:
                     continue
-                population_ranges = self.system.cells_meta_data.population_ranges
+                population_ranges = self.system.population_ranges
 
                 # Build connectivity arrays
                 all_i = []

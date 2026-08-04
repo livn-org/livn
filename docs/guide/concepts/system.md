@@ -42,7 +42,7 @@ system = System("./systems/graphs/EI2")
 # Cell populations
 system.populations          # ['EXC', 'INH']
 system.num_neurons          # 10
-system.cells_meta_data      # CellsMetaData with population ranges
+system.population_ranges    # {'EXC': (0, 8), 'INH': (8, 2)}
 
 # Spatial layout
 system.neuron_coordinates   # [n_neurons, 4] array of [gid, x, y, z]
@@ -68,10 +68,9 @@ print(coords[0])  # [0, 125.3, 450.7, 175.0]
 Neurons are organized into named populations (e.g., `"EXC"`, `"INH"`). Each population has a contiguous GID range:
 
 ```python
-meta = system.cells_meta_data
-meta.population_names        # ['EXC', 'INH']
-meta.population_ranges       # {'EXC': (0, 7), 'INH': (7, 3)}
-meta.population_count("EXC") # 7
+system.populations             # ['EXC', 'INH']
+system.population_ranges       # {'EXC': (0, 7), 'INH': (7, 3)}
+system.population_count("EXC") # 7
 ```
 
 ### Connectivity
