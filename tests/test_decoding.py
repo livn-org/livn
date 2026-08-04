@@ -25,7 +25,9 @@ def env_response(request):
 
     env = Env(os.environ["LIVN_TEST_SYSTEM"])
 
-    response = request.config.cache.get("livn/env/response-" + env.system.name, None)
+    cache_key = f"livn/env/response-{backend()}-{env.system.name}"
+
+    response = request.config.cache.get(cache_key, None)
     if response is None:
         env.init()
 
@@ -40,11 +42,14 @@ def env_response(request):
                 inputs[50 + r, c] = 1.5
 
         stimulus = env.cell_stimulus(inputs)
-        response = env.run(t_end, stimulus=stimulus)
+        response = [np.asarray(r) for r in env.run(t_end, stimulus=stimulus)]
 
-        request.config.cache.set(
-            "livn/env/response-" + env.system.name, [r.tolist() for r in response]
-        )
+        request.config.cache.set(cache_key, [r.tolist() for r in response])
+
+        # The neuron backend keeps this env's NetCons and gid registrations in
+        # global NEURON state until close() and leaving them behind segfaults
+        # the next env's finitialize() inside NetCvode::init_events().
+        env.close()
 
     return tuple([np.array(r) for r in response])
 
@@ -69,9 +74,14 @@ def test_slice_decoding(env_response):
     )
     orig_ii, orig_tt, orig_iv, orig_v, orig_im, orig_m = env_response
 
-    # spike times
-    assert tt[tt < start].shape[0] == 0
-    assert tt[tt >= start + duration].shape[0] == 0
+    # spike times are re-based onto the window, so they land in [0, duration)
+    assert tt[tt < 0].shape[0] == 0
+    assert tt[tt >= duration].shape[0] == 0
+    # and exactly the spikes inside the window survive
+    expected_spikes = orig_tt[(orig_tt >= start) & (orig_tt < start + duration)].shape[
+        0
+    ]
+    assert tt.shape[0] == expected_spikes
 
     expected_time_steps = int(duration / recording_dt)
     assert v.shape[0] == orig_v.shape[0]

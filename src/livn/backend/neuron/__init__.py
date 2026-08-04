@@ -55,7 +55,12 @@ class Env(EnvProtocol):
         self.decoding = None
         self.duration = None
 
-        # Compile mechanisms
+        # Compile mechanisms: rank 0 builds, the rest wait on it.
+        #
+        # NB this barrier is collective over ``comm``, so every rank sharing it
+        # must reach this constructor. Passing a communicator that only some of
+        # its ranks construct an Env on (e.g. COMM_WORLD from one rank while the
+        # others hold per-subworld communicators) deadlocks here.
         mech_dir = self.model.neuron_mechanisms_directory()
         if mech_dir is not None:
             if self.comm.Get_rank() == 0:
