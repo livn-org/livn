@@ -24,7 +24,8 @@ def test_run_a_simulation():
 
 
 @pytest.mark.skipif(
-    not os.getenv("LIVN_BACKEND"), reason="no simulation backend selected"
+    os.getenv("LIVN_BACKEND") != "neuron",
+    reason="the example pins LIVN_BACKEND=neuron",
 )
 @pytest.mark.skipif(ON_CI, reason="predefined system not available on CI")
 def test_parallel_simulation():

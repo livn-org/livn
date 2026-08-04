@@ -267,15 +267,23 @@ class SynapseBuilder:
                 continue
             cells = cells_by_pop[post]
             post_id = self._pop_id(post)
-            placement = self._read_placement(post, set(cells.keys()))
 
-            pre_pops = list(connections_config.get(post, {}).keys())
-            for pre in pre_pops:
+            active_by_pre = {}
+            for pre in connections_config.get(post, {}):
                 if pre in self._ignored:
                     continue
                 active = self._mechanisms_for(post, pre)
-                if not active:
-                    continue
+                if active:
+                    active_by_pre[pre] = active
+
+            # ``connections_config`` is replicated on every rank, so deciding
+            # here is rank-consistent and skips the collective placement read
+            # entirely for an unconnected population (which has no H5 to read)
+            if not active_by_pre:
+                continue
+            placement = self._read_placement(post, set(cells.keys()))
+
+            for pre, active in active_by_pre.items():
                 pre_id = self._pop_id(pre)
                 is_input = pre not in simulated
 

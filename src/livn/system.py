@@ -6,7 +6,15 @@ import pathlib
 import random
 import numpy
 from functools import cached_property
-from typing import TYPE_CHECKING, Callable, Iterator, Optional, Any, Sequence
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Iterator,
+    Mapping,
+    Optional,
+    Sequence,
+)
 
 from pydantic import BaseModel
 import pyfive
@@ -152,6 +160,106 @@ def make(name: str = "EI1") -> "System":
     system = predefined(name)
 
     return System(system)
+
+
+def resolve(
+    spec: "System | ParallelSystem | str | int",
+    comm: Optional["MPI.Intracomm"] = None,
+) -> "System | ParallelSystem":
+    """Resolve an ``Env(system=...)`` argument into a system object.
+
+    ``int`` -> :class:`ParallelSystem` with that many unconnected cells,
+    ``{population: count}`` -> :class:`ParallelSystem` over those populations,
+    ``str`` -> :class:`System` loaded from that directory,
+    anything else is assumed to satisfy the :class:`livn.types.System` protocol
+    and is returned unchanged.
+    """
+    if isinstance(spec, bool):
+        raise TypeError("system must be an int, a path or a System, not a bool")
+    if isinstance(spec, (int, numpy.integer, Mapping)):
+        return ParallelSystem(spec, comm=comm)
+    if isinstance(spec, (str, os.PathLike)):
+        return System(os.fspath(spec), comm=comm)
+    if not hasattr(spec, "populations"):
+        raise TypeError(
+            f"cannot resolve {type(spec).__name__} into a system; expected a number "
+            "of neurons, a system directory, or an object implementing the System "
+            "protocol"
+        )
+    return spec
+
+
+def selection_from_ranges(
+    ranges: dict[types.PopulationName, tuple[int, int]],
+    spec,
+    populations: "Sequence[str] | None" = None,
+    seed: int | None = 123,
+    method: str = "first",
+) -> "dict[str, Any] | None":
+    """Resolve a subselection spec against ``{population: (start, count)}`` ranges."""
+    if spec is None:
+        return None
+
+    # deliberately real numpy since selections index host-side gid arrays and must
+    # not depend on whichever array library the active backend pulled in
+    import numpy as npn
+
+    if populations is None:
+        populations = list(ranges.keys())
+    pops = [p for p in populations if p in ranges]
+
+    counts: dict[str, int] = {}
+    explicit: dict[str, npn.ndarray] = {}
+
+    def _frac_count(f: float, size: int) -> int:
+        if f <= 0:
+            return 0
+        if f >= 1:
+            return size
+        return max(1, int(round(f * size)))
+
+    if isinstance(spec, dict):
+        for p in pops:
+            if p not in spec:
+                continue
+            v = spec[p]
+            if isinstance(v, (list, tuple, npn.ndarray)):
+                explicit[p] = npn.asarray(sorted(int(g) for g in v), dtype=npn.int64)
+            elif isinstance(v, float):
+                counts[p] = _frac_count(v, ranges[p][1])
+            else:
+                counts[p] = min(int(v), ranges[p][1])
+    elif isinstance(spec, float):
+        for p in pops:
+            counts[p] = _frac_count(spec, ranges[p][1])
+    elif isinstance(spec, int):
+        total_size = sum(ranges[p][1] for p in pops)
+        if total_size == 0:
+            return {}
+        for p in pops:
+            counts[p] = min(ranges[p][1], int(round(spec * ranges[p][1] / total_size)))
+    else:
+        raise TypeError(f"unsupported selection spec: {type(spec).__name__}")
+
+    rng = npn.random.default_rng(seed)
+    out: dict[str, npn.ndarray] = {}
+    for p in pops:
+        if p in explicit:
+            out[p] = explicit[p]
+            continue
+        k = counts.get(p, 0)
+        if k <= 0:
+            continue
+        start, count = ranges[p]
+        k = min(k, count)
+        if method == "random":
+            gids = npn.sort(
+                rng.choice(count, size=k, replace=False).astype(npn.int64) + start
+            )
+        else:  # "first" -> contiguous block
+            gids = npn.arange(start, start + k, dtype=npn.int64)
+        out[p] = gids
+    return out
 
 
 # --- Generic H5 readers (backend-agnostic) ---
@@ -1010,68 +1118,13 @@ class System:
         -------
         ``{population: np.ndarray[gid]}`` or ``None``.
         """
-        if spec is None:
-            return None
-
-        ranges = self.cells_meta_data.population_ranges
-        if populations is None:
-            populations = self.populations
-        pops = [p for p in populations if p in ranges]
-
-        counts: dict[str, int] = {}
-        explicit: dict[str, np.ndarray] = {}
-
-        def _frac_count(f: float, size: int) -> int:
-            if f <= 0:
-                return 0
-            if f >= 1:
-                return size
-            return max(1, int(round(f * size)))
-
-        if isinstance(spec, dict):
-            for p in pops:
-                if p not in spec:
-                    continue
-                v = spec[p]
-                if isinstance(v, (list, tuple, np.ndarray)):
-                    explicit[p] = np.asarray(sorted(int(g) for g in v), dtype=np.int64)
-                elif isinstance(v, float):
-                    counts[p] = _frac_count(v, ranges[p][1])
-                else:
-                    counts[p] = min(int(v), ranges[p][1])
-        elif isinstance(spec, float):
-            for p in pops:
-                counts[p] = _frac_count(spec, ranges[p][1])
-        elif isinstance(spec, int):
-            total_size = sum(ranges[p][1] for p in pops)
-            if total_size == 0:
-                return {}
-            for p in pops:
-                counts[p] = min(
-                    ranges[p][1], int(round(spec * ranges[p][1] / total_size))
-                )
-        else:
-            raise TypeError(f"unsupported selection spec: {type(spec).__name__}")
-
-        rng = np.random.default_rng(seed)
-        out: dict[str, np.ndarray] = {}
-        for p in pops:
-            if p in explicit:
-                out[p] = explicit[p]
-                continue
-            k = counts.get(p, 0)
-            if k <= 0:
-                continue
-            start, count = ranges[p]
-            k = min(k, count)
-            if method == "random":
-                gids = np.sort(
-                    rng.choice(count, size=k, replace=False).astype(np.int64) + start
-                )
-            else:  # "first" -> contiguous block
-                gids = np.arange(start, start + k, dtype=np.int64)
-            out[p] = gids
-        return out
+        return selection_from_ranges(
+            self.cells_meta_data.population_ranges,
+            spec,
+            populations=self.populations if populations is None else populations,
+            seed=seed,
+            method=method,
+        )
 
     @property
     def neuron_coordinates(self) -> types.Float[types.Array, "n_coords ixyz=4"]:
@@ -1210,6 +1263,278 @@ class System:
             "num_neurons": num_neurons,
             "num_projections": num_projections,
             "population_counts": population_counts,
+        }
+
+
+class ParallelSystem:
+    """A number of unconnected neurons, simulated independently in parallel
+
+    Implements the :class:`livn.types.System` protocol without an H5 graph.
+    Use it to simulate a single cell, or N cells that never interact::
+
+        env = Env(64).init()   # 64 independent cells
+
+    Arguments:
+        num_neurons: Either a total cell count, which puts every cell in
+            ``"EXC"`` (``3`` is short for ``{"EXC": 3}``), or a
+            ``{population: count}`` mapping for several populations, e.g.
+            ``{"EXC": 3, "INH": 5}``. Gids are assigned contiguously in the
+            order the populations are given. Models key their cell factories by
+            population name, so each name has to be one the model defines.
+        coordinates: Where the cells sit, as either
+
+            - a ``float`` spacing in um, laying the cells out along x in gid
+              order (the default ``0.0`` puts every cell at the origin),
+            - an ``[n_neurons, 3]`` array of ``x, y, z`` (or ``[n_neurons, 4]``
+              of ``gid, x, y, z``, whose gids may be arbitrary as long as they
+              are whole and unique), or
+            - a callable taking the total cell count and returning either of
+              the above.
+
+        name: Identifier that keys per-system model defaults.
+    """
+
+    def __init__(
+        self,
+        num_neurons: int | Mapping[types.PopulationName, int] = 1,
+        coordinates: float | Callable | Any = 0.0,
+        name: str = "ParallelSystem",
+        comm: Optional["MPI.Intracomm"] = None,
+    ):
+        if isinstance(num_neurons, bool):
+            raise TypeError("num_neurons must be an int or a mapping, not a bool")
+        if isinstance(num_neurons, (int, numpy.integer)):
+            counts = {"EXC": int(num_neurons)}
+        elif isinstance(num_neurons, Mapping):
+            counts = {str(p): int(c) for p, c in num_neurons.items()}
+            if not counts:
+                raise ValueError("num_neurons must name at least one population")
+        else:
+            raise TypeError(
+                f"num_neurons must be an int or a {{population: count}} mapping, "
+                f"not {type(num_neurons).__name__}"
+            )
+        for p, count in counts.items():
+            if count < 0:
+                raise ValueError(f"population {p!r} has a negative count ({count})")
+
+        self.population_counts = counts
+        self.num_neurons = sum(counts.values())
+        if self.num_neurons < 1:
+            raise ValueError(
+                f"num_neurons must be >= 1 in total, not {self.num_neurons}"
+            )
+
+        self.name = name
+        self.comm = comm
+        self.uri = None
+
+        populations = list(self.population_counts)
+
+        self.files: dict[str, str] = {}
+        self.connections_config = {"synapses": {p: {} for p in populations}}
+        self.synapses_config = {
+            "cell_types": {
+                p: {
+                    "mechanism": None,
+                    "synapses": {},
+                    "synapse_type": "excitatory",
+                }
+                for p in populations
+            }
+        }
+
+        ranges: dict[types.PopulationName, tuple[int, int]] = {}
+        start = 0
+        for p, count in self.population_counts.items():
+            ranges[p] = (start, count)
+            start += count
+
+        self.cells_meta_data = CellsMetaData(
+            population_names=populations,
+            population_ranges=ranges,
+            cell_attribute_info={p: {} for p in populations},
+        )
+
+        # resolve the coordinate spec into [gid, x, y, z] rows
+        if callable(coordinates):
+            coordinates = coordinates(self.num_neurons)
+
+        gids = np.arange(self.num_neurons, dtype=float).reshape(-1, 1)
+
+        if isinstance(
+            coordinates, (int, float, numpy.integer, numpy.floating)
+        ) and not isinstance(coordinates, bool):
+            zeros = np.zeros((self.num_neurons, 1))
+            self._neuron_coordinates = np.concatenate(
+                [gids, gids * float(coordinates), zeros, zeros], axis=1
+            )
+            return
+
+        array = np.asarray(coordinates, dtype=float)
+        if array.ndim != 2 or array.shape[1] not in (3, 4):
+            raise ValueError(
+                "coordinates must be a spacing, an [n_neurons, 3] array of x, y, z "
+                "or an [n_neurons, 4] array of gid, x, y, z; got shape "
+                f"{tuple(array.shape)}"
+            )
+        if array.shape[0] != self.num_neurons:
+            raise ValueError(
+                f"expected {self.num_neurons} coordinate rows, one per neuron, "
+                f"got {array.shape[0]}"
+            )
+
+        if array.shape[1] == 3:
+            self._neuron_coordinates = np.concatenate([gids, array], axis=1)
+            return
+
+        gid_column = array[:, 0]
+        if not bool(np.array_equal(gid_column, np.floor(gid_column))):
+            raise ValueError("GID column of a coordinates array must contain integers")
+        if len(numpy.unique(numpy.asarray(gid_column))) != self.num_neurons:
+            raise ValueError("GID column of a coordinates array must be unique")
+        self._neuron_coordinates = array
+
+    def __repr__(self):
+        return f"ParallelSystem({self.population_counts!r})"
+
+    def default_io(self, comm=None) -> "IO":
+        from livn.io import IO
+
+        return IO()
+
+    def default_model(self, comm=None) -> "Model":
+        from livn.models.rcsd import ReducedCalciumSomaDendrite
+
+        return ReducedCalciumSomaDendrite()
+
+    def default_params(self, comm=None) -> dict | None:
+        return None
+
+    def load_file(self, filepath: str | list[str], default: Any = sentinel, **kwargs):
+        if default is sentinel:
+            raise FileNotFoundError(f"{self!r} has no files ({filepath})")
+        return default
+
+    @property
+    def populations(self) -> list[types.PopulationName]:
+        return self.cells_meta_data.population_names
+
+    @property
+    def weight_names(self) -> list[str]:
+        return []
+
+    @property
+    def neuron_coordinates(self) -> types.Float[types.Array, "n_coords ixyz=4"]:
+        return self._neuron_coordinates
+
+    @property
+    def gids(self) -> types.Int[types.Array, "n_neurons"]:
+        if _USES_JAX:
+            return np.asarray(self._neuron_coordinates[:, 0], dtype=int)
+
+        return self._neuron_coordinates[:, 0].astype(int)
+
+    @property
+    def bounding_box(self) -> types.Float[types.Array, "2 xyz=3"]:
+        coordinates = self._neuron_coordinates[:, 1:4]
+        padding = 100.0
+        return np.stack(
+            [coordinates.min(axis=0) - padding, coordinates.max(axis=0) + padding]
+        )
+
+    @property
+    def center_point(self) -> types.Float[types.Array, "xyz=3"]:
+        bb = self.bounding_box
+        return (bb[0] + bb[1]) / 2.0
+
+    def _population_slice(self, population: types.PopulationName) -> slice:
+        try:
+            start, count = self.cells_meta_data.population_ranges[population]
+        except KeyError:
+            raise KeyError(
+                f"{self!r} has no population {population!r}; "
+                f"expected one of {list(self.population_counts)}"
+            ) from None
+        return slice(start, start + count)
+
+    def coordinates(
+        self, population: types.PopulationName
+    ) -> Iterator[tuple[int, tuple[float, float, float]]]:
+        for row in self._neuron_coordinates[self._population_slice(population)]:
+            yield int(row[0]), (float(row[1]), float(row[2]), float(row[3]))
+
+    def coordinate_array(
+        self, population: types.PopulationName, all: bool = True
+    ) -> types.Float[types.Array, "n_coords cxyz=4"]:
+        return self._neuron_coordinates[self._population_slice(population)]
+
+    def transform_coordinates(
+        self,
+        transform: Callable,
+        populations: list[str] | None = None,
+        all: bool = True,
+    ) -> types.Float[types.Array, "n_coords ixyz=4"]:
+        if populations is None:
+            populations = self.populations
+        return np.vstack(
+            [
+                transform(self.coordinate_array(p, all=all), population=p)
+                for p in populations
+            ]
+        )
+
+    def selection(
+        self,
+        spec,
+        populations: "Sequence[str] | None" = None,
+        seed: int | None = 123,
+        method: str = "first",
+    ) -> "dict[str, Any] | None":
+        """Resolve a cell subselection; see :meth:`System.selection`"""
+        return selection_from_ranges(
+            self.cells_meta_data.population_ranges,
+            spec,
+            populations=self.populations if populations is None else populations,
+            seed=seed,
+            method=method,
+        )
+
+    def projections(
+        self,
+        pre: types.PreSynapticPopulationName,
+        post: types.PostSynapticPopulationName,
+    ) -> Iterator[tuple[int, tuple[list[int], Projection]]]:
+        return iter(())
+
+    def projection_array(
+        self,
+        pre: types.PreSynapticPopulationName,
+        post: types.PostSynapticPopulationName,
+        all: bool = True,
+    ) -> list[tuple[int, tuple[list[int], Projection]]]:
+        return []
+
+    def synapses(
+        self,
+        population: types.PostSynapticPopulationName,
+        node_allocation: set[int] | None = None,
+    ):
+        return iter(())
+
+    def connectivity_matrix(
+        self, weights: dict | None = None, seed=123
+    ) -> types.Float[types.Array, "num_neurons num_neurons"]:
+        # use numpy, not jax
+        import numpy as npn
+
+        return npn.zeros([self.num_neurons, self.num_neurons], dtype=npn.float32)
+
+    def summary(self) -> dict[str, int | dict[str, int]]:
+        return {
+            "num_neurons": self.num_neurons,
+            "num_projections": 0,
+            "population_counts": dict(self.population_counts),
         }
 
 

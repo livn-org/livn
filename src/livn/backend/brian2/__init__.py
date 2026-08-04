@@ -21,18 +21,16 @@ if TYPE_CHECKING:
 class Env(EnvProtocol):
     def __init__(
         self,
-        system: Union["System", str],
+        system: Union["System", str, int],
         model: Union["Model", None] = None,
         io: Union["IO"] = None,
         seed: int | None = 123,
         comm: Optional["MPI.Intracomm"] = None,
         subworld_size: int | None = None,
     ):
-        if isinstance(system, str):
-            from livn.system import System
+        from livn.system import resolve
 
-            system = System(system, comm=comm)
-        self.system = system
+        self.system = resolve(system, comm=comm)
         if model is None:
             model = self.system.default_model()
         self.model = model
@@ -112,18 +110,26 @@ class Env(EnvProtocol):
                 continue
             n = self.system.cells_meta_data.population_count(population_name)
             offset = population_ranges[population_name][0]
+            coordinates = self.system.coordinate_array(population_name)
 
             population = self.model.brian2_population_group(
                 population_name=population_name,
                 n=n,
                 offset=offset,
-                coordinates=self.system.coordinate_array(population_name),
+                coordinates=coordinates,
                 prng=self.prng,
             )
+
+            if coordinates is not None and len(coordinates) == n:
+                gids = np.asarray(coordinates[:, 0], dtype=np.int64)
+            else:
+                gids = np.arange(offset, offset + n, dtype=np.int64)
 
             population.add_attribute("kind")
             population.add_attribute("gid_offset")
             population.gid_offset = offset
+            population.add_attribute("gids")
+            population.gids = gids
             population.kind = "excitatory" if population_name == "EXC" else "inhibitory"
 
             self._network.add(population)
@@ -439,12 +445,7 @@ class Env(EnvProtocol):
         gids = []
         vv = []
         for population, monitor in self._voltage_monitors.items():
-            gids.append(
-                np.arange(
-                    monitor.source.gid_offset,
-                    monitor.source.gid_offset + len(monitor.source),
-                )
-            )
+            gids.append(np.asarray(monitor.source.gids))
             vv.append(
                 monitor.v[:, int(t_start / self._voltage_monitors_dt[population]) :]
                 / b2.mV
@@ -463,7 +464,7 @@ class Env(EnvProtocol):
         tt = []
         for population, monitor in self._spike_monitors.items():
             ts = monitor.t / b2.ms
-            ii.append(monitor.i[ts >= t_start] + monitor.source.gid_offset)
+            ii.append(np.asarray(monitor.source.gids)[monitor.i[ts >= t_start]])
             tt.append(ts[ts >= t_start] - t_start)
 
         # membrane currents aligned to global gid order if enabled
@@ -524,7 +525,7 @@ class Env(EnvProtocol):
         currents = np.zeros((n_neurons * sections_per_neuron, T), dtype=np.float32)
 
         for population, data in per_pop_data.items():
-            base = int(self._populations[population].gid_offset)
+            pop_gids = np.asarray(self._populations[population].gids)
 
             if isinstance(data, tuple):
                 # Two-compartment: interleave soma/dend (soma0, dend0, soma1, dend1, ...)
@@ -533,7 +534,7 @@ class Env(EnvProtocol):
                     continue
                 n_pop = data_s.shape[0]
                 for k in range(n_pop):
-                    gid = base + k
+                    gid = pop_gids[k]
                     idx = gid_to_index.get(int(gid))
                     if idx is None:
                         continue
@@ -551,7 +552,7 @@ class Env(EnvProtocol):
                     continue
                 n_pop = data.shape[0]
                 for k in range(n_pop):
-                    gid = base + k
+                    gid = pop_gids[k]
                     idx = gid_to_index.get(int(gid))
                     if idx is None:
                         continue

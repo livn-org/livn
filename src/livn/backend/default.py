@@ -17,18 +17,16 @@ if TYPE_CHECKING:
 class Env(EnvProtocol):
     def __init__(
         self,
-        system: Union["System", str],
+        system: Union["System", str, int],
         model: Union["Model", None] = None,
         io: Union["IO"] = None,
         seed: int | None = 123,
         comm: Optional["MPI.Intracomm"] = None,
         subworld_size: int | None = None,
     ):
-        if isinstance(system, str):
-            from livn.system import System
+        from livn.system import resolve
 
-            system = System(system, comm=comm)
-        self.system = system
+        self.system = resolve(system, comm=comm)
         if model is None:
             model = self.system.default_model()
         self.model = model

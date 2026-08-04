@@ -58,6 +58,32 @@ def pytest_unconfigure(config):
         reporter.close()
 
 
+def pytest_collection_modifyitems(config, items):
+    """Skip the whole run when the neuron backend cannot compile its mechanisms.
+
+    Every neuron test builds an ``Env``, which compiles the model's ``.mod``
+    files, so without ``nrnivmodl`` they all fail identically at setup. Skipping
+    reports that as the environment problem it is rather than as N failures.
+    """
+    if os.getenv("LIVN_BACKEND") != "neuron":
+        return
+
+    try:
+        from livn.backend.neuron.mechanisms import nrnivmodl
+    except ImportError:
+        return
+
+    if nrnivmodl() is not None:
+        return
+
+    skip = pytest.mark.skip(
+        reason="nrnivmodl not found: NEURON mechanisms cannot be compiled "
+        "(install the 'neuron' extra, or put its bin directory on PATH)"
+    )
+    for item in items:
+        item.add_marker(skip)
+
+
 def pytest_runtest_protocol(item, nextitem):
     if os.getenv(MPI_SUBPROCESS_ENV):
         return
