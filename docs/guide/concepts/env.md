@@ -41,7 +41,7 @@ env = Env({"EXC": 3, "INH": 5}).init()  # or per population
 
 ## Recording
 
-Before running a simulation, specify what to record. livn supports three recording modalities:
+Before running a simulation, specify what to record. Every backend provides at least these three modalities:
 
 ```python
 # Record spike times for all populations
@@ -60,6 +60,22 @@ Each recording method accepts an optional `population` argument to restrict reco
 env.record_spikes("EXC")        # only excitatory cells
 env.record_voltage(["EXC", "INH"])  # multiple populations
 ```
+
+The set of modalities is open and the methods above are wrappers over `env.record(what, population, **kwargs)`, which dispatches on the signal name. Signal-specific options are passed as keyword arguments, so the calls above are equivalent to:
+
+```python
+env.record("spikes")
+env.record("voltage", dt=0.1)
+env.record("membrane_current", ["EXC", "INH"], dt=0.5)
+```
+
+Which signals an environment supports depends on its backend and is reported by `recordable()`:
+
+```python
+env.recordable()   # ['membrane_current', 'spikes', 'voltage']
+```
+
+Recording an unknown signal raises an `AttributeError` naming the available ones, and options a signal does not accept raise a `TypeError` rather than being ignored.
 
 ## Running a simulation
 

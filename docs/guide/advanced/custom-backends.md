@@ -47,11 +47,11 @@ class Env(EnvProtocol):
             .add_current(current_ids, currents, dt=self.membrane_current_recording_dt)
         )
 
-    def record_spikes(self, population=None):
+    def _record_spikes(self, population):
         ...
         return self
 
-    def record_voltage(self, population=None, dt=0.1):
+    def _record_voltage(self, population, dt=0.1):
         ...
         return self
 
@@ -61,6 +61,19 @@ class Env(EnvProtocol):
 ::: tip
 Your backend can reuse `livn.types`, `livn.stimulus`, `livn.system`, etc., only the simulation engine needs to be custom.
 :::
+
+### Recording
+
+`_record_<name>` is the extension point for recordings. The public `env.record(what, population, **kwargs)` normalizes `population` (`None` means [all active populations](/guide/concepts/env#recording), a list is iterated) and then dispatches to `_record_<what>` on your class, so an implementation only ever sees a single population name plus the signal's own options:
+
+```python
+class Env(EnvProtocol):
+    def _record_threshold(self, population, dt=0.1):
+        ...
+        return self
+```
+
+Defining that method is all it takes: `env.record("threshold", dt=0.5)` now works, `recordable()` lists `threshold`, and `run` can return the trace via `run.add("threshold", ids, values, dt=dt)`. `record_spikes` / `record_voltage` / `record_membrane_current` are wrappers over the same dispatcher; override `_record_spikes` and friends, instead of the public wrappers, so the population normalization is kept.
 
 ### What `run` must return
 

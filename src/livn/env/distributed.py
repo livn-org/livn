@@ -160,14 +160,16 @@ class DistributedEnv(EnvProtocol):
                 time.sleep(0.2)
             self.controller.exit()
 
-    def _broadcast_to_workers(self, method_name: str, args: tuple) -> None:
+    def _broadcast_to_workers(
+        self, method_name: str, args: tuple, kwargs: dict | None = None
+    ) -> None:
         if self.controller is None:
             return
         n_workers = self.controller.comm.size - 1
         expected = set(
             self.controller.submit_multiple(
                 _env_config_call,
-                args_list=[(method_name, a) for a in [args] * n_workers],
+                args_list=[(method_name, a, kwargs) for a in [args] * n_workers],
             )
         )
 
@@ -202,20 +204,13 @@ class DistributedEnv(EnvProtocol):
         self._broadcast_to_workers("disable_plasticity", ())
         return self
 
-    def record_spikes(self, population: str | list | tuple | None = None) -> Self:
-        self._broadcast_to_workers("record_spikes", (population,))
-        return self
-
-    def record_voltage(
-        self, population: str | list | tuple | None = None, dt: float = 0.1
+    def record(
+        self,
+        what: str,
+        population: str | list | tuple | None = None,
+        **kwargs,
     ) -> Self:
-        self._broadcast_to_workers("record_voltage", (population, dt))
-        return self
-
-    def record_membrane_current(
-        self, population: str | list | tuple | None = None, dt: float = 0.1
-    ) -> Self:
-        self._broadcast_to_workers("record_membrane_current", (population, dt))
+        self._broadcast_to_workers("record", (what, population), kwargs)
         return self
 
     def cell_stimulus(
@@ -886,11 +881,11 @@ def _envcall(decoding, inputs, encoding, kwargs):
     return _state["env"](decoding, inputs, encoding, **kwargs)
 
 
-def _env_config_call(method_name: str, args: tuple):
+def _env_config_call(method_name: str, args: tuple, kwargs: dict | None = None):
     env = _state.get("env")
     if env is None:
         return None
-    getattr(env, method_name)(*args)
+    getattr(env, method_name)(*args, **(kwargs or {}))
 
 
 def _worker_init(worker, distributed_env: "DistributedEnv"):

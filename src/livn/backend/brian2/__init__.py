@@ -306,14 +306,7 @@ class Env(EnvProtocol):
 
         return self
 
-    def record_spikes(self, population: str | list | tuple | None = None):
-        if population is None:
-            population = self.active_populations()
-        if isinstance(population, (list, tuple)):
-            for p in population:
-                self.record_spikes(p)
-            return self
-
+    def _record_spikes(self, population: str) -> "Env":
         self._spike_monitors[population] = monitor = b2.SpikeMonitor(
             self._populations[population]
         )
@@ -321,16 +314,7 @@ class Env(EnvProtocol):
 
         return self
 
-    def record_voltage(
-        self, population: str | list | tuple | None = None, dt: float = 0.1
-    ):
-        if population is None:
-            population = self.active_populations()
-        if isinstance(population, (list, tuple)):
-            for p in population:
-                self.record_voltage(p, dt=dt)
-            return self
-
+    def _record_voltage(self, population: str, dt: float) -> "Env":
         self._voltage_monitors[population] = monitor = b2.StateMonitor(
             self._populations[population],
             "v",
@@ -712,10 +696,10 @@ class Env(EnvProtocol):
         gc.collect()
 
         for p in spms:
-            self.record_spikes(p)
+            self._record_spikes(p)
 
         for p in vms:
-            self.record_voltage(p, dt=self._voltage_monitors_dt.get(p, 0.1))
+            self._record_voltage(p, dt=self._voltage_monitors_dt.get(p, 0.1))
 
         for p in mms:
             self._record_membrane_current(p, dt=self._membrane_monitors_dt.get(p, 0.1))

@@ -312,18 +312,48 @@ class Env(Protocol):
         coords = self.active_neuron_coordinates()
         return coords[:, 0].astype(int)
 
-    def record_spikes(self, population: str | list | tuple | None = None) -> Self:
-        """Enable spike recording for population"""
+    def record(
+        self,
+        what: str,
+        population: str | list | tuple | None = None,
+        **kwargs,
+    ) -> Self:
+        """Enable recording of the ``what`` signal for population
+
+        A signal is recordable when the environment implements ``_record_<what>``;
+        see :meth:`recordable`. Signal-specific options (``dt``, ...) are passed
+        through to that implementation as keyword arguments.
+        """
+        if not isinstance(what, str) or not what.isidentifier():
+            raise ValueError(f"invalid signal name: {what!r}")
+
+        try:
+            handler = getattr(self, f"_record_{what}")
+        except AttributeError:
+            raise AttributeError(
+                f"cannot record {what!r}; available: {self.recordable()}"
+            ) from None
+
         if population is None:
             population = self.active_populations()
         if isinstance(population, (list, tuple)):
             for p in population:
-                self.record_spikes(p)
+                handler(p, **kwargs)
             return self
 
-        self._record_spikes(population)
+        handler(population, **kwargs)
 
         return self
+
+    def recordable(self) -> list[str]:
+        """Signals that can be passed to :meth:`record`"""
+        return sorted(
+            name[len("_record_") :] for name in dir(self) if name.startswith("_record_")
+        )
+
+    def record_spikes(self, population: str | list | tuple | None = None) -> Self:
+        """Enable spike recording for population"""
+        return self.record("spikes", population)
 
     def _record_spikes(self, population: str) -> Self: ...
 
@@ -331,16 +361,7 @@ class Env(Protocol):
         self, population: str | list | tuple | None = None, dt: float = 0.1
     ) -> Self:
         """Enable voltage recording for population"""
-        if population is None:
-            population = self.active_populations()
-        if isinstance(population, (list, tuple)):
-            for p in population:
-                self.record_voltage(p, dt=dt)
-            return self
-
-        self._record_voltage(population, dt)
-
-        return self
+        return self.record("voltage", population, dt=dt)
 
     def _record_voltage(self, population: str, dt: float) -> Self: ...
 
@@ -348,16 +369,7 @@ class Env(Protocol):
         self, population: str | list | tuple | None = None, dt: float = 0.1
     ) -> Self:
         """Enable membrane current recording for population"""
-        if population is None:
-            population = self.active_populations()
-        if isinstance(population, (list, tuple)):
-            for p in population:
-                self.record_membrane_current(p, dt=dt)
-            return self
-
-        self._record_membrane_current(population, dt)
-
-        return self
+        return self.record("membrane_current", population, dt=dt)
 
     def _record_membrane_current(self, population: str, dt: float) -> Self: ...
 
