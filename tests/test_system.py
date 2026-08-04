@@ -3,6 +3,8 @@ import os
 import numpy as np
 import pytest
 
+from livn.backend import backend
+
 SYSTEM_DIR = os.environ.get("LIVN_TEST_SYSTEM", "./systems/graphs/EI1")
 
 
@@ -538,3 +540,208 @@ class TestSystemPyfiveVsNeuroh5:
                     for ns in proj_n:
                         for arr_n, arr_p in zip(proj_n[ns], proj_p[ns]):
                             np.testing.assert_array_almost_equal(arr_n, arr_p)
+
+
+class TestParallelSystem:
+    def test_satisfies_the_system_protocol(self):
+        from livn.system import ParallelSystem, System
+        from livn.types import System as SystemProtocol
+
+        assert isinstance(ParallelSystem(3), SystemProtocol)
+        if os.path.isdir(SYSTEM_DIR):
+            assert isinstance(System(SYSTEM_DIR), SystemProtocol)
+
+    def test_resolve(self):
+        from livn.system import ParallelSystem, resolve
+
+        assert resolve(4).population_counts == {"EXC": 4}
+        assert resolve({"EXC": 3, "INH": 5}).population_counts == {"EXC": 3, "INH": 5}
+
+        existing = ParallelSystem(2)
+        assert resolve(existing) is existing
+
+        with pytest.raises(TypeError):
+            resolve(True)
+        with pytest.raises(TypeError):
+            resolve(1.5)
+
+    def test_populations(self):
+        from livn.system import ParallelSystem
+
+        assert ParallelSystem(4).population_counts == {"EXC": 4}
+
+        system = ParallelSystem({"EXC": 3, "INH": 5})
+        assert system.populations == ["EXC", "INH"]
+        assert system.num_neurons == 8
+        # gids run contiguously in the order the populations were given
+        assert system.cells_meta_data.population_ranges == {
+            "EXC": (0, 3),
+            "INH": (3, 5),
+        }
+        assert system.summary()["population_counts"] == {"EXC": 3, "INH": 5}
+
+        with pytest.raises(KeyError):
+            system.coordinate_array("PYR")
+
+    def test_empty_population(self):
+        from livn.system import ParallelSystem
+
+        system = ParallelSystem({"EXC": 3, "INH": 0})
+
+        assert system.num_neurons == 3
+        assert system.populations == ["EXC", "INH"]
+        assert np.asarray(system.coordinate_array("INH")).shape == (0, 4)
+
+    def test_rejects_an_empty_system(self):
+        from livn.system import ParallelSystem
+
+        for spec in (0, {}, {"EXC": 0}, {"EXC": -1}):
+            with pytest.raises(ValueError):
+                ParallelSystem(spec)
+
+    def test_is_unconnected(self):
+        from livn.system import ParallelSystem
+
+        system = ParallelSystem(3)
+
+        assert system.connections_config["synapses"] == {"EXC": {}}
+        assert system.weight_names == []
+        assert system.projection_array("EXC", "EXC") == []
+        assert list(system.projections("EXC", "EXC")) == []
+        assert system.connectivity_matrix().shape == (3, 3)
+        assert not system.connectivity_matrix().any()
+
+    def test_coordinates_from_spacing(self):
+        from livn.system import ParallelSystem
+
+        # the default puts every cell at the origin
+        origin = np.asarray(ParallelSystem(3).neuron_coordinates)
+        np.testing.assert_array_equal(origin[:, 0], [0, 1, 2])
+        np.testing.assert_array_equal(origin[:, 1:], np.zeros((3, 3)))
+
+        system = ParallelSystem({"EXC": 2, "INH": 2}, coordinates=5.0)
+        np.testing.assert_array_equal(
+            np.asarray(system.coordinate_array("EXC"))[:, 1], [0.0, 5.0]
+        )
+        np.testing.assert_array_equal(
+            np.asarray(system.coordinate_array("INH"))[:, 1], [10.0, 15.0]
+        )
+
+    def test_coordinates_from_array(self):
+        from livn.system import ParallelSystem
+
+        xyz = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+        coords = np.asarray(ParallelSystem(2, coordinates=xyz).neuron_coordinates)
+        np.testing.assert_array_equal(coords[:, 0], [0, 1])
+        np.testing.assert_array_equal(coords[:, 1:], xyz)
+
+        rows = [[100, 0.0, 0.0, 0.0], [7, 1.0, 0.0, 0.0], [42, 2.0, 0.0, 0.0]]
+        system = ParallelSystem(3, coordinates=rows)
+        np.testing.assert_array_equal(np.asarray(system.gids), [100, 7, 42])
+        np.testing.assert_array_equal(np.asarray(system.neuron_coordinates), rows)
+
+    def test_coordinates_from_callable(self):
+        from livn.system import ParallelSystem
+
+        def grid(n):
+            return np.stack([np.arange(n) * 2.0, np.zeros(n), np.ones(n)], axis=1)
+
+        coords = np.asarray(ParallelSystem(3, coordinates=grid).neuron_coordinates)
+        np.testing.assert_array_equal(coords[:, 1], [0.0, 2.0, 4.0])
+        np.testing.assert_array_equal(coords[:, 3], [1.0, 1.0, 1.0])
+
+    def test_coordinates_validation(self):
+        from livn.system import ParallelSystem
+
+        # one row per neuron, across all populations, callables included
+        with pytest.raises(ValueError, match="coordinate rows"):
+            ParallelSystem(3, coordinates=[[0.0, 0.0, 0.0]])
+        with pytest.raises(ValueError, match="coordinate rows"):
+            ParallelSystem(3, coordinates=lambda n: np.zeros((n + 1, 3)))
+        with pytest.raises(ValueError, match="coordinate rows"):
+            ParallelSystem({"EXC": 2, "INH": 2}, coordinates=np.zeros((2, 3)))
+
+        with pytest.raises(ValueError, match="n_neurons"):
+            ParallelSystem(2, coordinates=[[0.0, 0.0], [0.0, 0.0]])
+
+        # gids identify cells, so a duplicate would silently merge two of them
+        # and a fractional one would be truncated downstream
+        with pytest.raises(ValueError, match="unique"):
+            ParallelSystem(2, coordinates=[[7, 0.0, 0.0, 0.0], [7, 1.0, 0.0, 0.0]])
+        with pytest.raises(ValueError, match="must contain integers"):
+            ParallelSystem(2, coordinates=[[0.5, 0.0, 0.0, 0.0], [1.5, 1.0, 0.0, 0.0]])
+
+    def test_selection(self):
+        from livn.system import ParallelSystem
+
+        system = ParallelSystem(10)
+
+        assert system.selection(None) is None
+        np.testing.assert_array_equal(system.selection(4)["EXC"], [0, 1, 2, 3])
+        np.testing.assert_array_equal(system.selection(0.2)["EXC"], [0, 1])
+        np.testing.assert_array_equal(system.selection({"EXC": [7, 3]})["EXC"], [3, 7])
+        assert len(system.selection(4, method="random")["EXC"]) == 4
+
+
+@pytest.mark.skipif(
+    backend() not in ("brian2", "diffrax", "neuron"),
+    reason="requires a simulation backend",
+)
+@pytest.mark.parametrize("num_neurons", [1, 4])
+def test_parallel_system_env_runs_without_a_graph(num_neurons):
+    from livn.env import Env
+    from livn.system import ParallelSystem
+
+    env = Env(num_neurons)
+    assert isinstance(env.system, ParallelSystem)
+
+    env.init()
+    env.record_spikes()
+    env.record_voltage()
+
+    _, _, _, v, _, _ = env.run(20.0)
+
+    assert v is not None
+    assert np.asarray(v).shape[0] % num_neurons == 0
+    assert np.asarray(v).shape[0] >= num_neurons
+
+    if hasattr(env, "close"):
+        env.close()
+
+
+@pytest.mark.skipif(
+    backend() not in ("brian2", "neuron"),
+    reason="requires a backend that reports per-cell recording ids",
+)
+def test_parallel_system_env_reports_explicit_gids():
+    from livn.env import Env
+    from livn.system import ParallelSystem
+
+    gids = [100, 7, 42]
+    system = ParallelSystem(
+        3, coordinates=[[g, float(i), 0.0, 0.0] for i, g in enumerate(gids)]
+    )
+
+    env = Env(system).init()
+    env.record_voltage()
+    _, _, iv, _, _, _ = env.run(10.0)
+
+    assert set(np.asarray(iv).tolist()) == set(gids)
+
+    if hasattr(env, "close"):
+        env.close()
+
+
+@pytest.mark.skipif(
+    backend() != "neuron", reason="only the neuron backend implements Env.selection"
+)
+def test_parallel_system_env_selection():
+    from livn.env import Env
+
+    env = Env(10)
+    env.selection(3)
+    env.init()
+
+    assert sorted(env.cells["EXC"]) == [0, 1, 2]
+
+    env.close()

@@ -41,7 +41,7 @@ runs:
       if: steps.cache-venv.outputs.cache-hit != 'true'
       shell: bash
       run: |
-        uv sync --group dev --group neuron --no-install-package neuroh5 --no-install-package h5py
+        uv sync --group dev --extra neuron --no-install-package neuroh5 --no-install-package h5py
         uv pip install --no-build-isolation mpi4py
 
     - name: Install h5py with MPI support (no-build-isolation, needs mpi4py)
@@ -76,4 +76,4 @@ runs:
     - name: Sync venv from cache (fast, no-build packages already present)
       if: steps.cache-venv.outputs.cache-hit == 'true'
       shell: bash
-      run: uv sync --group dev --group neuron --no-install-package neuroh5 --no-install-package h5py
+      run: uv sync --group dev --extra neuron --no-install-package neuroh5 --no-install-package h5py

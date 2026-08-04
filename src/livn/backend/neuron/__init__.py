@@ -28,7 +28,7 @@ logger.setLevel(os.getenv("LIVN_NEURON_LOGGING", "WARNING"))
 class Env(EnvProtocol):
     def __init__(
         self,
-        system: Union["System", str],
+        system: Union["System", str, int],
         model: Union["Model", None] = None,
         io: Union["IO", None] = None,
         seed: int | None = 123,
@@ -37,16 +37,14 @@ class Env(EnvProtocol):
     ):
         from mpi4py import MPI
 
-        from livn.system import System
+        from livn.system import resolve
 
         self.seed = seed
         self._select_spec = None
         self._select_method = "first"
         self._selection: dict[str, object] | None = None
         self._selected_gids: set[int] | None = None
-        self.system = (
-            system if not isinstance(system, str) else System(system, comm=comm)
-        )
+        self.system = resolve(system, comm=comm)
         self.model = model if model is not None else self.system.default_model()
         self.io = io if io is not None else self.system.default_io()
         self.comm = comm if comm is not None else MPI.COMM_WORLD
@@ -57,7 +55,12 @@ class Env(EnvProtocol):
         self.decoding = None
         self.duration = None
 
-        # Compile mechanisms
+        # Compile mechanisms: rank 0 builds, the rest wait on it.
+        #
+        # NB this barrier is collective over ``comm``, so every rank sharing it
+        # must reach this constructor. Passing a communicator that only some of
+        # its ranks construct an Env on (e.g. COMM_WORLD from one rank while the
+        # others hold per-subworld communicators) deadlocks here.
         mech_dir = self.model.neuron_mechanisms_directory()
         if mech_dir is not None:
             if self.comm.Get_rank() == 0:

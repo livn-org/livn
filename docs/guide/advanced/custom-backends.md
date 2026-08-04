@@ -55,3 +55,18 @@ class Env(EnvProtocol):
 ::: tip
 Your backend can reuse `livn.types`, `livn.stimulus`, `livn.system`, etc., only the simulation engine needs to be custom.
 :::
+
+## What you may rely on from `system`
+
+The `system` argument is not necessarily a `livn.system.System`: users may pass a system directory, a neuron count, or their own object. Normalize it first with `livn.system.resolve`, which turns a `str` into a `System`, an `int` into a [`ParallelSystem`](/guide/concepts/system#parallelsystem), and passes anything else through:
+
+```python
+from livn.system import resolve
+
+class Env(EnvProtocol):
+    def __init__(self, system, model=None, io=None, seed=123, comm=None, subworld_size=None):
+        self.system = resolve(system, comm=comm)
+        self.model = model if model is not None else self.system.default_model()
+        self.io = io if io is not None else self.system.default_io()
+```
+

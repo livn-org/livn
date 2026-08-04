@@ -30,6 +30,15 @@ env = Env(system, model=model, io=io, seed=42).init()
 env.apply_model_defaults()
 ```
 
+The `system` argument accepts a system directory (as above), any object implementing the [`System` protocol](/guide/concepts/system#the-system-protocol), or a cell count. A count is shorthand for a [`ParallelSystem`](/guide/concepts/system#parallelsystem) of that many unconnected cells, which needs no system graph on disk:
+
+```python
+env = Env(64).init()   # 64 independent cells
+env = Env(1).init()    # a single cell
+
+env = Env({"EXC": 3, "INH": 5}).init()  # or per population
+```
+
 ## Recording
 
 Before running a simulation, specify what to record. livn supports three recording modalities:

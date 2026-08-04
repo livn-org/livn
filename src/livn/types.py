@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
     from livn.io import IO
     from livn.stimulus import Stimulus
-    from livn.system import System
+    from livn.system import CellsMetaData, Projection
     from livn.types import Model
 
     Array = Union[TorchTensor, ndarray, JaxArray, TfTensor]
@@ -101,12 +101,86 @@ class SynapticParam(BaseModel):
 
 
 @runtime_checkable
+class System(Protocol):
+    """Protocol defining the interface for livn systems."""
+
+    name: str
+    """Human-readable identifier that keys the model's per-system defaults"""
+
+    num_neurons: int
+    """Total number of cells across all populations"""
+
+    populations: list[PopulationName]
+    """Population names"""
+
+    gids: Int[Array, "n_neurons"]
+    """Global cell ids across all populations"""
+
+    cells_meta_data: "CellsMetaData"
+    """Population names, gid ranges and per-population attribute info"""
+
+    connections_config: dict
+    """``{"synapses": {post: {pre: config}}}`` or empty when unconnected"""
+
+    neuron_coordinates: Float[Array, "n_neurons ixyz=4"]
+    """``[gid, x, y, z]`` rows for every cell"""
+
+    def default_io(self, comm: Optional["MPI.Intracomm"] = None) -> "IO":
+        """IO device to use when the environment is constructed without one"""
+        ...
+
+    def default_model(self, comm: Optional["MPI.Intracomm"] = None) -> "Model":
+        """Model to use when the environment is constructed without one"""
+        ...
+
+    def coordinate_array(
+        self, population: PopulationName, all: bool = True
+    ) -> Float[Array, "n_coords ixyz=4"]:
+        """``[gid, x, y, z]`` rows for one population"""
+        ...
+
+    def transform_coordinates(
+        self,
+        transform: Any,
+        populations: list[PopulationName] | None = None,
+        all: bool = True,
+    ) -> Float[Array, "n_coords ixyz=4"]:
+        """Apply a model coordinate transform per population and stack the result"""
+        ...
+
+    def projection_array(
+        self,
+        pre: PreSynapticPopulationName,
+        post: PostSynapticPopulationName,
+        all: bool = True,
+    ) -> list[tuple[int, tuple[list[int], "Projection"]]]:
+        """Edges onto ``post`` from ``pre`` as ``(post_gid, (pre_gids, projection))``"""
+        ...
+
+    def connectivity_matrix(
+        self, weights: dict | None = None, seed: int = 123
+    ) -> Float[Array, "num_neurons num_neurons"]:
+        """Dense signed weight matrix or all-zero when unconnected"""
+        ...
+
+    def selection(
+        self,
+        spec,
+        populations: list[PopulationName] | None = None,
+        seed: int | None = 123,
+        method: str = "first",
+    ) -> dict[PopulationName, Any] | None:
+        """Resolve a cell subselection into ``{population: gids}`` (``None`` for all)"""
+        ...
+
+
+@runtime_checkable
 class Env(Protocol):
     """Protocol defining the interface for livn environments"""
 
     def __init__(
         self,
-        system: Union["System", str],
+        system: Union["System", str, int],
         model: "Model",
         io: "IO",
         seed: int | None = 123,

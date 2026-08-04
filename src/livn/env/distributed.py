@@ -925,6 +925,7 @@ def _controller_init(controller: MPIController, distributed_env: "DistributedEnv
             distributed_env._model_arg,
             distributed_env._io_arg,
             distributed_env.seed,
+            comm=MPI.COMM_SELF,
             subworld_size=distributed_env.subworld_size,
         )
         _state["env"] = None

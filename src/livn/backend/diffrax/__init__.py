@@ -16,19 +16,6 @@ if TYPE_CHECKING:
     from livn.types import Model
 
 
-class _ParallelSystem:
-    """System to simulate a number of neurons independently in parallel"""
-
-    def __init__(self, num_neurons: int):
-        self.num_neurons = num_neurons
-        self.name = "ParallelSystem"
-        self.populations = ["parallelized"]
-        self.gids = list(range(num_neurons))
-
-    def default_io(self):
-        return None
-
-
 class Env(EnvProtocol):
     def __init__(
         self,
@@ -39,15 +26,11 @@ class Env(EnvProtocol):
         comm: Optional["MPI.Intracomm"] = None,
         subworld_size: int | None = None,
     ):
-        if isinstance(system, int):
-            system = _ParallelSystem(system)
-        elif isinstance(system, str):
-            from livn.system import System
+        from livn.system import resolve
 
-            system = System(system, comm=comm)
-        self.system = system
+        self.system = resolve(system, comm=comm)
         if model is None:
-            model = system.default_model()
+            model = self.system.default_model()
         self.model = model
         if io is None:
             io = self.system.default_io()

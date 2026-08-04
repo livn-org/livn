@@ -6,12 +6,26 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 
 logger = logging.getLogger(__name__)
 
 _loaded: dict[str, str] = {}
 _hoc_configured = False
+
+
+def nrnivmodl() -> str | None:
+    """Locate NEURON's ``nrnivmodl``, or ``None`` if it is not installed."""
+    found = shutil.which("nrnivmodl")
+    if found:
+        return found
+
+    candidate = os.path.join(os.path.dirname(sys.executable), "nrnivmodl")
+    if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+        return candidate
+
+    return None
 
 
 def _is_complete(compiled: str) -> bool:
@@ -25,7 +39,8 @@ def _atomic_compile(compiled: str, contents: dict[str, str]) -> None:
     is written and the finished build is moved into place with a single
     atomic rename. A process that loses the publish race discards.
     """
-    if not shutil.which("nrnivmodl"):
+    nrnivmodl_exe = nrnivmodl()
+    if nrnivmodl_exe is None:
         raise ModuleNotFoundError("nrnivmodl not found on PATH")
     parent = os.path.dirname(compiled)
     os.makedirs(parent, exist_ok=True)
@@ -34,7 +49,7 @@ def _atomic_compile(compiled: str, contents: dict[str, str]) -> None:
         for m, data in contents.items():
             with open(os.path.join(tmp, os.path.basename(m)), "w") as f:
                 f.write(data)
-        subprocess.run(["nrnivmodl"], cwd=tmp, check=True)
+        subprocess.run([nrnivmodl_exe], cwd=tmp, check=True)
         open(os.path.join(tmp, ".livn_nrnivmodl_ok"), "w").close()
         try:
             os.rename(tmp, compiled)  # atomic publish

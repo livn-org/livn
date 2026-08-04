@@ -87,6 +87,66 @@ for post_gid, (pre_gids, projection) in system.projections("EXC", "INH"):
 W = system.connectivity_matrix()  # shape [num_neurons, num_neurons]
 ```
 
+## ParallelSystem
+
+`ParallelSystem` describes N unconnected cells, e.g. a single cell, or N copies of one cell that never interact.
+
+```python
+from livn.env import Env
+
+env = Env(64).init()   # 64 independent cells, no graph required
+env.record_voltage()
+it, t, iv, v, *_ = env.run(100)
+```
+
+Passing an `int` as the system is shorthand for constructing one, so the two lines below are equivalent:
+
+```python
+from livn.system import ParallelSystem
+
+env = Env(64)
+env = Env(ParallelSystem(64))
+```
+
+### Populations
+
+`num_neurons` may instead be a `{population: count}` mapping, so a plain count is shorthand for a single `"EXC"` population, e.g. `3` translates to `{"EXC": 3}`:
+
+```python
+system = ParallelSystem({"EXC": 3, "INH": 5})
+
+system.populations       # ['EXC', 'INH']
+system.num_neurons       # 8
+system.population_counts # {'EXC': 3, 'INH': 5}
+```
+
+GIDs are assigned contiguously in the order the populations are given, so `EXC` owns 0-2 and `INH` owns 3-7. `Env` accepts the mapping directly too:
+
+```python
+env = Env({"EXC": 3, "INH": 5}).init()
+```
+
+Because models key their cell factories by population name, every name has to be one the [model](/guide/concepts/model) defines.
+
+::: warning
+A model may handle some populations implicitly. For example, `ReducedCalciumSomaDendrite(implicit_inhibition=True)` puts `"INH"` in `ignored_populations()`, so those cells are never instantiated. Pass `ReducedCalciumSomaDendrite(implicit_inhibition=False)` to simulate them explicitly.
+:::
+
+### Coordinates
+
+The cells are unconnected, so their geometry only reaches the simulation through the [IO](/guide/concepts/io) transforms. `coordinates` accepts three forms:
+
+```python
+ParallelSystem(64)                    # default: every cell at the origin
+ParallelSystem(64, coordinates=25.0)  # 25 um apart along x, in gid order
+
+# an explicit [n_neurons, 3] of x, y, z (or [n_neurons, 4] of gid, x, y, z)
+ParallelSystem(3, coordinates=[[0, 0, 0], [10, 0, 0], [0, 10, 0]])
+
+# or a callable taking the total cell count
+ParallelSystem(64, coordinates=lambda n: rng.normal(size=(n, 3)))
+```
+
 ## Storage format
 
 Systems are stored on disk as a directory containing:

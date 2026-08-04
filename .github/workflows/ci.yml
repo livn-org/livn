@@ -17,8 +17,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
-      - run: uvx ruff format --check
-      - run: uvx ruff check
+      - run: uv run --frozen --only-group dev ruff format --check
+      - run: uv run --frozen --only-group dev ruff check
 
   download-ei1:
     runs-on: ubuntu-latest
@@ -91,7 +91,7 @@ jobs:
           fail-on-cache-miss: true
 
       - name: Install dependencies
-        run: uv sync --group dev --group diffrax
+        run: uv sync --group dev --extra diffrax
 
       - name: Run tests
         run: uv run tests/cli test --backend diffrax
@@ -149,7 +149,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libgsl-dev
 
       - name: Install dependencies
-        run: uv sync --group dev --group brian2
+        run: uv sync --group dev --extra brian2
 
       - name: Run tests
         run: uv run tests/cli test --backend brian2
