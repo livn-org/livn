@@ -5,8 +5,10 @@ import brian2 as b2
 import numpy as np
 from numpy.random import RandomState
 
+from livn.cells import CellRegistry
 from livn.run import Run
 from livn.stimulus import Stimulus
+from livn.types import Cell
 from livn.types import Env as EnvProtocol
 from livn.types import SynapticParam
 from livn.utils import P
@@ -17,6 +19,59 @@ if TYPE_CHECKING:
     from livn.io import IO
     from livn.system import System
     from livn.types import Model
+
+
+def _population_parameters(group) -> list[str]:
+    from brian2.equations.equations import PARAMETER
+
+    _INTERNAL_PARAMETERS = frozenset({"lastspike", "not_refractory"})
+
+    return sorted(
+        name
+        for name, equation in group.equations.items()
+        if equation.type == PARAMETER and name not in _INTERNAL_PARAMETERS
+    )
+
+
+class CellHandle(Cell):
+    """Per-cell parameter handle over one row of a brian2 ``NeuronGroup``.
+
+    Parameters are the group's parameter-typed state variables, read and
+    written in brian2's base SI units (volt, second, ...)::
+
+        env.cells[3].set_params({"E_K": -0.077})
+    """
+
+    def __init__(self, env: "Env", population: str, gid: int, index: int):
+        super().__init__(env, population, gid)
+        self._index = int(index)
+
+    @property
+    def index(self) -> int:
+        """Row of the cell within its ``NeuronGroup``"""
+        return self._index
+
+    @property
+    def group(self):
+        """The ``NeuronGroup`` holding the cell"""
+        return self._env._populations[self._population]
+
+    def get_params(self) -> dict[str, float]:
+        group = self.group
+        return {
+            name: float(group.state(name, use_units=False)[self._index])
+            for name in _population_parameters(group)
+        }
+
+    def set_params(self, params: dict[str, float]) -> "Env":
+        group = self.group
+        known = set(_population_parameters(group))
+        for name, value in params.items():
+            if name not in known:
+                raise self.unknown_param(name, known)
+            group.state(name, use_units=False)[self._index] = float(value)
+
+        return self._env
 
 
 class Env(EnvProtocol):
@@ -50,6 +105,7 @@ class Env(EnvProtocol):
             b2.seed(seed)
 
         self._populations = {}
+        self.cells = CellRegistry(self)
         self._synapses = {}
         self._spike_monitors = {}
         self._voltage_monitors = {}
@@ -106,6 +162,7 @@ class Env(EnvProtocol):
         if hasattr(self.model, "ignored_populations"):
             ignored = set(self.model.ignored_populations())
         population_ranges = self.system.population_ranges
+        self.cells.clear()
         for population_name in self.system.populations:
             if population_name in ignored:
                 continue
@@ -136,6 +193,13 @@ class Env(EnvProtocol):
             self._network.add(population)
 
             self._populations[population_name] = population
+            self.cells.add(
+                population_name,
+                {
+                    int(gid): CellHandle(self, population_name, int(gid), index)
+                    for index, gid in enumerate(gids)
+                },
+            )
 
         return self
 

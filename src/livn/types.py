@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from tensorflow import TfTensor
     from torch import TorchTensor
 
+    from livn.cells import CellRegistry
     from livn.io import IO
     from livn.run import Run
     from livn.stimulus import Stimulus
@@ -180,8 +181,53 @@ class System(Protocol):
 
 
 @runtime_checkable
+class Cell(Protocol):
+    """Protocol defining the interface for a single simulated cell and its physical parameters."""
+
+    def __init__(self, env: "Env", population: PopulationName, gid: int):
+        self._env = env
+        self._population = str(population)
+        self._gid = int(gid)
+
+    @property
+    def env(self) -> "Env":
+        return self._env
+
+    @property
+    def gid(self) -> int:
+        """Global id of the cell"""
+        return self._gid
+
+    @property
+    def population(self) -> PopulationName:
+        """Population the cell belongs to"""
+        return self._population
+
+    def get_params(self) -> dict[str, float]:
+        """Physical parameters of this cell."""
+        ...
+
+    def set_params(self, params: dict[str, float]) -> "Env":
+        """Set physical parameters of this cell."""
+        ...
+
+    def unknown_param(self, name: str, available) -> KeyError:
+        """The error to raise for a parameter this cell does not have"""
+        return KeyError(
+            f"cell {self._gid} has no {name!r} parameter "
+            f"(available: {sorted(available)})"
+        )
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self._population}, gid={self._gid})"
+
+
+@runtime_checkable
 class Env(Protocol):
     """Protocol defining the interface for livn environments"""
+
+    cells: "CellRegistry"
+    """The simulated cells, addressable by population name or gid"""
 
     def __init__(
         self,
@@ -273,25 +319,30 @@ class Env(Protocol):
         ...
         return self
 
-    def set_params(self, params: dict) -> Self:
-        """Set parameters"""
+    def set_params(self, params: dict) -> "Env":
         weights = {}
         noise = {}
+        cells = {}
 
         for k, v in params.items():
             if k.startswith("noise-"):
                 noise[k.replace("noise-", "")] = v
             elif k.startswith("weight-"):
                 weights[k.replace("weight-", "")] = v
+            elif k.startswith("cells-"):
+                cells[k.replace("cells-", "", 1)] = v
             else:
                 weights[k] = v
 
+        env = self
         if weights:
-            self.set_weights(weights)
+            env.set_weights(weights)
         if noise:
-            self.set_noise(noise)
+            env.set_noise(noise)
+        if cells:
+            env = env.cells.set_params(cells)
 
-        return self
+        return env
 
     def active_populations(self) -> list[str]:
         ignored: set[str] = set()

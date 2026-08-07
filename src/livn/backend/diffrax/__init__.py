@@ -1,12 +1,17 @@
+import copy
+import dataclasses
 from typing import TYPE_CHECKING, Optional, Union
 
 import jax
 import jax.numpy as jnp
 import jax.random as jr
 import equinox as eqx
+import numpy as np
 
+from livn.cells import CellRegistry
 from livn.run import Run
 from livn.stimulus import Stimulus
+from livn.types import Cell
 from livn.types import Env as EnvProtocol
 
 if TYPE_CHECKING:
@@ -15,6 +20,134 @@ if TYPE_CHECKING:
     from livn.io import IO
     from livn.system import System
     from livn.types import Model
+
+
+def cell_param_paths(module, n_cells: int) -> tuple[str, ...]:
+    """Names of the module fields that hold one value per cell.
+
+    A field qualifies when it is a non-static array of inexact dtype whose
+    leading axis is the number of cells; nested :class:`equinox.Module` fields
+    are reached by a dotted path. A module can declare the paths itself by
+    exposing ``cell_param_names``, which takes precedence.
+    """
+    declared = getattr(module, "cell_param_names", None)
+    if declared is not None:
+        return tuple(str(name) for name in declared)
+
+    if not isinstance(module, eqx.Module):
+        return ()
+
+    paths: list[str] = []
+    for field in dataclasses.fields(module):
+        if field.metadata.get("static", False):
+            continue
+        value = getattr(module, field.name, None)
+        if isinstance(value, eqx.Module):
+            paths.extend(
+                f"{field.name}.{path}" for path in cell_param_paths(value, n_cells)
+            )
+            continue
+        if not eqx.is_array(value) or value.ndim < 1:
+            continue
+        if value.shape[0] != n_cells:
+            continue
+        if not jnp.issubdtype(value.dtype, jnp.inexact):
+            continue
+        paths.append(field.name)
+
+    return tuple(sorted(paths))
+
+
+def _resolve(module, path: str):
+    value = module
+    for part in path.split("."):
+        value = getattr(value, part)
+    return value
+
+
+def cell_params(module, n_cells: int) -> dict[str, jnp.ndarray]:
+    """Per-cell parameter arrays of a diffrax module"""
+    return {path: _resolve(module, path) for path in cell_param_paths(module, n_cells)}
+
+
+def replace_cell_params(module, params: dict, n_cells: int):
+    """Return a copy of the module with its per-cell parameters replaced"""
+    current = cell_params(module, n_cells)
+
+    replace = []
+    paths = []
+    for path, value in params.items():
+        if path not in current:
+            raise KeyError(
+                f"{type(module).__name__} has no {path!r} cell parameter "
+                f"(available: {sorted(current)})"
+            )
+        array = current[path]
+        paths.append(path)
+        replace.append(
+            jnp.broadcast_to(jnp.asarray(value, dtype=array.dtype), array.shape)
+        )
+
+    if not paths:
+        return module
+
+    return eqx.tree_at(lambda m: [_resolve(m, p) for p in paths], module, replace)
+
+
+class CellHandle(Cell):
+    """Per-cell parameter handle.
+
+    env = env.cells[3].set_params({"tau_m": 12.0})
+    """
+
+    def __init__(self, env: "Env", population: str, gid: int, index: int):
+        super().__init__(env, population, gid)
+        self._index = int(index)
+
+    @property
+    def index(self) -> int:
+        return self._index
+
+    def get_params(self) -> dict:
+        n_cells = self._env.num_cells
+        return {
+            path: array[self._index]
+            for path, array in cell_params(self._env.module, n_cells).items()
+        }
+
+    def set_params(self, params: dict) -> "Env":
+        env = self._env
+        n_cells = env.num_cells
+        current = cell_params(env.module, n_cells)
+
+        updates = {}
+        for path, value in params.items():
+            if path not in current:
+                raise self.unknown_param(path, current)
+            array = current[path]
+            updates[path] = array.at[self._index].set(
+                jnp.asarray(value, dtype=array.dtype)
+            )
+
+        return env._with_module(replace_cell_params(env.module, updates, n_cells))
+
+
+class ModuleCellRegistry(CellRegistry):
+    @property
+    def gids(self) -> np.ndarray:
+        return np.asarray(self._env.active_gids(), dtype=np.int64)
+
+    def get_params(self) -> dict:
+        env = self._env
+        if env.module is None:
+            return {}
+        return cell_params(env.module, env.num_cells)
+
+    def set_params(self, params: dict) -> "Env":
+        env = self._env
+        if env.module is None:
+            raise RuntimeError("call init() before setting cell parameters")
+        return env._with_module(replace_cell_params(env.module, params, env.num_cells))
 
 
 class Env(EnvProtocol):
@@ -54,7 +187,41 @@ class Env(EnvProtocol):
             self,
             key=self.init_key,
         )
+        self.__dict__.pop("_cells", None)
         return self
+
+    @property
+    def num_cells(self) -> int:
+        """Number of cells the module simulates"""
+        return int(len(self.active_gids()))
+
+    @property
+    def cells(self) -> CellRegistry:
+        registry = self.__dict__.get("_cells")
+        if registry is None:
+            registry = ModuleCellRegistry(self)
+            index = 0
+            for population in self.active_populations():
+                gids = np.asarray(
+                    self.system.coordinate_array(population, all=False)[:, 0],
+                    dtype=np.int64,
+                )
+                registry.add(
+                    population,
+                    {
+                        int(gid): CellHandle(self, population, int(gid), index + offset)
+                        for offset, gid in enumerate(gids)
+                    },
+                )
+                index += len(gids)
+            self.__dict__["_cells"] = registry
+        return registry
+
+    def _with_module(self, module) -> "Env":
+        env = copy.copy(self)
+        env.module = module
+        env.__dict__.pop("_cells", None)
+        return env
 
     def set_weights(self, weights):
         self._weights = weights

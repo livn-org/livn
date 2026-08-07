@@ -209,7 +209,11 @@ This is equivalent to:
 
 This pattern is used extensively in [dataset generation](/systems/sampling) and the Gymnasium RL integration.
 
-## Weights and noise
+## Parameters
+
+An environment carries parameters at two levels. First, the network level, which is the synaptic weights and the background noise, and secondly, the cell level, which is the physical properties of the individual cells (conductances, time constants, passive properties). They are set through separate methods, and `set_params()` routes to both by key prefix.
+
+### Weights and noise
 
 Synaptic weights and background noise can be configured after initialization:
 
@@ -224,6 +228,64 @@ env.set_noise({"g_e0": 1.0, "std_e": 0.3, ...})
 # Combined via params dict
 env.set_params({"weight-EXC_EXC-hillock-AMPA-weight": 0.5, "noise-g_e0": 1.0})
 ```
+
+### Cell parameters
+
+The simulated cells are reachable through `env.cells`, which maps a population name to its cells and a gid directly to one cell:
+
+```python
+env.cells["EXC"]        # {gid: Cell}
+env.cells[7]            # the Cell with gid 7
+env.cells.gids          # every gid, ascending
+```
+
+Every cell reports and accepts its physical parameters as a flat dict. Which names it exposes depends on what backs it so read them back before setting them:
+
+```python
+env.cells[7].get_params()          # {'soma.g_pas': 1e-05, 'soma.cm': 3.0, ...}
+env = env.cells[7].set_params({"soma.g_pas": 3e-5})
+```
+
+On the NEURON backend a name is `"<section type>.<name>"`, where the section type is the same one weight keys select on (`soma`, `hillock`, `basal`, ...) and the name is a section attribute (`cm`, `Ra`) or a mechanism parameter under its suffixed NEURON name (`g_pas`, `gnabar_hh`). Reads report the value at the middle of that section type's first section, writes reach every segment of every section of that type.
+
+The whole population is addressed at once by the registry's own `get_params()` / `set_params()`, which work in `env.cells.gids` order. A scalar applies to every cell, an array holds one value per cell:
+
+```python
+env.cells.gids                                    # [0, 1, 2]
+env.cells.get_params()                            # {'soma.g_pas': array([1e-5, 1e-5, 1e-5]), ...}
+
+env = env.cells.set_params({"soma.g_pas": 3e-5})            # all cells
+env = env.cells.set_params({"soma.g_pas": [1e-5, 2e-5, 3e-5]})  # one each
+```
+
+The same reaches `set_params()` under the `cells-` prefix, so cell parameters can be searched alongside weights and noise by anything that drives an env through one dict:
+
+```python
+env = env.set_params({"cells-soma.g_pas": 3e-5, "noise-g_e0": 1.0})
+```
+
+::: warning Keep the returned env
+Every parameter setter returns the environment to continue with. On NEURON and brian2 that is the same object, but a diffrax `Env` holds an immutable equinox module and state cannot be mutated inside a `jit` or `grad` trace, so its setters return a new env and leave the original untouched:
+
+```python
+env = env.cells.set_params(theta)     # not env.cells.set_params(theta)
+```
+:::
+
+On the diffrax backend the parameters are the module's per-cell arrays, so they differentiate:
+
+```python
+import jax
+
+def loss(theta):
+    return objective(env.cells.set_params(theta).run(100.0))
+
+gradients = jax.grad(loss)(env.cells.get_params())
+```
+
+A model only exposes what it holds as an array field of shape `[n_cells, ...]`. A parameter kept as a Python float, or captured in a closure, is a compile-time constant to JAX and carries no gradient.
+
+Under MPI the cells are distributed over the ranks. Indexing the registry reaches only the rank's own cells (`env.cells.local_gids`), while `gids` and `get_params()` cover all of them and are collective. Every rank has to reach them. An array passed to `set_params()` is in global gid order, and each rank picks out the entries for the cells it owns.
 
 ## Seed
 

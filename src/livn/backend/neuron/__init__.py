@@ -9,8 +9,9 @@ from typing import TYPE_CHECKING, Self, Union
 import numpy as np
 
 from livn.backend.neuron import mechanisms
-from livn.backend.neuron.cells import CellBuilder
+from livn.backend.neuron.cells import CellBuilder, CellHandle
 from livn.backend.neuron.synapses import SynapseBuilder
+from livn.cells import CellRegistry
 from livn.run import Run
 from livn.stimulus import Stimulus
 from livn.types import Env as EnvProtocol
@@ -77,7 +78,7 @@ class Env(EnvProtocol):
         self.rank = int(self.pc.id())
 
         # graph state
-        self.cells: dict[str, dict[int, object]] = {}
+        self.cells = CellRegistry(self, comm=self.comm)
         self._detectors: dict[int, dict] = {}  # gid -> {filter,in_nc,out_nc}
         self.syn = None
         self.conn = None
@@ -188,7 +189,10 @@ class Env(EnvProtocol):
             if self._selection is not None:
                 sel = set(int(g) for g in self._selection.get(pop, []))
             cells = builder.build_local(pop, selection=sel)
-            self.cells[pop] = cells
+            self.cells.add(
+                pop,
+                {gid: CellHandle(self, pop, gid, cell) for gid, cell in cells.items()},
+            )
             for gid, cell in cells.items():
                 self._register_cell(gid, cell)
 

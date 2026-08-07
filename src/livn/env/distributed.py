@@ -381,6 +381,31 @@ class DistributedEnv(EnvProtocol):
         self._broadcast_to_workers("set_params", (params,))
         return self
 
+    @property
+    def cells(self) -> "_RemoteCells":
+        return _RemoteCells(self)
+
+
+class _RemoteCells:
+    def __init__(self, env: DistributedEnv):
+        self._env = env
+
+    def set_params(self, params: dict) -> DistributedEnv:
+        self._env._broadcast_to_workers("cells.set_params", (params,))
+        return self._env
+
+    def __getattr__(self, name):
+        raise NotImplementedError(
+            f"the cells live on the workers; {name!r} is not available on the "
+            "controller, only cells.set_params()"
+        )
+
+    def __getitem__(self, key):
+        raise NotImplementedError(
+            "the cells live on the workers; only cells.set_params() is "
+            "available on the controller"
+        )
+
 
 class MessageTag(IntEnum):
     READY = 0
@@ -885,7 +910,17 @@ def _env_config_call(method_name: str, args: tuple, kwargs: dict | None = None):
     env = _state.get("env")
     if env is None:
         return None
-    getattr(env, method_name)(*args, **(kwargs or {}))
+
+    # a dotted name reaches through the env, e.g. "cells.set_params"
+    target = env
+    for attribute in method_name.split("."):
+        target = getattr(target, attribute)
+
+    result = target(*args, **(kwargs or {}))
+    # a functional backend's setters return the env to continue with rather
+    # than mutating this one, so keep it
+    if result is not None and type(result) is type(env):
+        _state["env"] = result
 
 
 def _worker_init(worker, distributed_env: "DistributedEnv"):

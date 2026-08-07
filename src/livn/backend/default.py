@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional, Union
 
+from livn.cells import CellRegistry
 from livn.run import Run
 from livn.types import Env as EnvProtocol
 
@@ -40,6 +41,7 @@ class Env(EnvProtocol):
 
         self.encoding = None
         self.decoding = None
+        self.cells = CellRegistry(self)
 
         self.t = 0
 

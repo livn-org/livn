@@ -5,6 +5,8 @@ from typing import Protocol, runtime_checkable
 
 import numpy as np
 
+from livn.types import Cell
+
 # SWC type codes (Cannon et al. convention, matching the neuroh5 attributes).
 SWC_SOMA = 1
 SWC_AXON = 2
@@ -213,6 +215,114 @@ class MorphologyCell:
     @property
     def template(self):
         return self._template
+
+
+class CellHandle(Cell):
+    """Per-cell parameter handle over a NEURON cell.
+
+    Parameters are addressed as ``"<section type>.<name>"``, where the section
+    type is the one the cell routes synapses by (``soma``, ``dend``, ``basal``,
+    ...) and the name is a section attribute (``cm``, ``Ra``) or a mechanism
+    parameter under its suffixed NEURON name (``g_pas``, ``gnabar_hh``)::
+
+        env.cells[3].set_params({"soma.g_pas": 3e-5, "dend.cm": 1.5})
+
+    Reads report the value at the middle of the section type's first section
+    and writes are applied to every segment of every section of that type.
+
+    Any other attribute access is forwarded to the underlying cell, so a handle
+    can be used wherever the cell itself was.
+    """
+
+    _own = ("_env", "_population", "_gid", "_cell")
+
+    def __init__(self, env, population: str, gid: int, cell):
+        object.__setattr__(self, "_cell", cell)
+        super().__init__(env, population, gid)
+
+    @property
+    def cell(self):
+        """The wrapped ``NeuronCell``"""
+        return self._cell
+
+    def sections_by_type(self) -> dict[str, list]:
+        """The cell's sections grouped under their section-type name"""
+        cell = self._cell
+        sections = list(getattr(cell, "sections", []) or [])
+        types = getattr(cell, "section_type", None)
+        name_of = getattr(cell, "dest_sec_type", None)
+
+        groups: dict[str, list] = {}
+        for i, sec in enumerate(sections):
+            swc = int(types[i]) if types is not None and i < len(types) else SWC_SOMA
+            if callable(name_of):
+                sec_type = str(name_of(swc))
+            else:
+                sec_type = _MORPH_SECTYPE_NAMES.get(swc, "apical")
+            groups.setdefault(sec_type, []).append(sec)
+        return groups
+
+    def get_params(self) -> dict[str, float]:
+        from neuron import h
+
+        params: dict[str, float] = {}
+        for sec_type, sections in self.sections_by_type().items():
+            sec = sections[0]
+            seg = sec(0.5)
+            params[f"{sec_type}.cm"] = float(seg.cm)
+            params[f"{sec_type}.Ra"] = float(sec.Ra)
+
+            # MechanismStandard(name, 1) enumerates exactly the mechanism's
+            # parameters, leaving out its states and assigned variables, and
+            # under the suffixed names a segment exposes them by (g_pas,
+            # gnabar_hh)
+            for mech in seg:
+                standard = h.MechanismStandard(mech.name(), 1)
+                for i in range(int(standard.count())):
+                    ref = h.ref("")
+                    if int(standard.name(ref, i)) != 1:
+                        continue  # array parameters have no single value
+                    name = ref[0]
+                    try:
+                        params[f"{sec_type}.{name}"] = float(getattr(seg, name))
+                    except AttributeError:
+                        continue  # GLOBAL parameters are not segment attributes
+        return params
+
+    def set_params(self, params: dict[str, float]):
+        groups = self.sections_by_type()
+        for key, value in params.items():
+            sec_type, _, name = key.partition(".")
+            if not name:
+                raise KeyError(
+                    f"{key!r} is not a cell parameter; expected "
+                    f"'<section type>.<name>', e.g. 'soma.g_pas'"
+                )
+            sections = groups.get(sec_type)
+            if sections is None:
+                raise self.unknown_param(key, self.get_params())
+            value = float(value)
+            for sec in sections:
+                if name == "Ra":
+                    sec.Ra = value
+                    continue
+                for seg in sec:
+                    setattr(seg, name, value)
+
+        return self._env
+
+    def __getattr__(self, name):
+        try:
+            cell = object.__getattribute__(self, "_cell")
+        except AttributeError:
+            raise AttributeError(name) from None
+        return getattr(cell, name)
+
+    def __setattr__(self, name, value):
+        if name in self._own:
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._cell, name, value)
 
 
 class CellBuilder:

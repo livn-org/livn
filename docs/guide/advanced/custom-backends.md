@@ -89,6 +89,50 @@ run = run.add("threshold", threshold_ids, thresholds, dt=0.1)
 
 A channel that was never added reads back as `None`, so it allocates nothing. Times are stored relative to `t0`, meaning the spike times of a continued run start at zero again.
 
+### Exposing the cells
+
+`env.cells` is a [`CellRegistry`](/guide/concepts/env#cell-parameters) that is mapping from population name to `{gid: Cell}` that also resolves a gid directly. Fill it as `init()` constructs the cells, one `add()` per population:
+
+```python
+from livn.cells import CellRegistry
+
+class Env(EnvProtocol):
+    def __init__(self, system, ...):
+        self.cells = CellRegistry(self)
+
+    def init(self):
+        for population in self.system.populations:
+            self.cells.add(population, {gid: Cell(self, population, gid) for gid in ...})
+        return self
+```
+
+A `Cell` is the handle to one cell's physical parameters. Subclass [`livn.types.Cell`](/guide/concepts/env#cell-parameters), which carries the identity (`env`, `gid`, `population`), the `repr` and the `unknown_param()` error, and implement the two methods over whatever holds the values:
+
+```python
+from livn.types import Cell
+
+class MyCell(Cell):
+    def get_params(self) -> dict[str, float]:
+        return {name: ... for name in ...}
+
+    def set_params(self, params) -> "Env":
+        for name, value in params.items():
+            if name not in ...:
+                raise self.unknown_param(name, ...)
+            ...
+        return self.env
+```
+
+A handle that needs its own state (the NEURON one wraps a cell object, the brian2 and diffrax ones keep a row index) takes it in `__init__` and passes the identity up:
+
+```python
+    def __init__(self, env, population, gid, index):
+        super().__init__(env, population, gid)
+        self._index = int(index)
+```
+
+That is all `env.cells.get_params()`, `env.cells.set_params()` and the `cells-` prefix of `Env.set_params()` need as the registry implements them over the cells it holds. Pass it the `comm` your cells are distributed over and it spans the ranks; subclass it (as the diffrax backend does) when a backend can do better than cell by cell, for instance to set a whole parameter array in one operation.
+
 ## What you may rely on from `system`
 
 The `system` argument is not necessarily a `livn.system.System`: users may pass a system directory, a neuron count, or their own object. Normalize it first with `livn.system.resolve`, which turns a `str` into a `System`, an `int` into a [`ParallelSystem`](/guide/concepts/system#parallelsystem), and passes anything else through:
