@@ -41,7 +41,7 @@ The flow is:
 
 1. `encoding(env, duration, inputs)` → produces a `Stimulus`
 2. `env.run(duration, stimulus)` → raw recordings
-3. `decoding(env, *recordings)` → processed output
+3. `decoding(signal, env)` → processed output
 
 ## Built-in encodings
 

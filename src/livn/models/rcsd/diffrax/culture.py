@@ -32,8 +32,11 @@ class MotoneuronCulture(eqx.Module):
         y0=None,
         dt_solver=0.01,
         key=None,
+        record=None,
         **kwargs,
     ):
+        del record  # no auxiliary state to record selectively
+
         def solve_single(I_stim, init_state):
             t_arr, v_soma, v_dend, i_mem_soma, i_mem_dend, final_state = (
                 self.neurons.solve(
@@ -93,4 +96,4 @@ class MotoneuronCulture(eqx.Module):
         im = iv
         mp = i_mem_soma_dend.reshape(self.num_neurons * 2, -1)
 
-        return it, tt, iv, v, im, mp, yT
+        return it, tt, iv, v, im, mp, yT, {}

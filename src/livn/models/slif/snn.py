@@ -571,9 +571,11 @@ class SpikingNeuralNet(eqx.Module):
         dt_solver=0.01,
         key=None,
         unroll=None,
+        record=None,
         **kwargs,
     ):
         del noise  # SLIF has no noise mechanism
+        del record  # SLIF holds no auxiliary state, so it records unconditionally
         num_samples = 1  # batch processing currently not supported
         duration = t1 - t0
         num_neurons = self.num_neurons
@@ -622,7 +624,7 @@ class SpikingNeuralNet(eqx.Module):
 
             spike_train = get_marcus_lifts(sol.spike_times, sol.spike_marks)
 
-            return spike_train, None, gids, v, None, None, yT
+            return spike_train, None, gids, v, None, None, yT, {}
 
         # One (neuron, time) pair per recorded event, straight from the loop --
         # the spike times are exact rather than read back off the voltage grid.
@@ -641,7 +643,7 @@ class SpikingNeuralNet(eqx.Module):
                 ),
                 in_axes=1,
             )(index)
-            return mask, None, gids, v, None, None, yT
+            return mask, None, gids, v, None, None, yT, {}
 
         if unroll == "padded":
             return (
@@ -652,6 +654,7 @@ class SpikingNeuralNet(eqx.Module):
                 None,
                 None,
                 yT,
+                {},
             )
 
         keep = np.asarray(fired).reshape(-1)
@@ -659,7 +662,7 @@ class SpikingNeuralNet(eqx.Module):
         tt = np.asarray(times).reshape(-1)[keep]
         order = np.argsort(tt, kind="stable")
 
-        return it[order], tt[order], gids, v, None, None, yT
+        return it[order], tt[order], gids, v, None, None, yT, {}
 
 
 def _build_forward_network(in_size, out_size, width_size, depth):

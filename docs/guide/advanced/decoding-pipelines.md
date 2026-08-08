@@ -7,16 +7,15 @@ The `Pipe` decoding composes multiple stages into a single processing pipeline. 
 Every stage is a callable with the signature:
 
 ```python
-def __call__(self, env, *data) -> tuple | scalar | array | None:
+def __call__(self, signal, env=None) -> Run | value | None:
     ...
 ```
 
-There are three return patterns used by stages:
+There are two return patterns used by stages:
 
 | Return value | Meaning |
 |---|---|
-| `tuple` | Transformed data passed as the input to the next stage |
-| Scalar / array | Wrapped to `(value,)` and passed on |
+| Any value | Passed as the input to the next stage; a `Run` for a stage that transforms recordings, anything else for one that reduces |
 | `None` | Pass-through where current data flows unchanged to the next stage |
 
 The `None` pass-through pattern enables feature-extractor stages that read the neural data. 
@@ -49,8 +48,8 @@ class FeatureExtractor(Decoding):
     duration: int = 100
     context_key: str = "my_features"
 
-    def __call__(self, env, it, tt, iv, vv, im, mp):
-        features = _compute(it, tt)  # some computation over raw data
+    def __call__(self, signal, env=None):
+        features = _compute(signal.spike_ids, signal.spike_times)  # over the raw data
         pipe = getattr(env, "decoding", None)
         if hasattr(pipe, "context"):
             pipe.context[self.context_key] = features
@@ -60,7 +59,7 @@ class FeatureExtractor(Decoding):
 class AugmentOutput(Decoding):
     duration: int = 1
 
-    def __call__(self, env, result):
+    def __call__(self, result, env=None):
         pipe  = getattr(env, "decoding", None)
         ctx   = getattr(pipe, "context", {})
         feats = ctx.get("my_features")
@@ -79,8 +78,8 @@ class RunningMean(Decoding):
     duration: int = 100
     n: int = 0
 
-    def __call__(self, env, it, tt, iv, vv, im, mp):
-        current = _firing_rate(tt)
+    def __call__(self, signal, env=None):
+        current = _firing_rate(signal.spike_times)
 
         pipe = getattr(env, "decoding", None)
         st   = getattr(pipe, "state", {})
@@ -90,7 +89,7 @@ class RunningMean(Decoding):
         new_mean  = prev_mean + (current - prev_mean) / self.n
         st["running_mean"] = new_mean
 
-        return it, tt, iv, vv, im, mp  # pass data through unchanged
+        return signal  # pass the recordings through unchanged
 ```
 
 `state` is also the right place for values that an external caller wants to inject into the pipeline between steps:
@@ -115,10 +114,10 @@ from livn.utils import P
 class SpikeCountExtractor(Decoding):
     duration: int = 500
 
-    def __call__(self, env, it, tt, iv, vv, im, mp):
+    def __call__(self, signal, env=None):
         local_counts = {}
-        if it is not None:
-            for nid in it:
+        if signal.spike_ids is not None:
+            for nid in signal.spike_ids:
                 local_counts[int(nid)] = local_counts.get(int(nid), 0) + 1
 
         all_counts = P.gather(local_counts, comm=env.comm)
@@ -132,14 +131,14 @@ class SpikeCountExtractor(Decoding):
             if hasattr(pipe, "context"):
                 pipe.context["spike_counts"] = merged
 
-        return None # raw 6-tuple pass unchanged to the next stage
+        return None # the signal passes unchanged to the next stage
 
 
 class PopulationSummary(Decoding):
     duration: int = 500
     top_k: int = 5
 
-    def __call__(self, env, it, tt, iv, vv, im, mp):
+    def __call__(self, signal, env=None):
         pipe   = getattr(env, "decoding", None)
         counts = getattr(pipe, "context", {}).get("spike_counts", {})
 
@@ -213,7 +212,7 @@ class MyStage:
     def __eq__(self, other):
         return type(self) is type(other) and self.__dict__ == other.__dict__
 
-    def __call__(self, env, *data):
+    def __call__(self, signal, env=None):
         ...
 ```
 

@@ -69,13 +69,32 @@ env.record("voltage", dt=0.1)
 env.record("membrane_current", ["EXC", "INH"], dt=0.5)
 ```
 
-Which signals an environment supports depends on its backend and is reported by `recordable()`:
+Which signals an environment supports depends on its backend and on its model, and is reported by `recordable()`:
 
 ```python
 env.recordable()   # ['membrane_current', 'spikes', 'voltage']
 ```
 
 Recording an unknown signal raises an `AttributeError` naming the available ones, and options a signal does not accept raise a `TypeError` rather than being ignored.
+
+### Model-defined states
+
+A model can expose its own internal states for recording, and they appear in `recordable()` alongside the three above. [GLIF](/models/glif), for instance, carries a threshold that moves:
+
+```python
+env = Env(64, model=GLIF(level=5)).init()
+
+env.recordable()   # [..., 'AScurrents', 'theta_s', 'theta_v', 'threshold', ...]
+
+env.record("threshold")
+run = env.run(100)
+
+run["threshold"].values    # [n_neurons, timestep], on the run's own dt
+```
+
+::: tip Recording is what makes a signal exist
+On the diffrax backend a signal that was never recorded is never sampled and allocates no buffer, so `run.voltage` is `None` until `record_voltage()` has been called. Anything you intend to read back has to be asked for first.
+:::
 
 ## Running a simulation
 
@@ -131,12 +150,23 @@ for _ in range(9):
 
 ### Channels and the time base
 
-A `Run` is a set of named channels. Spikes are an `Events` channel (`ids`, `times`) while voltage and current are `Series` channels (`ids`, `values` of shape `[n_ids, T]`, plus the `dt` they were sampled at). Models may record further channels, and they are reachable by name:
+A `Run` is a set of named channels. Spikes are an `Events` channel (`ids`, `times`) while voltage and current are `Series` channels (`ids`, `values` of shape `[n_ids, T]`, plus the `dt` they were sampled at). The model-defined states above are `Series` channels too, and they are reachable by name:
 
 ```python
 run["voltage"].dt          # 0.1
-run.channels.keys()        # dict_keys(['spikes', 'voltage', 'current'])
+run.channels.keys()        # dict_keys(['spikes', 'voltage', 'current', 'threshold'])
 ```
+
+The three standard channels are also reachable by name:
+
+```python
+run.drop_voltage()                          # everything but the voltage trace
+run.drop_current().drop_spikes()            # composes, and returns a new Run
+
+run.drop("threshold")                       # anything else, by name
+```
+
+A sample may itself be a vector, in which case the channel's values are `[n_ids, T, ...]`. Every channel operation (`slice`, `select`, `concat`, `merge`) works the same on those.
 
 A run also records the window it covers where `t0` is the absolute simulation time at which it starts and `duration` is its length. The arrays are stored relative to that origin, so spike times fall in `[0, duration)` and sample `k` of a series is at `t0 + k * dt`:
 
@@ -204,8 +234,8 @@ result = env(
 This is equivalent to:
 
 1. `encoding(env, duration, inputs)` → produces a [Stimulus](/guide/concepts/stimulus)
-2. `env.run(duration, stimulus)` → raw recordings
-3. `decoding(env, *recordings)` → processed output
+2. `env.run(duration, stimulus)` → a `Run`
+3. `decoding(signal, env)` → processed output
 
 This pattern is used extensively in [dataset generation](/systems/sampling) and the Gymnasium RL integration.
 

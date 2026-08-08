@@ -89,8 +89,8 @@ class MyTarget(TuningTargets):
         data = env.run(total)
 
         # Compute objectives: dict of name -> [(objective_value, feature_value)]
-        recording = Slice(start=self.warmup, stop=total)(env, *data)
-        mfr = MeanFiringRate(duration=self.duration)(env, *recording)
+        recording = Slice(start=self.warmup, stop=total)(data)
+        mfr = MeanFiringRate(duration=self.duration)(recording, env)
         rate = mfr["rate_hz"] if mfr else 0.0
         objectives = {"mfr": [((rate - self.target_mfr) ** 2, rate)]}
 
@@ -255,11 +255,9 @@ class OrganoidMatch(TuningTargets):
         env.record_membrane_current()
         data = env.run(total)
 
-        recording = Slice(start=self.warmup, stop=total)(env, *data)
-        it, tt, iv, vv, im, mp = recording
-
+        recording = Slice(start=self.warmup, stop=total)(data)
         # Mean firing rate objective
-        mfr_result = MeanFiringRate(duration=self.duration)(env, *recording)
+        mfr_result = MeanFiringRate(duration=self.duration)(recording, env)
         rate = mfr_result["rate_hz"] if mfr_result else 0.0
         mfr_obj = (rate - self.recording_mfr) ** 2
 
@@ -364,8 +362,8 @@ class EvokedResponse(TuningTargets):
         post_stim = Slice(
             start=stim_start + stim_dur,
             stop=stim_start + stim_dur + post,
-        )(env, *data)
-        mfr = MeanFiringRate(duration=post)(env, *post_stim)
+        )(data)
+        mfr = MeanFiringRate(duration=post)(post_stim, env)
         rate = mfr["rate_hz"] if mfr else 0.0
 
         objectives = {

@@ -1,5 +1,6 @@
 import copy
 import dataclasses
+import functools
 from typing import TYPE_CHECKING, Optional, Union
 
 import jax
@@ -177,6 +178,7 @@ class Env(EnvProtocol):
 
         self._noise = {}
         self._weights = None
+        self._recording = {}
         self.module = None
         self.seed = seed
         self.key = jr.PRNGKey(seed)
@@ -220,6 +222,7 @@ class Env(EnvProtocol):
     def _with_module(self, module) -> "Env":
         env = copy.copy(self)
         env.module = module
+        env._recording = {name: dict(o) for name, o in self._recording.items()}
         env.__dict__.pop("_cells", None)
         return env
 
@@ -231,6 +234,43 @@ class Env(EnvProtocol):
         # noise will be handled later during run
         self._noise = dict(noise)
         return self
+
+    def _enable(self, signal: str, **options) -> "Env":
+        self._recording[signal] = dict(options)
+        return self
+
+    def _record_spikes(self, population: str) -> "Env":
+        return self._enable("spikes")
+
+    def _record_voltage(self, population: str, dt: float = 0.1) -> "Env":
+        return self._enable("voltage", dt=dt)
+
+    def _record_membrane_current(self, population: str, dt: float = 0.1) -> "Env":
+        return self._enable("membrane_current", dt=dt)
+
+    def _enable_state(self, signal: str, population: str | None = None) -> "Env":
+        return self._enable(signal)
+
+    def _model_states(self) -> tuple[str, ...]:
+        model = self.__dict__.get("model")
+        return () if model is None else tuple(model.recordable_states())
+
+    def __getattr__(self, name: str):
+        if name.startswith("_record_"):
+            signal = name[len("_record_") :]
+            if signal in self._model_states():
+                return functools.partial(self._enable_state, signal)
+
+        raise AttributeError(
+            f"{type(self).__name__!r} object has no attribute {name!r}"
+        )
+
+    def __dir__(self):
+        states = (f"_record_{signal}" for signal in self._model_states())
+        return sorted({*super().__dir__(), *states})
+
+    def recording(self) -> dict:
+        return dict(self._recording)
 
     def run(
         self,
@@ -254,7 +294,9 @@ class Env(EnvProtocol):
         y0 = kwargs.pop("y0", None)
         key = kwargs.pop("key", self.run_key)
 
-        run_kwargs = dict(
+        record = self.recording()
+
+        it, tt, iv, v, im, mp, yT, states = self.module.run(
             input_current=input_current,
             noise=self._noise,
             t0=t0,
@@ -263,17 +305,22 @@ class Env(EnvProtocol):
             y0=y0,
             dt_solver=dt_solver,
             key=key,
+            record=frozenset(record),
             **kwargs,
         )
 
-        it, tt, iv, v, im, mp, yT = self.module.run(**run_kwargs)
+        run = Run(t0=t0, duration=duration)
+        if "spikes" in record:
+            run = run.add_spikes(it, tt)
+        if "voltage" in record:
+            run = run.add_voltage(iv, v, dt=dt)
+        if "membrane_current" in record:
+            run = run.add_current(im, mp, dt=dt)
 
-        return (
-            Run(t0=t0, duration=duration)
-            .add_spikes(it, tt)
-            .add_voltage(iv, v, dt=dt)
-            .add_current(im, mp, dt=dt)
-        )
+        for name, (ids, values) in states.items():
+            run = run.add(name, ids, values, dt=dt, kind="series")
+
+        return run
 
     def clear_recordings(self):
         return self
@@ -317,6 +364,11 @@ def _env_tree_flatten(env):
         env.run_key,
         env.encoding,
         env.decoding,
+        tuple(
+            sorted(
+                (name, tuple(sorted(o.items()))) for name, o in env._recording.items()
+            )
+        ),
     )
     return children, aux
 
@@ -338,6 +390,7 @@ def _env_tree_unflatten(aux, children):
         run_key,
         encoding,
         decoding,
+        recording,
     ) = aux
 
     system = system_child if system_is_trainable else system_aux
@@ -353,6 +406,7 @@ def _env_tree_unflatten(aux, children):
     env.key = key
     env._noise = noise
     env._weights = weights
+    env._recording = {name: dict(options) for name, options in recording}
 
     env.init_key = init_key
     env.run_key = run_key

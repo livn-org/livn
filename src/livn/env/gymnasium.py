@@ -191,7 +191,8 @@ class GymStep:
             space.high,
         )
 
-    def __call__(self, env, action, *_):
+    def __call__(self, action, env=None):
+        """Take the action the stage before it decoded, and step the task"""
         if action is None:
             return None
 
@@ -239,10 +240,13 @@ class ObsAugmentation:
     def zero_features(self) -> np.ndarray:
         return np.zeros(self.obs_dim, dtype=np.float32)
 
-    def __call__(self, env, obs, *rest):
+    def __call__(self, step, env=None):
+        """Take ``GymStep``'s ``(obs, reward, terminated, truncated, info)``"""
+        if step is None:
+            return None
+        obs, reward, terminated, truncated, info = step
         if obs is None:
             return None
-        reward, terminated, truncated, info = rest
         pipe = getattr(env, "decoding", None)
         ctx = getattr(pipe, "context", {})
         st = getattr(pipe, "state", {})

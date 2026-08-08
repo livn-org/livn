@@ -11,7 +11,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from livn.models.eventloop import SolverConfig, event_solve
+from livn.models.eventloop import SolverConfig, event_solve, resample
 from livn.types import Model
 
 
@@ -73,6 +73,38 @@ DEFAULT_PARAMS = {
 }
 
 MECHANISMS = ("hard", "escape")
+
+V, THETA_S, THETA_V, ASC_1, ASC_2 = range(5)
+
+SIGNAL_COLUMNS = {
+    "voltage": (V,),
+    "theta_s": (THETA_S,),
+    "theta_v": (THETA_V,),
+    "AScurrents": (ASC_1, ASC_2),
+    "threshold": (THETA_S, THETA_V),
+}
+
+_STATE_ATTRIBUTES = {
+    "threshold": "threshold",
+    "theta_s": "theta_s",
+    "theta_v": "theta_v",
+    "AScurrents": "ascs",
+}
+
+RECORDABLE_STATES = tuple(_STATE_ATTRIBUTES)
+
+# What ``run`` records when its caller does not say
+DEFAULT_RECORD = frozenset({"spikes", "voltage"})
+
+ALL_COLUMNS = (V, THETA_S, THETA_V, ASC_1, ASC_2)
+
+
+def _columns_for(record) -> tuple[int, ...]:
+    """The ODE state columns the requested signals need, ascending"""
+    needed: set[int] = set()
+    for name in record:
+        needed.update(SIGNAL_COLUMNS.get(name, ()))
+    return tuple(sorted(needed))
 
 
 def _check_mechanism(mechanism: str) -> str:
@@ -371,42 +403,50 @@ def to_neuron_config(
 
 
 class GlifSolution(eqx.Module):
-    """Result of :meth:`GlifNeurons.solve`, on a uniform time grid.
-
-    The ODE state is laid out as ``[v, theta_s, theta_v, asc_1, asc_2]``; the
-    properties below name its columns.
-    """
-
     ts: Any  # (times,) in ms
-    ys: Any  # (cells, times, 5)
-    threshold: Any  # (cells, times) in mV
+    ys: Any  # (cells, times, len(columns))
+    threshold: Any  # (cells, times) in mV, or None when it was not requested
     spike_times: Any  # (cells, max_spikes) in ms, inf-padded
     yT: Any  # (cells, 5) final state
     saturated: Any  # (cells,) spike budget exhausted before t1
     solver_ok: Any  # (cells,) every inner solve succeeded
+    columns: tuple = eqx.field(static=True, default=ALL_COLUMNS)
+
+    def column(self, index: int):
+        """The sampled trace of one ODE state column"""
+        try:
+            position = self.columns.index(index)
+        except ValueError:
+            raise AttributeError(
+                f"state column {index} was not sampled; the solve recorded "
+                f"{self.columns}"
+            ) from None
+        return self.ys[..., position]
 
     @property
     def v(self):
-        return self.ys[..., 0]
+        return self.column(V)
 
     @property
     def theta_s(self):
-        return self.ys[..., 1]
+        return self.column(THETA_S)
 
     @property
     def theta_v(self):
-        return self.ys[..., 2]
+        return self.column(THETA_V)
 
     @property
     def ascs(self):
-        return self.ys[..., 3:]
+        return jnp.stack([self.column(ASC_1), self.column(ASC_2)], axis=-1)
 
     @property
     def num_spikes(self):
         return jnp.sum(jnp.isfinite(self.spike_times), axis=-1)
 
 
-def _solve_cell(p, stim_ts, stim_ys, y0, *, t0, t1, dt, mechanism, config, n_out):
+def _solve_cell(
+    p, stim_ts, stim_ys, y0, *, t0, t1, dt, mechanism, config, n_out, columns
+):
     current = diffrax.LinearInterpolation(ts=stim_ts, ys=stim_ys)
 
     def drift(t, y, args):
@@ -474,8 +514,9 @@ def _solve_cell(p, stim_ts, stim_ys, y0, *, t0, t1, dt, mechanism, config, n_out
     )
 
     ts_out = t0 + jnp.arange(n_out) * dt
+    ys = solution.ys[:, jnp.asarray(columns, dtype=jnp.int32)]
     return (
-        solution.sample(ts_out),
+        resample(solution.ts, ys, ts_out),
         solution.event_times,
         solution.y1,
         solution.saturated,
@@ -578,11 +619,18 @@ class GlifNeurons(eqx.Module):
         y0=None,
         stimulus_dt: Optional[float] = None,
         config: Optional[SolverConfig] = None,
+        record=None,
     ) -> GlifSolution:
         t0, t1, dt = float(t0), float(t1), float(dt)
         config = self.config if config is None else config
         n_out = int(round((t1 - t0) / dt)) + 1
         stimulus_dt = dt if stimulus_dt is None else float(stimulus_dt)
+
+        if record is None:
+            columns, want_threshold = ALL_COLUMNS, True
+        else:
+            record = frozenset(record)
+            columns, want_threshold = _columns_for(record), "threshold" in record
 
         if input_current is None:
             stim = jnp.zeros((2, self.n_cells))
@@ -620,12 +668,19 @@ class GlifNeurons(eqx.Module):
                 mechanism=self.mechanism,
                 config=config,
                 n_out=n_out,
+                columns=columns,
             ),
             in_axes=(0, 0, 0),
         )
         ys, spike_times, yT, saturated, solver_ok = solve(self.params(), stim.T, y0)
 
-        threshold = self.V_threshold_base[:, None] + ys[..., 1] + ys[..., 2]
+        columns = tuple(columns)
+        threshold = None
+        if want_threshold:
+            # Theta_inf + Theta_s + Theta_v, Eqs. (2, 4)
+            theta_s = ys[..., columns.index(THETA_S)]
+            theta_v = ys[..., columns.index(THETA_V)]
+            threshold = self.V_threshold_base[:, None] + theta_s + theta_v
 
         return GlifSolution(
             ts=t0 + jnp.arange(n_out) * dt,
@@ -635,6 +690,7 @@ class GlifNeurons(eqx.Module):
             yT=yT,
             saturated=saturated,
             solver_ok=solver_ok,
+            columns=columns,
         )
 
     def run(
@@ -648,11 +704,14 @@ class GlifNeurons(eqx.Module):
         dt_solver: Optional[float] = None,
         key=None,
         unroll: Optional[str] = None,
+        record=None,
         **kwargs,
     ):
         del key  # the hard mechanism is deterministic
         if noise:
             raise NotImplementedError("GLIF does not support noise yet")
+
+        record = DEFAULT_RECORD if record is None else frozenset(record)
 
         config = self.config
         if dt_solver is not None:
@@ -666,9 +725,20 @@ class GlifNeurons(eqx.Module):
             y0=y0,
             config=config,
             stimulus_dt=kwargs.pop("stimulus_dt", None),
+            record=record,
         )
 
         ids = jnp.arange(self.n_cells)
+        voltage = solution.v if "voltage" in record else None
+        states = {
+            name: (ids, getattr(solution, attribute))
+            for name, attribute in _STATE_ATTRIBUTES.items()
+            if name in record
+        }
+
+        if "spikes" not in record:
+            return None, None, ids, voltage, None, None, solution.yT, states
+
         spike_times = solution.spike_times
         fired = jnp.isfinite(spike_times)
 
@@ -682,7 +752,7 @@ class GlifNeurons(eqx.Module):
                 # out-of-range indices (the padding) are dropped
                 lambda idx: jnp.zeros(n_out, bool).at[idx].set(True, mode="drop")
             )(index)
-            return mask, None, ids, solution.v, None, None, solution.yT
+            return mask, None, ids, voltage, None, None, solution.yT, states
 
         cell_ids = jnp.broadcast_to(ids[:, None], spike_times.shape)
         if unroll == "padded":
@@ -690,10 +760,11 @@ class GlifNeurons(eqx.Module):
                 cell_ids.reshape(-1),
                 spike_times.reshape(-1),
                 ids,
-                solution.v,
+                voltage,
                 None,
                 None,
                 solution.yT,
+                states,
             )
 
         keep = np.asarray(fired).reshape(-1)
@@ -701,7 +772,7 @@ class GlifNeurons(eqx.Module):
         tt = np.asarray(spike_times).reshape(-1)[keep]
         order = np.argsort(tt, kind="stable")
 
-        return it[order], tt[order], ids, solution.v, None, None, solution.yT
+        return it[order], tt[order], ids, voltage, None, None, solution.yT, states
 
 
 class GlifNeuronJAX(eqx.Module):
@@ -789,6 +860,9 @@ class GLIF(Model):
 
     def __repr__(self):
         return f"GLIF(level={self.level}, mechanism={self.mechanism!r})"
+
+    def recordable_states(self) -> tuple[str, ...]:
+        return RECORDABLE_STATES
 
     def prepare_stimulus(self, stimulus):
         if stimulus.input_mode != "current":

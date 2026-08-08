@@ -1,16 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Iterator, Mapping
+from typing import TYPE_CHECKING, Any, Iterator, Literal, Mapping
 
 from livn.utils import P, lnp, merge_array
 
 if TYPE_CHECKING:
     from livn.types import Array
-
-SPIKES = "spikes"
-VOLTAGE = "voltage"
-CURRENT = "current"
 
 _TOL = 1e-9
 
@@ -70,7 +66,7 @@ class Events:
             times=_join(self.times, other.times),
         )
 
-    def window(self, start: float, stop: float, name: str = SPIKES) -> "Events":
+    def window(self, start: float, stop: float, name: str = "events") -> "Events":
         """Keep the events in ``[start, stop)``, given in absolute time"""
         lo, hi = start - self.t0, stop - self.t0
 
@@ -107,7 +103,8 @@ class Series:
 
     Args:
         ids: Cell id per row
-        values: ``(n_ids, T)`` matrix of samples
+        values: ``(n_ids, T)`` matrix of samples, or ``(n_ids, T, ...)`` when a
+            sample is itself a vector (an after-spike current pair, say)
         dt: Sampling interval in ms
         t0: Absolute simulation time of sample ``0``
     """
@@ -124,13 +121,13 @@ class Series:
         """Sample times relative to ``t0``"""
         if self.values is None:
             return None
-        return lnp().arange(self.values.shape[-1]) * self.dt
+        return lnp().arange(self.values.shape[1]) * self.dt
 
     @property
     def duration(self) -> float | None:
         if self.values is None:
             return None
-        return float(self.values.shape[-1] * self.dt)
+        return float(self.values.shape[1] * self.dt)
 
     def concat(self, other: "Series", shift: float) -> "Series":
         """Append ``other``'s samples along the time axis"""
@@ -236,13 +233,13 @@ class Run:
         values: "Array | None" = None,
         *,
         dt: float | None = None,
-        kind: str | None = None,
+        kind: Literal["events", "series"] | None = None,
         t0: float | None = None,
         duration: float | None = None,
     ) -> "Run":
         """Return a copy of this run with an additional (or replaced) channel."""
         if kind is None:
-            if dt is not None or getattr(values, "ndim", 1) == 2:
+            if dt is not None or getattr(values, "ndim", 1) >= 2:
                 kind = "series"
             else:
                 kind = "events"
@@ -272,25 +269,37 @@ class Run:
         """Add the ``spikes`` channel, or nothing when it was not recorded"""
         if ids is None and times is None:
             return self
-        return self.add(SPIKES, ids, times, kind="events")
+        return self.add("spikes", ids, times, kind="events")
 
     def add_voltage(self, ids, values, dt: float = 0.1) -> "Run":
         """Add the ``voltage`` channel, or nothing when it was not recorded"""
         if ids is None and values is None:
             return self
-        return self.add(VOLTAGE, ids, values, dt=dt, kind="series")
+        return self.add("voltage", ids, values, dt=dt, kind="series")
 
     def add_current(self, ids, values, dt: float = 0.1) -> "Run":
         """Add the ``current`` channel, or nothing when it was not recorded"""
         if ids is None and values is None:
             return self
-        return self.add(CURRENT, ids, values, dt=dt, kind="series")
+        return self.add("current", ids, values, dt=dt, kind="series")
 
     def drop(self, name: str) -> "Run":
         """Return a copy of this run without ``name``"""
         channels = dict(self.channels)
         channels.pop(name, None)
         return replace(self, channels=channels)
+
+    def drop_spikes(self) -> "Run":
+        """Return a copy of this run without the ``spikes`` channel"""
+        return self.drop("spikes")
+
+    def drop_voltage(self) -> "Run":
+        """Return a copy of this run without the ``voltage`` channel"""
+        return self.drop("voltage")
+
+    def drop_current(self) -> "Run":
+        """Return a copy of this run without the ``current`` channel"""
+        return self.drop("current")
 
     def channel(self, name: str):
         return self.channels.get(name)
@@ -305,40 +314,40 @@ class Run:
 
     @property
     def spikes(self) -> Events | None:
-        return self.channels.get(SPIKES)
+        return self.channels.get("spikes")
 
     @property
     def spike_ids(self):
-        return self.ids(SPIKES)
+        return self.ids("spikes")
 
     @property
     def spike_times(self):
-        return self.values(SPIKES)
+        return self.values("spikes")
 
     @property
     def voltage_ids(self):
-        return self.ids(VOLTAGE)
+        return self.ids("voltage")
 
     @property
     def voltage(self):
-        return self.values(VOLTAGE)
+        return self.values("voltage")
 
     @property
     def voltage_dt(self) -> float | None:
-        channel = self.channels.get(VOLTAGE)
+        channel = self.channels.get("voltage")
         return None if channel is None else channel.dt
 
     @property
     def current_ids(self):
-        return self.ids(CURRENT)
+        return self.ids("current")
 
     @property
     def current(self):
-        return self.values(CURRENT)
+        return self.values("current")
 
     @property
     def current_dt(self) -> float | None:
-        channel = self.channels.get(CURRENT)
+        channel = self.channels.get("current")
         return None if channel is None else channel.dt
 
     @property
@@ -362,7 +371,7 @@ class Run:
         return iter(self._tuple())
 
     def __len__(self) -> int:
-        return len((SPIKES, VOLTAGE, CURRENT)) * 2  # an (ids, values) pair per channel
+        return 6  # an (ids, values) pair per channel
 
     def __getitem__(self, key):
         if isinstance(key, str):

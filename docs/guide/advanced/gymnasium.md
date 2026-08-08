@@ -179,8 +179,8 @@ class ForceDecoder(Decoding):
     def setup(self, env):
         env.record_spikes()
 
-    def __call__(self, env, it, tt, iv, vv, im, mp):
-        cit, ct = env.channel_recording(it, tt)
+    def __call__(self, signal, env=None):
+        cit, ct = env.channel_recording(signal.spike_ids, signal.spike_times)
         cit, ct = P.gather(cit, ct, comm=env.comm)
         if P.is_root(comm=env.comm):
             cit, ct = P.merge(cit, ct)

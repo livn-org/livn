@@ -442,7 +442,9 @@ class Env(Protocol):
             - ``current_ids``: Membrane current recording neuron ids
             - ``current``: Membrane current traces with shape [n_neurons, timestep]
 
-            It also unpacks as a six-tuple in exactly that order.
+            It also unpacks as a six-tuple in exactly that order. Any further
+            signal the model exposes to :meth:`record` arrives as a channel of
+            its own, reachable by name.
         """
         ...
 
@@ -474,7 +476,7 @@ class Env(Protocol):
         if isinstance(decoding, int):
             return response
 
-        return decoding(self, *response)
+        return decoding(response, self)
 
     @property
     def voltage_recording_dt(self) -> float:
@@ -571,6 +573,9 @@ class Model(Protocol):
     def prepare_stimulus(self, stimulus: "Stimulus") -> "Stimulus":
         return stimulus
 
+    def recordable_states(self) -> tuple[str, ...]:
+        return ()
+
     def diffrax_module(self, env: "Env", key=None):
         raise NotImplementedError(
             f"{type(self).__name__} does not implement the diffrax backend"
@@ -651,17 +656,8 @@ class Decoding(BaseModel):
     def setup(self, env: "Env"):
         """Optional setup"""
 
-    def __call__(
-        self,
-        env: "Env",
-        it: Int[Array, "n_spiking_neuron_ids"] | None,
-        tt: Float[Array, "n_spiking_neuron_times"] | None,
-        iv: Int[Array, "n_voltage_neuron_ids"] | None,
-        vv: Float[Array, "neuron_ids voltages"] | None,
-        im: Int[Array, "n_membrane_current_neuron_ids"] | None,
-        mp: Float[Array, "neuron_ids membrane_currents"] | None,
-    ) -> Any:
-        return it, tt, iv, vv, im, mp
+    def __call__(self, signal: "Run", env: Optional["Env"] = None) -> Any:
+        return signal
 
     @property
     def output_space(self) -> "gymnasium.Space":

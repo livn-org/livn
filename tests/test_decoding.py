@@ -16,6 +16,16 @@ from livn.decoding import (
     ArrowDataset,
 )
 from livn.backend import backend
+from livn.run import Run
+
+
+def _recording(it=None, tt=None, iv=None, vv=None, im=None, mp=None, dt=0.1):
+    return (
+        Run(duration=250.0)
+        .add_spikes(it, tt)
+        .add_voltage(iv, vv, dt=dt)
+        .add_current(im, mp, dt=dt)
+    )
 
 
 @pytest.fixture
@@ -51,7 +61,7 @@ def env_response(request):
         # the next env's finitialize() inside NetCvode::init_events().
         env.close()
 
-    return tuple([np.array(r) for r in response])
+    return _recording(*[np.array(r) for r in response])
 
 
 @pytest.mark.skipif(
@@ -69,9 +79,7 @@ def test_slice_decoding(env_response):
     duration = 50
     recording_dt = 0.1
 
-    ii, tt, iv, v, im, mp = Slice(start=start, stop=start + duration)(
-        env, *env_response
-    )
+    ii, tt, iv, v, im, mp = Slice(start=start, stop=start + duration)(env_response)
     orig_ii, orig_tt, orig_iv, orig_v, orig_im, orig_m = env_response
 
     # spike times are re-based onto the window, so they land in [0, duration)
@@ -106,9 +114,7 @@ def test_slice_float_valid(env_response):
     start = 10.0
     duration = 5.0
 
-    ii, tt, iv, v, im, mp = Slice(start=start, stop=start + duration)(
-        env, *env_response
-    )
+    ii, tt, iv, v, im, mp = Slice(start=start, stop=start + duration)(env_response)
 
     # spike times should be correctly offset
     if len(tt) > 0:
@@ -124,14 +130,14 @@ def test_slice_float_valid(env_response):
     duration = 10.0
 
     with pytest.raises(ValueError, match="does not align with.*recording dt"):
-        Slice(start=start, stop=start + duration)(env, *env_response)
+        Slice(start=start, stop=start + duration)(env_response)
 
     # duration 10.025 with dt=0.1 -> fractional end index
     start = 10.0
     duration = 0.025
 
     with pytest.raises(ValueError, match="does not align with.*recording dt"):
-        Slice(start=start, stop=start + duration)(env, *env_response)
+        Slice(start=start, stop=start + duration)(env_response)
 
 
 class MockEnv:
@@ -208,7 +214,7 @@ class TestMeanFiringRate:
         tt = np.linspace(0, 999, 20)
 
         mfr = MeanFiringRate(duration=duration)
-        result = mfr(env, it, tt, None, None, None, None)
+        result = mfr(_recording(it, tt, None, None, None, None), env)
 
         assert result is not None
         assert "rate_hz" in result
@@ -223,7 +229,7 @@ class TestMeanFiringRate:
         tt = np.array([])
 
         mfr = MeanFiringRate(duration=1000)
-        result = mfr(env, it, tt, None, None, None, None)
+        result = mfr(_recording(it, tt, None, None, None, None), env)
 
         assert result is not None
         assert result["total_spikes"] == 0
@@ -238,7 +244,7 @@ class TestActiveFraction:
         tt = np.linspace(0, 999, 10)
 
         af = ActiveFraction(duration=1000)
-        result = af(env, it, tt, None, None, None, None)
+        result = af(_recording(it, tt, None, None, None, None), env)
 
         assert result is not None
         assert result["active_fraction"] == 1.0
@@ -252,7 +258,7 @@ class TestActiveFraction:
         tt = np.linspace(0, 999, 5)
 
         af = ActiveFraction(duration=1000)
-        result = af(env, it, tt, None, None, None, None)
+        result = af(_recording(it, tt, None, None, None, None), env)
 
         assert result["active_fraction"] == 0.5
         assert result["active_units"] == 5
@@ -264,7 +270,7 @@ class TestActiveFraction:
         tt = np.linspace(0, 999, 6)
 
         af = ActiveFraction(duration=1000, min_spikes=2)
-        result = af(env, it, tt, None, None, None, None)
+        result = af(_recording(it, tt, None, None, None, None), env)
 
         assert result["active_units"] == 1
 
@@ -279,7 +285,7 @@ class TestStability:
         it, tt = make_mock_spikes(n_spikes, 10, duration)
 
         stability = Stability(duration=duration, max_rate_hz=20, min_rate_hz=0.01)
-        result = stability(env, it, tt, None, None, None, None)
+        result = stability(_recording(it, tt, None, None, None, None), env)
 
         assert result is not None
         assert "is_stable" in result
@@ -294,7 +300,7 @@ class TestStability:
         tt = np.random.uniform(1500, 2000, 500)  # all in last 500ms
 
         stability = Stability(duration=duration, tail_window=500, max_rate_hz=10)
-        result = stability(env, it, tt, None, None, None, None)
+        result = stability(_recording(it, tt, None, None, None, None), env)
 
         assert result["is_runaway"] is True
         assert result["is_stable"] is False
@@ -307,7 +313,7 @@ class TestStability:
         tt = np.array([], dtype=np.float64)
 
         stability = Stability(duration=duration, min_rate_hz=0.05)
-        result = stability(env, it, tt, None, None, None, None)
+        result = stability(_recording(it, tt, None, None, None, None), env)
 
         assert result["global_mean_hz"] == 0.0
         assert result["is_quiescent"] is True
@@ -322,7 +328,7 @@ class TestLFP:
         im, m = make_mock_membrane_current(50, duration)
 
         lfp = LFP(duration=duration, downsample_hz=1000)
-        result = lfp(env, None, None, None, None, im, m)
+        result = lfp(_recording(None, None, None, None, im, m), env)
 
         assert result is not None
         assert "lfp" in result
@@ -338,7 +344,7 @@ class TestLFP:
 
         # 10kHz to 1kHz
         lfp = LFP(duration=duration, downsample_hz=1000)
-        result = lfp(env, None, None, None, None, im, m)
+        result = lfp(_recording(None, None, None, None, im, m), env)
 
         assert result["sample_rate_hz"] == 1000.0
 
@@ -349,7 +355,7 @@ class TestLFP:
         im, m = make_mock_membrane_current(50, duration)
 
         lfp = LFP(duration=duration, channels=[0, 1, 2, 3])
-        result = lfp(env, None, None, None, None, im, m)
+        result = lfp(_recording(None, None, None, None, im, m), env)
 
         assert result["n_channels"] == 4
 
@@ -357,7 +363,7 @@ class TestLFP:
         env = MockEnv()
 
         lfp = LFP(duration=1000)
-        result = lfp(env, None, None, None, None, None, None)
+        result = lfp(_recording(None, None, None, None, None, None), env)
 
         assert result is not None
         assert result["n_channels"] == 0
@@ -379,7 +385,7 @@ class TestLFPBandPower:
             },
             nperseg=512,
         )
-        result = lfp_decoder(env, None, None, None, None, im, m)
+        result = lfp_decoder(_recording(None, None, None, None, im, m), env)
 
         assert result is not None
         assert "theta" in result
@@ -401,7 +407,7 @@ class TestLFPBandPower:
         im, m = make_mock_membrane_current(50, duration)
 
         lfp = LFP(duration=duration, compute_band_power=False)
-        result = lfp(env, None, None, None, None, im, m)
+        result = lfp(_recording(None, None, None, None, im, m), env)
 
         assert result is not None
         assert "lfp" in result
@@ -415,7 +421,7 @@ class TestLFPBandPower:
         im, m = make_mock_membrane_current(50, duration)
 
         lfp = LFP(duration=duration, compute_band_power=True)
-        result = lfp(env, None, None, None, None, im, m)
+        result = lfp(_recording(None, None, None, None, im, m), env)
 
         assert result is not None
         assert "delta" in result
@@ -434,7 +440,7 @@ class TestLFPBandPower:
             duration=duration,
             compute_band_power={"delta": (1.0, 4.0), "theta": (4.0, 8.0)},
         )
-        result = lfp(env, None, None, None, None, im, m)
+        result = lfp(_recording(None, None, None, None, im, m), env)
 
         assert "delta_relative" in result
         assert "theta_relative" in result
@@ -455,7 +461,7 @@ class TestPipe:
             stages=[MeanFiringRate(duration=duration)],
         )
 
-        result = pipeline(env, it, tt, None, None, None, None)
+        result = pipeline(_recording(it, tt, None, None, None, None), env)
 
         assert result is not None
         assert "rate_hz" in result
@@ -496,7 +502,7 @@ class TestAvalancheAnalysis:
         it = np.random.randint(0, 10, len(tt))
 
         aa = AvalancheAnalysis(duration=duration, bin_width=5.0)
-        result = aa(env, it, tt, None, None, None, None)
+        result = aa(_recording(it, tt, None, None, None, None), env)
 
         assert result is not None
         assert "n_avalanches" in result
@@ -534,7 +540,7 @@ class TestAvalancheAnalysis:
         it = np.random.randint(0, 50, len(tt))
 
         aa = AvalancheAnalysis(duration=duration, bin_width=bin_width)
-        result = aa(env, it, tt, None, None, None, None)
+        result = aa(_recording(it, tt, None, None, None, None), env)
 
         assert result is not None
         assert 0.5 < result["branching_ratio"] < 1.5
@@ -561,7 +567,7 @@ class TestAvalancheAnalysis:
         it = np.random.randint(0, 30, len(tt))
 
         aa = AvalancheAnalysis(duration=duration, bin_width=bin_width)
-        result = aa(env, it, tt, None, None, None, None)
+        result = aa(_recording(it, tt, None, None, None, None), env)
 
         assert result is not None
         assert result["branching_ratio"] < 1.0
@@ -588,7 +594,7 @@ class TestAvalancheAnalysis:
         it = np.random.randint(0, 30, len(tt))
 
         aa = AvalancheAnalysis(duration=duration, bin_width=bin_width)
-        result = aa(env, it, tt, None, None, None, None)
+        result = aa(_recording(it, tt, None, None, None, None), env)
 
         assert result is not None
         assert result["branching_ratio"] > 1.0
@@ -601,7 +607,7 @@ class TestAvalancheAnalysis:
         it = np.array([0, 1, 2, 3])
 
         aa = AvalancheAnalysis(duration=duration, bin_width=5.0)
-        result = aa(env, it, tt, None, None, None, None)
+        result = aa(_recording(it, tt, None, None, None, None), env)
 
         assert result is not None
         assert result["n_avalanches"] >= 4
@@ -616,7 +622,7 @@ class TestAvalancheAnalysis:
         it = np.array([])
 
         aa = AvalancheAnalysis(duration=duration, bin_width=4.0)
-        result = aa(env, it, tt, None, None, None, None)
+        result = aa(_recording(it, tt, None, None, None, None), env)
 
         assert result is not None
         assert result["n_avalanches"] == 0
@@ -633,7 +639,7 @@ class TestAvalancheAnalysis:
         it = np.random.randint(0, 20, 500)
 
         aa = AvalancheAnalysis(duration=duration, bin_width=4.0)
-        result = aa(env, it, tt, None, None, None, None)
+        result = aa(_recording(it, tt, None, None, None, None), env)
 
         assert result is not None
         assert result["n_avalanches"] > 0
@@ -646,10 +652,10 @@ class TestAvalancheAnalysis:
         it = np.array([0, 1, 2, 3, 4, 5, 6, 7])
 
         aa_small = AvalancheAnalysis(duration=duration, bin_width=2.0)
-        result_small = aa_small(env, it, tt, None, None, None, None)
+        result_small = aa_small(_recording(it, tt, None, None, None, None), env)
 
         aa_large = AvalancheAnalysis(duration=duration, bin_width=50.0)
-        result_large = aa_large(env, it, tt, None, None, None, None)
+        result_large = aa_large(_recording(it, tt, None, None, None, None), env)
 
         assert result_large["mean_size"] >= result_small["mean_size"]
 
@@ -671,7 +677,7 @@ class TestAvalancheAnalysis:
         it = np.random.randint(0, 100, len(tt))
 
         aa = AvalancheAnalysis(duration=duration, bin_width=bin_width)
-        result = aa(env, it, tt, None, None, None, None)
+        result = aa(_recording(it, tt, None, None, None, None), env)
 
         assert result is not None
         assert -1.0 <= result["size_power_law_r2"] <= 1.0
@@ -685,10 +691,8 @@ def test_mean_firing_rate_integration(env_response):
     if backend() == "brian2":
         env.init()
 
-    it, tt, iv, vv, im, m = env_response
-
     mfr = MeanFiringRate(duration=250)
-    result = mfr(env, it, tt, iv, vv, im, m)
+    result = mfr(env_response, env)
 
     assert result is not None
     assert result["rate_hz"] >= 0
@@ -703,10 +707,8 @@ def test_active_fraction_integration(env_response):
     if backend() == "brian2":
         env.init()
 
-    it, tt, iv, vv, im, m = env_response
-
     af = ActiveFraction(duration=250)
-    result = af(env, it, tt, iv, vv, im, m)
+    result = af(env_response, env)
 
     assert result is not None
     assert 0 <= result["active_fraction"] <= 1
@@ -720,10 +722,8 @@ def test_stability_integration(env_response):
     if backend() == "brian2":
         env.init()
 
-    it, tt, iv, vv, im, m = env_response
-
     stability = Stability(duration=250, tail_window=100)
-    result = stability(env, it, tt, iv, vv, im, m)
+    result = stability(env_response, env)
 
     assert result is not None
     assert "is_stable" in result
@@ -739,10 +739,8 @@ def test_lfp_integration(env_response):
         env.init()
     env.record_membrane_current()
 
-    it, tt, iv, vv, im, m = env_response
-
     lfp = LFP(duration=250)
-    result = lfp(env, it, tt, iv, vv, im, m)
+    result = lfp(env_response, env)
 
     assert result is not None
     assert "lfp" in result
@@ -758,8 +756,6 @@ def test_pipeline_integration(env_response):
     env.record_spikes()
     env.record_membrane_current()
 
-    it, tt, iv, vv, im, m = env_response
-
     pipeline = Pipe(
         duration=250,
         stages=[
@@ -768,7 +764,7 @@ def test_pipeline_integration(env_response):
         ],
     )
 
-    result = pipeline(env, it, tt, iv, vv, im, m)
+    result = pipeline(env_response, env)
 
     assert result is not None
     assert "rate_hz" in result
@@ -782,10 +778,8 @@ def test_avalanche_analysis_integration(env_response):
     if backend() == "brian2":
         env.init()
 
-    it, tt, iv, vv, im, m = env_response
-
     aa = AvalancheAnalysis(duration=250, bin_width=4.0)
-    result = aa(env, it, tt, iv, vv, im, m)
+    result = aa(env_response, env)
 
     assert result is not None
     assert "n_avalanches" in result
@@ -812,7 +806,7 @@ class TestArrowDataset:
             voltages=False,
             membrane_currents=False,
         )
-        result = ad(env, it, tt, None, None, None, None)
+        result = ad(_recording(it, tt, None, None, None, None), env)
 
         assert result is not None
         assert os.path.isfile(os.path.join(directory, "data-00000.arrow"))
@@ -838,7 +832,7 @@ class TestArrowDataset:
 
         for seed in range(3):
             it, tt = make_mock_spikes(15, 10, duration, seed=seed)
-            ad(env, it, tt, None, None, None, None)
+            ad(_recording(it, tt, None, None, None, None), env)
 
         for i in range(3):
             assert os.path.isfile(os.path.join(directory, f"data-{i:05d}.arrow"))
@@ -858,7 +852,7 @@ class TestArrowDataset:
             membrane_currents=False,
         )
         it, tt = make_mock_spikes(10, 10, duration, seed=0)
-        ad1(env, it, tt, None, None, None, None)
+        ad1(_recording(it, tt, None, None, None, None), env)
 
         # recreate — simulates object destruction/recreation
         ad2 = ArrowDataset(
@@ -868,7 +862,7 @@ class TestArrowDataset:
             membrane_currents=False,
         )
         it, tt = make_mock_spikes(10, 10, duration, seed=1)
-        ad2(env, it, tt, None, None, None, None)
+        ad2(_recording(it, tt, None, None, None, None), env)
 
         assert os.path.isfile(os.path.join(directory, "data-00000.arrow"))
         assert os.path.isfile(os.path.join(directory, "data-00001.arrow"))
@@ -893,7 +887,7 @@ class TestArrowDataset:
             voltages=True,
             membrane_currents=True,
         )
-        ad(env, it, tt, iv, vv, im, mp)
+        ad(_recording(it, tt, iv, vv, im, mp), env)
 
         ds = ad.dataset()
         assert len(ds) == 1
@@ -920,7 +914,7 @@ class TestArrowDataset:
             voltages=False,
             membrane_currents=False,
         )
-        ad(env, it, tt, None, None, im, mp)
+        ad(_recording(it, tt, None, None, im, mp), env)
 
         ds = ad.dataset()
         assert "it" in ds.column_names
@@ -970,7 +964,9 @@ class TestChannelRecording:
         tt = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float64)
         mp = np.arange(20, dtype=np.float32).reshape(2, 10)
 
-        cit, ct, iv, vv, channel_ids, p = decoder(env, it, tt, None, None, None, mp)
+        cit, ct, iv, vv, channel_ids, p = decoder(
+            _recording(it, tt, None, None, None, mp), env
+        )
 
         assert iv is None
         assert vv is None
@@ -992,9 +988,7 @@ class TestChannelRecording:
         iv = np.array([0, 1], dtype=np.int32)
         vv = np.ones((2, 5), dtype=np.float32)
 
-        cit, ct, iv_out, vv_out, channel_ids, p = decoder(
-            env, None, None, iv, vv, None, None
-        )
+        cit, ct, iv_out, vv_out, channel_ids, p = decoder(_recording(iv=iv, vv=vv), env)
 
         assert cit is None
         assert ct is None

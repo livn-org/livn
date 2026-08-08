@@ -16,21 +16,24 @@ class MyDecoding(Decoding):
         """Optional: configure the environment before simulation (e.g., enable recordings)"""
         env.record_spikes()
 
-    def __call__(self, env, it, tt, iv, vv, im, mp):
-        """Process raw recordings and return structured output"""
-        return {"n_spikes": len(tt) if tt is not None else 0}
+    def __call__(self, signal, env=None):
+        """Process one signal's channels and return structured output"""
+        return {"n_spikes": 0 if signal.spike_times is None else len(signal.spike_times)}
 ```
 
-The six arguments to `__call__` correspond to the raw recording outputs from [`env.run()`](/guide/concepts/env):
+`signal` is a [`Run`](/guide/concepts/env#running-a-simulation) containing the recordings of one simulated window.
 
-| Argument | Type | Description |
-|----------|------|-------------|
-| `it` | `int[]` | Spiking neuron IDs |
-| `tt` | `float[]` | Spike times (ms) |
-| `iv` | `int[]` | Voltage-recorded neuron IDs |
-| `vv` | `float[n, T]` | Voltage traces |
-| `im` | `int[]` | Membrane-current-recorded neuron IDs |
-| `mp` | `float[n, T]` | Membrane current traces |
+```python
+signal.spike_ids, signal.spike_times   # the spikes
+signal.voltage, signal.voltage_dt      # the trace and the dt it was sampled at
+signal["threshold"].values             # a model-defined channel
+```
+
+```python
+Slice(start=100, stop=500)(signal)           # ignores env; nothing else required
+MeanFiringRate(duration=500)(signal, env)    # reduces over env.comm
+LFP(duration=500)(signal, env)               # needs env.io to reach the electrodes
+```
 
 ## Using decodings
 

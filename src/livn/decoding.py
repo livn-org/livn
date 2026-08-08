@@ -4,6 +4,7 @@ from typing import Callable, Optional, Any
 import numpy as np
 from pydantic import Field, PrivateAttr
 from scipy.signal import butter, filtfilt, welch
+from livn.run import Run
 from livn.types import Decoding
 from livn.utils import P
 
@@ -21,54 +22,8 @@ class Slice(Decoding):
     start: float = 0.0
     duration: float = Field(validation_alias="stop")
 
-    def __call__(self, env, it, tt, iv, vv, im, mp):
-        stop = self.duration
-
-        # spikes
-        if it is not None and tt is not None:
-            mask = (tt >= self.start) & (tt < stop)
-            it = it[mask]
-            tt = tt[mask] - self.start
-
-        # voltage [n_neurons, T]
-        if iv is not None and vv is not None:
-            v_dt = env.voltage_recording_dt
-            self._validate_no_information_loss(self.start, v_dt, "start", "voltage")
-            self._validate_no_information_loss(stop, v_dt, "duration", "voltage")
-
-            start_idx = int(self.start / v_dt)
-            stop_idx = int(stop / v_dt)
-            vv = vv[:, start_idx:stop_idx]
-
-        # membrane currents [n_neurons, T]
-        if im is not None and mp is not None:
-            m_dt = env.membrane_current_recording_dt
-            self._validate_no_information_loss(
-                self.start, m_dt, "start", "membrane current"
-            )
-            self._validate_no_information_loss(
-                stop, m_dt, "duration", "membrane current"
-            )
-
-            start_idx = int(self.start / m_dt)
-            stop_idx = int(stop / m_dt)
-            mp = mp[:, start_idx:stop_idx]
-
-        return it, tt, iv, vv, im, mp
-
-    def _validate_no_information_loss(
-        self, time_ms: float, dt: float, param_name: str, data_type: str
-    ) -> None:
-        index = time_ms / dt
-        if not self._is_integer(index):
-            raise ValueError(
-                f"{param_name}={time_ms} ms does not align with {data_type} recording dt={dt} ms"
-                f" yielding a fractional index {index}"
-            )
-
-    @staticmethod
-    def _is_integer(value: float, tol: float = 1e-9) -> bool:
-        return abs(value - round(value)) < tol
+    def __call__(self, signal: Run, env=None):
+        return signal.slice(self.start, self.duration)
 
 
 class ChannelRecording(Decoding):
@@ -85,7 +40,10 @@ class ChannelRecording(Decoding):
         if self.membrane_currents:
             env.record_membrane_current()
 
-    def __call__(self, env, it, tt, iv, vv, im, mp):
+    def __call__(self, signal: Run, env=None):
+        it, tt = signal.spike_ids, signal.spike_times
+        iv, vv, mp = signal.voltage_ids, signal.voltage, signal.current
+
         # Per-rank electrode potential, sum-reduced for each channel [n_channels, T].
         if self.membrane_currents and mp is not None:
             p = P.reduce_sum(env.potential_recording(mp), all=True, comm=env.comm)
@@ -125,31 +83,15 @@ class GatherAndMerge(Decoding):
         if self.membrane_currents:
             env.record_membrane_current()
 
-    def __call__(self, env, it, tt, iv, vv, im, mp):
-        if self.spikes:
-            it, tt = P.gather(it, tt, comm=env.comm, root=self.root)
-        else:
-            it, tt = None, None
+    def __call__(self, signal: Run, env=None):
+        if not self.spikes:
+            signal = signal.drop_spikes()
+        if not self.voltages:
+            signal = signal.drop_voltage()
+        if not self.membrane_currents:
+            signal = signal.drop_current()
 
-        if self.voltages:
-            iv, vv = P.gather(iv, vv, comm=env.comm, root=self.root)
-        else:
-            iv, vv = None, None
-
-        if self.membrane_currents:
-            im, mp = P.gather(im, mp, comm=env.comm, root=self.root)
-        else:
-            im, mp = None, None
-
-        if P.is_root(comm=env.comm, root=self.root):
-            if self.spikes:
-                it, tt = P.merge(it, tt)
-            if self.voltages:
-                iv, vv = P.merge(iv, vv)
-            if self.membrane_currents:
-                im, mp = P.merge(im, mp)
-
-            return it, tt, iv, vv, im, mp
+        return signal.gather(comm=env.comm, root=self.root)
 
 
 class Pipe(Decoding):
@@ -204,18 +146,16 @@ class Pipe(Decoding):
     def clear(self):
         self._state.clear()
 
-    def __call__(self, env, it, tt, iv, vv, im, mp):
+    def __call__(self, signal: Run, env=None):
         self._context.clear()
-        data = (it, tt, iv, vv, im, mp)
+        data = signal
         for stage in self.stages:
-            result = stage(env, *data)
-            if result is None:
-                pass
-            elif isinstance(result, tuple):
+            result = stage(data, env)
+            if result is not None:
                 data = result
-            else:
-                data = (result,)
-        return data[0] if len(data) == 1 else data
+        if isinstance(data, tuple) and len(data) == 1:
+            return data[0]
+        return data
 
     def __repr__(self):
         stage_reprs = ", ".join(repr(s) for s in self.stages)
@@ -223,7 +163,9 @@ class Pipe(Decoding):
 
 
 class MeanFiringRate(Decoding):
-    def __call__(self, env, it, tt, iv, vv, im, mp):
+    def __call__(self, signal: Run, env=None):
+        it, tt = signal.spike_ids, signal.spike_times
+
         local_count = 0
         local_units = set()
         if tt is not None and it is not None:
@@ -260,7 +202,9 @@ class MeanFiringRate(Decoding):
 class ActiveFraction(Decoding):
     min_spikes: int = 1
 
-    def __call__(self, env, it, tt, iv, vv, im, mp):
+    def __call__(self, signal: Run, env=None):
+        it, tt = signal.spike_ids, signal.spike_times
+
         local_unit_counts = {}
         if tt is not None and it is not None:
             for uid in it:
@@ -320,7 +264,9 @@ class PopulationRateMetrics(Decoding):
 
     bin_size: float = 100.0
 
-    def __call__(self, env, it, tt, iv, vv, im, mp):
+    def __call__(self, signal: Run, env=None):
+        tt = signal.spike_times
+
         local_spikes = tt.tolist() if tt is not None else []
         all_spikes = P.gather(local_spikes, comm=env.comm)
 
@@ -364,7 +310,9 @@ class ISICV(Decoding):
 
     min_spikes_per_unit: int = 5
 
-    def __call__(self, env, it, tt, iv, vv, im, mp):
+    def __call__(self, signal: Run, env=None):
+        it, tt = signal.spike_ids, signal.spike_times
+
         local_it = it.tolist() if it is not None else []
         local_tt = tt.tolist() if tt is not None else []
         all_it = P.gather(local_it, comm=env.comm)
@@ -422,7 +370,9 @@ class PopulationAutocorrTau(Decoding):
     bin_size: float = 10.0
     max_lag: float = 5000.0
 
-    def __call__(self, env, it, tt, iv, vv, im, mp):
+    def __call__(self, signal: Run, env=None):
+        tt = signal.spike_times
+
         local_spikes = tt.tolist() if tt is not None else []
         all_spikes = P.gather(local_spikes, comm=env.comm)
 
@@ -482,7 +432,9 @@ class BurstRate(Decoding):
     min_floor_fraction: float = 0.15
     min_floor: float = 3.0
 
-    def __call__(self, env, it, tt, iv, vv, im, mp):
+    def __call__(self, signal: Run, env=None):
+        it, tt = signal.spike_ids, signal.spike_times
+
         local_it = it.tolist() if it is not None else []
         local_tt = tt.tolist() if tt is not None else []
         all_it = P.gather(local_it, comm=env.comm)
@@ -536,7 +488,9 @@ class PeakSynchrony(Decoding):
 
     bin_size: float = 2.0
 
-    def __call__(self, env, it, tt, iv, vv, im, mp):
+    def __call__(self, signal: Run, env=None):
+        it, tt = signal.spike_ids, signal.spike_times
+
         local_it = it.tolist() if it is not None else []
         local_tt = tt.tolist() if tt is not None else []
         all_it = P.gather(local_it, comm=env.comm)
@@ -583,7 +537,9 @@ class PairwiseChannelCorrelation(Decoding):
     bin_size: float = 20.0
     min_units: int = 2
 
-    def __call__(self, env, it, tt, iv, vv, im, mp):
+    def __call__(self, signal: Run, env=None):
+        it, tt = signal.spike_ids, signal.spike_times
+
         local_it = it.tolist() if it is not None else []
         local_tt = tt.tolist() if tt is not None else []
         all_it = P.gather(local_it, comm=env.comm)
@@ -646,7 +602,9 @@ class PerUnitFiringRate(Decoding):
         n_units
     """
 
-    def __call__(self, env, it, tt, iv, vv, im, mp):
+    def __call__(self, signal: Run, env=None):
+        it = signal.spike_ids
+
         local_it = it.tolist() if it is not None else []
         all_it = P.gather(local_it, comm=env.comm)
 
@@ -690,7 +648,9 @@ class PopulationFiringRates(Decoding):
     subsampling. Returns ``{"rates_hz": {pop: Hz}}``.
     """
 
-    def __call__(self, env, it, tt, iv, vv, im, mp):
+    def __call__(self, signal: Run, env=None):
+        it, tt = signal.spike_ids, signal.spike_times
+
         ranges = env.system.population_ranges
         pops = sorted(ranges, key=lambda p: ranges[p][0])  # ascending start gid
         starts = np.array([ranges[p][0] for p in pops], dtype=np.int64)
@@ -726,7 +686,9 @@ class Stability(Decoding):
     min_rate_hz: float = 0.05
     bin_size: float = 100.0
 
-    def __call__(self, env, it, tt, iv, vv, im, mp):
+    def __call__(self, signal: Run, env=None):
+        tt = signal.spike_times
+
         local_spikes = tt.tolist() if tt is not None else []
         all_spikes = P.gather(local_spikes, comm=env.comm)
 
@@ -785,7 +747,9 @@ class LFP(Decoding):
     nperseg: int = 2048  # Welch window length for band power
     noverlap: Optional[int] = None  # Welch overlap (None = nperseg//2)
 
-    def __call__(self, env, it, tt, iv, vv, im, mp):
+    def __call__(self, signal: Run, env=None):
+        mp = signal.current
+
         if mp is not None:
             local_potential = env.potential_recording(mp)
             if local_potential is not None:
@@ -919,7 +883,9 @@ class AvalancheAnalysis(Decoding):
 
     bin_width: float = 4.0
 
-    def __call__(self, env, it, tt, iv, vv, im, mp):
+    def __call__(self, signal: Run, env=None):
+        tt = signal.spike_times
+
         local_spikes = tt.tolist() if tt is not None else []
         all_spikes = P.gather(local_spikes, comm=env.comm)
 
@@ -1037,12 +1003,12 @@ class ArrowDataset(GatherAndMerge):
 
     directory: str
 
-    def __call__(self, env, it, tt, iv, vv, im, mp):
-        data = super().__call__(env, it, tt, iv, vv, im, mp)
-        if data is None:
+    def __call__(self, signal: Run, env=None):
+        gathered = super().__call__(signal, env)
+        if gathered is None:
             return
 
-        it, tt, iv, vv, im, mp = data
+        it, tt, iv, vv, im, mp = gathered
 
         row = {"duration": self.duration}
         if self.spikes:
@@ -1057,7 +1023,7 @@ class ArrowDataset(GatherAndMerge):
 
         self._write_shard(row)
 
-        return it, tt, iv, vv, im, mp
+        return gathered
 
     def _write_shard(self, row):
         from datasets.arrow_writer import ArrowWriter
