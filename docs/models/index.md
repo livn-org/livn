@@ -6,6 +6,7 @@ livn ships with several built-in neuron models spanning different levels of biop
 |-------|------|----------|-------------|
 | [RCSD](/models/rcsd) | Two-compartment | brian2, NEURON, Diffrax | Booth-Rinzel-Kiehn motoneuron & Pinsky-Rinzel interneuron with calcium dynamics |
 | [CA1](/models/ca1) | Multi-compartment | NEURON | Morphologically detailed hippocampal pyramidal neurons |
+| [GLIF](/models/glif) | Point neuron | Diffrax | Allen GLIF1–5, hard + escape mechanisms |
 | [Izhikevich](/models/izhikevich) | Point neuron | brian2 | Quadratic integrate-and-fire with recovery variable |
 | [LIF](/models/lif) | Point neuron | brian2 | Leaky integrate-and-fire |
 | [SLIF](/models/slif) | Point neuron | Diffrax | Event-driven spiking LIF for differentiable simulation |

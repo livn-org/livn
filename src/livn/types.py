@@ -571,6 +571,11 @@ class Model(Protocol):
     def prepare_stimulus(self, stimulus: "Stimulus") -> "Stimulus":
         return stimulus
 
+    def diffrax_module(self, env: "Env", key=None):
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement the diffrax backend"
+        )
+
     def ignored_populations(self) -> set[str]:
         """Populations that backends should skip when instantiating cells/connections."""
         return set()

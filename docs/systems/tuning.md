@@ -123,7 +123,29 @@ The optional third element is a transform function applied to the bounds before 
 | `transform_log10` | log10(x) | 10^x | Parameters spanning orders of magnitude |
 | `transform_log1p` | log10(1+x) | 10^x - 1 | Like log10 but handles zero |
 
-The parameter names must match the names expected by `env.set_params()`. Synaptic weight parameters follow the convention `{pre}_{post}-{section}-{mechanism}-weight` (e.g., `EXC_INH-hillock-AMPA-weight`). Noise parameters are prefixed with `noise-` (e.g., `noise-g_e0`).
+The parameter names must match the names expected by [`env.set_params()`](/guide/concepts/env#parameters), which routes each key by its prefix:
+
+| prefix | goes to | example |
+|---|---|---|
+| `weight-`, or no prefix | `env.set_weights()` | `EXC_INH-hillock-AMPA-weight` |
+| `noise-` | `env.set_noise()` | `noise-g_e0` |
+| `cells-` | `env.cells.set_params()` | `cells-soma.g_pas` |
+
+Synaptic weight parameters follow the convention `{pre}_{post}-{section}-{mechanism}-weight` (e.g., `EXC_INH-hillock-AMPA-weight`) and are the search space's default, so an unprefixed name is read as a weight.
+
+`cells-` reaches the physical parameters of the cells themselves rather than the synapses between them, and applies one value to every cell. Its names are the ones the cells expose (`env.cells[gid].get_params()`), which on the NEURON backend are `"<section type>.<name>"` under the same section types weight keys select on. Searching over them tunes the cell model alongside the network:
+
+```python
+def _weight_space(self):
+    return {
+        "EXC_EXC-hillock-AMPA-weight": [0.001, 20.0, self.transform_log1p],
+        "cells-soma.g_pas": [1e-5, 1e-3, self.transform_log10],
+    }
+```
+
+::: tip
+Cell parameters are per cell, so `set_params()` can only broadcast one value across all of them. To give each cell its own value, address them directly with `env.cells.set_params()` or `env.cells[gid].set_params()`, see [cell parameters](/guide/concepts/env#cell-parameters).
+:::
 
 ### Objectives and constraints
 
@@ -138,7 +160,7 @@ When the optimizer evaluates a candidate parameter set, it:
 
 ### Consuming protocol-specific parameters
 
-If your target introduces parameters that should not be passed to `env.set_params()` (e.g., stimulus amplitude), override `set_params()`:
+If your target introduces parameters that should not be passed to `env.set_params()` (e.g., stimulus amplitude), override the target's own `set_params()`.
 
 ```python
 def _protocol_space(self):
@@ -147,8 +169,12 @@ def _protocol_space(self):
 def set_params(self, params):
     remaining = params.copy()
     self.amplitude = remaining.pop("stim_amplitude")
-    return remaining  # only weight/noise params remain
+    return remaining  # only env-level params remain
 ```
+
+::: tip
+This is unaffected by the prefixes above as whatever the target does not consume is handed to `env.set_params()`, which then routes it to weights, noise or cells as usual.
+:::
 
 ## Built-in targets
 

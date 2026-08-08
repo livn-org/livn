@@ -80,6 +80,7 @@ export default defineConfig({
                         { text: "livn models", link: "/models/" },
                         { text: "RCSD (default)", link: "/models/rcsd" },
                         { text: "CA1", link: "/models/ca1" },
+                        { text: "GLIF", link: "/models/glif" },
                         { text: "Izhikevich", link: "/models/izhikevich" },
                         { text: "LIF", link: "/models/lif" },
                         { text: "SLIF", link: "/models/slif" },

@@ -1,4 +1,5 @@
 import jax.numpy as jnp
+import numpy as np
 from jaxtyping import Float
 
 from livn.models.slif.snn import SpikingNeuralNet
@@ -14,8 +15,8 @@ class SLIF(Model):
             )
         return stimulus
 
-    def diffrax_module(self, env, key):
-        connectivity = env.system.connectivity_matrix()
+    def diffrax_module(self, env, key=None):
+        connectivity = np.asarray(env.system.connectivity_matrix())
 
         tau_s = 1
         beta = 5

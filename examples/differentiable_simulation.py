@@ -87,3 +87,46 @@ for iteration in range(5):
     print(
         f"[{end - start} s]: {iteration}, loss: {loss:2f}, updated input: {inputs.mean():2f}"
     )
+
+import jax  # noqa: E402
+import numpy as np  # noqa: E402
+
+from livn.models.glif import GLIF  # noqa: E402
+
+cells = Env(4, model=GLIF(level=3)).init()
+
+duration, step = 60.0, 0.1
+current = jnp.full((int(duration / step) + 1, 4), 0.3)  # nA
+
+target = 12.0
+
+
+def first_spike_loss(params):
+    _, times, *_ = cells.cells.set_params(params).module.run(
+        input_current=current,
+        t0=0.0,
+        t1=duration,
+        dt=step,
+        unroll="padded",
+    )
+    times = times.reshape(4, -1)
+    first = jnp.min(jnp.where(jnp.isfinite(times), times, duration), axis=1)
+    return jnp.mean((first - target) ** 2)
+
+
+theta = {"V_threshold_base": cells.cells.get_params()["V_threshold_base"]}
+optimizer = optax.adam(5.0)
+state = optimizer.init(theta)
+
+for iteration in range(10):
+    value, gradients = eqx.filter_value_and_grad(first_spike_loss)(theta)
+    updates, state = optimizer.update(gradients, state)
+    theta = eqx.apply_updates(theta, updates)
+    print(
+        f"{iteration}: loss {float(value):.3f}, "
+        f"d(loss)/d(threshold) {np.asarray(gradients['V_threshold_base'])[0]:+.4f}, "
+        f"threshold {float(theta['V_threshold_base'][0]):.2f} mV"
+    )
+
+
+assert float(jax.grad(first_spike_loss)(theta)["V_threshold_base"][0]) != 0.0

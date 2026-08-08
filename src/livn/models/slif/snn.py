@@ -21,7 +21,7 @@ END OF NOTICES AND INFORMATION
 """
 
 import functools as ft
-from typing import Any, Callable, List, Literal, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, List, Literal, Optional, Sequence, Union
 
 import diffrax
 import equinox as eqx
@@ -31,7 +31,6 @@ import jax.numpy as jnp
 import jax.random as jr
 import jax.tree_util as jtu
 import numpy as np
-import optimistix as optx
 from diffrax import (
     AbstractPath,
     BrownianIncrement,
@@ -45,6 +44,8 @@ from jax._src.ad_util import stop_gradient_p  # pyright: ignore
 from jax.interpreters import ad
 from jax.typing import ArrayLike
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray, PyTree, Real
+
+from livn.models.eventloop import SolverConfig, event_solve
 from typing_extensions import TypeAlias
 
 
@@ -61,50 +62,17 @@ _Spline: TypeAlias = Literal["sqrt", "quad", "zero"]
 
 
 class Solution(eqx.Module):
-    """Solution of the event-driven model."""
-
+    t0: Real
     t1: Real
-    ys: Float[Array, "samples spikes neurons times 3"]
-    ts: Float[Array, "samples spikes times"]
-    spike_times: Float[Array, "samples spikes"]
-    spike_marks: Float[Array, "samples spikes neurons"]
-    num_spikes: int
     dt: Real
-
-
-def plottable_paths(
-    sol: Solution,
-) -> Tuple[Real[Array, "samples times"], Float[Array, "samples neurons times 3"]]:
-    """Takes an instance of `Solution` from `SpikingNeuralNet.__call__(...)` and outputs the times
-    and values of the internal neuron states in a plottable format.
-
-    **Arguments**:
-
-    - `sol`: An instance of `Solution` as returned from `SpikingNeuralNet.__call__(...)`.
-
-    **Returns**:
-
-    - `ts`: The time axis of the path of shape `(samples, times)`.
-    - `ys`: The values of the internal state of the neuron of shape `(samples, neurons, times, 3)`.
-    """
-
-    @jax.vmap
-    def _plottable_neuron(ts, ys):
-        t0 = ts[0, 0]
-        t1 = sol.t1
-        _, neurons, times, _ = ys.shape
-        ys = ys.transpose((1, 0, 2, 3))
-        ts_out = jnp.linspace(t0, t1, times)
-        ts_flat = ts.flatten()
-        ys_flat = ys.reshape((neurons, -1, 3))
-        sort_idx = jnp.argsort(ts_flat)
-        ts_flat = ts_flat[sort_idx]
-        ys_flat = ys_flat[:, sort_idx, :]
-        idx = jnp.searchsorted(ts_flat, ts_out)
-        ys_out = ys_flat[:, idx, :]
-        return ts_out, ys_out
-
-    return _plottable_neuron(sol.ts, sol.ys)
+    ts: Float[Array, " times"]
+    ys: Float[Array, "samples neurons times 3"]
+    spike_times: Float[Array, "samples spikes"]
+    spike_marks: Bool[Array, "samples spikes neurons"]
+    num_spikes: Int[Array, " samples"]
+    y1: Float[Array, "samples neurons 3"]
+    saturated: Bool[Array, " samples"]
+    solver_ok: Bool[Array, " samples"]
 
 
 def interleave(arr1: Array, arr2: Array) -> Array:
@@ -153,55 +121,6 @@ def marcus_lift(
     # time_capped = jnp.where(out[:, 0] < t1, out[:, 0], last_spike_time)
     # out = out.at[:, 0].set(time_capped)
     return out
-
-
-@eqx.filter_jit
-def cap_fill_ravel(ts, ys, spike_cap=10):
-    # Cap the number of spikes
-    ys_capped = ys[:spike_cap]
-    ts_capped = ts[:spike_cap]
-    spikes, neurons, times, _ = ys_capped.shape
-
-    # Fill up infs
-    idx = ts_capped > ts_capped[:, -1, None]
-    idx_y = jnp.tile(idx[:, None, :, None], (1, neurons, 1, 3))
-    ts_capped = jnp.where(idx, ts_capped[:, -1, None], ts_capped)
-    ys_capped = jnp.where(idx_y, ys_capped[:, :, -1, None, :], ys_capped)
-
-    xs = (ts_capped, ys_capped)
-    carry_ys = jnp.zeros((neurons, times, 3))
-    carr_ts = jnp.array(0.0)
-    carry = (carr_ts, carry_ys)
-
-    def _fill(carry, x):
-        _ts, _ys = x
-        carry_ts, carry_ys = carry
-        _ys_fill_val = jnp.tile(_ys[:, None, -1], (1, times, 1))
-        _ts_fill_val = _ts[-1]
-        _ys_out = jnp.where(jnp.isinf(_ys), _ys_fill_val, _ys)
-        _ts_out = jnp.where(jnp.isinf(_ts), _ts_fill_val, _ts)
-        assert isinstance(_ys_out, Array)
-        _ys_all_inf = jnp.all(jnp.isinf(_ys_out))
-        _ts_all_inf = jnp.all(jnp.isinf(_ts_out))
-        _ys_out = jnp.where(_ys_all_inf, carry_ys, _ys_out)
-        _ts_out = jnp.where(_ts_all_inf, carry_ts, _ts_out)
-        assert isinstance(_ys_out, Array)
-        new_carry_ys = jnp.tile(_ys_out[:, None, -1], (1, times, 1))
-        new_carry_ts = _ts_out[-1]
-        new_carry = (new_carry_ts, new_carry_ys)
-        out = (_ts_out, _ys_out)
-        return new_carry, out
-
-    _, xs_filled_capped = jax.lax.scan(_fill, carry, xs=xs)
-    ts_filled_capped, ys_filled_capped = xs_filled_capped
-
-    # Ravel out the "spikes" dimension
-    # (spikes, neurons, times, 3) -> (neurons, spikes, times, 3)
-    ys_filled_capped = jnp.transpose(ys_filled_capped, (1, 0, 2, 3))
-    # (spikes, neurons, times, 3) -> (neurons, spikes*times, 3)
-    ys_filled_capped_ravelled = ys_filled_capped.reshape((neurons, -1, 3))
-    ts_filled_capped_ravelled = jnp.ravel(ts_filled_capped)
-    return ts_filled_capped_ravelled, ys_filled_capped_ravelled
 
 
 class SpikeTrain(AbstractPath):
@@ -296,29 +215,6 @@ class BrownianPath(VirtualBrownianTree):
         levy_out = self._denormalise_bm_inc(levy_out)
         assert isinstance(levy_out, (BrownianIncrement, SpaceTimeLevyArea))
         return levy_out if use_levy else levy_out.W
-
-
-class NetworkState(eqx.Module):
-    """State of the neural network simulation at a given time."""
-
-    ts: Real[Array, "samples spikes times"]
-    ys: Float[Array, "samples spikes neurons times 3"]
-    tevents: eqxi.MaybeBuffer[Real[Array, "samples spikes"]]
-    t0: Real[Array, " samples"]
-    y0: Float[Array, "samples neurons 3"]
-    num_spikes: int
-    event_mask: Bool[Array, "samples neurons"]
-    event_types: eqxi.MaybeBuffer[Bool[Array, "samples spikes neurons"]]
-    key: Any
-
-
-def buffers(state: NetworkState):
-    """Get the buffers from a NetworkState.
-
-    This function is deprecated and kept for backward compatibility.
-    """
-    assert type(state) is NetworkState
-    return state.tevents, state.ts, state.ys, state.event_types
 
 
 class SpikingNeuralNet(eqx.Module):
@@ -461,13 +357,16 @@ class SpikingNeuralNet(eqx.Module):
         i0: Optional[Float[Array, "samples neurons"]] = None,
         dt: Real = 0.01,
         dt0: Real = 0.01,
-        max_steps: Int = 1000,
+        max_steps: Optional[Int] = None,
+        max_rate: Optional[Real] = None,
+        points_per_segment: Int = 8,
+        throw: bool = True,
     ):
         """**Arguments:**
 
             `input_current`: The input current to the SNN model. Should be a function
                 taking as input a scalar time value and returning an array of shape
-                `(self.num_neurons,)` or `(num_samples, self.num_neurons)`.
+                `(self.num_neurons,)`.
             `t0`: The starting time of the simulation.
             `t1`: The ending time of the simulation.
             `num_samples`: The number of samples to simulate.
@@ -478,18 +377,37 @@ class SpikingNeuralNet(eqx.Module):
             `v0`: The initial membrane potential of the neurons. If None,
                 it will be randomly generated. Otherwise, it should be a vector of shape
                 `(num_samples, self.num_neurons)`.
-            `i0`: The initial membrane potential of the neurons. If None,
+            `i0`: The initial synaptic current of the neurons. If None,
                 it will be randomly generated. Otherwise, it should be a vector of shape
                 `(num_samples, self.num_neurons)`.
             `dt`: The time resolution for capturing voltage traces and other data.
             `dt0`: The time step size used in the differential equation solve.
-            `max_steps`: The maximum number of steps allowed in the differential equation solve.
+            `max_steps`: The maximum number of steps allowed in the differential equation
+                solve. `None` derives it from the segment span and `dt0`.
+            `max_rate`: Spike budget in spikes per ms, for the network as a whole.
+                The loop is sized for `(t1 - t0) * max_rate` spikes and a run that
+                needs more saturates -- loudly, unless `throw` is off. `None` uses
+                `1 / dt`, one spike per recording sample, which is the capacity the
+                shared loop this replaced had (it sized a *spike* budget as a
+                *step* count). The escape mechanism has no refractory period, so
+                SLIF's spike rate is bounded by nothing but its own dynamics; this
+                is the knob to raise when a busy network saturates, at a cost of
+                one buffered segment per spike.
+            `points_per_segment`: Samples written per segment. The segment spans
+                `(points_per_segment - 1) * dt`, so samples land exactly `dt` apart.
+                Kept small because most segments end early at a spike, and a
+                segment's buffer is allocated whether or not it is used.
+            `throw`: Raise on saturation or a failed inner solve rather than reporting
+                it on the solution.
 
         **Returns:**
 
-            `Solution`: An object containing the simulation results,
-                including the time points, membrane potentials,
-                 spike times, spike marks, and the number of spikes.
+            `Solution`: the time grid, the internal state on it, the spike times and
+                marks, the final state, and the saturation / solver flags.
+
+        Samples are independent, so the whole solve is `vmap`ed over them: each one
+        runs its own event loop rather than sharing a loop that steps until the
+        slowest sample is done.
         """
         # Check that input current is of correct shape
         ic_shape = jax.eval_shape(input_current, 0)
@@ -501,60 +419,39 @@ class SpikingNeuralNet(eqx.Module):
         if i0 is not None:
             assert i0.shape == (num_samples, self.num_neurons)
 
-        t0, t1 = float(t0), float(t1)
-        _t0 = jnp.broadcast_to(t0, (num_samples,))
+        t0, t1, dt = float(t0), float(t1), float(dt)
+        num_neurons = self.num_neurons
+
         key, bm_key, init_key = jr.split(key, 3)
         s0_key, i0_key, v0_key = jr.split(init_key, 3)
         # to ensure that s0 != -inf, we set minval=1e-10
         s0 = (
-            jnp.log(jr.uniform(s0_key, (num_samples, self.num_neurons), minval=1e-10))
+            jnp.log(jr.uniform(s0_key, (num_samples, num_neurons), minval=1e-10))
             - self.alpha
         )
         s0 = eqx.error_if(s0, jnp.any(jnp.isinf(s0)), "s0 is inf")
         if v0 is None:
             v0 = jr.uniform(
-                v0_key, (num_samples, self.num_neurons), minval=0.0, maxval=self.v_reset
+                v0_key, (num_samples, num_neurons), minval=0.0, maxval=self.v_reset
             )
         if i0 is None:
             i0 = jr.uniform(
-                i0_key, (num_samples, self.num_neurons), minval=0.0, maxval=self.v_reset
+                i0_key, (num_samples, num_neurons), minval=0.0, maxval=self.v_reset
             )
         y0 = jnp.dstack([v0, i0, s0])
 
-        # Calculate number of time points per segment based on dt
-        num_save = max(2, int((t1 - t0) / dt))
-        max_spikes = max(20, int((t1 - t0) / dt))
-
-        # Preallocate arrays but with adaptive sizes based on dt
-        ys = jnp.full((num_samples, max_spikes, self.num_neurons, num_save, 3), jnp.inf)
-        ts = jnp.full((num_samples, max_spikes, num_save), jnp.inf)
-        tevents = jnp.full((num_samples, max_spikes), jnp.inf)
-        num_spikes = jnp.zeros((), dtype=jnp.int32)
-        event_mask = jnp.full((num_samples, self.num_neurons), False)
-        event_types = jnp.full((num_samples, max_spikes, self.num_neurons), False)
-
-        # Initialize state
-        init_state = NetworkState(
-            ts, ys, tevents, _t0, y0, num_spikes, event_mask, event_types, key
-        )
-
-        stepsize_controller = diffrax.ConstantStepSize()
-        vf = diffrax.ODETerm(self.drift_vf)
-        root_finder = optx.Newton(1e-2, 1e-2, optx.rms_norm)
-        event = diffrax.Event(self.cond_fn, root_finder)
-        solver = diffrax.Euler()
         if w is None:
             w_update = self.network
         else:
             w_update = w.at[self.network].set(0.0)
-        # bm_key is not updated in body_fun since we want to make sure that the same Brownian path
-        # is used for before and after each spike.
+        # bm_key is not updated inside the loop since we want to make sure that the
+        # same Brownian path is used before and after each spike.
         bm_key = jr.split(bm_key, num_samples)
 
         if input_weights is not None:
             assert input_spikes is not None
             input_dim = input_weights.shape[1]
-            input_w_large = jnp.zeros((self.num_neurons, 3, input_dim))
+            input_w_large = jnp.zeros((num_neurons, 3, input_dim))
             input_w_large = input_w_large.at[:, 1, :].set(input_weights)
 
             def input_vf(t, y, args):
@@ -568,188 +465,137 @@ class SpikingNeuralNet(eqx.Module):
             s_out = jnp.where(
                 s > -1e-3, jnp.log(jr.uniform(key, minval=1e-10)) - self.alpha, s
             )
-            # ensures that s_out does not exceed 0 in cases where two events are triggered
-            # s_out = jnp.minimum(s_out, -1e-3)
-
             i_out = jnp.maximum(i_out, self.v_rest)
 
             return jnp.array([v_out, i_out, s_out])
 
-        def body_fun(state: NetworkState) -> NetworkState:
-            new_key, trans_key = jr.split(state.key, 2)
-            trans_key = jr.split(trans_key, num_samples)
+        config = SolverConfig(
+            dt_solver=dt0,
+            points_per_segment=int(points_per_segment),
+            max_rate=1.0 / dt if max_rate is None else max_rate,
+            max_steps=max_steps,
+            solver=diffrax.Euler(),
+            stepsize_controller=diffrax.ConstantStepSize(),
+            throw=throw,
+        )
 
-            @jax.vmap
-            def update(_t0, y0, trans_key, bm_key, input_spike):
-                # Calculate time points for this segment based on dt
-                ts = jnp.where(
-                    _t0 < t1 - dt,
-                    jnp.linspace(_t0, jnp.minimum(_t0 + dt * num_save, t1), num_save),
-                    jnp.full((num_save,), _t0),
+        def solve_sample(sample, y0_s, bm_key_s, input_spike_s):
+            extra_terms = []
+            if self.diffusion_vf is not None:
+                bm = BrownianPath(
+                    t0 - 1,
+                    t1 + 1,
+                    tol=dt0 / 2,
+                    shape=(2, num_neurons),
+                    key=bm_key_s,
                 )
-                ts = eqxi.error_if(ts, ts[1:] < ts[:-1], "ts must be increasing")
-                trans_key = jr.split(trans_key, self.num_neurons)
-                saveat_ts = diffrax.SubSaveAt(ts=ts)
-                saveat_t1 = diffrax.SubSaveAt(t1=True)
-                saveat = diffrax.SaveAt(subs=(saveat_ts, saveat_t1))
-                terms = vf
-                multi_terms = []
-                if self.diffusion_vf is not None:
-                    bm = BrownianPath(
-                        t0 - 1,
-                        t1 + 1,
-                        tol=dt0 / 2,
-                        shape=(2, self.num_neurons),
-                        key=bm_key,
-                    )
-                    cvf = diffrax.ControlTerm(self.diffusion_vf, bm)
-                    multi_terms.append(cvf)
-                if input_spike is not None:
-                    assert input_weights is not None
-                    input_st = SingleSpikeTrain(t0, t1, input_spike)
-                    input_cvf = diffrax.ControlTerm(input_vf, input_st)
-                    multi_terms.append(input_cvf)
-                if multi_terms:
-                    terms = diffrax.MultiTerm(terms, *multi_terms)
+                extra_terms.append(diffrax.ControlTerm(self.diffusion_vf, bm))
+            if input_spike_s is not None:
+                assert input_weights is not None
+                input_st = SingleSpikeTrain(t0, t1, input_spike_s)
+                extra_terms.append(diffrax.ControlTerm(input_vf, input_st))
 
-                sol = diffrax.diffeqsolve(
-                    terms,
-                    solver,
-                    _t0,
-                    t1,
-                    dt0,
-                    y0,
-                    input_current,
-                    throw=False,
-                    stepsize_controller=stepsize_controller,
-                    saveat=saveat,
-                    event=event,
-                    max_steps=max_steps,
-                )
-
-                assert sol.event_mask is not None
-                event_mask = jnp.array(sol.event_mask)
+            def transition(t_event, y, args, event_mask, event_key):
                 event_happened = jnp.any(event_mask)
-
-                assert sol.ts is not None
-                ts = sol.ts[0]
-                _t1 = sol.ts[1]
-                tevent = _t1[0]
-                # If tevent > t1 we normalize to keep within range
-                tevent = jnp.where(tevent > t1, tevent * (t1 / tevent), tevent)
-                tevent = eqxi.error_if(tevent, jnp.isnan(tevent), "tevent is nan")
-
-                assert sol.ys is not None
-                ys = sol.ys[0]
-                _y1 = sol.ys[1]
-                yevent = _y1[0].reshape((self.num_neurons, 3))
-                yevent = jnp.where(_t0 < t1, yevent, y0)
-                yevent = eqxi.error_if(
-                    yevent, jnp.any(jnp.isnan(yevent)), "yevent is nan"
-                )
-                yevent = eqxi.error_if(
-                    yevent, jnp.any(jnp.isinf(yevent)), "yevent is inf"
-                )
-
-                event_array = jnp.array(yevent[:, 2] > -1e-3)
+                fired = jnp.array(y[:, 2] > -1e-3)
                 w_update_t = jnp.where(
-                    jnp.tile(event_array, (self.num_neurons, 1)).T, w_update, 0.0
+                    jnp.tile(fired, (num_neurons, 1)).T, w_update, 0.0
                 ).T
                 w_update_t = jnp.where(event_happened, w_update_t, 0.0)
-                ytrans = trans_fn(yevent, w_update_t, trans_key)
+
+                # The per-sample split preserves the key stream of the shared loop
+                # this replaced, so a migrated run reproduces its spike train.
+                trans_key = jr.split(
+                    jr.split(event_key, num_samples)[sample], num_neurons
+                )
+                ytrans = trans_fn(y, w_update_t, trans_key)
                 ytrans = eqx.error_if(
                     ytrans, ~jnp.all(ytrans[:, 2] < 0), "s is not negative"
                 )
-                ys = jnp.transpose(ys, (1, 0, 2))
+                return t_event, ytrans
 
-                return ts, ys, tevent, ytrans, event_mask
-
-            _ts, _ys, tevent, _ytrans, event_mask = update(
-                state.t0, state.y0, trans_key, bm_key, input_spikes
-            )
-            num_spikes = state.num_spikes + 1
-
-            ts = state.ts
-            ts = ts.at[:, state.num_spikes].set(_ts)
-
-            ys = state.ys
-            ys = ys.at[:, state.num_spikes].set(_ys)
-
-            event_types = state.event_types
-            event_types = event_types.at[:, state.num_spikes].set(event_mask)
-
-            tevents = state.tevents
-            tevents = tevents.at[:, state.num_spikes].set(tevent)
-
-            new_state = NetworkState(
-                ts=ts,
-                ys=ys,
-                tevents=tevents,
-                t0=tevent,
-                y0=_ytrans,
-                num_spikes=num_spikes,
-                event_mask=event_mask,
-                event_types=event_types,
-                key=new_key,
+            return event_solve(
+                drift=self.drift_vf,
+                cond_fn=self.cond_fn,
+                transition=transition,
+                y0=y0_s,
+                t0=t0,
+                t1=t1,
+                dt=dt,
+                args=input_current,
+                extra_terms=extra_terms,
+                key=key,
+                config=config,
             )
 
-            return new_state
+        solutions = jax.vmap(
+            solve_sample, in_axes=(0, 0, 0, 0 if input_spikes else None)
+        )(jnp.arange(num_samples), y0, bm_key, input_spikes)
 
-        def stop_fn(state: NetworkState) -> bool:
-            return (state.num_spikes < max_spikes) & (jnp.min(state.t0) < t1)
+        num_save = max(2, int(round((t1 - t0) / dt)))
+        ts = t0 + jnp.arange(num_save) * dt
+        # (samples, times, neurons, 3) -> (samples, neurons, times, 3)
+        ys = jnp.transpose(jax.vmap(lambda s: s.sample(ts))(solutions), (0, 2, 1, 3))
 
-        final_state = eqxi.while_loop(
-            stop_fn,
-            body_fun,
-            init_state,
-            buffers=buffers,
-            max_steps=max_spikes,
-            kind="checkpointed",
-        )
+        marks = solutions.event_masks
+        if len(self.cond_fn) != num_neurons:
+            # read-out neurons carry no event condition; widen back to one column
+            # per neuron so a mark is always indexed by neuron
+            columns = [n for n in range(num_neurons) if n not in self.read_out_neurons]
+            widened = jnp.zeros(marks.shape[:2] + (num_neurons,), bool)
+            marks = widened.at[:, :, jnp.asarray(columns)].set(marks)
 
-        ys = final_state.ys
-        ts = final_state.ts
-        spike_times = final_state.tevents
-        spike_marks = final_state.event_types
-        num_spikes = final_state.num_spikes
-
-        sol = Solution(
+        return Solution(
+            t0=t0,
             t1=t1,
-            ys=ys,
-            ts=ts,
-            spike_times=spike_times,
-            spike_marks=spike_marks,
-            num_spikes=num_spikes,
             dt=dt,
+            ts=ts,
+            ys=ys,
+            spike_times=solutions.event_times,
+            spike_marks=marks,
+            num_spikes=jnp.sum(jnp.isfinite(solutions.event_times), axis=-1),
+            y1=solutions.y1,
+            saturated=solutions.saturated,
+            solver_ok=solutions.solver_ok,
         )
-        return sol
 
     def run(
         self,
         input_current,
-        noise,
-        t0,
-        t1,
-        dt,
+        noise=None,
+        t0=0.0,
+        t1=None,
+        dt=0.1,
         v0=None,
+        y0=None,
         dt_solver=0.01,
         key=None,
+        unroll=None,
         **kwargs,
     ):
+        del noise  # SLIF has no noise mechanism
         num_samples = 1  # batch processing currently not supported
-        if v0 is None:
-            v0 = jnp.full((num_samples, self.num_neurons), 0)
-        i0 = jnp.full((num_samples, self.num_neurons), 0)
-
         duration = t1 - t0
-        max_steps = int(duration / dt_solver)
+        num_neurons = self.num_neurons
+
+        if input_current is None:
+            input_current = jnp.zeros((int(duration / dt) + 1, num_neurons))
+        input_current = jnp.asarray(input_current)
 
         def stim(t):
             idx = jnp.minimum(
-                jnp.floor(t / dt).astype(jnp.int32),
+                jnp.floor((t - t0) / dt).astype(jnp.int32),
                 input_current.shape[0] - 1,
             )
-            return jnp.asarray(input_current)[idx]
+            return input_current[idx]
+
+        if y0 is not None:
+            v0 = y0[..., 0]
+            i0 = y0[..., 1]
+        else:
+            i0 = jnp.zeros((num_samples, num_neurons))
+            if v0 is None:
+                v0 = jnp.zeros((num_samples, num_neurons))
 
         sol = self.__call__(
             stim,
@@ -758,46 +604,62 @@ class SpikingNeuralNet(eqx.Module):
             num_samples,
             dt=dt,
             dt0=dt_solver,
+            v0=v0,
             i0=i0,
-            max_steps=max_steps,
             key=key,
+            **kwargs,
         )
 
-        ts, ys = plottable_paths(sol)
+        v = sol.ys[0, :, :, 0]
+        gids = jnp.arange(num_neurons)
+        yT = sol.y1
 
-        # v_end = ys[0, :, -1, 0]
-        # i_end = ys[0, :, -1, 1]
-
-        v = ys[0, :, :, 0]
-        assert v.shape[1] == int(duration / dt)
-
-        gids = jnp.arange(self.num_neurons)
-
-        # spikes
-        if kwargs.get("unroll", None) == "marcus":
+        if unroll == "marcus":
 
             @jax.vmap
             def get_marcus_lifts(spike_times, spike_marks):
-                return marcus_lift(self.t - duration, self.t, spike_times, spike_marks)
+                return marcus_lift(t0, t1, spike_times, spike_marks)
 
             spike_train = get_marcus_lifts(sol.spike_times, sol.spike_marks)
 
-            return spike_train, None, gids, v, None, None
+            return spike_train, None, gids, v, None, None, yT
 
-        diff_values = jnp.abs(jnp.diff(v, axis=1))
-        mask = diff_values > 0.5
-        mask = jnp.concatenate(
-            [mask, jnp.zeros((mask.shape[0], 1), dtype=bool)], axis=1
-        )
+        # One (neuron, time) pair per recorded event, straight from the loop --
+        # the spike times are exact rather than read back off the voltage grid.
+        times = jnp.broadcast_to(sol.spike_times[0][:, None], sol.spike_marks[0].shape)
+        ids = jnp.broadcast_to(gids[None, :], sol.spike_marks[0].shape)
+        fired = sol.spike_marks[0] & jnp.isfinite(times)
 
-        if kwargs.get("unroll", None) == "mask":
-            return mask, None, gids, v, None, None
+        if unroll == "mask":
+            index = jnp.round((times - t0) / dt)
+            index = jnp.where(fired, jnp.clip(index, 0, v.shape[1] - 1), v.shape[1])
+            mask = jax.vmap(
+                lambda column: (
+                    jnp.zeros(v.shape[1], bool)
+                    .at[column.astype(jnp.int32)]
+                    .set(True, mode="drop")
+                ),
+                in_axes=1,
+            )(index)
+            return mask, None, gids, v, None, None, yT
 
-        indices = jnp.nonzero(mask)
-        it = indices[0]
-        tt = indices[1] * dt
+        if unroll == "padded":
+            return (
+                ids.reshape(-1),
+                jnp.where(fired, times, jnp.inf).reshape(-1),
+                gids,
+                v,
+                None,
+                None,
+                yT,
+            )
 
-        return it, tt, gids, v, None, None
+        keep = np.asarray(fired).reshape(-1)
+        it = np.asarray(ids).reshape(-1)[keep]
+        tt = np.asarray(times).reshape(-1)[keep]
+        order = np.argsort(tt, kind="stable")
+
+        return it[order], tt[order], gids, v, None, None, yT
 
 
 def _build_forward_network(in_size, out_size, width_size, depth):
