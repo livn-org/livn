@@ -19,7 +19,7 @@ All backends share the same user-facing API - you write your simulation code onc
 **Strengths:**
 - Fast setup, no external system libraries needed
 - Good for systems up to ~1,000 neurons on a single machine
-- Includes Izhikevich and Leaky Integrate-and-Fire (LIF) models
+- Runs the [GLIF](/models/glif) point neuron (levels 1–5, the `hard` mechanism) and [Izhikevich](/models/izhikevich)
 
 ```python
 import os
@@ -78,6 +78,20 @@ env = make("EI2")
 ```
 
 Under this backend the [`Run`](/guide/concepts/env#running-a-simulation) returned by `env.run()` is a registered pytree, so it can cross a `jit`, `vmap` or `grad` boundary as a return value. Its arrays are the leaves while `t0`, `duration` and `dt` are static metadata and must be concrete values rather than tracers.
+
+### Which model axes are available where
+
+[GLIF](/models/glif) runs on both diffrax and brian2, but not every axis crosses:
+
+| | diffrax | brian2 |
+|---|---|---|
+| levels 1–5 | yes | yes |
+| `mechanism="hard"` | yes | yes |
+| `mechanism="escape"` | yes | — needs the event-driven solver |
+| gradients through spike times | yes | no |
+| `num_samples` batching, membrane diffusion | yes | — |
+
+Asking for the escape mechanism on brian2 raises rather than silently falling back.
 
 See the [Differentiable Simulation](/examples/differentiable) example for a full walkthrough.
 

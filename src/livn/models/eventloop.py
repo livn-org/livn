@@ -1,8 +1,17 @@
+"""Event-driven solver harness.
+
+## License information
+
+Parts of this module (the segment loop and BrownianPath) are adapted
+from the snnax project (https://github.com/cholberg/snnax), Copyright 2024
+Christian Holberg, and were received under the MIT license.
+"""
+
 from __future__ import annotations
 
 import dataclasses
 import math
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence, Union
 
 import diffrax
 import equinox as eqx
@@ -10,16 +19,67 @@ import equinox.internal as eqxi
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import jax.tree_util as jtu
 import optimistix as optx
+from diffrax import BrownianIncrement, SpaceTimeLevyArea, VirtualBrownianTree
+from diffrax._brownian.tree import _levy_diff, _make_levy_val
+from diffrax._custom_types import RealScalarLike, levy_tree_transpose
+from diffrax._misc import linear_rescale
+from jaxtyping import Array, PyTree
 
 __all__ = [
     "SolverConfig",
     "LoopBudget",
     "loop_budget",
     "EventSolution",
+    "BrownianPath",
     "event_solve",
     "resample",
 ]
+
+
+class BrownianPath(VirtualBrownianTree):
+    @eqxi.doc_remove_args("_spline")
+    def __init__(
+        self,
+        t0: RealScalarLike,
+        t1: RealScalarLike,
+        tol: RealScalarLike,
+        shape: Union[tuple[int, ...], PyTree[jax.ShapeDtypeStruct]],
+        key,
+        levy_area: type[
+            Union[BrownianIncrement, SpaceTimeLevyArea]
+        ] = BrownianIncrement,
+        _spline: str = "sqrt",
+    ):
+        super().__init__(t0, t1, tol, shape, key, levy_area, _spline)
+
+    @eqx.filter_jit
+    def evaluate(
+        self,
+        t0: RealScalarLike,
+        t1: Optional[RealScalarLike] = None,
+        left: bool = True,
+        use_levy: bool = False,
+    ) -> Union[PyTree[Array], BrownianIncrement, SpaceTimeLevyArea]:
+        t0 = jax.lax.stop_gradient(t0)
+        # map the interval [self.t0, self.t1] onto [0,1]
+        t0 = linear_rescale(self.t0, t0, self.t1)
+        levy_0 = self._evaluate(t0)
+        if t1 is None:
+            levy_out = levy_0
+            levy_out = jtu.tree_map(_make_levy_val, self.shape, levy_out)
+        else:
+            t1 = jax.lax.stop_gradient(t1)
+            t1 = linear_rescale(self.t0, t1, self.t1)
+            levy_1 = self._evaluate(t1)
+            levy_out = jtu.tree_map(_levy_diff, self.shape, levy_0, levy_1)
+
+        levy_out = levy_tree_transpose(self.shape, levy_out)
+        # now map [0,1] back onto [self.t0, self.t1]
+        levy_out = self._denormalise_bm_inc(levy_out)
+        assert isinstance(levy_out, (BrownianIncrement, SpaceTimeLevyArea))
+        return levy_out if use_levy else levy_out.W
 
 
 @dataclasses.dataclass(frozen=True)
@@ -128,6 +188,13 @@ def loop_budget(
     )
 
 
+def _grid(t_a, t_b, n: int, endpoint: bool = True):
+    weights = jnp.linspace(0.0, 1.0, n, endpoint=endpoint)
+    grid = t_a + (t_b - t_a) * weights
+    # ...and clipping, also monotone, keeps the ends from rounding outside
+    return jnp.clip(grid, jnp.minimum(t_a, t_b), jnp.maximum(t_a, t_b))
+
+
 class _LoopState(eqx.Module):
     seg_ts: Any
     seg_ys: Any
@@ -222,11 +289,11 @@ def event_solve(
 
     def body(state: _LoopState) -> _LoopState:
         block = state.block
-        t_start = state.t
+        t_start = jnp.minimum(state.t, t1)
         t_stop = (
             jnp.asarray(t1, dtype) if unbounded else jnp.minimum(t_start + span, t1)
         )
-        ts_seg = jnp.linspace(t_start, t_stop, n_points)
+        ts_seg = _grid(t_start, t_stop, n_points)
 
         saveat = diffrax.SaveAt(
             subs=(diffrax.SubSaveAt(ts=ts_seg), diffrax.SubSaveAt(t1=True))
@@ -251,7 +318,14 @@ def event_solve(
         mask = jnp.reshape(
             jnp.asarray(jax.tree_util.tree_leaves(sol.event_mask)), (n_cond,)
         )
-        fired = jnp.any(mask)
+        slack = config.dt_solver  # a root landing just off the end is rounding
+        found = (
+            jnp.isfinite(t_event)
+            & (t_event >= t_start - slack)
+            & (t_event <= t_stop + slack)
+        )
+        t_event = jnp.clip(jnp.where(found, t_event, t_stop), t_start, t_stop)
+        fired = jnp.any(mask) & found
 
         keep = ts_seg <= t_event
         seg_ts = jnp.where(keep, ts_seg, t_event)
@@ -272,7 +346,7 @@ def event_solve(
         # state at t_next is carried by the next segment's first sample, so a
         # jump that lands at the end of the window is not smeared by the
         # resampling.
-        hold_ts = jnp.linspace(t_event, t_next, n_hold, endpoint=False)
+        hold_ts = _grid(t_event, t_next, n_hold, endpoint=False)
         if hold_fn is None:
             hold_ys = jnp.broadcast_to(y_event, (n_hold,) + y_shape)
         else:
@@ -292,9 +366,12 @@ def event_solve(
             ),
             event_masks=state.event_masks.at[block].set(mask),
             solver_ok=state.solver_ok.at[block].set(
-                (sol.result == diffrax.RESULTS.successful)
-                # terminating on the event is the normal outcome here, not a failure
-                | (sol.result == diffrax.RESULTS.event_occurred)
+                (
+                    (sol.result == diffrax.RESULTS.successful)
+                    # terminating on the event is the normal outcome here, not a failure
+                    | (sol.result == diffrax.RESULTS.event_occurred)
+                )
+                & found
             ),
             block=block + 1,
             events=state.events + fired.astype(state.events.dtype),
