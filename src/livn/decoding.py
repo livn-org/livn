@@ -680,6 +680,72 @@ class PopulationFiringRates(Decoding):
         }
 
 
+class PopulationActiveFraction(Decoding):
+    """Fraction of a population's cells firing per time bin, per population.
+
+    Each cell counts once per bin however often it fires, so the fraction is
+    over cells rather than spikes. The denominator is the population's
+    simulated cell count (``env.cells``), so it stays correct under
+    ``selection()``. Returns the mean and standard deviation across bins as
+    ``{"mean_active_fraction": {pop: f}, "std_active_fraction": {pop: f}}``.
+
+    Unlike :class:`ActiveFraction`, which asks whether a cell was ever active
+    over the whole window, this resolves activity in time. A population where
+    every cell fires once is very different from one where a tenth of it fires
+    ten times.
+    """
+
+    bin_size: float = 50.0
+
+    def __call__(self, signal: Run, env=None):
+        it, tt = signal.spike_ids, signal.spike_times
+
+        ranges = env.system.population_ranges
+        pops = sorted(ranges, key=lambda p: ranges[p][0])  # ascending start gid
+        starts = np.array([ranges[p][0] for p in pops], dtype=np.int64)
+        ends = np.array([ranges[p][0] + ranges[p][1] for p in pops], dtype=np.int64)
+
+        n_bins = max(1, int(round(float(self.duration) / self.bin_size)))
+        active = np.zeros((len(pops), n_bins), dtype=np.int64)
+
+        if it is not None and tt is not None and len(it):
+            gids = np.asarray(it, dtype=np.int64)
+            times = np.asarray(tt, dtype=np.float64)
+            pop_idx = np.searchsorted(starts, gids, side="right") - 1
+            bin_idx = np.floor(times / self.bin_size).astype(np.int64)
+            valid = (
+                (pop_idx >= 0)
+                & (gids < ends[np.clip(pop_idx, 0, len(pops) - 1)])
+                & (bin_idx >= 0)
+                & (bin_idx < n_bins)
+            )
+            # collapse repeat spikes of one cell within one bin to a single count
+            cell_bins = np.unique(
+                np.stack([pop_idx[valid], bin_idx[valid], gids[valid]]), axis=1
+            )
+            np.add.at(active, (cell_bins[0], cell_bins[1]), 1)
+
+        cells = np.array([len(env.cells.get(p, {})) for p in pops], dtype=np.int64)
+        active, cells = P.reduce_sum(active, cells, all=True, comm=env.comm)
+
+        mean: dict[str, float] = {}
+        std: dict[str, float] = {}
+        for i, p in enumerate(pops):
+            count = int(cells[i])
+            if count <= 0:
+                continue
+            fraction = np.asarray(active[i], dtype=np.float64) / count
+            mean[p] = float(fraction.mean())
+            std[p] = float(fraction.std())
+
+        return {
+            "mean_active_fraction": mean,
+            "std_active_fraction": std,
+            "bin_size": float(self.bin_size),
+            "n_bins": int(n_bins),
+        }
+
+
 class Stability(Decoding):
     tail_window: float = 1000.0
     max_rate_hz: float = 20.0

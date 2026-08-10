@@ -65,13 +65,14 @@ env.set_noise({"sigma_v": 1.0})   # equivalently, per run
 `num_samples` runs independent realisations of the same stimulus and every returned array gains a leading sample axis:
 
 ```python
-spikes, _, ids, voltage, *_ = env.module.run(
-    current, t1=100.0, dt=0.1, num_samples=8, unroll="mask"
-)
-voltage.shape   # (8, cells, T)
+run = env.run(100.0, stimulus, dt=0.1, num_samples=8)
+
+run.voltage                  # (8, cells, T)
+run.spikes.padded.times      # (8, cells, k)
+run.spikes.raster(0.1)       # (8, cells, T)
 ```
 
-A batched run needs `unroll="mask"` or `unroll="padded"` as the number of spikes differs per sample, so the eager `(ids, times)` form has no rectangular shape to take.
+Spikes come back as a rectangle — one row per cell, `inf`-padded — because that is the shape the solver can allocate before it knows how many events there will be. A batched run has no ragged form at all, since the number of spikes differs per sample, so `run.spike_times` raises there and points you at `.padded` or `.raster()`.
 
 ## Recordable states
 
@@ -90,4 +91,13 @@ env.record("threshold")
 
 run = env.run(100)
 run["threshold"].values          # [n_cells, T]
+```
+
+```python
+env.record_voltage(dt=dt)
+env.record("threshold")
+env.record_spikes()
+
+run = env.run(duration, stimulus, dt=dt)
+run.spikes.padded.times     # exact event times, differentiable
 ```

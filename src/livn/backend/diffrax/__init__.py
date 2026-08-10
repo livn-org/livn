@@ -311,7 +311,9 @@ class Env(EnvProtocol):
 
         run = Run(t0=t0, duration=duration)
         if "spikes" in record:
-            run = run.add_spikes(it, tt)
+            run = run.add_spikes(
+                it, tt, padded=getattr(self.module, "padded_spikes", False)
+            )
         if "voltage" in record:
             run = run.add_voltage(iv, v, dt=dt)
         if "membrane_current" in record:

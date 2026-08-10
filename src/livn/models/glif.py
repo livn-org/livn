@@ -882,6 +882,7 @@ class GlifNeurons(eqx.Module):
     diffusion: bool = eqx.field(static=True)
     config: SolverConfig = eqx.field(static=True)
     current_scale: float = eqx.field(static=True)
+    padded_spikes = True
 
     def __init__(
         self,
@@ -1146,11 +1147,15 @@ class GlifNeurons(eqx.Module):
         y0=None,
         dt_solver: Optional[float] = None,
         key=None,
-        unroll: Optional[str] = None,
         record=None,
         num_samples: int = 1,
         **kwargs,
     ):
+        """Simulate, returning ``(spike_row_ids, spike_times, ids, voltage, _, _, yT, states)``.
+
+        ``spike_times`` is the solver's ``(..., cells, k)`` rectangle with non-finite padding, and
+        ``spike_row_ids`` labels its rows. Nothing here syncs to the host.
+        """
         module, diffusion = self._with_noise(noise)
         num_samples = int(num_samples)
 
@@ -1185,51 +1190,16 @@ class GlifNeurons(eqx.Module):
         if "spikes" not in record:
             return None, None, ids, voltage, None, None, solution.yT, states
 
-        spike_times = solution.spike_times
-        fired = jnp.isfinite(spike_times)
-
-        n_out = solution.ts.shape[0]
-        if unroll == "mask":
-            index = jnp.round((spike_times - float(t0)) / float(dt))
-            index = jnp.where(fired, jnp.clip(index, 0, n_out - 1), n_out).astype(
-                jnp.int32
-            )
-            to_mask = jax.vmap(
-                # out-of-range indices (the padding) are dropped
-                lambda idx: jnp.zeros(n_out, bool).at[idx].set(True, mode="drop")
-            )
-            if num_samples > 1:
-                to_mask = jax.vmap(to_mask)
-            return to_mask(index), None, ids, voltage, None, None, solution.yT, states
-
-        cell_ids = jnp.broadcast_to(ids[:, None], spike_times.shape[-2:])
-        cell_ids = jnp.broadcast_to(cell_ids, spike_times.shape)
-        flat = spike_times.shape[:-2] + (-1,)
-        if unroll == "padded":
-            return (
-                cell_ids.reshape(flat),
-                spike_times.reshape(flat),
-                ids,
-                voltage,
-                None,
-                None,
-                solution.yT,
-                states,
-            )
-
-        if num_samples > 1:
-            raise ValueError(
-                "a batched run has a different number of spikes per sample, so "
-                "there is no rectangular eager form for it; ask for "
-                'unroll="padded" or unroll="mask"'
-            )
-
-        keep = np.asarray(fired).reshape(-1)
-        it = np.asarray(cell_ids).reshape(-1)[keep]
-        tt = np.asarray(spike_times).reshape(-1)[keep]
-        order = np.argsort(tt, kind="stable")
-
-        return it[order], tt[order], ids, voltage, None, None, solution.yT, states
+        return (
+            ids,
+            solution.spike_times,
+            ids,
+            voltage,
+            None,
+            None,
+            solution.yT,
+            states,
+        )
 
     def _with_noise(self, noise) -> tuple["GlifNeurons", Optional[bool]]:
         if not noise:

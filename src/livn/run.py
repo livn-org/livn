@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Iterator, Literal, Mapping
+
+import numpy
 
 from livn.utils import P, lnp, merge_array
 
@@ -19,28 +22,207 @@ def _join(a, b):
     return merge_array([a, b])
 
 
+def _is_traced(value) -> bool:
+    """Whether ``value`` is a JAX tracer, without importing jax if it is not already loaded"""
+    jax = sys.modules.get("jax")
+    if jax is None or value is None:
+        return False
+    return isinstance(value, jax.core.Tracer)
+
+
 @dataclass(frozen=True, eq=False)
+class PaddedEvents:
+    """Rectangular event storage with one row per cell, non-finite where a row ran out of events.
+
+    This is what an event-driven solve produces on device with a fixed shape it can allocate before
+    it knows how many events there will be. It is the lossless form in that the times are the exact
+    root-found event times, so it stays differentiable in them, and it needs no host sync, so it
+    survives ``jit`` / ``grad`` / ``vmap``.
+
+    Args:
+        ids: ``(cells,)`` cell id of each row
+        times: ``(..., cells, k)`` event times relative to the channel's ``t0``, padded with a
+            non-finite value. A leading axis appears when the run had multiple samples.
+    """
+
+    ids: "Array"
+    times: "Array"
+
+    @property
+    def fired(self) -> "Array":
+        """``True`` where an entry is a real event rather than padding"""
+        return lnp().isfinite(self.times)
+
+    def __repr__(self) -> str:
+        return f"PaddedEvents(shape={tuple(self.times.shape)})"
+
+
 class Events:
-    """Point events with one ``(id, time)`` pair per row.
+    """Point events.
 
     Args:
         ids: Cell id per event
         times: Event time per event, relative to ``t0``
         t0: Absolute simulation time of this channel's time origin
         duration: Length of the recorded window in ms
+        padded: Rectangular storage to compact from, instead of ``ids``/``times``
     """
 
-    ids: "Array | None" = None
-    times: "Array | None" = None
-    t0: float = 0.0
-    duration: float | None = None
+    __slots__ = ("_ids", "_times", "_padded", "_compacted", "t0", "duration")
 
     kind = "events"
+
+    def __init__(
+        self,
+        ids: "Array | None" = None,
+        times: "Array | None" = None,
+        t0: float = 0.0,
+        duration: float | None = None,
+        padded: "PaddedEvents | None" = None,
+    ):
+        put = object.__setattr__
+        put(self, "_ids", ids)
+        put(self, "_times", times)
+        put(self, "_padded", padded)
+        put(self, "_compacted", None)
+        put(self, "t0", t0)
+        put(self, "duration", duration)
+
+    def __setattr__(self, name, value):
+        raise AttributeError(f"{type(self).__name__} is immutable")
+
+    def __delattr__(self, name):
+        raise AttributeError(f"{type(self).__name__} is immutable")
+
+    def __getstate__(self) -> dict:
+        # pickle and copy would otherwise go through __setattr__, which refuses.
+        # The compaction cache is derived, so it is not worth carrying.
+        return {
+            "_ids": self._ids,
+            "_times": self._times,
+            "_padded": self._padded,
+            "t0": self.t0,
+            "duration": self.duration,
+        }
+
+    def __setstate__(self, state: dict) -> None:
+        for name, value in state.items():
+            object.__setattr__(self, name, value)
+        object.__setattr__(self, "_compacted", None)
+
+    # -- storage ---------------------------------------------------------
+
+    @property
+    def padded(self) -> "PaddedEvents | None":
+        """The rectangular device form, or ``None`` for a channel that never had one"""
+        return self._padded
+
+    def _compact(self) -> tuple:
+        """``(ids, times)`` with the padding dropped and the events ordered by time"""
+        if self._padded is None:
+            return self._ids, self._times
+        if self._compacted is not None:
+            return self._compacted
+
+        times = self._padded.times
+        if _is_traced(times):
+            raise RuntimeError(
+                "these events are still a rectangular device array; compacting them "
+                "drops padding and sorts by time, which needs concrete values and so "
+                "cannot happen inside a JAX trace. Use `.padded.times` and "
+                "`.padded.ids`, which keep the gradient, or move the access outside "
+                "jit/grad/vmap."
+            )
+        if times.ndim > 2:
+            raise ValueError(
+                f"a batched run has a different number of events per sample, so its "
+                f"{tuple(times.shape)} events have no ragged form; use `.padded` or "
+                f"`.raster(dt)`"
+            )
+
+        times = numpy.asarray(times)
+        rows = numpy.broadcast_to(numpy.asarray(self._padded.ids)[:, None], times.shape)
+
+        keep = numpy.isfinite(times).reshape(-1)
+        ids = rows.reshape(-1)[keep]
+        times = times.reshape(-1)[keep]
+        order = numpy.argsort(times, kind="stable")
+
+        compacted = (ids[order], times[order])
+        object.__setattr__(self, "_compacted", compacted)
+        return compacted
+
+    def compact(self) -> "Events":
+        """This channel in the compact form, keeping the padded storage alongside"""
+        ids, times = self._compact()
+        return Events(
+            ids=ids,
+            times=times,
+            t0=self.t0,
+            duration=self.duration,
+            padded=self._padded,
+        )
+
+    @property
+    def ids(self) -> "Array | None":
+        """Cell id per event, compact"""
+        return self._compact()[0]
+
+    @property
+    def times(self) -> "Array | None":
+        """Event time per event, compact and ordered by time"""
+        return self._compact()[1]
 
     @property
     def values(self) -> "Array | None":
         """The event times"""
         return self.times
+
+    def raster(self, dt: float, n_cells: int | None = None, steps: int | None = None):
+        np = lnp()
+        if steps is None:
+            if self.duration is None:
+                raise ValueError(
+                    "raster needs `steps` when the channel has no duration"
+                )
+            steps = int(round(self.duration / dt)) + 1
+
+        if self._padded is not None:
+            times = self._padded.times  # (..., cells, k)
+            cells = times.shape[-2] if n_cells is None else int(n_cells)
+            rows = np.broadcast_to(
+                np.arange(cells).reshape((cells, 1)), times.shape[-2:]
+            )
+            rows = np.broadcast_to(rows, times.shape)
+            lead = times.shape[:-2]
+        else:
+            times, rows = self._times, self._ids
+            if times is None or rows is None:
+                raise ValueError("this channel holds no events")
+            times, rows = np.asarray(times), np.asarray(rows)
+            cells = (int(rows.max()) + 1) if n_cells is None else int(n_cells)
+            lead = ()
+
+        sample = int(numpy.prod(lead)) if lead else 1
+        width = cells * steps
+        bin_index = np.clip(np.round(times / dt), 0, steps - 1).astype(np.int32)
+        flat = rows.reshape(sample, -1) * steps + bin_index.reshape(sample, -1)
+        flat = np.where(np.isfinite(times).reshape(sample, -1), flat, width)
+
+        offset = (np.arange(sample) * width).reshape(sample, 1)
+        target = np.where(flat < width, flat + offset, sample * width).reshape(-1)
+
+        grid = np.zeros(sample * width, bool)
+        if hasattr(grid, "at"):
+            grid = grid.at[target].set(True, mode="drop")
+        else:
+            inside = numpy.asarray(target) < sample * width
+            grid = numpy.asarray(grid)
+            grid[numpy.asarray(target)[inside]] = True
+
+        return grid.reshape(lead + (cells, steps))
+
+    # -- composition -----------------------------------------------------
 
     def concat(self, other: "Events", shift: float) -> "Events":
         """Append ``other``, whose time origin moves by ``shift``"""
@@ -60,10 +242,11 @@ class Events:
 
     def merge(self, other: "Events") -> "Events":
         """Union with the events of other cells over the same window"""
-        return replace(
-            self,
+        return Events(
             ids=_join(self.ids, other.ids),
             times=_join(self.times, other.times),
+            t0=self.t0,
+            duration=self.duration,
         )
 
     def window(self, start: float, stop: float, name: str = "events") -> "Events":
@@ -79,21 +262,26 @@ class Events:
 
     def select(self, keep) -> "Events":
         """Keep only the events of the cells in ``keep``"""
-        if self.ids is None:
+        ids, times = self._compact()
+        if ids is None:
             return self
 
         np = lnp()
-        ids = np.asarray(self.ids)
+        ids = np.asarray(ids)
         mask = np.isin(ids, keep)
 
-        return replace(
-            self,
+        return Events(
             ids=ids[mask],
-            times=None if self.times is None else np.asarray(self.times)[mask],
+            times=None if times is None else np.asarray(times)[mask],
+            t0=self.t0,
+            duration=self.duration,
         )
 
     def __repr__(self) -> str:
-        n = 0 if self.times is None else len(self.times)
+        if self._padded is not None and self._compacted is None:
+            return f"Events({self._padded!r}, t0={self.t0}, duration={self.duration})"
+        times = self._compact()[1]
+        n = 0 if times is None else len(times)
         return f"Events(n={n}, t0={self.t0}, duration={self.duration})"
 
 
@@ -236,10 +424,12 @@ class Run:
         kind: Literal["events", "series"] | None = None,
         t0: float | None = None,
         duration: float | None = None,
+        padded: bool = False,
     ) -> "Run":
-        """Return a copy of this run with an additional (or replaced) channel."""
         if kind is None:
-            if dt is not None or getattr(values, "ndim", 1) >= 2:
+            if padded:
+                kind = "events"
+            elif dt is not None or getattr(values, "ndim", 1) >= 2:
                 kind = "series"
             else:
                 kind = "events"
@@ -247,15 +437,29 @@ class Run:
         t0 = self.t0 if t0 is None else t0
 
         if kind == "series":
+            if padded:
+                raise ValueError("padded storage only applies to event channels")
             channel = Series(
                 ids=ids, values=values, dt=0.1 if dt is None else float(dt), t0=t0
             )
         elif kind == "events":
+            if padded:
+                if getattr(values, "ndim", 1) < 2:
+                    raise ValueError(
+                        f"padded event times must be (..., cells, k), got "
+                        f"{getattr(values, 'shape', type(values).__name__)}"
+                    )
+                if getattr(ids, "ndim", 1) != 1 or len(ids) != values.shape[-2]:
+                    raise ValueError(
+                        f"padded events need one row id per row: {len(ids)} ids for "
+                        f"{values.shape[-2]} rows"
+                    )
             channel = Events(
-                ids=ids,
-                times=values,
+                ids=None if padded else ids,
+                times=None if padded else values,
                 t0=t0,
                 duration=self.duration if duration is None else duration,
+                padded=PaddedEvents(ids=ids, times=values) if padded else None,
             )
         else:
             raise ValueError(f"Unknown channel kind: {kind!r}")
@@ -265,11 +469,11 @@ class Run:
 
         return replace(self, channels=channels)
 
-    def add_spikes(self, ids, times) -> "Run":
+    def add_spikes(self, ids, times, *, padded: bool = False) -> "Run":
         """Add the ``spikes`` channel, or nothing when it was not recorded"""
         if ids is None and times is None:
             return self
-        return self.add("spikes", ids, times, kind="events")
+        return self.add("spikes", ids, times, kind="events", padded=padded)
 
     def add_voltage(self, ids, values, dt: float = 0.1) -> "Run":
         """Add the ``voltage`` channel, or nothing when it was not recorded"""
@@ -518,13 +722,26 @@ class Run:
 
 
 def _events_flatten(events: Events):
-    return (events.ids, events.times), (events.t0, events.duration)
+    padded = events.padded
+    children = (
+        events._ids,
+        events._times,
+        None if padded is None else padded.ids,
+        None if padded is None else padded.times,
+    )
+    return children, (events.t0, events.duration, padded is not None)
 
 
 def _events_unflatten(aux, children) -> Events:
-    ids, times = children
-    t0, duration = aux
-    return Events(ids=ids, times=times, t0=t0, duration=duration)
+    ids, times, padded_ids, padded_times = children
+    t0, duration, was_padded = aux
+    return Events(
+        ids=ids,
+        times=times,
+        t0=t0,
+        duration=duration,
+        padded=PaddedEvents(ids=padded_ids, times=padded_times) if was_padded else None,
+    )
 
 
 def _series_flatten(series: Series):

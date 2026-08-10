@@ -168,6 +168,20 @@ run.drop("threshold")                       # anything else, by name
 
 A sample may itself be a vector, in which case the channel's values are `[n_ids, T, ...]`. Every channel operation (`slice`, `select`, `concat`, `merge`) works the same on those.
 
+### Two views of the same spikes
+
+`run.spike_times` is the compact view with one entry per spike, ordered by time, padding removed. That is what every backend produces, what decoding consumes, and what you want for plotting or reporting.
+
+An event-driven solve (the diffrax backend) does not compute spikes that way. It fills a rectangle (one row per cell, sized before it knows how many spikes there will be, and padded with `inf`). The compact view is derived from it on demand. Both are reachable:
+
+```python
+run.spike_times            # ragged, ordered by time
+run.spikes.padded.times    # [n_cells, k], inf-padded, or None on other backends
+run.spikes.raster(dt)      # [n_cells, T] bool, binned onto a dt grid
+```
+
+The reason for this is that compacting needs concrete values, so it cannot happen inside a `jit` / `grad` / `vmap` trace. Reading `run.spike_times` there raises and points you at `.padded`, which is also the form gradients flow through. The times in it are the exact root-found event times, not rounded onto any grid. See [losses](/optimization/losses#take-spike-times-from-run-spikes-padded).
+
 A run also records the window it covers where `t0` is the absolute simulation time at which it starts and `duration` is its length. The arrays are stored relative to that origin, so spike times fall in `[0, duration)` and sample `k` of a series is at `t0 + k * dt`:
 
 ```python
