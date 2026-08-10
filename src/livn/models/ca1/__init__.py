@@ -77,7 +77,7 @@ class PinskyRinzel(Model):
 
         # interneurons: 2 compartments (soma + dend)
         cell_config = self.neuron_cell_config()
-        config_key = population[:2] if population.startswith("IS") else population
+        config_key = self.cell_config_key(population)
         if config_key not in cell_config:
             return np.array([])
         Ltotal = cell_config[config_key]["PinskyRinzel"]["Ltotal"]
@@ -102,8 +102,41 @@ class PinskyRinzel(Model):
     def neuron_mechanisms_directory(self):
         return os.path.join(os.path.dirname(__file__), "neuron", "mechanisms")
 
+    def cell_config_key(self, population: str) -> str:
+        """The ``neuron_cell_config`` key holding this population's parameters.
+
+        IS1/IS2/IS3 share one fitted parameter set under ``IS``.
+        """
+        return "IS" if population.startswith("IS") else population
+
+    def interneuron_populations(self) -> list[str]:
+        """CA1 interneuron populations, i.e. every non-PYR population with a
+        fitted reduced-cell parameter set (CA2/CA3/EC have none and stay
+        external spike sources)."""
+        return [
+            "AAC",
+            "BS",
+            "CCKBC",
+            "IS1",
+            "IS2",
+            "IS3",
+            "IVY",
+            "NGFC",
+            "OLM",
+            "PVBC",
+            "SCA",
+        ]
+
     def neuron_cells(self):
-        from livn.backend.neuron.cells import MorphologyCell
+        from livn.backend.neuron.cells import (
+            SWC_APICAL,
+            SWC_BASAL,
+            SWC_SOMA,
+            MorphologyCell,
+            ReducedCell,
+        )
+        from livn.models.ca1.neuron.templates.PR_neuron import PR
+        from livn.models.ca1.neuron.templates.PRN_neuron import PRN
         from livn.models.ca1.neuron.templates.PyramidalCellBilash import (
             PyramidalCell,
         )
@@ -113,7 +146,25 @@ class PinskyRinzel(Model):
                 PyramidalCell(), threshold=-20.0, v_rest=-65.0
             )
 
-        return {"PYR": make_pyr}
+        factories = {"PYR": make_pyr}
+
+        sec_types = {SWC_SOMA: "soma", SWC_APICAL: "apical", SWC_BASAL: "basal"}
+        cell_config = self.neuron_cell_config()
+        for population in self.interneuron_populations():
+            params = cell_config[self.cell_config_key(population)]["PinskyRinzel"]
+            template = PR if "dend_gmax_KAHP" in params else PRN
+
+            def make_interneuron(morphology=None, template=template, params=params):
+                return ReducedCell(
+                    template({"PinskyRinzel": params}),
+                    threshold=params["V_threshold"],
+                    v_rest=params["V_rest"],
+                    sec_types=sec_types,
+                )
+
+            factories[population] = make_interneuron
+
+        return factories
 
     def neuron_celltypes(self, celltypes):
         params = self.neuron_cell_config()

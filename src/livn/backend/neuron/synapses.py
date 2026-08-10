@@ -145,7 +145,8 @@ class SynapseBuilder:
     """Builds the synapse/connection tables for the local rank.
 
     Parameters come from the model's synapse rules merged over the
-    system's ``connections_config`` mechanisms. Mechanisms whose
+    system's ``connections_config`` mechanisms, which a projection states
+    either once (``default``) or per destination SWC type. Mechanisms whose
     ``tau_decay`` is null are skipped as inactive.
     """
 
@@ -176,6 +177,11 @@ class SynapseBuilder:
         # gid is selected are wired. edges from external input populations are
         # always wired so subselected networks keep their external drive
         self._selected_gids = selected_gids
+        self._microcircuit_inputs = bool(
+            model.neuron_microcircuit_inputs()
+            if hasattr(model, "neuron_microcircuit_inputs")
+            else False
+        )
         # populations built as biophysical cells with any other source population
         # treated as an external VecStim spike source
         self._simulated_pops = (
@@ -197,6 +203,10 @@ class SynapseBuilder:
         self._pop_code: dict[str, int] = {}
         self._mech_code: dict[str, int] = {}
         self._sectype_code: dict[str, int] = {}
+
+    def _is_cell(self, gid: int) -> bool:
+        """Whether ``gid`` is built as a cell rather than replayed from file."""
+        return self._selected_gids is None or gid in self._selected_gids
 
     def _pop_id(self, name: str) -> int:
         return self._pop_code.setdefault(name, len(self._pop_code))
@@ -229,15 +239,30 @@ class SynapseBuilder:
             self._input_ncs.append(nc)
 
     def _mechanisms_for(self, post: str, pre: str) -> dict:
-        """Active {synapse_class: params} for a (post, pre) projection."""
+        """Active ``{swc_type: {synapse_class: params}}`` for a projection."""
         syn_cfg = self.system.connections_config["synapses"][post][pre]
-        mechs = syn_cfg.get("mechanisms", {}).get("default", {})
-        active = {}
-        for cls, params in mechs.items():
-            if params.get("tau_decay") is None:
+        blocks: dict = {}
+        for key, mechs in (syn_cfg.get("mechanisms", {}) or {}).items():
+            if not isinstance(mechs, dict):
                 continue
-            active[cls] = params
-        return active
+            if key == "default":
+                swc_type = None
+            else:
+                try:
+                    swc_type = int(key)
+                except (TypeError, ValueError):
+                    raise ValueError(
+                        f"{post}<-{pre} declares mechanisms under {key!r}; "
+                        "expected 'default' or an SWC type number"
+                    ) from None
+            active = {}
+            for cls, params in mechs.items():
+                if params.get("tau_decay") is None:
+                    continue
+                active[cls] = params
+            if active:
+                blocks[swc_type] = active
+        return blocks
 
     def build(self, cells_by_pop: dict[str, dict[int, object]]):
         from neuron import h
@@ -253,6 +278,13 @@ class SynapseBuilder:
             if self._simulated_pops is not None
             else set(cells_by_pop.keys())
         )
+
+        selected_sorted = (
+            None
+            if self._selected_gids is None
+            else np.array(sorted(self._selected_gids), dtype=np.int64)
+        )
+        place_keys: dict[int, np.ndarray] = {}  # id(place) -> its syn_ids
 
         # --- Pass 1: read edges, cache payloads, collect needed input gids ----
         # cached entry: (post_id, pre_id, is_input, active, cell, place, pre_gids,
@@ -309,10 +341,22 @@ class SynapseBuilder:
                             distances,
                         )
                     )
-                    if is_input:
-                        for k in range(len(pre_gids)):
-                            if int(syn_ids[k]) in place:
-                                needed_inputs.add(int(pre_gids[k]))
+                    if is_input or self._microcircuit_inputs:
+                        keys = place_keys.get(id(place))
+                        if keys is None:
+                            keys = np.fromiter(place, dtype=np.int64, count=len(place))
+                            keys.sort()
+                            place_keys[id(place)] = keys
+                        sources = np.asarray(pre_gids, dtype=np.int64)[
+                            np.isin(np.asarray(syn_ids, dtype=np.int64), keys)
+                        ]
+                        if not is_input and selected_sorted is not None:
+                            # a source of a simulated population is external
+                            # only where it is not itself a built cell
+                            sources = sources[
+                                np.isin(sources, selected_sorted, invert=True)
+                            ]
+                        needed_inputs.update(np.unique(sources).tolist())
 
         # --- Gather + create the input sources this rank owns -----------------
         if self.comm is not None and int(self.pc.nhost()) > 1:
@@ -348,16 +392,21 @@ class SynapseBuilder:
             syn_ids,
             distances,
         ) in cached:
-            specs = spec_cache.get(id(active))
-            if specs is None:
-                specs = self._mech_specs(h, active)
-                spec_cache[id(active)] = specs
+            specs_by_swc = spec_cache.get(id(active))
+            if specs_by_swc is None:
+                specs_by_swc = {
+                    swc: self._mech_specs(h, mechs) for swc, mechs in active.items()
+                }
+                spec_cache[id(active)] = specs_by_swc
+            default_specs = specs_by_swc.get(None)
 
             place_get = place.get
             cell_place = cell.place
             dest_code = {}  # swc_type -> dest_sectype code (per-cell tiny cache)
             cell_dest = cell.dest_sec_type
-            sel = None if is_input else self._selected_gids
+            sel = (
+                None if (is_input or self._microcircuit_inputs) else self._selected_gids
+            )
             pre_list = pre_gids.tolist()
             syn_list = syn_ids.tolist()
             dist_list = distances.tolist()
@@ -371,6 +420,9 @@ class SynapseBuilder:
                 if site is None:
                     continue
                 swc_type, loc = site
+                specs = specs_by_swc.get(swc_type, default_specs)
+                if specs is None:
+                    continue  # no mechanism declared for this destination type
                 seg = cell_place(swc_type, loc)
                 dsec = dest_code.get(swc_type)
                 if dsec is None:

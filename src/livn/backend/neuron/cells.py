@@ -47,12 +47,14 @@ class ReducedCell:
         v_rest: float | None = None,
         soma_type: str = "soma",
         dend_type: str = "dend",
+        sec_types: dict[int, str] | None = None,
     ):
         self._template = template
         self.threshold = float(threshold)
         self._v_rest = v_rest
         self._soma_type = soma_type
         self._dend_type = dend_type
+        self._sec_types = dict(sec_types) if sec_types else {}
 
         self.sections = list(template.sections)
         if not self.sections:
@@ -88,7 +90,8 @@ class ReducedCell:
         return self._dend(loc)
 
     def dest_sec_type(self, swc_type: int) -> str:
-        return self._soma_type if swc_type == SWC_SOMA else self._dend_type
+        default = self._soma_type if swc_type == SWC_SOMA else self._dend_type
+        return self._sec_types.get(swc_type, default)
 
     def spike_source(self):
         return self._soma(0.5)

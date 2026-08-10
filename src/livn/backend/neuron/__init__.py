@@ -184,7 +184,16 @@ class Env(EnvProtocol):
         ]
         self._resolve_selection(buildable)
 
+        if self._selection is None:
+            simulated_pops = set(buildable)
+        else:
+            simulated_pops = {
+                p for p in buildable if len(self._selection.get(p, [])) > 0
+            }
+
         for pop in buildable:
+            if pop not in simulated_pops:
+                continue
             sel = None
             if self._selection is not None:
                 sel = set(int(g) for g in self._selection.get(pop, []))
@@ -198,7 +207,6 @@ class Env(EnvProtocol):
 
         self._h.define_shape()
 
-        simulated_pops = set(buildable)
         sb = SynapseBuilder(
             self.system,
             self.model,

@@ -12,6 +12,8 @@ PYR:
         g_unit: 0.0001
         weight: 1.721332249831302
       NMDA:
+        tau_rise: 10.0
+        tau_decay: 35.0
         g_unit: 0.00005
         weight: 1.0
   CA3:
@@ -28,6 +30,8 @@ PYR:
           g_unit: 0.0001
           weight: 3.057760642471306
         NMDA:
+          tau_rise: 10.0
+          tau_decay: 35.0
           g_unit: 0.00001
           weight: 1.0
       apical:
@@ -38,6 +42,8 @@ PYR:
           g_unit: 0.0001
           weight: 3.057760642471306
         NMDA:
+          tau_rise: 10.0
+          tau_decay: 35.0
           g_unit: 0.00001
           weight: 1.0
   EC:
@@ -54,6 +60,8 @@ PYR:
           g_unit: 0.0001
           weight: 0.1
         NMDA:
+          tau_rise: 10.0
+          tau_decay: 35.0
           g_unit: 0.00001
           weight: 1.0
       apical:
@@ -64,6 +72,8 @@ PYR:
           g_unit: 0.00001
           weight: 1.792136068009607
         NMDA:
+          tau_rise: 10.0
+          tau_decay: 35.0
           g_unit: 0.00001
           weight: 1.0
   PYR:
@@ -80,6 +90,8 @@ PYR:
           g_unit: 0.0001
           weight: 5.3832407681675685
         NMDA:
+          tau_rise: 10.0
+          tau_decay: 35.0
           g_unit: 0.0001
           weight: 1.0
       soma:
@@ -90,6 +102,8 @@ PYR:
           g_unit: 0.0002
           weight: 5.3832407681675685
         NMDA:
+          tau_rise: 10.0
+          tau_decay: 35.0
           g_unit: 0.0001
           weight: 1.0
   AAC:
@@ -210,6 +224,8 @@ AAC:
         g_unit: 0.0002
         weight: 5.0
       NMDA:
+        tau_rise: 10.0
+        tau_decay: 35.0
         g_unit: 0.001
         weight: 2.0342310112720163
   CA3:
@@ -225,6 +241,8 @@ AAC:
         g_unit: 0.0002
         weight: 5.0
       NMDA:
+        tau_rise: 10.0
+        tau_decay: 35.0
         g_unit: 0.001
         weight: 2.0
   EC:
@@ -240,6 +258,8 @@ AAC:
         g_unit: 0.0005
         weight: 0.35806854633611973
       NMDA:
+        tau_rise: 10.0
+        tau_decay: 35.0
         g_unit: 0.002
         weight: 0.7476521718721013
   PYR:
@@ -255,6 +275,8 @@ AAC:
         g_unit: 0.0005
         weight: 9.89481904034616
       NMDA:
+        tau_rise: 10.0
+        tau_decay: 35.0
         g_unit: 0.002
         weight: 0.564394532193321
   PVBC:
@@ -363,6 +385,8 @@ PVBC:
         g_unit: 0.0005
         weight: 3.0
       NMDA:
+        tau_rise: 10.0
+        tau_decay: 35.0
         g_unit: 0.0005
         weight: 1.5
   CA3:
@@ -378,6 +402,8 @@ PVBC:
         g_unit: 0.0005
         weight: 3.0
       NMDA:
+        tau_rise: 10.0
+        tau_decay: 35.0
         g_unit: 0.0005
         weight: 1.0869979471202966
   EC:
@@ -393,6 +419,8 @@ PVBC:
         g_unit: 0.0005
         weight: 3.0
       NMDA:
+        tau_rise: 10.0
+        tau_decay: 35.0
         g_unit: 0.0005
         weight: 1.5
   PYR:
@@ -408,6 +436,8 @@ PVBC:
         g_unit: 0.0002
         weight: 3.17132639092828
       NMDA:
+        tau_rise: 10.0
+        tau_decay: 35.0
         g_unit: 0.0005
         weight: 2.551863652128099
   PVBC:
@@ -857,6 +887,8 @@ OLM:
         g_unit: 0.00025
         weight: 1.0
       NMDA:
+        tau_rise: 10.0
+        tau_decay: 35.0
         g_unit: 0.0001
         weight: 1.0
   OLM:
@@ -897,6 +929,8 @@ IVY:
         g_unit: 0.001
         weight: 1.9433190002814857
       NMDA:
+        tau_rise: 10.0
+        tau_decay: 35.0
         g_unit: 0.0005
         weight: 2.7486743049172935
   CA3:
@@ -912,6 +946,8 @@ IVY:
         g_unit: 0.001
         weight: 0.43536993278348424
       NMDA:
+        tau_rise: 10.0
+        tau_decay: 35.0
         g_unit: 0.0005
         weight: 0.2892090724270505
   PYR:
@@ -927,6 +963,8 @@ IVY:
         g_unit: 0.001
         weight: 5.311349875948598
       NMDA:
+        tau_rise: 10.0
+        tau_decay: 35.0
         g_unit: 0.0002
         weight: 3.8234359016206754
   PVBC:
@@ -1047,6 +1085,8 @@ NGFC:
         g_unit: 0.0001
         weight: 2.4353500364020926
       NMDA:
+        tau_rise: 10.0
+        tau_decay: 35.0
         g_unit: 0.0005
         weight: 3.9789159157154477
   CA3:
@@ -1062,6 +1102,8 @@ NGFC:
         g_unit: 0.0005
         weight: 19.68309571674812
       NMDA:
+        tau_rise: 10.0
+        tau_decay: 35.0
         g_unit: 0.0005
         weight: 18.721519915437867
   BS:
@@ -1335,6 +1377,8 @@ IS1:
         g_unit: 0.001
         weight: 0.4626539370845072
       NMDA:
+        tau_rise: 10.0
+        tau_decay: 35.0
         g_unit: 0.001
         weight: 0.240162102854785
   PVBC:
