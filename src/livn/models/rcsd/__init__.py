@@ -24,6 +24,7 @@ class ReducedCalciumSomaDendrite(Model):
         refractory_period: float = 2.0,
         implicit_inhibition: bool = True,
         renshaw_phenotype: str = "invitro",
+        short_term_depression: bool = False,
     ):
         # Optional override for the underlying neuron's stimulus
         # interpretation; this is only needed for the JAX
@@ -44,6 +45,7 @@ class ReducedCalciumSomaDendrite(Model):
             raise ValueError(f"refractory_period must be >= 0, got {refractory_period}")
         self.refractory_period = float(refractory_period)
         self.implicit_inhibition = bool(implicit_inhibition)
+        self.short_term_depression = bool(short_term_depression)
         if renshaw_phenotype not in ("invitro", "perry"):
             raise ValueError(
                 f"renshaw_phenotype must be 'invitro' or 'perry', got "
@@ -283,7 +285,9 @@ class ReducedCalciumSomaDendrite(Model):
 
     def neuron_synapse_mechanisms(self):
         return {
-            "AMPA": "StdpLinExp2Syn",
+            "AMPA": (
+                "DepLinExp2Syn" if self.short_term_depression else "StdpLinExp2Syn"
+            ),
             "NMDA": "StdpLinExp2SynNMDA",
             "GABA_A": "StdpLinExp2SynInh",
             "GABA_B": "LinExp2Syn",
@@ -315,6 +319,21 @@ class ReducedCalciumSomaDendrite(Model):
                     "vshift",
                 ],
                 "netcon_params": {"weight": 0, "g_unit": 1},
+                "netcon_state": {},
+            },
+            "DepLinExp2Syn": {
+                # `LinExp2Syn` plus Tsodyks-Markram depression, per stream.
+                # `R` (available resources) and `tlast` are per-connection
+                # state carried in the NetCon weight vector, so each source
+                # depresses independently despite sharing the point process.
+                "mech_file": "dep_lin_exp2syn.mod",
+                "mech_params": ["tau_rise", "tau_decay", "e", "U", "tau_rec"],
+                "netcon_params": {
+                    "weight": 0,
+                    "g_unit": 1,
+                    "R": 2,
+                    "tlast": 3,
+                },
                 "netcon_state": {},
             },
             "StdpLinExp2Syn": {
