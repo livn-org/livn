@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict
 from livn.utils import ObjSpec, import_instance, P
 from livn.env.distributed import DistributedEnv
 from livn.decoding import GatherAndMerge, Slice
+from livn.run import Run
 from livn.types import Encoding
 from livn.env import Env
 from datasets import Dataset
@@ -19,8 +20,8 @@ import numpy as np
 
 
 class Raw(GatherAndMerge):
-    def __call__(self, env, it, tt, iv, vv, im, mp):
-        data = super().__call__(env, it, tt, iv, vv, im, mp)
+    def __call__(self, signal, env=None):
+        data = super().__call__(signal, env)
         if data is None:
             return
 
@@ -155,14 +156,16 @@ class Sample(Interface):
             data = load_file(file_path)
 
             # remove warmup
+            recorded = (
+                Run(duration=float(data["duration"]))
+                .add_spikes(data["it"], data["tt"])
+                .add_voltage(data["iv"], data["vv"], dt=env.voltage_recording_dt)
+                .add_current(
+                    data["im"], data["mp"], dt=env.membrane_current_recording_dt
+                )
+            )
             it, tt, iv, vv, im, mp = Slice(start=warmup, stop=data["duration"])(
-                env,
-                it=data["it"],
-                tt=data["tt"],
-                iv=data["iv"],
-                vv=data["vv"],
-                im=data["im"],
-                mp=data["mp"],
+                recorded
             )
 
             cit, ctt = env.channel_recording(it, tt)
