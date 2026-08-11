@@ -3,15 +3,15 @@ import os
 import uuid
 import json
 from collections import defaultdict
+from enum import IntEnum
 from pathlib import Path
 
+import h5py
 from machinable import Interface
 from machinable.utils import save_file
 from pydantic import BaseModel, Field, model_validator
 from typing import Dict, Optional
 import numpy as np
-from miv_simulator.utils.io import create_neural_h5
-from miv_simulator.config import SWCTypesDef
 from neuroh5.io import (
     NeuroH5ProjectionGen,
     read_cell_attributes,
@@ -29,6 +29,139 @@ from matplotlib.colors import to_rgba
 
 
 _SYN_TYPE_LOOKUP = {"excitatory": 0, "inhibitory": 1}
+
+CONNECTIVITY_CHUNK = 2048
+
+
+class SWCTypesDef(IntEnum):
+    """SWC section-type codes (Cannon et al. convention, matching neuroh5)."""
+
+    soma = 1
+    axon = 2
+    basal = 3
+    apical = 4
+    trunk = 5
+    tuft = 6
+    ais = 7
+    hillock = 8
+
+
+_grp_h5types = "H5Types"
+_grp_populations = "Populations"
+_grp_valid_population_projections = "Valid population projections"
+_path_population_labels = f"/{_grp_h5types}/Population labels"
+_path_population_range = f"/{_grp_h5types}/Population range"
+_path_population_projections = f"/{_grp_h5types}/Population projections"
+
+
+def _h5_get_group(h, groupname):
+    if groupname in h:
+        return h[groupname]
+    return h.create_group(groupname)
+
+
+def _h5_get_dataset(g, dsetname, **kwargs):
+    if dsetname in g:
+        return g[dsetname]
+    return g.create_dataset(dsetname, (0,), **kwargs)
+
+
+def create_neural_h5(
+    output_filepath: str,
+    cell_distributions: Dict[str, Dict[str, int]],
+    synapses: Dict[str, Dict[str, object]],
+    population_definitions: Dict[str, int],
+    gap_junctions: Optional[Dict] = None,
+) -> None:
+    """Write the NeuroH5 ``H5Types`` group (populations and projections).
+
+    Args:
+        output_filepath: Target ``.h5`` file (opened in append mode).
+        cell_distributions: ``{population: {layer: count}}``.
+        synapses: ``{post: {pre: ...}}`` used to enumerate projections
+            (ignored when ``gap_junctions`` is provided).
+        population_definitions: ``{population: enum_index}``.
+        gap_junctions: Optional ``{(post, pre): ...}`` used for projections
+            instead of ``synapses``.
+    """
+    populations = []
+    for pop_name, pop_idx in population_definitions.items():
+        if pop_name not in cell_distributions:
+            raise ValueError(
+                f"Definitions contain a population '{pop_name}' that is not "
+                f"specified in the cell distribution populations "
+                f"({', '.join([p for p in cell_distributions])})"
+            )
+        pop_count = sum(cell_distributions[pop_name].values())
+        populations.append((pop_name, pop_idx, pop_count))
+    populations.sort(key=lambda x: x[1])
+
+    projections = []
+    if gap_junctions:
+        for (post, pre), _ in gap_junctions.items():
+            projections.append(
+                (population_definitions[pre], population_definitions[post])
+            )
+    else:
+        for post, connection_dict in synapses.items():
+            for pre in connection_dict:
+                projections.append(
+                    (population_definitions[pre], population_definitions[post])
+                )
+
+    # HDF5 enumerated type for the population label
+    mapping = {name: idx for name, idx in population_definitions.items()}
+    dt_population_labels = h5py.special_dtype(enum=(np.uint16, mapping))
+
+    with h5py.File(output_filepath, "a") as h5:
+        h5[_path_population_labels] = dt_population_labels
+
+        dt_populations = np.dtype(
+            [
+                ("Start", np.uint64),
+                ("Count", np.uint32),
+                ("Population", h5[_path_population_labels].dtype),
+            ]
+        )
+        h5[_path_population_range] = dt_populations
+        dt = h5[_path_population_range].dtype
+
+        g = _h5_get_group(h5, _grp_h5types)
+
+        dset = _h5_get_dataset(
+            g, _grp_populations, maxshape=(len(populations),), dtype=dt
+        )
+        dset.resize((len(populations),))
+        a = np.zeros(len(populations), dtype=dt)
+        start = 0
+        for enum_id, (name, idx, count) in enumerate(populations):
+            a[enum_id]["Start"] = start
+            a[enum_id]["Count"] = count
+            a[enum_id]["Population"] = idx
+            start += count
+        dset[:] = a
+
+        dt_projections = np.dtype(
+            [
+                ("Source", h5[_path_population_labels].dtype),
+                ("Destination", h5[_path_population_labels].dtype),
+            ]
+        )
+        h5[_path_population_projections] = dt_projections
+        dt = h5[_path_population_projections]
+
+        dset = _h5_get_dataset(
+            g,
+            _grp_valid_population_projections,
+            maxshape=(len(projections),),
+            dtype=dt,
+        )
+        dset.resize((len(projections),))
+        a = np.zeros(len(projections), dtype=dt)
+        for i, (src, dst) in enumerate(projections):
+            a[i]["Source"] = int(src)
+            a[i]["Destination"] = int(dst)
+        dset[:] = a
 
 
 def bounding_box(xs, ys) -> tuple:  # ((xmin, ymin), (xmax, ymax))
@@ -81,6 +214,32 @@ class PopulationConfig(BaseModel):
     )
     count: Optional[int] = Field(default=None, ge=0)
     synapse_type: str = Field("excitatory")
+    transmitter: Optional[str] = Field(
+        default=None,
+        description=(
+            "What this population releases: glutamatergic, cholinergic, "
+            "gabaergic or glycinergic. Defaults from synapse_type."
+        ),
+    )
+    soma_only: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Single-compartment cells, which can only receive on the soma. "
+            "Defaults true for inhibitory populations. "
+        ),
+    )
+
+    @property
+    def released(self) -> str:
+        if self.transmitter:
+            return self.transmitter
+        return "glutamatergic" if self.synapse_type == "excitatory" else "gabaergic"
+
+    @property
+    def single_compartment(self) -> bool:
+        if self.soma_only is not None:
+            return self.soma_only
+        return self.synapse_type == "inhibitory"
 
     @model_validator(mode="after")
     def _validate(self) -> "PopulationConfig":
@@ -96,10 +255,26 @@ class PopulationConfig(BaseModel):
 
 
 class ConnectivityConfig(BaseModel):
-    """Gaussian distance-dependent connectivity specification"""
+    """Distance-dependent connectivity specification.
 
+    The ``kernel`` selects the shape of the distance dependence:
+
+    * ``"exponential"``: ``exp(-d / sigma)``. Heavy-tailed matching the long
+      reach of free-growing 2D-culture axons in organoid systems.
+    * ``"gaussian"``: ``exp(-d^2 / (2 sigma^2))``. Tissue-like local wiring.
+
+    ``sigma`` is the length constant in space units (Gaussian width or, for the
+    exponential kernel, the decay constant lambda). ``mean_degree`` fixes the
+    expected in-degree via amplitude normalisation, so ``sigma`` controls only
+    the spatial spread of each neuron's connections, not their number.
+    """
+
+    kernel: str = Field(
+        default="exponential",
+        description="Distance-kernel shape: 'exponential' or 'gaussian'",
+    )
     sigma: float = Field(
-        ..., gt=0.0, description="Gaussian width parameter (space units)"
+        ..., gt=0.0, description="Length constant lambda/sigma (space units)"
     )
     mean_degree: float | Dict[str, float] = Field(
         default=100.0,
@@ -113,17 +288,29 @@ class ConnectivityConfig(BaseModel):
     )
     allow_self_connections: bool = False
 
+    @model_validator(mode="after")
+    def _validate_kernel(self) -> "ConnectivityConfig":
+        if self.kernel not in {"exponential", "gaussian"}:
+            raise ValueError(
+                f"kernel must be 'exponential' or 'gaussian', got '{self.kernel}'"
+            )
+        return self
+
 
 class SynapseRecord(BaseModel):
     syn_ids: list[int] = Field(default_factory=list)
     syn_types: list[int] = Field(default_factory=list)
     syn_cdists: list[float] = Field(default_factory=list)
+    syn_secs: list[int] = Field(default_factory=list)
+    swc_types: list[int] = Field(default_factory=list)
 
-    def add(self, syn_type: int, distance: float) -> int:
+    def add(self, syn_type: int, distance: float, sec: int, swc_type: int) -> int:
         syn_id = len(self.syn_ids)
         self.syn_ids.append(syn_id)
         self.syn_types.append(syn_type)
         self.syn_cdists.append(distance)
+        self.syn_secs.append(sec)
+        self.swc_types.append(swc_type)
         return syn_id
 
 
@@ -141,9 +328,14 @@ class Generate2DSystem(Interface):
         )
         connectivity: ConnectivityConfig = Field(
             default={
-                "sigma": 200.0,
-                "mean_degree": 100.0,
-                "cutoff": 0.1,
+                "kernel": "exponential",
+                "sigma": 600.0,
+                "mean_degree": {
+                    "EXC->INH": 4.0,
+                    "INH->EXC": 40.0,
+                    "default": 0.0,
+                },
+                "cutoff": None,
                 "allow_self_connections": False,
             }
         )
@@ -183,24 +375,36 @@ class Generate2DSystem(Interface):
             return os.path.join(self.config.output_directory, "graph.json")
         return self.local_directory("graph.json")
 
-    def mea(self, pitch: float = 50, overwrite: bool = True):
+    def mea(
+        self,
+        pitch: float = 50,
+        overwrite: bool = True,
+        coordinates: list | None = None,
+        input_radius: float = 50,
+        output_radius: float = 80,
+    ):
         fn = os.path.join(self.config.output_directory, "mea.json")
         if not overwrite and os.path.isfile(fn):
             raise FileExistsError("mea.json already exists")
         z_min, z_max = self.config.z_range
+        z = z_min + (z_max - z_min) / 2
 
-        with open(self.graph_filepath, "r") as f:
-            graph = json.load(f)
-        area = graph["architecture"]["config"]["area"]
-        bounds = (tuple(area[0]), tuple(area[1]))
-        coords = electrode_array_coordinates_for_area(
-            pitch=pitch, area=bounds, z=z_min + (z_max - z_min) / 2
-        )
+        if coordinates is not None:
+            coords = np.asarray(
+                [[c[0], c[1], c[2], c[3] if len(c) > 3 else z] for c in coordinates],
+                dtype=float,
+            )
+        else:
+            with open(self.graph_filepath, "r") as f:
+                graph = json.load(f)
+            area = graph["architecture"]["config"]["area"]
+            bounds = (tuple(area[0]), tuple(area[1]))
+            coords = electrode_array_coordinates_for_area(pitch=pitch, area=bounds, z=z)
 
         data = {
             "electrode_coordinates": coords.tolist(),
-            "input_radius": 50,
-            "output_radius": 80,
+            "input_radius": input_radius,
+            "output_radius": output_radius,
         }
 
         with open(fn, "w") as f:
@@ -246,7 +450,63 @@ class Generate2DSystem(Interface):
 
         return la
 
+    TRANSMITTERS = {
+        "glutamatergic": (
+            {
+                "AMPA": {"e": 0, "g_unit": 0.0005, "tau_decay": 3.0, "tau_rise": 0.5},
+                "NMDA": {"e": 0, "g_unit": 0.0005, "tau_decay": 80.0, "tau_rise": 0.5},
+            },
+            1,
+        ),
+        "cholinergic": (
+            {"AMPA": {"e": 0, "g_unit": 0.0005, "tau_decay": 7.0, "tau_rise": 0.5}},
+            7,
+        ),
+        "glycinergic": (
+            {
+                "GABA_A": {
+                    "e": -70,
+                    "g_unit": 0.00025,
+                    "tau_decay": 5.0,
+                    "tau_rise": 0.3,
+                }
+            },
+            5,
+        ),
+        "gabaergic": (
+            {"GABA_A": {"e": -60, "g_unit": 0.001, "tau_decay": 6.0, "tau_rise": 0.3}},
+            1,
+        ),
+    }
+
+    def _projection_synapse(self, pre: str, post: str):
+        pre_cfg = self.config.populations[pre]
+        post_cfg = self.config.populations[post]
+
+        released = pre_cfg.transmitter or (
+            "glutamatergic" if pre_cfg.synapse_type == "excitatory" else "gabaergic"
+        )
+        soma_only = post_cfg.soma_only
+        if soma_only is None:
+            soma_only = post_cfg.synapse_type == "inhibitory"
+        inhibitory_input = released in ("gabaergic", "glycinergic")
+        receives_on = "soma" if (soma_only or inhibitory_input) else "dend"
+        if released not in self.TRANSMITTERS:
+            raise ValueError(
+                f"population {pre!r} releases {released!r}; known transmitters: "
+                f"{', '.join(sorted(self.TRANSMITTERS))}"
+            )
+
+        template, contacts = self.TRANSMITTERS[released]
+        mechanisms = {
+            name: {**params, "weight": float(contacts)}
+            for name, params in template.items()
+        }
+        return mechanisms, [receives_on], contacts
+
     def __call__(self):
+        if self.config.output_directory:
+            os.makedirs(self.config.output_directory, exist_ok=True)
         counts: Dict[str, int] = {}
         ratios: Dict[str, float] = {}
         syn_types = {}
@@ -296,13 +556,14 @@ class Generate2DSystem(Interface):
         cell_distributions = {pop: {"2d": counts[pop]} for pop in populations}
         synapse_flags: Dict[str, Dict[str, bool]] = {post: {} for post in populations}
         target_degrees = {}
+        mean_degree_cfg = self.config.connectivity.mean_degree
+        is_mapping = not isinstance(mean_degree_cfg, (int, float))
         for post in populations:
             for pre in populations:
                 key = f"{pre}->{post}"
                 degree = 0.0
 
-                mean_degree_cfg = self.config.connectivity.mean_degree
-                if isinstance(mean_degree_cfg, dict):
+                if is_mapping:
                     if key in mean_degree_cfg:
                         degree = float(mean_degree_cfg[key])
                     elif "default" in mean_degree_cfg:
@@ -406,20 +667,28 @@ class Generate2DSystem(Interface):
                 if pre_gids.size == 0 or post_gids.size == 0:
                     continue
 
-                diffs = pre_info["xy"][:, None, :] - post_info["xy"][None, :, :]
-                distances = np.linalg.norm(diffs, axis=2).astype(np.float32)
+                length_constant = self.config.connectivity.sigma
+                allow_self = self.config.connectivity.allow_self_connections
 
-                sigma_sq = self.config.connectivity.sigma**2
-                raw_weights = np.exp(-(distances**2) / (2.0 * sigma_sq))
+                def _kernel(lo: int, hi: int):
+                    diffs = pre_info["xy"][:, None, :] - post_info["xy"][None, lo:hi, :]
+                    d = np.linalg.norm(diffs, axis=2).astype(np.float32)
+                    if self.config.connectivity.kernel == "gaussian":
+                        w = np.exp(-(d**2) / (2.0 * length_constant**2))
+                    else:  # exponential
+                        w = np.exp(-d / length_constant)
+                    if not allow_self and pre == post:
+                        # the diagonal of this chunk, in pre-index coordinates
+                        rows = np.arange(lo, hi)
+                        inside = (rows >= 0) & (rows < w.shape[0])
+                        w[rows[inside], np.arange(hi - lo)[inside]] = 0.0
+                    return d, w
 
-                # amplitude from target degree
-                if not self.config.connectivity.allow_self_connections and pre == post:
-                    diag_mask = ~np.eye(
-                        raw_weights.shape[0], raw_weights.shape[1], dtype=bool
-                    )
-                    weight_sum = np.sum(raw_weights[diag_mask])
-                else:
-                    weight_sum = np.sum(raw_weights)
+                n_post = len(post_gids)
+                chunk = max(1, min(n_post, CONNECTIVITY_CHUNK))
+                weight_sum = 0.0
+                for lo in range(0, n_post, chunk):
+                    weight_sum += float(_kernel(lo, min(lo + chunk, n_post))[1].sum())
 
                 if weight_sum > 0:
                     amp = (target_degree * len(post_gids)) / weight_sum
@@ -428,6 +697,7 @@ class Generate2DSystem(Interface):
 
                 kernel = {
                     "amplitude": float(amp),
+                    "kernel": str(self.config.connectivity.kernel),
                     "sigma": float(self.config.connectivity.sigma),
                     "allow_self_connections": bool(
                         self.config.connectivity.allow_self_connections
@@ -436,40 +706,14 @@ class Generate2DSystem(Interface):
                 if self.config.connectivity.cutoff is not None:
                     kernel["cutoff"] = float(self.config.connectivity.cutoff)
 
-                syn_type = self.config.populations[pre].synapse_type
-                target_sections = ["soma"]
-                if syn_type == "excitatory":
-                    target_sections = ["dend"]
-                    mechanisms = {
-                        "AMPA": {
-                            "e": 0,
-                            "g_unit": 0.0005,
-                            "tau_decay": 3.0,
-                            "tau_rise": 0.5,
-                            "weight": 1.0,
-                        },
-                        "NMDA": {
-                            "e": 0,
-                            "g_unit": 0.0005,
-                            "tau_decay": 80.0,
-                            "tau_rise": 0.5,
-                            "weight": 1.0,
-                        },
-                    }
-                elif syn_type == "inhibitory":
-                    mechanisms = {
-                        "GABA_A": {
-                            "e": -60,
-                            "g_unit": 0.001,
-                            "tau_decay": 6.0,
-                            "tau_rise": 0.3,
-                            "weight": 1.0,
-                        }
-                    }
+                pre_type = self.config.populations[pre].synapse_type
+                mechanisms, target_sections, contacts = self._projection_synapse(
+                    pre, post
+                )
 
                 synapse_config[post][pre] = {
-                    "type": self.config.populations[pre].synapse_type,
-                    "contacts": 1,
+                    "type": pre_type,
+                    "contacts": contacts,
                     "layers": ["2d"],
                     "sections": target_sections,
                     "proportions": [1.0],
@@ -477,74 +721,99 @@ class Generate2DSystem(Interface):
                     "kernel": kernel,
                 }
 
-                raw_probs = amp * raw_weights
-                probs = raw_probs.copy()
-
-                if self.config.connectivity.cutoff is not None:
-                    probs = np.where(
-                        probs >= self.config.connectivity.cutoff, probs, 0.0
-                    )
-
-                mask = rng.random(size=probs.shape, dtype=np.float32) < probs
-
-                if not self.config.connectivity.allow_self_connections and pre == post:
-                    diag = np.eye(mask.shape[0], mask.shape[1], dtype=bool)
-                    mask = np.logical_and(mask, ~diag)
-
-                if not mask.any():
-                    fallback_mask = np.zeros_like(mask, dtype=bool)
-                    fallback_probs = raw_probs.copy()
-                    if (
-                        not self.config.connectivity.allow_self_connections
-                        and pre == post
-                    ):
-                        diag_indices = np.diag_indices(fallback_probs.shape[0])
-                        fallback_probs[diag_indices] = -np.inf
-                    flat_index = int(np.argmax(fallback_probs))
-                    fallback_value = fallback_probs.reshape(-1)[flat_index]
-                    if np.isfinite(fallback_value) and fallback_value > 0.0:
-                        fallback_mask.reshape(-1)[flat_index] = True
-                        mask = fallback_mask
+                if target_sections[0] == "soma":
+                    target_sec = 0
+                    target_swc = int(np.uint8(SWCTypesDef.soma))
+                else:
+                    target_sec = 1
+                    target_swc = int(np.uint8(SWCTypesDef.apical))
 
                 pair_edges: dict[
                     int, tuple[np.ndarray, dict[str, dict[str, np.ndarray]]]
                 ] = {}
                 syn_type_index = syn_types[pre]
                 total_edges = 0
+                best = (0.0, -1, -1)  # (probability, pre index, post index)
 
-                for post_idx, post_gid in enumerate(post_gids):
-                    selected = np.where(mask[:, post_idx])[0]
-                    if selected.size == 0:
-                        pair_edges[int(post_gid)] = (
-                            np.zeros(0, dtype=np.uint32),
-                            {
-                                "Connections": {
-                                    "distance": np.zeros(0, dtype=np.float32)
+                for lo in range(0, n_post, chunk):
+                    hi = min(lo + chunk, n_post)
+                    distances, raw_weights = _kernel(lo, hi)
+                    raw_probs = amp * raw_weights
+                    probs = raw_probs
+                    if self.config.connectivity.cutoff is not None:
+                        probs = np.where(
+                            probs >= self.config.connectivity.cutoff, probs, 0.0
+                        )
+                    mask = rng.random(size=probs.shape, dtype=np.float32) < probs
+
+                    if raw_probs.size:
+                        flat = int(np.argmax(raw_probs))
+                        value = float(raw_probs.reshape(-1)[flat])
+                        if value > best[0]:
+                            r, c = divmod(flat, raw_probs.shape[1])
+                            best = (value, r, lo + c)
+
+                    for offset, post_gid in enumerate(post_gids[lo:hi]):
+                        post_idx = offset
+                        selected = np.where(mask[:, post_idx])[0]
+                        if selected.size == 0:
+                            pair_edges[int(post_gid)] = (
+                                np.zeros(0, dtype=np.uint32),
+                                {
+                                    "Connections": {
+                                        "distance": np.zeros(0, dtype=np.float32)
+                                    },
+                                    "Synapses": {
+                                        "syn_id": np.zeros(0, dtype=np.uint32)
+                                    },
                                 },
-                                "Synapses": {"syn_id": np.zeros(0, dtype=np.uint32)},
+                            )
+                            continue
+
+                        selected_pre_gids = pre_gids[selected].astype(np.uint32)
+                        selected_distances = distances[selected, post_idx].astype(
+                            np.float32
+                        )
+                        syn_ids = []
+                        record = synapses[post][int(post_gid)]
+                        for dist in selected_distances:
+                            syn_ids.append(
+                                record.add(
+                                    syn_type_index, float(dist), target_sec, target_swc
+                                )
+                            )
+
+                        pair_edges[int(post_gid)] = (
+                            selected_pre_gids,
+                            {
+                                "Connections": {"distance": selected_distances},
+                                "Synapses": {
+                                    "syn_id": np.asarray(syn_ids, dtype=np.uint32)
+                                },
                             },
                         )
-                        continue
+                        total_edges += selected_pre_gids.size
 
-                    selected_pre_gids = pre_gids[selected].astype(np.uint32)
-                    selected_distances = distances[selected, post_idx].astype(
-                        np.float32
+                if total_edges == 0 and best[1] >= 0:
+                    pre_idx, post_idx = best[1], best[2]
+                    post_gid = int(post_gids[post_idx])
+                    d, _ = _kernel(post_idx, post_idx + 1)
+                    dist = float(d[pre_idx, 0])
+                    syn_id = synapses[post][post_gid].add(
+                        syn_type_index, dist, target_sec, target_swc
                     )
-                    syn_ids = []
-                    record = synapses[post][int(post_gid)]
-                    for dist in selected_distances:
-                        syn_ids.append(record.add(syn_type_index, float(dist)))
-
-                    pair_edges[int(post_gid)] = (
-                        selected_pre_gids,
+                    pair_edges[post_gid] = (
+                        np.asarray([pre_gids[pre_idx]], dtype=np.uint32),
                         {
-                            "Connections": {"distance": selected_distances},
+                            "Connections": {
+                                "distance": np.asarray([dist], dtype=np.float32)
+                            },
                             "Synapses": {
-                                "syn_id": np.asarray(syn_ids, dtype=np.uint32)
+                                "syn_id": np.asarray([syn_id], dtype=np.uint32)
                             },
                         },
                     )
-                    total_edges += selected_pre_gids.size
+                    total_edges = 1
 
                 if total_edges == 0:
                     continue
@@ -558,7 +827,6 @@ class Generate2DSystem(Interface):
 
         # write synapse attributes
         layer_index = 0
-        swc_type_value = np.uint8(SWCTypesDef.soma)
         for pop in populations:
             cell_dict = {}
             for gid, record in synapses[pop].items():
@@ -567,14 +835,9 @@ class Generate2DSystem(Interface):
                     syn_types = np.asarray(record.syn_types, dtype=np.uint8)
                     syn_cdists = np.asarray(record.syn_cdists, dtype=np.float32)
                     syn_locs = np.zeros_like(syn_ids, dtype=np.float32)
-                    syn_secs = np.zeros_like(syn_ids, dtype=np.int16)
+                    syn_secs = np.asarray(record.syn_secs, dtype=np.int16)
                     syn_layers = np.full(syn_ids.shape, layer_index, dtype=np.uint8)
-                    swc_types = np.full(syn_ids.shape, swc_type_value, dtype=np.uint8)
-
-                    # map excitatory synapses (type 0) to dendrite (section 1, swc type 4)
-                    is_exc = syn_types == 0
-                    syn_secs[is_exc] = 1
-                    swc_types[is_exc] = np.uint8(SWCTypesDef.apical)
+                    swc_types = np.asarray(record.swc_types, dtype=np.uint8)
                 else:
                     syn_ids = np.zeros(0, dtype=np.uint32)
                     syn_types = np.zeros(0, dtype=np.uint8)
