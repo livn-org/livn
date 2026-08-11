@@ -4,6 +4,7 @@ from functools import partial
 import numpy as np
 from dmosopt import config
 from machinable import Project
+from machinable.config import Field as ConfigField
 from mpi4py import MPI
 from pydantic import Field
 
@@ -55,7 +56,7 @@ class Evaluation:
 
         if len(self.constraints) > 0:
             constraints = []
-            for name in sorted(self.constraints.keys()):
+            for name in self.constraints:
                 constraints.append(np.min(self.constraints[name]))
 
             return {
@@ -93,7 +94,9 @@ def _build_env(target, system, model, comm, subworld_size):
     env = Env(
         system,
         model=model,
-        io=io.MEA.from_json(os.path.join(system, "mea.json"), comm=False),
+        io=io.MEA.from_json(os.path.join(os.fspath(system), "mea.json"), comm=False)
+        if not isinstance(system, (str, os.PathLike))
+        else None,
         comm=comm,
         subworld_size=subworld_size,
     )
@@ -116,12 +119,12 @@ def obj_fun_init(
 
 
 def controller_init(system, model, target, subworld_size):
-    # The distwq controller is a lone rank (not part of any worker group), so it
-    # must build its env on COMM_SELF. Passing None would default to COMM_WORLD,
-    # whose collectives (e.g. the mechanism-compile barrier in Env.__init__) then
-    # block forever waiting for worker ranks that are busy on their own comms.
-    target = import_instance(target)
-    env = _build_env(target, system, model, MPI.COMM_SELF, subworld_size)
+    env = Env(
+        system,
+        model=import_instance(model),
+        comm=MPI.COMM_SELF,
+        subworld_size=subworld_size,
+    )
     live_envs.append(env)
 
 
@@ -164,6 +167,7 @@ def obj_reduce(payload):
 
 class Sopt(Dmosopt):
     class Config(Dmosopt.Config):
+        system: str | int | None = ConfigField(None, identifying=False)
         dopt_params: dict = Field(
             default_factory=lambda: {
                 "opt_id": "default",
@@ -206,6 +210,14 @@ class Sopt(Dmosopt):
             }
         )
         ranks: int = -1
+
+    def on_compute_predicate(self):
+        system = self.config.system
+        if system is None:
+            return {}
+        if isinstance(system, int):
+            return {"system": f"{system} cell" + ("s" if system != 1 else "")}
+        return super().on_compute_predicate()
 
     def evaluate_objective_at(self, x, verbose=False, **reduce_kwargs):
         import logging

@@ -304,7 +304,8 @@ class SingleCell:
             celsius=self.celsius,
         )
         env = Env(system, model=cell_model, comm=comm, subworld_size=subworld_size)
-        env.selection(1)
+        if isinstance(system, (str, os.PathLike)):
+            env.selection(1)
         env.init()
         env.record_voltage(dt=self.record_dt)
         env.v_init = self.v_hold  # initialize at the holding potential each run
