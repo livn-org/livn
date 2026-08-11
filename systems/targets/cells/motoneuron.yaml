@@ -57,7 +57,7 @@ Parameters:
   pp: 0.1
   Ltotal: 120.0
 Space:
-  gc:  [0.1, 2.0]
+  gc:  [0.1, 30.0]
   soma_gmax_Na:  [0.1, 0.3]
   soma_gmax_K:  [0.01, 0.3]
   soma_gmax_KCa:  [0.0001, 0.01]

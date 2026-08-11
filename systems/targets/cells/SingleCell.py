@@ -4,7 +4,7 @@ import os
 
 import numpy as np
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from livn.env import Env
 from livn.models.rcsd import ReducedCalciumSomaDendrite
@@ -15,8 +15,10 @@ from . import ephys
 
 
 class StepTarget(BaseModel):
-    current: list[float] = []
-    current_factor: float = 1.0
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    current: list[float] = Field(default_factory=list, alias="I")
+    current_factor: float = Field(1.0, alias="I_factor")
     t: list[float] | None = None
     mean: list[float] | None = None
     lower: list[float] | None = None
@@ -184,8 +186,27 @@ class SingleCell:
         self.fixed = dict(cfg.Parameters)
         self.space = {k: [float(v[0]), float(v[1])] for k, v in cfg.Space.items()}
 
+    def _log_scaled(self) -> set:
+        return {k for k, (lo, hi) in self.space.items() if lo > 0 and hi / lo >= 10.0}
+
     def search_space(self, model=None) -> dict:
-        return {k: list(v) for k, v in self.space.items()}
+        log_scaled = self._log_scaled()
+        return {
+            k: (
+                [float(np.log10(lo)), float(np.log10(hi))]
+                if k in log_scaled
+                else [float(lo), float(hi)]
+            )
+            for k, (lo, hi) in self.space.items()
+        }
+
+    def _from_search(self, x) -> dict:
+        """Optimizer coordinates back to biophysical values."""
+        log_scaled = self._log_scaled()
+        return {
+            k: (10.0 ** float(v) if k in log_scaled else float(v))
+            for k, v in dict(x).items()
+        }
 
     def objective_names(self) -> list[str]:
         return [
@@ -234,13 +255,13 @@ class SingleCell:
         # x: {param: value} from the optimizer. Merge with fixed parameters and
         # stash for __call__ (applied to the cell via env.cells, not set_params).
         decoded = dict(self.fixed)
-        decoded.update({k: float(v) for k, v in dict(x).items()})
+        decoded.update(self._from_search(x))
         self._decoded = decoded
         return {}
 
     def decode_params(self, x, model=None) -> dict:
         merged = dict(self.fixed)
-        merged.update({k: float(v) for k, v in dict(x).items()})
+        merged.update(self._from_search(x))
         return merged
 
     def set_params(self, params: dict) -> dict:
