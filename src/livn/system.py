@@ -1040,24 +1040,28 @@ class System:
     def name(self):
         return self.uri.split("/")[-1]
 
+    def synapse_projections(self) -> list[tuple[str, str, str, str, str]]:
+        found = []
+        for post, sources in (self.connections_config.get("synapses") or {}).items():
+            for pre, spec in (sources or {}).items():
+                syn_type = (spec or {}).get("type", "excitatory")
+                mechanisms = ((spec or {}).get("mechanisms") or {}).get("default") or {}
+                for section in (spec or {}).get("sections") or []:
+                    for mechanism in mechanisms:
+                        found.append((post, pre, section, mechanism, syn_type))
+        return sorted(set(found))
+
     @property
     def weight_names(self) -> list[str]:
-        weight_names = []
-
-        for post_pop, pre_connections in self.connections_config["synapses"].items():
-            for pre_pop, synapse_config in pre_connections.items():
-                if backend() != "neuron":
-                    weight_names.append(f"{pre_pop}_{post_pop}")
-                else:
-                    sections = synapse_config.get("sections", [])
-                    mechanisms = synapse_config.get("mechanisms", {}).get("default", {})
-                    for section in sections:
-                        for mech_name in mechanisms.keys():
-                            weight_names.append(
-                                f"{pre_pop}_{post_pop}-{section}-{mech_name}-weight"
-                            )
-
-        return weight_names
+        names = []
+        for post, pre, section, mechanism, _ in self.synapse_projections():
+            if backend() != "neuron":
+                name = f"{post}_{pre}"
+            else:
+                name = f"{post}_{pre}-{section}-{mechanism}-weight"
+            if name not in names:
+                names.append(name)
+        return names
 
     @property
     def num_neurons(self):
@@ -1237,7 +1241,7 @@ class System:
             for pre, synapse in v.items():
                 kind = synapse["type"]
                 prefix = -1.0 if kind == "inhibitory" else 1.0
-                weight = weights.get(f"{pre}_{post}", 1.0)
+                weight = weights.get(f"{post}_{pre}", 1.0)
 
                 for post_gid, (pre_gids, projection) in self.projection_array(
                     pre, post
@@ -1433,6 +1437,9 @@ class ParallelSystem:
     @property
     def populations(self) -> list[types.PopulationName]:
         return self.cells_meta_data.population_names
+
+    def synapse_projections(self) -> list[tuple[str, str, str, str, str]]:
+        return []
 
     @property
     def weight_names(self) -> list[str]:

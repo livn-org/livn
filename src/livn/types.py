@@ -131,6 +131,10 @@ class System(Protocol):
         """Number of cells in one population"""
         ...
 
+    def synapse_projections(self) -> list[tuple[str, str, str, str, str]]:
+        """``(post, pre, section, mechanism, type)`` per synapse the graph declares"""
+        ...
+
     def default_io(self, comm: Optional["MPI.Intracomm"] = None) -> "IO":
         """IO device to use when the environment is constructed without one"""
         ...
@@ -284,6 +288,13 @@ class Env(Protocol):
         raise NotImplementedError(
             f"{type(self).__name__} does not support cell subselection"
         )
+
+    def destination_sections(self) -> dict[str, dict[str, str]]:
+        return {}
+
+    @property
+    def weight_names(self) -> list[str]:
+        return self.system.weight_names
 
     def set_weights(self, weights: dict) -> Self:
         """Set the synaptic weights"""

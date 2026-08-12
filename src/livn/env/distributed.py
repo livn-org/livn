@@ -180,6 +180,35 @@ class DistributedEnv(EnvProtocol):
             else:
                 self._result_buffer[_task_id] = response
 
+    def _query_workers(self, attribute: str) -> list:
+        if self.controller is None:
+            return []
+        n_workers = self.controller.comm.size - 1
+        expected = set(
+            self.controller.submit_multiple(
+                _env_query, args_list=[(attribute,)] * n_workers
+            )
+        )
+
+        answers = []
+        while expected:
+            task_id, response = self.controller.get_next_result()
+            if task_id in expected:
+                expected.remove(task_id)
+                answers.extend(self._unwrap_response(task_id, response))
+            else:
+                self._result_buffer[task_id] = response
+        return answers
+
+    @property
+    def weight_names(self) -> list[str]:
+        names: list[str] = []
+        for answer in self._query_workers("weight_names"):
+            for name in answer or []:
+                if name not in names:
+                    names.append(name)
+        return names
+
     def clear_recordings(self) -> Self:
         self._broadcast_to_workers("clear_recordings", ())
         return self
@@ -921,6 +950,17 @@ def _env_config_call(method_name: str, args: tuple, kwargs: dict | None = None):
     # than mutating this one, so keep it
     if result is not None and type(result) is type(env):
         _state["env"] = result
+
+
+def _env_query(attribute: str):
+    env = _state.get("env")
+    if env is None:
+        return None
+
+    value = env
+    for part in attribute.split("."):
+        value = getattr(value, part)
+    return value
 
 
 def _worker_init(worker, distributed_env: "DistributedEnv"):

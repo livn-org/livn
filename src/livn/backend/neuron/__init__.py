@@ -712,6 +712,63 @@ class Env(EnvProtocol):
                 return cells[gid]
         return None
 
+    def destination_sections(self) -> dict[str, dict[str, str]]:
+        from livn.backend.neuron.cells import CONFIG_SECTION_NAMES, config_section_swc
+
+        declared = CONFIG_SECTION_NAMES | {
+            section for _, _, section, _, _ in self.system.synapse_projections()
+        }
+
+        sections: dict[str, dict[str, str]] = {}
+        for population, factory in self.model.neuron_cells().items():
+            cell = factory(morphology=None)
+            sections[population] = {
+                section: str(cell.dest_sec_type(config_section_swc(section)))
+                for section in declared
+            }
+        return sections
+
+    @property
+    def weight_names(self) -> list[str]:
+        if self.conn is None:
+            return []
+
+        pop_of = {code: name for name, code in self._pop_code.items()}
+        sec_of = {code: name for name, code in self._sectype_code.items()}
+        mech_of = {code: name for name, code in self._mech_code.items()}
+
+        # (post, pre, section, mechanism) by name
+        built = {
+            (pop_of[po], pop_of[pr], sec_of[ds], mech_of[mi])
+            for po, pr, ds, mi in zip(
+                self.conn.post_pop.tolist(),
+                self.conn.pre_pop.tolist(),
+                self.conn.dest_sectype.tolist(),
+                self.conn.mech_id.tolist(),
+            )
+        }
+        if self.comm is not None and self.comm.Get_size() > 1:
+            for other in self.comm.allgather(built):
+                built |= other
+
+        mech_names = self.model.neuron_synapse_mechanisms()
+        names = []
+        for (
+            post,
+            pre,
+            _config_section,
+            syn_name,
+            _,
+        ) in self.system.synapse_projections():
+            mech = mech_names.get(syn_name, syn_name)
+            for sec_type in sorted(
+                {s for (po, pr, s, m) in built if (po, pr, m) == (post, pre, mech)}
+            ):
+                name = f"{post}_{pre}-{sec_type}-{syn_name}-weight"
+                if name not in names:
+                    names.append(name)
+        return names
+
     def set_weights(self, weights: dict) -> Self:
         from livn.types import SynapticParam
 

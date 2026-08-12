@@ -117,6 +117,22 @@ _MORPH_SECTYPE_NAMES = {
     SWC_APICAL: "apical",
 }
 
+_CONFIG_SECTION_SWC = {
+    "soma": SWC_SOMA,
+    "axon": SWC_AXON,
+    "basal": SWC_BASAL,
+    "apical": SWC_APICAL,
+    "dend": SWC_APICAL,
+}
+
+
+CONFIG_SECTION_NAMES = frozenset(_CONFIG_SECTION_SWC)
+
+
+def config_section_swc(name: str) -> int:
+    """The SWC code a graph config's section name places synapses at."""
+    return _CONFIG_SECTION_SWC.get(str(name).lower(), SWC_APICAL)
+
 
 class MorphologyCell:
     """Adapter for a full-morphology template as a ``NeuronCell``.
