@@ -48,7 +48,7 @@ class Env(EnvProtocol):
         self._selected_gids: set[int] | None = None
         self.system = resolve(system, comm=comm)
         self.model = model if model is not None else self.system.default_model()
-        self.io = io if io is not None else self.system.default_io()
+        self.io = io if io is not None else self.system.default_io(comm=comm)
         self.comm = comm if comm is not None else MPI.COMM_WORLD
         self.subworld_size = subworld_size
         self.store_kind = "auto"
