@@ -10,9 +10,20 @@ Numerics:
     dt: 0.0125
     record_dt: 0.01
     v_init: -60.0
-Record: 
+Record:
     soma: ['V']
     dend: ['V']
+# Behaviour under the network's OU conductance drive, not the current clamp.
+# Without this fits tend to produce cells that fit the clamp targets and
+# then lock (one spike, any drive) or invert (rate falling as drive rises)
+# in the network. Levels span the range noise-g_e0 is searched over.
+Drive:
+    enabled: True
+    levels: [0.3, 1.0, 3.0, 6.0]
+    duration: 2000.0
+    seed: 20260811
+    min_spikes: 5.0
+    min_top_fraction: 0.5
 Targets:
     Rin:    
         I: [-100.0]
@@ -45,18 +56,18 @@ Targets:
         lower: [1.2, 1.2, 1.2, 1.2, 1.2, 1.2, 1.2]
         t: [500, 1500]
 Parameters:
-  soma_f_Caconc: 0.004
-  soma_alpha_Caconc: 1
-  soma_kCa_Caconc: 8
-  dend_f_Caconc: 0.004
-  dend_alpha_Caconc: 1
-  dend_kCa_Caconc: 8
   e_pas: -62
   pp: 0.1
   Ltotal: 120.0
 Space:
   global_diam:   [2.0, 15.0]
   global_cm:     [0.9, 2.5]
+  soma_f_Caconc:     [1.0e-3, 2.0e-2]
+  soma_alpha_Caconc: [0.2, 5.0]
+  soma_kCa_Caconc:   [1.0, 30.0]
+  dend_f_Caconc:     [1.0e-3, 2.0e-2]
+  dend_alpha_Caconc: [0.2, 5.0]
+  dend_kCa_Caconc:   [1.0, 30.0]
   gc:  [0.1, 30.0]
   soma_gmax_Na:  [0.1, 0.3]
   soma_gmax_K:  [0.01, 0.3]

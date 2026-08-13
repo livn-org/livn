@@ -46,10 +46,22 @@ class SingleCellNumerics(BaseModel):
     celsius: float = 36.0
 
 
+class DriveTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    levels: list[float] = [0.3, 1.0, 3.0, 6.0]
+    duration: float = 2000.0
+    seed: int = 20260811
+    min_spikes: float = 5.0
+    min_top_fraction: float = 0.5
+
+
 class SingleCellOptConfig(BaseModel):
     Template: str
     Numerics: SingleCellNumerics
     Targets: SingleCellTargets
+    Drive: DriveTarget = DriveTarget()
     Parameters: dict[str, float] = {}
     Space: dict[str, list[float]] = {}
 
@@ -183,6 +195,8 @@ class SingleCell:
         # firing passes; silent sweeps fail, as in the reference optimization).
         self.first_ISI_lower = np.zeros_like(self.fI_amps)
 
+        self.drive = cfg.Drive
+
         self.fixed = dict(cfg.Parameters)
         self.space = {k: [float(v[0]), float(v[1])] for k, v in cfg.Space.items()}
 
@@ -217,6 +231,30 @@ class SingleCell:
             "ISI_adaptation_error",
         ]
 
+    def feature_bands(self) -> dict:
+        bands = {
+            "rn_error": self.target_rn,
+            "tau_error": self.target_tau,
+        }
+        if self.spk_amp_lb.size and self.spk_amp_ub.size:
+            bands["spike_amplitude_error"] = (
+                float(np.mean(self.spk_amp_lb)),
+                float(np.mean(self.spk_amp_ub)),
+            )
+        if self.spk_adapt_lb.size and self.spk_adapt_ub.size:
+            bands["ISI_adaptation_error"] = (
+                float(np.mean(self.spk_adapt_lb)),
+                float(np.mean(self.spk_adapt_ub)),
+            )
+
+        fI_width = float(np.mean(self.fI_ub - self.fI_lb)) if self.fI_ub.size else 0.0
+        if fI_width > 1e-9:
+            bands["fI_error"] = (float(np.mean(self.fI_lb)), float(np.mean(self.fI_ub)))
+        elif self.fI_mean.size:
+            m = float(np.mean(self.fI_mean))
+            bands["fI_error"] = (0.8 * m, 1.2 * m)
+        return bands
+
     def objective_scales(self) -> dict:
         fI_w = float(np.mean(self.fI_ub - self.fI_lb)) if self.fI_ub.size else 0.0
         if fI_w <= 1e-9:  # mean-only f-I bands (no lower/upper) -> relative tol
@@ -239,8 +277,24 @@ class SingleCell:
             "ISI_adaptation_error": max(isi_w, 1.0),
         }
 
+    def _drive_constraints(self, counts) -> dict:
+        if not self.drive.enabled:
+            return {}
+        top, best = float(counts[-1]), float(np.max(counts))
+        return {
+            "drive_sustained": (best - self.drive.min_spikes, best),
+            "drive_no_inversion": (top - self.drive.min_top_fraction * best, top),
+        }
+
     def constraint_names(self) -> list[str]:
-        return [
+        return (
+            []
+            if not self.drive.enabled
+            else [
+                "drive_sustained",
+                "drive_no_inversion",
+            ]
+        ) + [
             "monotonic_fI",
             "rn_constr",
             "tau_constr",
@@ -410,11 +464,55 @@ class SingleCell:
         t = np.arange(trace.size, dtype=float) * self.record_dt
         return t, trace
 
+    NOISE_KEYS = ("g_e0", "g_i0", "std_e", "std_i")
+
+    @staticmethod
+    def _seed_noise(env, seed: int) -> None:
+        for fluct, _state in (getattr(env, "_flucts", None) or {}).values():
+            new_seed = getattr(fluct, "new_seed", None)
+            if new_seed is not None:
+                new_seed(int(seed))
+
+    @classmethod
+    def _drive_noise(cls, env) -> dict:
+        try:
+            import inspect
+
+            sig = inspect.signature(env.model.neuron_noise_configure)
+            return {
+                f"noise-{k}": float(sig.parameters[k].default)
+                for k in cls.NOISE_KEYS
+                if k in sig.parameters
+            }
+        except Exception:  # pragma: no cover - model without a noise mechanism
+            return {}
+
+    @classmethod
+    def _resting_noise(cls, env) -> dict:
+        state = getattr(env, "_noise_state", None) or {}
+        return {
+            f"noise-{k}": float(state[k]) if k in state else 0.0 for k in cls.NOISE_KEYS
+        }
+
+    def _drive_counts(self, env, gid) -> np.ndarray:
+        resting = self._resting_noise(env)
+        driving = self._drive_noise(env)
+        env.record_spikes()
+        counts = []
+        try:
+            for i, level in enumerate(self.drive.levels):
+                env.clear()
+                env.set_params({**driving, "noise-g_e0": float(level)})
+                self._seed_noise(env, self.drive.seed + i)
+                run = env.run(self.drive.duration, dt=self.sim_dt)
+                ids = getattr(run, "spike_ids", None)
+                counts.append(0 if ids is None else int(np.sum(np.asarray(ids) == gid)))
+        finally:
+            env.clear()
+            env.set_params(resting)
+        return np.asarray(counts, dtype=float)
+
     def _measure(self, env) -> dict:
-        """Run the full current-clamp protocol for the currently-stashed params
-        and return the modeled quantities. Single source of truth shared by
-        __call__ (which reduces these to objectives) and Tune.plot (which shows
-        the per-current curves against the targets)."""
         gid, cell = self._cell(env)
         self._apply_params(cell)
 
@@ -454,7 +552,14 @@ class SingleCell:
         ISI = ephys.measure_ISI(self.fI_amps, spk_infos)
         fI = ephys.measure_fI(spk_cnt[:, 0], self.fI_t[0], self.fI_t[1], self.fI_amps)
 
+        drive_counts = (
+            self._drive_counts(env, gid)
+            if self.drive.enabled
+            else np.asarray([], dtype=float)
+        )
+
         return {
+            "drive_counts": drive_counts,
             "rn": rn,
             "tau": tau,
             "v_baseline": v_baseline,
@@ -537,6 +642,7 @@ class SingleCell:
         initial_v_constr = 1.0 if abs(initial_v_error) < 1.0 else -1.0
 
         constraints = {
+            **self._drive_constraints(m["drive_counts"]),
             "monotonic_fI": (monotonic, float(np.mean(rates)) if len(rates) else 0.0),
             "rn_constr": (rn_constr, rn),
             "tau_constr": (tau_constr, tau),
