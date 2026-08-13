@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import faulthandler
 import logging
+import os
+import signal
+import sys
 import time
 
 from livn.backend.config import backend
@@ -193,3 +197,60 @@ def with_progress_logging(
         progress=progress,
     )
     return env
+
+
+_streams: list = []
+
+
+def enable_diagnostic_logging(
+    every: float | None = None,
+    directory: str | None = None,
+    label: str = "livn",
+    rank: int | None = None,
+) -> bool:
+    """Arm periodic and on-demand stack dumps for this process
+
+    Call this before constructing an env, so that a constructor that hangs is
+    covered too.
+
+    Args:
+        every: Dump period in seconds. ``None`` or non-positive registers
+            ``SIGUSR1`` but arms no timer.
+        directory: Write dumps to ``<directory>/rank-NNNN.txt`` rather than
+            stderr.
+        label: Names this process in the announcement line
+        rank: Identifies this process in the line and the filename. Defaults
+            to the world rank.
+
+    Returns:
+        Whether the periodic timer was armed; ``SIGUSR1`` is registered either way
+    """
+    faulthandler.enable(file=sys.stderr, all_threads=True)
+    try:
+        signal.signal(
+            signal.SIGUSR1,
+            lambda *_: faulthandler.dump_traceback(file=sys.stderr, all_threads=True),
+        )
+    except (ValueError, OSError):
+        pass
+
+    if every is None or every <= 0:
+        return False
+
+    if rank is None:
+        rank = P.rank()
+
+    stream = sys.stderr
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+        stream = open(os.path.join(directory, f"rank-{rank:04d}.txt"), "w", buffering=1)
+        _streams.append(stream)
+
+    print(
+        f"[livn] watchdog {label} rank={rank} pid={os.getpid()} every {every:g}s",
+        file=sys.stderr,
+        flush=True,
+    )
+
+    faulthandler.dump_traceback_later(every, repeat=True, file=stream, exit=False)
+    return True

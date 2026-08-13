@@ -6,6 +6,8 @@ import json
 import os
 import shutil
 import sys
+import time
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Optional, Union
 import pickle
 
@@ -458,6 +460,30 @@ class P:
         all: bool = False,
     ):
         return reduce_sum(*data, comm=comm, root=root, all=all)
+
+
+@contextmanager
+def timed(message: str, enabled: bool = True):
+    """Note that a block ran, and how long it took
+
+    Prints ``message`` to stderr on entry and ``message took Ns`` on exit,
+    tagged with the rank.
+
+    Args:
+        message: What the block is doing.
+        enabled: Logs only when true.
+    """
+    if not enabled:
+        yield
+        return
+
+    tag = f"[livn] rank={P.rank()} {message}"
+    print(tag, file=sys.stderr, flush=True)
+    start = time.time()
+    try:
+        yield
+    finally:
+        print(f"{tag} took {time.time() - start:.1f}s", file=sys.stderr, flush=True)
 
 
 def download_directory(source: str, target: str, force: bool = False) -> None:
