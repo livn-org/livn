@@ -293,6 +293,13 @@ def event_solve(
         t_stop = (
             jnp.asarray(t1, dtype) if unbounded else jnp.minimum(t_start + span, t1)
         )
+        # Under vmap the loop runs until every batch element's cond is false, so a cell
+        # that already reached t1 keeps executing this body with its state update masked
+        # out. Left alone that is a zero-length solve, and while its value is discarded,
+        # its adjoint is not and its degenerate interval can poisons the gradient of the
+        # whole batch. So we give those spent iterations a well-conditioned interval
+        # which can only fire when t_stop <= t_start i.e. the cell is done.
+        t_stop = jnp.where(t_stop > t_start, t_stop, t_start + config.dt_solver)
         ts_seg = _grid(t_start, t_stop, n_points)
 
         saveat = diffrax.SaveAt(
