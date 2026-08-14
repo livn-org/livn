@@ -69,19 +69,25 @@ class SynapticParam(BaseModel):
 
     @classmethod
     def from_string(cls, string: str) -> "SynapticParam":
-        "'population_source-sec_type-syn_name-param_path-param_range-phenotype'"
+        """`population_source-sec_type-syn_name-param_path-param_range-phenotype`
+
+        The source may be omitted for parameters that are not per-connection.
+        """
         try:
-            pop_rest = string.split("_", 1)
-            if len(pop_rest) != 2:
-                raise ValueError("String must contain exactly one underscore")
-
-            population, rest = pop_rest
-
-            parts = rest.split("-")
+            has_source = "_" in string.split("-", 1)[0]
+            if has_source:
+                population, rest = string.split("_", 1)
+                parts = rest.split("-")
+                source = parts[0]
+                parts = parts[1:]
+            else:
+                parts = string.split("-")
+                population, source = parts[0], None
+                parts = parts[1:]
 
             data = {"population": population}
 
-            data["source"] = parts[0]
+            data["source"] = source
 
             optional_fields = [
                 "sec_type",
@@ -91,10 +97,7 @@ class SynapticParam(BaseModel):
                 "phenotype",
             ]
             for i, field in enumerate(optional_fields):
-                if len(parts) > i + 1:
-                    data[field] = parts[i + 1]
-                else:
-                    data[field] = None
+                data[field] = parts[i] if len(parts) > i else None
 
             return cls(**data)
 

@@ -331,6 +331,11 @@ class Env(EnvProtocol):
     def set_weights(self, weights):
         for k, v in weights.items():
             param = SynapticParam.from_string(k)
+            if isinstance(param.param_path, str) and param.param_path != "weight":
+                raise NotImplementedError(
+                    f"brian2 backend cannot set the synapse mechanism parameter "
+                    f"{param.param_path!r} ({k})"
+                )
             if param.sec_type is not None and param.sec_type not in (
                 "soma",
                 "dend",

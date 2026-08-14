@@ -769,8 +769,69 @@ class Env(EnvProtocol):
                     names.append(name)
         return names
 
+    def _set_synapse_mech_params(self, params: dict) -> Self:
+        """Set mechanism parameters on synaptic point processes."""
+        from livn.types import SynapticParam
+
+        if self.syn is None or self.syn.size == 0:
+            return self
+
+        post_pop = np.full(self.syn.size, -1, dtype=np.int16)
+        if self.conn is not None and self.conn.size:
+            post_pop[self.conn.syn_row] = self.conn.post_pop
+
+        for key, value in params.items():
+            try:
+                p = SynapticParam.from_string(key)
+            except ValueError:
+                continue
+            name = p.param_path
+            if not isinstance(name, str):
+                continue
+            if p.source is not None:
+                raise ValueError(
+                    f"{key!r} names a source, but {name!r} is a property of the "
+                    f"point process, which every source targeting that site "
+                    f"shares. Drop the source: "
+                    f"{p.population}-{p.sec_type}-{p.syn_name}-{name}"
+                )
+
+            mask = np.ones(self.syn.size, dtype=bool)
+            if p.population is not None and p.population in self._pop_code:
+                mask &= post_pop == self._pop_code[p.population]
+            if p.syn_name is not None:
+                mech = self.model.neuron_synapse_mechanisms().get(
+                    p.syn_name, p.syn_name
+                )
+                if mech in self._mech_code:
+                    mask &= self.syn.mech_id == self._mech_code[mech]
+                else:
+                    mask &= False
+            if p.sec_type is not None:
+                if p.sec_type in self._sectype_code:
+                    mask &= self.syn.dest_sectype == self._sectype_code[p.sec_type]
+                else:
+                    mask &= False
+
+            for row in np.flatnonzero(mask):
+                pp = self.syn.store.get(int(row))
+                if hasattr(pp, name):
+                    setattr(pp, name, float(value))
+        return self
+
     def set_weights(self, weights: dict) -> Self:
         from livn.types import SynapticParam
+
+        mech = {}
+        for key in list(weights):
+            try:
+                path = SynapticParam.from_string(key).param_path
+            except ValueError:
+                continue
+            if isinstance(path, str) and path != "weight":
+                mech[key] = weights.pop(key)
+        if mech:
+            self._set_synapse_mech_params(mech)
 
         if self.conn is None or self.conn.size == 0:
             return self
