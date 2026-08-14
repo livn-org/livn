@@ -8,7 +8,6 @@ from machinable.config import Field as ConfigField
 from mpi4py import MPI
 from pydantic import Field
 
-from livn import io
 from livn.env import Env
 from livn.utils import import_instance
 
@@ -94,9 +93,7 @@ def _build_env(target, system, model, comm, subworld_size):
     env = Env(
         system,
         model=model,
-        io=io.MEA.from_json(os.path.join(os.fspath(system), "mea.json"), comm=False)
-        if not isinstance(system, (str, os.PathLike))
-        else None,
+        io=target.io() if hasattr(target, "io") else None,
         comm=comm,
         subworld_size=subworld_size,
     )
@@ -119,9 +116,11 @@ def obj_fun_init(
 
 
 def controller_init(system, model, target, subworld_size):
+    target = import_instance(target)
     env = Env(
         system,
         model=import_instance(model),
+        io=target.io() if hasattr(target, "io") else None,
         comm=MPI.COMM_SELF,
         subworld_size=subworld_size,
     )
