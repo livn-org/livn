@@ -141,7 +141,7 @@ class Tune(Interface):
         return {"target": ["systems.targets.EI.Spontaneous", options]}
 
     def version_rcsd(
-        self, implicit_inhibition: bool = True, short_term_depression: bool = False
+        self, implicit_inhibition: bool = False, short_term_depression: bool = False
     ):
         options = {"implicit_inhibition": implicit_inhibition}
         if short_term_depression:

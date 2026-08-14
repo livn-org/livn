@@ -22,7 +22,7 @@ class ReducedCalciumSomaDendrite(Model):
         self,
         input_mode: str | None = None,
         refractory_period: float = 2.0,
-        implicit_inhibition: bool = True,
+        implicit_inhibition: bool = False,
         renshaw_phenotype: str = "invitro",
         short_term_depression: bool = False,
     ):
@@ -515,14 +515,6 @@ class ReducedCalciumSomaDendrite(Model):
                 "tau_e": 33.00786209106445,
                 "tau_i": 28.50772476196289,
             },
-            "E1": {
-                "g_e0": 7.111820697784424,
-                "g_i0": 1.4761981964111328,
-                "std_e": 0.20595668256282806,
-                "std_i": 0.3790721297264099,
-                "tau_e": 31.166749954223633,
-                "tau_i": 5.819411277770996,
-            },
             "EI2": {
                 "g_e0": 3.409418821334839,
                 "g_i0": 1.0573457479476929,
@@ -531,19 +523,9 @@ class ReducedCalciumSomaDendrite(Model):
                 "tau_e": 31.219661712646484,
                 "tau_i": 16.700607299804688,
             },
-            "E2": {
-                "g_e0": 2.9937374591827393,
-                "g_i0": 1.3689101934432983,
-                "std_e": 0.3047086000442505,
-                "std_i": 0.3421246111392975,
-                "tau_e": 10.197466850280762,
-                "tau_i": 12.741419792175293,
-            },
             "EI3": {},
-            "E3": {},
             "EI4": {},
-            "E4": {},
-        }[system.replace("I", "") if self.implicit_inhibition else system]
+        }[system]
 
     def neuron_default_weights(self, system: str):
         return {
@@ -555,10 +537,6 @@ class ReducedCalciumSomaDendrite(Model):
                 "INH_EXC-soma-GABA_A-weight": 9.406616405134113,
                 "INH_INH-soma-GABA_A-weight": 8.710510071227473,
             },
-            "E1": {
-                "EXC_EXC-hillock-AMPA-weight": 0.0010000000254350994,
-                "EXC_EXC-hillock-NMDA-weight": 0.04389299160615967,
-            },
             "EI2": {
                 "EXC_EXC-hillock-AMPA-weight": 0.8598201979147386,
                 "EXC_EXC-hillock-NMDA-weight": 1.2337499089211241,
@@ -567,15 +545,9 @@ class ReducedCalciumSomaDendrite(Model):
                 "INH_EXC-soma-GABA_A-weight": 1.5785464331652075,
                 "INH_INH-soma-GABA_A-weight": 4.262910407764182,
             },
-            "E2": {
-                "EXC_EXC-hillock-AMPA-weight": 1.8472533315670465,
-                "EXC_EXC-hillock-NMDA-weight": 1.8983852905268401,
-            },
             "EI3": {},
-            "E3": {},
             "EI4": {},
-            "E4": {},
-        }[system.replace("I", "") if self.implicit_inhibition else system]
+        }[system]
 
     # diffrax
 
