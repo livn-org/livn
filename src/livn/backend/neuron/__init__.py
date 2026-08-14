@@ -44,6 +44,7 @@ class Env(EnvProtocol):
         self.seed = seed
         self._select_spec = None
         self._select_method = "first"
+        self._select_bounds = None
         self._selection: dict[str, object] | None = None
         self._selected_gids: set[int] | None = None
         self.system = resolve(system, comm=comm)
@@ -160,11 +161,12 @@ class Env(EnvProtocol):
         self._iclamp_step = 0
         self._iclamp_registered = False
 
-    def selection(self, select, method: str = "first") -> Self:
+    def selection(self, select, method: str = "first", bounds=None) -> Self:
         if self.cells:
             raise RuntimeError("selection() must be called before init()")
         self._select_spec = select
         self._select_method = method
+        self._select_bounds = bounds
         return self
 
     def init(self) -> Self:
@@ -297,6 +299,7 @@ class Env(EnvProtocol):
             populations=buildable,
             seed=self.seed,
             method=self._select_method,
+            bounds=self._select_bounds,
         )
         if self._selection is None:
             self._selected_gids = None

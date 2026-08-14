@@ -189,15 +189,45 @@ def resolve(
     return spec
 
 
+def resolve_selection(
+    system,
+    spec,
+    populations: "Sequence[str] | None" = None,
+    seed: int | None = 123,
+    method: str = "first",
+    bounds=None,
+) -> "dict[str, Any] | None":
+    names = system.populations if populations is None else populations
+    ranges = system.cells_meta_data.population_ranges
+
+    coordinates = None
+    if method == "patch":
+        coordinates = {
+            p: system.coordinate_array(p, all=True) for p in names if p in ranges
+        }
+
+    return selection_from_ranges(
+        ranges,
+        spec,
+        populations=names,
+        seed=seed,
+        method=method,
+        coordinates=coordinates,
+        bounds=bounds,
+    )
+
+
 def selection_from_ranges(
     ranges: dict[types.PopulationName, tuple[int, int]],
     spec,
     populations: "Sequence[str] | None" = None,
     seed: int | None = 123,
     method: str = "first",
+    coordinates: "dict[str, Any] | None" = None,
+    bounds=None,
 ) -> "dict[str, Any] | None":
     """Resolve a subselection spec against ``{population: (start, count)}`` ranges."""
-    if spec is None:
+    if spec is None and bounds is None:
         return None
 
     # deliberately real numpy since selections index host-side gid arrays and must
@@ -207,6 +237,78 @@ def selection_from_ranges(
     if populations is None:
         populations = list(ranges.keys())
     pops = [p for p in populations if p in ranges]
+
+    if bounds is not None and method != "patch":
+        raise ValueError(
+            f"bounds= is only meaningful for method='patch', got {method!r}"
+        )
+
+    if method == "patch" and isinstance(spec, dict):
+        offenders = [
+            p for p, v in spec.items() if not isinstance(v, (list, tuple, npn.ndarray))
+        ]
+        if offenders:
+            raise ValueError(
+                "method='patch' resolves one box for every population, so a "
+                f"per-population count is ambiguous (got {offenders}); pass a "
+                "float area fraction, an int cell budget, or bounds="
+            )
+
+    elif method == "patch":
+        if coordinates is None:
+            raise ValueError(
+                "method='patch' needs cell coordinates; use System.selection or "
+                "ParallelSystem.selection, which supply them"
+            )
+
+        table: dict[str, Any] = {}
+        for p in pops:
+            c = coordinates.get(p)
+            if c is None:
+                continue
+            c = npn.asarray(c, dtype=npn.float64)
+            if c.ndim == 2 and len(c):
+                table[p] = c
+        if not table:
+            return {}
+
+        stacked = npn.vstack(list(table.values()))
+        lo, hi = stacked[:, 1:3].min(axis=0), stacked[:, 1:3].max(axis=0)
+        centre = (lo + hi) / 2.0
+
+        if bounds is not None:
+            (x0, y0), (x1, y1) = bounds
+            box_lo = npn.array([min(x0, x1), min(y0, y1)], dtype=npn.float64)
+            box_hi = npn.array([max(x0, x1), max(y0, y1)], dtype=npn.float64)
+        elif isinstance(spec, float):
+            if spec <= 0:
+                return {}
+            if spec >= 1:
+                box_lo, box_hi = lo, hi
+            else:
+                half = (hi - lo) * npn.sqrt(spec) / 2.0
+                box_lo, box_hi = centre - half, centre + half
+        else:
+            k = min(int(spec), len(stacked))
+            if k <= 0:
+                return {}
+            d2 = ((stacked[:, 1:3] - centre) ** 2).sum(axis=1)
+            keep = stacked[npn.lexsort((stacked[:, 0], d2))[:k], 0].astype(npn.int64)
+            budgeted: dict[str, Any] = {}
+            for p, c in table.items():
+                gids = c[:, 0].astype(npn.int64)
+                inside = gids[npn.isin(gids, keep)]
+                if len(inside):
+                    budgeted[p] = npn.sort(inside)
+            return budgeted
+
+        boxed: dict[str, Any] = {}
+        for p, c in table.items():
+            xy = c[:, 1:3]
+            inside = npn.all((xy >= box_lo) & (xy <= box_hi), axis=1)
+            if inside.any():
+                boxed[p] = npn.sort(c[inside, 0].astype(npn.int64))
+        return boxed
 
     counts: dict[str, int] = {}
     explicit: dict[str, npn.ndarray] = {}
@@ -1100,42 +1202,41 @@ class System:
         populations: "Sequence[str] | None" = None,
         seed: int | None = 123,
         method: str = "first",
+        bounds=None,
     ) -> "dict[str, np.ndarray] | None":
         """Resolve a cell subselection of this system's graph.
 
-        This picks a small, representative subset from the contiguous
-        per-population gid ranges so no cell/coordinate data is read;
-        the result is deterministic and identical on every MPI rank.
+        The result is deterministic and identical on every MPI rank.
 
         Parameters
         ----------
         spec :
-            - ``None`` -> no subselection (returns ``None``; build everything).
+            - ``None`` -> no subselection (returns ``None``; build everything),
+              unless ``bounds`` is given.
             - ``int N`` -> ``N`` cells total, allocated across populations in
               proportion to their size (preserves population ratios).
-            - ``float f`` in (0, 1] -> fraction ``f`` of each population.
+            - ``float f`` in (0, 1] -> fraction ``f`` of each population, or of
+              the *area* under ``method="patch"``.
             - ``dict`` -> per-population override; each value may be an ``int``
               count, a ``float`` fraction, or an explicit sequence of gids.
+              Under ``method="patch"`` only explicit sequences are accepted.
         populations :
             Populations eligible for selection; defaults to all of the system's.
         seed :
-            Seed for ``method="random"`` (ignored by ``method="first"``).
+            Seed for ``method="random"`` (ignored by the other methods).
         method :
-            ``"first"`` (contiguous gid block, default) or ``"random"`` (seeded
-            sample). Contiguous blocks preserve local connectivity because these
-            systems assign gids in spatially-structured order.
+            - ``"first"`` (default) -> contiguous gid block.
+            - ``"random"`` -> seeded sample.
+            - ``"patch"`` -> a centred planar region
+        bounds :
+            ``[[x0, y0], [x1, y1]]`` explicit patch box, in the coordinate units
+            of the graph. ``method="patch"`` only. Takes precedence over ``spec``.
 
         Returns
         -------
         ``{population: np.ndarray[gid]}`` or ``None``.
         """
-        return selection_from_ranges(
-            self.cells_meta_data.population_ranges,
-            spec,
-            populations=self.populations if populations is None else populations,
-            seed=seed,
-            method=method,
-        )
+        return resolve_selection(self, spec, populations, seed, method, bounds)
 
     @property
     def neuron_coordinates(self) -> types.Float[types.Array, "n_coords ixyz=4"]:
@@ -1511,15 +1612,9 @@ class ParallelSystem:
         populations: "Sequence[str] | None" = None,
         seed: int | None = 123,
         method: str = "first",
+        bounds=None,
     ) -> "dict[str, Any] | None":
-        """Resolve a cell subselection; see :meth:`System.selection`"""
-        return selection_from_ranges(
-            self.cells_meta_data.population_ranges,
-            spec,
-            populations=self.populations if populations is None else populations,
-            seed=seed,
-            method=method,
-        )
+        return resolve_selection(self, spec, populations, seed, method, bounds)
 
     def projections(
         self,
