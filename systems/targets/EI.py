@@ -12,6 +12,7 @@ from livn.decoding import (
     PairwiseChannelCorrelation,
     PeakSynchrony,
     PerUnitFiringRate,
+    PopulationActiveFraction,
     PopulationAutocorrTau,
     PopulationRateMetrics,
     Slice,
@@ -341,9 +342,12 @@ class Spontaneous(TuningTargets):
             stop=self.warmup_duration + self.recording_duration,
         )
         recording_data = recording_slice(self.response_data)
-        self.metrics["population_liveness"] = self._population_liveness(
-            env, recording_data
+        liveness = (
+            PopulationActiveFraction(duration=d, bin_size=float(d))(recording_data, env)
+            or {}
         )
+        self.metrics["population_liveness"] = liveness.get("mean_active_fraction", {})
+
         env, recording_data = self._readout(env, recording_data)
         it = recording_data.spike_ids
 
@@ -498,28 +502,6 @@ class Spontaneous(TuningTargets):
             voltage_recording_dt=getattr(env, "voltage_recording_dt", None),
         )
         return proxy, data.add_spikes(it, tt)
-
-    def _population_liveness(self, env, data) -> dict:
-        """Fraction of each simulated population that fired at least once."""
-        it = data.spike_ids
-        local = (
-            set(np.asarray(it).astype(np.int64).tolist()) if it is not None else set()
-        )
-        comm = getattr(env, "comm", None)
-        unit_sets = P.gather(local, comm=comm)
-
-        result = None
-        if P.is_root(comm=comm):
-            firing = set()
-            for s in unit_sets or [local]:
-                firing.update(s)
-            result = {}
-            for population in env.active_populations():
-                gids = env.system.coordinate_array(population, all=True)[:, 0]
-                members = set(np.asarray(gids).astype(np.int64).tolist())
-                if members:
-                    result[population] = len(firing & members) / len(members)
-        return P.broadcast(result, comm=comm) or {}
 
     def compute_constraints(self, env) -> dict:
         result: dict = {}
