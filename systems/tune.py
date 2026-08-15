@@ -11,6 +11,18 @@ def _pj(p):
     return json.dumps(p, indent=4, sort_keys=True)
 
 
+def decode_strict(target, model, space, raw: dict) -> dict:
+    unknown = sorted(set(raw) - set(space))
+    if unknown:
+        raise ValueError(
+            f"{unknown} are not in this target's search space, so they have no "
+            "inverse transform and would be emitted at their encoded value. "
+            "The target is probably built differently from the run that "
+            f"produced them as this offers {sorted(space)}."
+        )
+    return target.decode_params(raw, model=model)
+
+
 class Tune(Interface):
     class Config(BaseModel):
         model_config = ConfigDict(extra="forbid")
@@ -152,7 +164,7 @@ class Tune(Interface):
         return self.version_rcsd(implicit_inhibition=True, short_term_depression=True)
 
     def version_EI(self):
-        return self.version_rcsd(implicit_inhibition=False, short_term_depression=True)
+        return self.version_rcsd(implicit_inhibition=False, short_term_depression=False)
 
     def version_motoneuron(self):
         return self.version_cell("systems/targets/cells/motoneuron.yaml")
@@ -274,6 +286,7 @@ class Tune(Interface):
 
         bands = self._feature_bands(target)
         wanted = [p.strip() for p in (params or "").split(",") if p.strip()]
+        space = target.search_space(model) if wanted else {}
 
         rows = []
         for i in range(len(f)):
@@ -289,11 +302,13 @@ class Tune(Interface):
                 row["in_band"] = f"{n_in}/{len(bands)}"
                 row["_n"] = n_in
             if wanted:
-                decoded = target.decode_params(
+                decoded = decode_strict(
+                    target,
+                    model,
+                    space,
                     optimization.parameter_vector_to_dict(
                         list(map(float, best["x"].to_numpy()[i]))
                     ),
-                    model=model,
                 )
                 for name in wanted:
                     value = decoded.get(name)
@@ -314,6 +329,63 @@ class Tune(Interface):
         else:
             print("\n(the target states no feature bands, so nothing is marked)")
         return table
+
+    def export(self, path: str | None = None, feasible_only: bool = False):
+        import numpy as np
+
+        optimization = self.interfaces[0]
+        if not optimization.is_materialized() or not os.path.isfile(
+            optimization.output_filepath
+        ):
+            print("No data yet")
+            return None
+
+        target, model = self._target_and_model()
+        best = self._ranked_best(optimization, target)
+
+        space = target.search_space(model)
+        c = np.asarray(best["c"]) if best.get("c") is not None else None
+
+        solutions = []
+        for loc in range(len(best["x"])):
+            if feasible_only and c is not None and (c[loc] <= 0).any():
+                continue
+            raw = optimization.parameter_vector_to_dict(
+                list(map(float, best["x"].to_numpy()[loc]))
+            )
+            decoded = decode_strict(target, model, space, raw)
+            solutions.append(
+                {
+                    "loc": loc,
+                    "objectives": {k: float(v) for k, v in best["y"].iloc[loc].items()},
+                    "features": {k: float(v) for k, v in best["f"].iloc[loc].items()},
+                    "constraints": (
+                        {k: float(v) for k, v in best["c"].iloc[loc].items()}
+                        if best.get("c") is not None
+                        else None
+                    ),
+                    "feasible": bool(c is None or (c[loc] > 0).all()),
+                    "params": {k: float(v) for k, v in decoded.items()},
+                }
+            )
+
+        document = {
+            "system": self.config.system,
+            "model": self.config.model,
+            "target": self.config.target,
+            "source": optimization.output_filepath,
+            "feature_bands": {
+                k: list(v) for k, v in self._feature_bands(target).items()
+            },
+            "solutions": solutions,
+        }
+
+        path = path or "front.json"
+        with open(path, "w") as f:
+            json.dump(document, f, indent=2)
+        n_feasible = sum(1 for s in solutions if s["feasible"])
+        print(f"wrote {len(solutions)} solutions ({n_feasible} feasible) to {path}")
+        return path
 
     def inspect(self, loc=None, params=None):
         if loc is None:
@@ -350,10 +422,19 @@ class Tune(Interface):
             print(best["f"])
             if best.get("c") is not None:
                 print("\nConstraints (c):")
-                if best["c"].all(axis=None):
-                    print("All constraints satisfied.")
+                if (best["c"] > 0).all(axis=None):
+                    print("All constraints satisfied")
                 else:
                     print(best["c"])
+                    import numpy as np
+
+                    c = np.asarray(best["c"])
+                    infeasible = int((c <= 0).any(axis=1).sum())
+                    if infeasible:
+                        print(
+                            f"{infeasible} of {len(c)} solutions on this front violate at "
+                            "least one constraint, so this is an infeasible front."
+                        )
 
         bands = self._feature_bands(target)
         if bands:
@@ -383,7 +464,7 @@ class Tune(Interface):
         raw_params = optimization.parameter_vector_to_dict(
             list(map(float, best["x"].to_numpy()[loc]))
         )
-        decoded = target.decode_params(raw_params, model=model)
+        decoded = decode_strict(target, model, target.search_space(model), raw_params)
 
         groups = (
             target.describe_params(decoded)
