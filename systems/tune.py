@@ -36,7 +36,7 @@ class Tune(Interface):
         population_size: int = 100
         num_generations: int = 10
         n_epochs: int = 10
-        surrogate_custom_training: str | None = "dmosopt.model_transformer.joint"
+        surrogate: dict = {}
 
     def version_cell(self, config: str):
         from systems.targets.cells.SingleCell import SingleCellOptConfig
@@ -229,8 +229,12 @@ class Tune(Interface):
                 "no synapses. Use `~E_only`, or a mixed graph."
             )
 
-    def launch(self, **dopt_params):
+    def launch(self):
         target, model = self._target_and_model()
+
+        surrogate_config = {}
+        for k, v in self.config.surrogate.items():
+            surrogate_config["surrogate_" + k] = v
 
         get(
             "interface.sopt",
@@ -247,8 +251,7 @@ class Tune(Interface):
                     "n_initial": self.config.n_initial,
                     "population_size": self.config.population_size,
                     "num_generations": self.config.num_generations,
-                    "surrogate_custom_training": self.config.surrogate_custom_training,
-                    **dopt_params,
+                    **surrogate_config,
                 },
                 "nprocs_per_worker": self.config.nprocs_per_worker,
             },
