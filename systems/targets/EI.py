@@ -65,6 +65,7 @@ class Spontaneous(TuningTargets):
     SYNCHRONY_BAND = (0.02, 0.25)
     MAX_SYNC_PEAK = 0.2
     MIN_ACTIVE_FRACTION = 0.5
+    MIN_POPULATION_ACTIVE = 0.05
     POP_TAU_BAND_MS = (10.0, 500.0)
     MAX_BURST_RATE_HZ = 0.2
     BRANCHING_RATIO_BAND = (0.5, 1.5)
@@ -72,6 +73,7 @@ class Spontaneous(TuningTargets):
     MAX_POP_RATE_PER_UNIT_HZ = 20.0
     MIN_POP_RATE_PER_UNIT_HZ = 0.05
     STABILITY_MARGIN = 5.0
+    MAX_BACKGROUND_G_E0 = 0.1
 
     def __init__(
         self,
@@ -160,6 +162,7 @@ class Spontaneous(TuningTargets):
             "min_mean_firing_rate",
             "max_mean_firing_rate",
             "active_fraction_floor",
+            "populations_active",
             "pop_autocorr_tau_band",
             "burst_rate_cap",
             "branching_ratio_band",
@@ -304,7 +307,7 @@ class Spontaneous(TuningTargets):
 
     def _noise_space(self, model):
         return {
-            "noise-g_e0": [0.01, 1.0, self.transform_log10],
+            "noise-g_e0": [0.01, self.MAX_BACKGROUND_G_E0, self.transform_log10],
             "noise-g_i0": [0.01, 1.5, self.transform_log10],
             "noise-std_e": [0.005, 0.5, self.transform_log10],
             "noise-std_i": [0.05, 0.4],
@@ -338,6 +341,9 @@ class Spontaneous(TuningTargets):
             stop=self.warmup_duration + self.recording_duration,
         )
         recording_data = recording_slice(self.response_data)
+        self.metrics["population_liveness"] = self._population_liveness(
+            env, recording_data
+        )
         env, recording_data = self._readout(env, recording_data)
         it = recording_data.spike_ids
 
@@ -493,6 +499,28 @@ class Spontaneous(TuningTargets):
         )
         return proxy, data.add_spikes(it, tt)
 
+    def _population_liveness(self, env, data) -> dict:
+        """Fraction of each simulated population that fired at least once."""
+        it = data.spike_ids
+        local = (
+            set(np.asarray(it).astype(np.int64).tolist()) if it is not None else set()
+        )
+        comm = getattr(env, "comm", None)
+        unit_sets = P.gather(local, comm=comm)
+
+        result = None
+        if P.is_root(comm=comm):
+            firing = set()
+            for s in unit_sets or [local]:
+                firing.update(s)
+            result = {}
+            for population in env.active_populations():
+                gids = env.system.coordinate_array(population, all=True)[:, 0]
+                members = set(np.asarray(gids).astype(np.int64).tolist())
+                if members:
+                    result[population] = len(firing & members) / len(members)
+        return P.broadcast(result, comm=comm) or {}
+
     def compute_constraints(self, env) -> dict:
         result: dict = {}
         m = self.metrics
@@ -559,6 +587,13 @@ class Spontaneous(TuningTargets):
         result["max_mean_firing_rate"] = (
             float(_max_constraint(mean_rate, self.MAX_MEAN_RATE_HZ)),
             float(mean_rate),
+        )
+
+        liveness = m.get("population_liveness") or {}
+        worst = min(liveness.values()) if liveness else float("nan")
+        result["populations_active"] = (
+            float(_min_constraint(worst, self.MIN_POPULATION_ACTIVE, scale=1.0)),
+            float(worst),
         )
 
         active_fraction = m.get("active_fraction", float("nan"))
