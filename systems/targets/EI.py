@@ -269,10 +269,10 @@ class Spontaneous(TuningTargets):
         depressing = bool(getattr(model, "short_term_depression", False))
 
         default_ranges = {
-            "excitatory": [0.001, 1000.0],
-            "inhibitory": [0.001, 800.0],
+            "excitatory": [1e-5, 10.0],
+            "inhibitory": [1e-5, 8.0],
         }
-        mechanism_ranges = {"NMDA": [0.001, 300.0]}
+        mechanism_ranges = {"NMDA": [1e-5, 3.0]}
         depression_ranges = {
             "tau_rec": [50.0, 3000.0],
             # burst period the mechanism can impose
@@ -287,10 +287,11 @@ class Spontaneous(TuningTargets):
             low, high = mechanism_ranges.get(
                 mechanism, default_ranges.get(syn_type, [0.001, 10.0])
             )
+
             weights[f"{post}_{pre}-{section}-{mechanism}-weight"] = [
                 low,
                 high,
-                self.transform_log1p,
+                self.transform_log10,
             ]
 
             if depressing and mechanism == "AMPA":
@@ -309,9 +310,9 @@ class Spontaneous(TuningTargets):
     def _noise_space(self, model):
         return {
             "noise-g_e0": [0.01, self.MAX_BACKGROUND_G_E0, self.transform_log10],
-            "noise-g_i0": [0.01, 1.5, self.transform_log10],
-            "noise-std_e": [0.005, 0.5, self.transform_log10],
-            "noise-std_i": [0.05, 0.4],
+            "noise-g_i0": [0.01, 0.2, self.transform_log10],
+            "noise-std_e": [0.0003, 0.05, self.transform_log10],
+            "noise-std_i": [0.0005, 0.05, self.transform_log10],
             "noise-tau_e": [1.0, 40.0, self.transform_log10],
             "noise-tau_i": [4.0, 20.0],
         }
