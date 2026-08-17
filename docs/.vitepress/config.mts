@@ -69,7 +69,6 @@ export default defineConfig({
                         { text: "Tuning systems", link: "/systems/tuning" },
                         { text: "Generating datasets", link: "/systems/sampling" },
                         { text: "Using HSDS", link: "/systems/hsds" },
-                        { text: "WebUI", link: "/ui" },
                     ],
                 },
             ],
