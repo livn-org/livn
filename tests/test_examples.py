@@ -39,3 +39,11 @@ def test_parallel_simulation():
 @pytest.mark.skipif(ON_CI, reason="predefined system not available on CI")
 def test_differentiable_simulation():
     from examples import differentiable_simulation  # noqa: F401
+
+
+@pytest.mark.skipif(os.getenv("LIVN_BACKEND") != "diffrax", reason="diffrax only")
+@pytest.mark.skipif(ON_CI, reason="predefined system not available on CI")
+def test_fitting():
+    from examples import fitting
+
+    assert fitting.history["loss"][-1] < fitting.history["loss"][0]

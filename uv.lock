@@ -24,6 +24,7 @@ resolution-markers = [
 members = [
     "benchmarks",
     "livn",
+    "optimization",
     "systems",
 ]
 overrides = [
@@ -2384,6 +2385,17 @@ sdist = { url = "https://files.pythonhosted.org/packages/5c/0b/3bdc0e698cb0d264e
 wheels = [
     { url = "https://files.pythonhosted.org/packages/63/53/6a81a6ebb1739f19c32002139719d4ee021a349d5bdbe066910feed327a1/optimistix-0.1.0-py3-none-any.whl", hash = "sha256:c8edda7bf7fe48839c93fcd72bce750c950ed9f7033158303150b7ab395add81", size = 101740, upload-time = "2026-02-16T13:35:42.971Z" },
 ]
+
+[[package]]
+name = "optimization"
+version = "0.1.0"
+source = { editable = "optimization" }
+dependencies = [
+    { name = "livn", extra = ["diffrax"] },
+]
+
+[package.metadata]
+requires-dist = [{ name = "livn", extras = ["diffrax"], editable = "." }]
 
 [[package]]
 name = "optree"

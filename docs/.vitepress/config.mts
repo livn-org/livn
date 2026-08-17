@@ -22,6 +22,7 @@ export default defineConfig({
             { text: "Guide", link: "/guide/getting-started" },
             { text: "Models", link: "/models/" },
             { text: "Systems", link: "/systems/" },
+            { text: "Optimization", link: "/optimization/" },
             { text: "Examples", link: "/examples/" },
         ],
 
@@ -90,6 +91,17 @@ export default defineConfig({
                     ],
                 },
             ],
+            "/optimization/": [
+                {
+                    text: "Optimization",
+                    items: [
+                        { text: "Overview", link: "/optimization/" },
+                        { text: "Metrics", link: "/optimization/metrics" },
+                        { text: "Losses", link: "/optimization/losses" },
+                        { text: "Fit", link: "/optimization/fit" },
+                    ],
+                },
+            ],
             "/examples/": [
                 {
                     text: "Examples",
@@ -100,6 +112,10 @@ export default defineConfig({
                         {
                             text: "Differentiable Simulation",
                             link: "/examples/differentiable",
+                        },
+                        {
+                            text: "Fitting Parameters",
+                            link: "/examples/fitting",
                         },
                         {
                             text: "STDP Training",

@@ -17,6 +17,7 @@ import jax.random as jr
 import optax
 
 from livn.env import Env
+from livn.stimulus import Stimulus
 from livn.system import predefined
 
 
@@ -24,9 +25,9 @@ from livn.system import predefined
 def systempass(inputs, env, t_end, targets, key):
     # pass through IO and system
     stimulus = env.cell_stimulus(inputs)
-    mask, _, gids, v, *_ = env.run(t_end, stimulus, unroll="mask")
+    run = env.run(t_end, stimulus)
 
-    return -jnp.mean(v)  # dummy loss: maximize action potentials
+    return -jnp.mean(run.voltage)  # dummy loss: maximize action potentials
 
 
 @eqx.filter_jit
@@ -94,22 +95,19 @@ import numpy as np  # noqa: E402
 from livn.models.glif import GLIF  # noqa: E402
 
 cells = Env(4, model=GLIF(level=3)).init()
+cells.record_spikes()
 
 duration, step = 60.0, 0.1
 current = jnp.full((int(duration / step) + 1, 4), 0.3)  # nA
+current_stimulus = Stimulus.from_current(current, dt=step)
 
 target = 12.0
 
 
 def first_spike_loss(params):
-    _, times, *_ = cells.cells.set_params(params).module.run(
-        input_current=current,
-        t0=0.0,
-        t1=duration,
-        dt=step,
-        unroll="padded",
-    )
-    times = times.reshape(4, -1)
+    run = cells.cells.set_params(params).run(duration, current_stimulus, dt=step)
+
+    times = run.spikes.padded.times
     first = jnp.min(jnp.where(jnp.isfinite(times), times, duration), axis=1)
     return jnp.mean((first - target) ** 2)
 
