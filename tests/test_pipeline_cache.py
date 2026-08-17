@@ -20,7 +20,7 @@ class DummyDecoding(Decoding):
     duration: int = 100
     alpha: float = 0.5
 
-    def __call__(self, env, it, tt, iv, vv, im, mp):
+    def __call__(self, signal, env=None):
         return None
 
 
@@ -236,7 +236,7 @@ class TestPipelineCall:
                 reset_called.append(True)
                 return None
 
-            def __call__(self, env, *data):
+            def __call__(self, signal, env=None):
                 return None
 
         pipe = Pipe(stages=[ResetTrackingStage()], duration=100)

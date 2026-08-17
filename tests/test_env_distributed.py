@@ -289,7 +289,7 @@ def test_collect_baseline_timings(mpiexec_n):
     except Exception:
         t_defaults = None
 
-    weights = {name: 1.0 for name in env.system.weight_names}
+    weights = {name: 1.0 for name in env.weight_names}
     try:
         _, t_weights = _timed(env.set_weights, weights)
     except Exception:
@@ -409,7 +409,7 @@ def test_distributed_set_weights_performance(mpiexec_n):
     env = DistributedEnv(system, seed=123, subworld_size=1)
     env.init()
 
-    weights = {name: 1.0 for name in env.system.weight_names}
+    weights = {name: 1.0 for name in env.weight_names}
     try:
         _, elapsed = _timed(env.set_weights, weights)
     except Exception:

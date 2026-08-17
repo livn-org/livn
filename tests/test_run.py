@@ -11,7 +11,7 @@ import pytest
 
 from livn.backend import backend
 from livn.decoding import Slice
-from livn.run import SPIKES, VOLTAGE, Events, Run, Series
+from livn.run import Events, Run, Series
 
 try:
     import mpi4py  # noqa: F401
@@ -59,11 +59,8 @@ def test_tuple_unpacking_forms():
     it, t, iv, v, *rest = run
     assert len(rest) == 2
 
-    def stage(env, it, tt, iv, vv, im, mp):
-        return env, it, tt, iv, vv, im, mp
-
-    # the decoding pipeline dispatches every stage as stage(env, *data)
-    assert stage("env", *run)[0] == "env"
+    it, tt, iv, vv, im, mp = run
+    assert (it, tt, iv, vv, im, mp) == tuple(run)
 
 
 def test_missing_channels_are_none():
@@ -78,20 +75,36 @@ def test_missing_channels_are_none():
     assert run.voltage_ids is None
     assert run.voltage is None
     assert run.current is None
-    assert VOLTAGE not in run
+    assert "voltage" not in run
     assert tuple(run)[2:] == (None, None, None, None)
+
+
+def test_the_standard_channels_are_named_both_ways():
+    run = _run(duration=10.0, dt=0.5)
+
+    assert set(run.channels) == {"spikes", "voltage", "current"}
+
+    assert set(run.drop_spikes().channels) == {"voltage", "current"}
+    assert set(run.drop_voltage().channels) == {"spikes", "current"}
+    assert set(run.drop_current().channels) == {"spikes", "voltage"}
+
+    # immutable, composable, and a no-op when the channel was never there
+    stripped = run.drop_voltage().drop_current().drop_current()
+    assert set(stripped.channels) == {"spikes"}
+    assert set(run.channels) == {"spikes", "voltage", "current"}
+    assert stripped.voltage is None
 
 
 def test_add_is_immutable_and_infers_kind():
     run = Run(duration=10.0)
-    with_spikes = run.add(SPIKES, np.array([1]), np.array([0.5]))
-    with_voltage = with_spikes.add(VOLTAGE, np.array([1]), np.zeros((1, 20)), dt=0.5)
+    with_spikes = run.add("spikes", np.array([1]), np.array([0.5]))
+    with_voltage = with_spikes.add("voltage", np.array([1]), np.zeros((1, 20)), dt=0.5)
 
-    assert SPIKES not in run
-    assert VOLTAGE not in with_spikes
+    assert "spikes" not in run
+    assert "voltage" not in with_spikes
 
-    assert isinstance(with_voltage[SPIKES], Events)
-    assert isinstance(with_voltage[VOLTAGE], Series)
+    assert isinstance(with_voltage["spikes"], Events)
+    assert isinstance(with_voltage["voltage"], Series)
     assert with_voltage.voltage_dt == 0.5
 
     # a 2d payload is a series even without an explicit dt
@@ -255,26 +268,28 @@ def test_gather_folds_the_per_rank_runs(mpiexec_n):
     assert gathered.duration == 10.0
 
 
-class _FakeEnv:
-    """Just enough env for ``decoding.Slice``"""
-
-    def __init__(self, dt):
-        self.voltage_recording_dt = dt
-        self.membrane_current_recording_dt = dt
+def _windowed_by_hand(run, start, stop, dt):
+    it, tt, iv, vv, im, mp = run
+    mask = (tt >= start) & (tt < stop)
+    lo, hi = int(start / dt), int(stop / dt)
+    return it[mask], tt[mask] - start, iv, vv[:, lo:hi], im, mp[:, lo:hi]
 
 
 def test_slice_matches_decoding_slice_without_an_env():
     dt = 0.5
     run = _run(duration=20.0, dt=dt, seed=3)
 
-    expected = Slice(start=5.0, stop=15.0)(_FakeEnv(dt), *run)
-    actual = tuple(run.slice(5.0, 15.0))
+    expected = _windowed_by_hand(run, 5.0, 15.0, dt)
 
-    for a, b in zip(actual, expected):
-        if a is None or b is None:
-            assert a is b
-        else:
-            np.testing.assert_allclose(np.asarray(a), np.asarray(b))
+    for actual in (
+        tuple(run.slice(5.0, 15.0)),
+        tuple(Slice(start=5.0, stop=15.0)(run)),
+    ):
+        for a, b in zip(actual, expected):
+            if a is None or b is None:
+                assert a is b
+            else:
+                np.testing.assert_allclose(np.asarray(a), np.asarray(b))
 
 
 def test_slice_metadata_and_defaults():
@@ -283,7 +298,7 @@ def test_slice_metadata_and_defaults():
     windowed = run.slice(5.0, 15.0)
     assert windowed.t0 == 105.0
     assert windowed.duration == 10.0
-    assert windowed[VOLTAGE].t0 == 105.0
+    assert windowed["voltage"].t0 == 105.0
     assert windowed.voltage.shape[1] == 20
 
     # stop defaults to the end of the run
@@ -356,7 +371,9 @@ def test_survives_jit_and_vmap_as_a_return_value():
     assert IS_PYTREE
 
     def simulate(v):
-        return Run(duration=10.0).add(VOLTAGE, jnp.arange(v.shape[0]), v * 2.0, dt=0.5)
+        return Run(duration=10.0).add(
+            "voltage", jnp.arange(v.shape[0]), v * 2.0, dt=0.5
+        )
 
     v = jnp.ones((3, 20))
 
@@ -387,3 +404,128 @@ def test_container_module_does_not_import_jax():
         ],
         check=True,
     )
+
+
+def _padded_run(duration=10.0):
+    times = np.array([[1.0, 4.0, np.inf], [2.0, np.inf, np.inf], [0.5, 3.0, 8.0]])
+    return Run(t0=0.0, duration=duration).add_spikes(
+        np.arange(3), times, padded=True
+    ), times
+
+
+def test_a_padded_channel_reports_its_rectangle():
+    run, times = _padded_run()
+
+    padded = run.spikes.padded
+    assert padded is not None
+    np.testing.assert_array_equal(np.asarray(padded.times), times)
+    np.testing.assert_array_equal(np.asarray(padded.ids), [0, 1, 2])
+    np.testing.assert_array_equal(np.asarray(padded.fired), np.isfinite(times))
+
+
+def test_a_padded_channel_compacts_to_the_ragged_form():
+    run, _ = _padded_run()
+
+    # padding dropped, ordered by time, one id per event
+    np.testing.assert_allclose(
+        np.asarray(run.spike_times), [0.5, 1.0, 2.0, 3.0, 4.0, 8.0]
+    )
+    np.testing.assert_array_equal(np.asarray(run.spike_ids), [2, 0, 1, 2, 0, 2])
+
+
+def test_a_compact_channel_has_no_rectangle():
+    assert _run().spikes.padded is None
+
+
+def test_compacting_keeps_the_rectangle_alongside():
+    run, times = _padded_run()
+    compacted = run.spikes.compact()
+
+    assert compacted.padded is not None
+    np.testing.assert_array_equal(np.asarray(compacted.padded.times), times)
+
+
+def test_a_padded_channel_composes_like_any_other():
+    """concat / window / select are host-side, so they see the compact form."""
+    run, _ = _padded_run()
+
+    windowed = run.slice(2.0, 5.0)
+    np.testing.assert_allclose(np.asarray(windowed.spike_times), [0.0, 1.0, 2.0])
+
+    selected = run.select([2])
+    np.testing.assert_allclose(np.asarray(selected.spike_times), [0.5, 3.0, 8.0])
+
+
+def test_a_raster_bins_the_events_onto_a_grid():
+    run, _ = _padded_run()
+
+    raster = np.asarray(run.spikes.raster(1.0))
+
+    assert raster.shape == (3, 11)
+    assert raster.sum() == 6
+    assert raster[0, 1] and raster[0, 4]
+    assert raster[2, 0] and raster[2, 3] and raster[2, 8]
+    assert not raster[1, 0] and raster[1, 2]
+
+
+def test_a_raster_of_a_compact_channel_agrees_with_the_padded_one():
+    padded, _ = _padded_run()
+    compact = Run(t0=0.0, duration=10.0).add_spikes(
+        np.asarray(padded.spike_ids), np.asarray(padded.spike_times)
+    )
+
+    np.testing.assert_array_equal(
+        np.asarray(padded.spikes.raster(1.0)),
+        np.asarray(compact.spikes.raster(1.0, n_cells=3)),
+    )
+
+
+def test_a_batched_rectangle_has_no_ragged_form():
+    times = np.full((2, 3, 4), np.inf)
+    times[..., 0] = 1.0
+    run = Run(t0=0.0, duration=10.0).add_spikes(np.arange(3), times, padded=True)
+
+    assert run.spikes.raster(1.0).shape == (2, 3, 11)
+    with pytest.raises(ValueError, match="no ragged form"):
+        run.spike_times
+
+
+def test_events_are_immutable():
+    run, _ = _padded_run()
+    with pytest.raises(AttributeError, match="immutable"):
+        run.spikes.t0 = 5.0
+
+
+@pytest.mark.skipif("ax" not in backend(), reason="needs jax")
+def test_compacting_under_a_trace_points_at_the_rectangle():
+    import jax
+    import jax.numpy as jnp
+
+    def traced(times):
+        run = Run(t0=0.0, duration=10.0).add_spikes(jnp.arange(3), times, padded=True)
+        return run.spike_times
+
+    times = jnp.asarray([[1.0, jnp.inf], [2.0, 3.0], [4.0, jnp.inf]])
+    with pytest.raises(RuntimeError, match=r"\.padded"):
+        jax.jit(traced)(times)
+
+    assert (
+        jax.jit(
+            lambda t: (
+                Run(t0=0.0, duration=10.0)
+                .add_spikes(jnp.arange(3), t, padded=True)
+                .spikes.padded.times.sum()
+            )
+        )(jnp.zeros((3, 2)))
+        == 0.0
+    )
+
+
+def test_declaring_padded_storage_for_a_ragged_list_is_rejected():
+    run = Run(t0=0.0, duration=10.0)
+
+    with pytest.raises(ValueError, match=r"padded event times must be"):
+        run.add_spikes(np.arange(3), np.array([1.0, 2.0]), padded=True)
+
+    with pytest.raises(ValueError, match="one row id per row"):
+        run.add_spikes(np.arange(2), np.zeros((3, 4)), padded=True)

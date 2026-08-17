@@ -682,6 +682,107 @@ class TestParallelSystem:
         np.testing.assert_array_equal(system.selection({"EXC": [7, 3]})["EXC"], [3, 7])
         assert len(system.selection(4, method="random")["EXC"]) == 4
 
+    def _grid(self, side=10, spacing=100.0):
+        from livn.system import ParallelSystem
+
+        xy = [(i * spacing, j * spacing) for i in range(side) for j in range(side)]
+        order = np.random.default_rng(7).permutation(len(xy))
+        return ParallelSystem(
+            len(xy),
+            coordinates=[[gid, *xy[int(pos)], 0.0] for gid, pos in enumerate(order)],
+        )
+
+    def test_selection_patch_area_fraction(self):
+        system = self._grid()
+        coords = {int(r[0]): (r[1], r[2]) for r in system.coordinate_array("EXC")}
+
+        gids = system.selection(0.25, method="patch")["EXC"]
+
+        assert 16 <= len(gids) <= 36
+        xs = [coords[int(g)][0] for g in gids]
+        ys = [coords[int(g)][1] for g in gids]
+
+        assert min(xs) >= 200.0 and max(xs) <= 700.0
+        assert min(ys) >= 200.0 and max(ys) <= 700.0
+
+    def test_selection_patch_beats_random_on_locality(self):
+        system = self._grid()
+        coords = {int(r[0]): (r[1], r[2]) for r in system.coordinate_array("EXC")}
+
+        def spread(gids):
+            xs = [coords[int(g)][0] for g in gids]
+            ys = [coords[int(g)][1] for g in gids]
+            return max(max(xs) - min(xs), max(ys) - min(ys))
+
+        n = 25
+        assert spread(system.selection(n, method="patch")["EXC"]) < spread(
+            system.selection(n, method="random")["EXC"]
+        )
+
+    def test_selection_patch_cell_budget_is_exact(self):
+        system = self._grid()
+        assert len(system.selection(25, method="patch")["EXC"]) == 25
+        assert len(system.selection(1, method="patch")["EXC"]) == 1
+
+    def test_selection_patch_explicit_bounds(self):
+        system = self._grid()
+        coords = {int(r[0]): (r[1], r[2]) for r in system.coordinate_array("EXC")}
+
+        gids = system.selection(
+            None, method="patch", bounds=[[0.0, 0.0], [250.0, 150.0]]
+        )["EXC"]
+
+        assert len(gids) == 6
+        assert all(
+            coords[int(g)][0] <= 250.0 and coords[int(g)][1] <= 150.0 for g in gids
+        )
+
+    def test_selection_patch_matches_geometry_scale_convention(self):
+        system = self._grid()
+        coords = {int(r[0]): (r[1], r[2]) for r in system.coordinate_array("EXC")}
+
+        s = 0.5
+        lo, hi = 0.0, 900.0
+        centre, half = (lo + hi) / 2.0, (hi - lo) * s / 2.0
+        expected = {
+            gid
+            for gid, (x, y) in coords.items()
+            if abs(x - centre) <= half and abs(y - centre) <= half
+        }
+
+        gids = set(int(g) for g in system.selection(s**2, method="patch")["EXC"])
+        assert gids == expected
+
+    def test_selection_patch_preserves_population_ratio(self):
+        from livn.system import ParallelSystem
+
+        xy = [(i * 100.0, j * 100.0) for i in range(10) for j in range(10)]
+        system = ParallelSystem(
+            {"EXC": 80, "INH": 20},
+            coordinates=[[gid, *xy[gid], 0.0] for gid in range(100)],
+        )
+        sel = system.selection(0.25, method="patch")
+        assert len(sel.get("EXC", [])) > len(sel.get("INH", []))
+
+    def test_selection_patch_rejects_ambiguous_specs(self):
+        system = self._grid()
+
+        with pytest.raises(ValueError, match="per-population count is ambiguous"):
+            system.selection({"EXC": 0.5}, method="patch")
+
+        with pytest.raises(ValueError, match="only meaningful for method='patch'"):
+            system.selection(0.5, method="random", bounds=[[0, 0], [1, 1]])
+
+    def test_selection_patch_explicit_gids_bypass_geometry(self):
+        system = self._grid()
+        np.testing.assert_array_equal(
+            system.selection({"EXC": [7, 3]}, method="patch")["EXC"], [3, 7]
+        )
+
+    def test_selection_none_still_means_everything(self):
+        system = self._grid()
+        assert system.selection(None, method="patch") is None
+
 
 @pytest.mark.skipif(
     backend() not in ("brian2", "diffrax", "neuron"),
@@ -743,5 +844,26 @@ def test_parallel_system_env_selection():
     env.init()
 
     assert sorted(env.cells["EXC"]) == [0, 1, 2]
+
+    env.close()
+
+
+@pytest.mark.skipif(
+    backend() != "neuron", reason="only the neuron backend implements Env.selection"
+)
+def test_parallel_system_env_patch_selection():
+    from livn.env import Env
+    from livn.system import ParallelSystem
+
+    system = ParallelSystem(
+        10, coordinates=[[gid, (9 - gid) * 100.0, 0.0, 0.0] for gid in range(10)]
+    )
+
+    env = Env(system)
+    env.selection(None, method="patch", bounds=[[0.0, -1.0], [250.0, 1.0]])
+    env.init()
+
+    # x <= 250um is gids 9, 8, 7
+    assert sorted(env.cells["EXC"]) == [7, 8, 9]
 
     env.close()

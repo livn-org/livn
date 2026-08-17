@@ -10,6 +10,7 @@ from livn.decoding import (
     Pipe,
     MeanFiringRate,
     ActiveFraction,
+    PopulationActiveFraction,
     Stability,
     LFP,
     AvalancheAnalysis,
@@ -273,6 +274,46 @@ class TestActiveFraction:
         result = af(_recording(it, tt, None, None, None, None), env)
 
         assert result["active_units"] == 1
+
+
+class MockPopulationEnv:
+    def __init__(self):
+        self.comm = None
+
+        class MockSystem:
+            population_ranges = {"A": (0, 10), "B": (10, 4)}
+
+        self.system = MockSystem()
+        self.cells = {"A": dict.fromkeys([0, 1, 2, 3]), "B": dict.fromkeys([10, 11])}
+
+
+class TestPopulationActiveFraction:
+    def test_fraction_is_over_cells_per_bin(self):
+        # bin 0 = [0, 50): A cells 0 (twice) and 1 fire, B cell 10 fires
+        # bin 1 = [50, 100): A cell 2 fires, B is silent
+        it = np.array([0, 0, 1, 10, 2])
+        tt = np.array([1.0, 2.0, 30.0, 10.0, 60.0])
+
+        result = PopulationActiveFraction(duration=100, bin_size=50.0)(
+            Run(duration=100.0).add_spikes(it, tt), MockPopulationEnv()
+        )
+
+        assert result["n_bins"] == 2
+        assert result["mean_active_fraction"]["A"] == pytest.approx(0.375)  # .5, .25
+        assert result["std_active_fraction"]["A"] == pytest.approx(0.125)
+        assert result["mean_active_fraction"]["B"] == pytest.approx(0.25)  # .5, 0
+        assert result["std_active_fraction"]["B"] == pytest.approx(0.25)
+
+    def test_populations_with_no_simulated_cells_are_absent(self):
+        env = MockPopulationEnv()
+        env.cells = {"A": dict.fromkeys([0, 1])}
+
+        result = PopulationActiveFraction(duration=100, bin_size=50.0)(
+            Run(duration=100.0).add_spikes(np.array([0]), np.array([1.0])),
+            env,
+        )
+
+        assert set(result["mean_active_fraction"]) == {"A"}
 
 
 class TestStability:
