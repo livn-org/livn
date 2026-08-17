@@ -20,11 +20,4 @@ def make(system_url: str = "hf://datasets/livn-org/livn/systems/graphs/EI1"):
     from livn.env import Env
     from livn.system import fetch
 
-    env = Env(fetch(system_url)).init()
-
-    if (params := env.system.default_params()) is not None:
-        env = env.set_params(params)
-    else:
-        env.apply_model_defaults()
-
-    return env
+    return Env(fetch(system_url)).init().apply_default_params()

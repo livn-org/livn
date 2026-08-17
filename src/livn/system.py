@@ -21,7 +21,13 @@ import pyfive
 
 from livn import types
 from livn.backend import backend
-from livn.utils import download_directory, sentinel, load_file, import_object_by_path
+from livn.utils import (
+    P,
+    download_directory,
+    sentinel,
+    load_file,
+    import_object_by_path,
+)
 
 if TYPE_CHECKING:
     from mpi4py import MPI
@@ -197,6 +203,21 @@ def resolve_selection(
     method: str = "first",
     bounds=None,
 ) -> "dict[str, Any] | None":
+    if isinstance(spec, str):
+        if bounds is not None or method not in ("first", None):
+            raise ValueError(
+                f"selection({spec!r}) names a stored selection, which already "
+                f"fixes which cells are built; method={method!r}/bounds= would "
+                "contradict it"
+            )
+        gids = system.selection_document(spec).get("gids")
+        if not isinstance(gids, dict) or not gids:
+            raise ValueError(
+                f"selection {spec!r} has no `gids` block; a stored selection "
+                "holds the resolved gids per population"
+            )
+        spec = {p: sorted(int(g) for g in v) for p, v in gids.items()}
+
     names = system.populations if populations is None else populations
     ranges = system.cells_meta_data.population_ranges
 
@@ -1102,8 +1123,12 @@ class System:
                     return json.loads(resp.read())
         raise FileNotFoundError(f"No HTTP endpoint for {filename}")
 
-    def default_params(self, comm=None) -> dict | None:
-        return self.load_file("params.json", None, comm=comm)
+    def params_document(
+        self, selection_name: str | None = None, comm=None
+    ) -> tuple[str | None, dict | None]:
+        path = ["params", f"{selection_name or 'default'}.json"]
+        document = self.load_file(path, None, comm=self.comm if comm is None else comm)
+        return (None, None) if document is None else ("/".join(path), document)
 
     def load_file(
         self,
@@ -1141,6 +1166,32 @@ class System:
     @property
     def name(self):
         return self.uri.split("/")[-1]
+
+    def local_directory(self, *args) -> str:
+        return self._graph.local_directory(*args)
+
+    def selections(self, comm=None) -> list[str]:
+        comm = self.comm if comm is None else comm
+        found = None
+        if comm is False or P.is_root(comm=comm):
+            directory = self.local_directory("selection")
+            found = (
+                sorted(f[:-5] for f in os.listdir(directory) if f.endswith(".json"))
+                if os.path.isdir(directory)
+                else []
+            )
+        return found if comm is False else P.broadcast(found, comm=comm)
+
+    def selection_document(self, name: str, comm=None) -> dict:
+        comm = self.comm if comm is None else comm
+        document = self.load_file(["selection", f"{name}.json"], None, comm=comm)
+        if document is None:
+            found = self.selections(comm=comm)
+            raise FileNotFoundError(
+                f"{self.name!r} has no stored selection {name!r}"
+                + (f"; available: {', '.join(found)}" if found else "; it has none")
+            )
+        return document
 
     def synapse_projections(self) -> list[tuple[str, str, str, str, str]]:
         found = []
@@ -1241,13 +1292,13 @@ class System:
     @property
     def neuron_coordinates(self) -> types.Float[types.Array, "n_coords ixyz=4"]:
         if self._neuron_coordinates is None:
-            self._neuron_coordinates = np.vstack(
+            coordinates = np.vstack(
                 [
-                    self.coordinate_array(population_name, all=False)
+                    self.coordinate_array(population_name, all=True)
                     for population_name in self.populations
                 ]
             )
-            self._neuron_coordinates[self._neuron_coordinates[:, 0].argsort()]
+            self._neuron_coordinates = coordinates[coordinates[:, 0].argsort()]
 
         return self._neuron_coordinates
 
@@ -1520,8 +1571,10 @@ class ParallelSystem:
 
         return ReducedCalciumSomaDendrite()
 
-    def default_params(self, comm=None) -> dict | None:
-        return None
+    def params_document(
+        self, selection_name: str | None = None, comm=None
+    ) -> tuple[list[str] | None, dict | None]:
+        return None, None
 
     def load_file(self, filepath: str | list[str], default: Any = sentinel, **kwargs):
         if default is sentinel:
@@ -1615,6 +1668,12 @@ class ParallelSystem:
         bounds=None,
     ) -> "dict[str, Any] | None":
         return resolve_selection(self, spec, populations, seed, method, bounds)
+
+    def selections(self, comm=None) -> list[str]:
+        return []
+
+    def selection_document(self, name: str, comm=None) -> dict:
+        raise FileNotFoundError(f"{self!r} stores no selections")
 
     def projections(
         self,

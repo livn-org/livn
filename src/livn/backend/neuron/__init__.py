@@ -47,10 +47,12 @@ class Env(EnvProtocol):
         self._select_bounds = None
         self._selection: dict[str, object] | None = None
         self._selected_gids: set[int] | None = None
-        self.system = resolve(system, comm=comm)
-        self.model = model if model is not None else self.system.default_model()
-        self.io = io if io is not None else self.system.default_io(comm=comm)
         self.comm = comm if comm is not None else MPI.COMM_WORLD
+        self.system = resolve(system, comm=comm)
+        self.model = (
+            model if model is not None else self.system.default_model(comm=comm)
+        )
+        self.io = io if io is not None else self.system.default_io(comm=comm)
         self.subworld_size = subworld_size
         self.store_kind = "auto"
 
@@ -168,6 +170,11 @@ class Env(EnvProtocol):
         self._select_method = method
         self._select_bounds = bounds
         return self
+
+    @property
+    def selection_name(self) -> str | None:
+        spec = self._select_spec
+        return spec if isinstance(spec, str) else None
 
     def init(self) -> Self:
         self.pc.gid_clear()
@@ -771,6 +778,67 @@ class Env(EnvProtocol):
                 if name not in names:
                     names.append(name)
         return names
+
+    def admissible_params(self, cells: bool = False) -> dict[str, list[str]]:
+        import inspect
+
+        found: dict[str, list[str]] = {}
+
+        found["weights"] = list(self.weight_names)
+
+        sites = set()
+        if self.syn is not None and self.syn.size:
+            post_pop = np.full(self.syn.size, -1, dtype=np.int16)
+            if self.conn is not None and self.conn.size:
+                post_pop[self.conn.syn_row] = self.conn.post_pop
+            pop_of = {code: name for name, code in self._pop_code.items()}
+            sec_of = {code: name for name, code in self._sectype_code.items()}
+            mech_of = {code: name for name, code in self._mech_code.items()}
+            for pp, sec, mech in zip(
+                post_pop.tolist(),
+                self.syn.dest_sectype.tolist(),
+                self.syn.mech_id.tolist(),
+            ):
+                if pp < 0 or pp not in pop_of:
+                    continue
+                sites.add((pop_of[pp], sec_of.get(sec, ""), mech_of.get(mech, "")))
+        if self.comm is not None and self.comm.Get_size() > 1:
+            for other in self.comm.allgather(sites):
+                sites |= other
+
+        receptor_of = {
+            pp: receptor
+            for receptor, pp in self.model.neuron_synapse_mechanisms().items()
+        }
+        rules = self.model.neuron_synapse_rules()
+        mechanisms: list[str] = []
+        for post, sec, pp_name in sorted(sites):
+            if not sec or not pp_name:
+                continue
+            receptor = receptor_of.get(pp_name, pp_name)
+            for param in (rules.get(pp_name) or {}).get("mech_params") or []:
+                name = f"{post}-{sec}-{receptor}-{param}"
+                if name not in mechanisms:
+                    mechanisms.append(name)
+        found["mechanisms"] = mechanisms
+
+        noise: list[str] = []
+        if hasattr(self.model, "neuron_noise_mechanism") and hasattr(
+            self.model, "neuron_noise_configure"
+        ):
+            skip = {"self", "population", "mechanism", "state"}
+            noise = [
+                f"noise-{p}"
+                for p in inspect.signature(self.model.neuron_noise_configure).parameters
+                if p not in skip
+            ]
+        found["noise"] = noise
+
+        found["cells"] = (
+            [f"cells-{name}" for name in self.cells.get_params()] if cells else []
+        )
+
+        return found
 
     def _set_synapse_mech_params(self, params: dict) -> Self:
         """Set mechanism parameters on synaptic point processes."""

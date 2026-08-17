@@ -100,6 +100,20 @@ class DistributedEnv(EnvProtocol):
         self.seed = seed
         self.comm = comm
         self.subworld_size = subworld_size
+        self._select: tuple | None = None
+
+    def selection(self, select, method: str = "first", bounds=None) -> "DistributedEnv":
+        if self.controller is not None:
+            raise RuntimeError("selection() must be called before init()")
+        self._select = (select, method, bounds)
+        return self
+
+    @property
+    def selection_name(self) -> str | None:
+        if self._select is None:
+            return None
+        select = self._select[0]
+        return select if isinstance(select, str) else None
 
     def __getstate__(self):
         d = self.__dict__.copy()
@@ -215,6 +229,10 @@ class DistributedEnv(EnvProtocol):
 
     def apply_model_defaults(self, weights: bool = True, noise: bool = True) -> Self:
         self._broadcast_to_workers("apply_model_defaults", (weights, noise))
+        return self
+
+    def apply_default_params(self, group: str | None = None, strict: bool = False):
+        self._broadcast_to_workers("apply_default_params", (group, strict))
         return self
 
     def set_weights(self, weights: dict) -> Self:
@@ -975,6 +993,9 @@ def _worker_init(worker, distributed_env: "DistributedEnv"):
             comm=worker_comm,
             subworld_size=distributed_env.subworld_size,
         )
+        if distributed_env._select is not None:
+            select, method, bounds = distributed_env._select
+            env.selection(select, method=method, bounds=bounds)
         env.init()
         _state["env"] = env
 

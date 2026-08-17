@@ -252,6 +252,58 @@ class Env(Protocol):
 
         return self
 
+    def apply_default_params(self, group: str | None = None, strict: bool = False):
+        import warnings
+
+        system = getattr(self, "system", None)
+        selection_name = getattr(self, "selection_name", None)
+
+        source, document = (None, None)
+        if system is not None and hasattr(system, "params_document"):
+            source, document = system.params_document(
+                selection_name, comm=getattr(self, "comm", None)
+            )
+
+        if document is None:
+            return self.apply_model_defaults()
+
+        key = self.model.params_key()
+        if key not in document:
+            return self.apply_model_defaults()
+
+        groups = document[key]
+        name = group or "default"
+        if name not in groups:
+            raise KeyError(
+                f"{source} has no parameter group {name!r} for "
+                f"{key}; available: {', '.join(sorted(groups)) or 'none'}"
+            )
+        entry = groups[name]
+        params = entry.get("params", entry) if isinstance(entry, dict) else entry
+
+        if hasattr(self, "admissible_params"):
+            admissible = self.admissible_params()
+            known = set().union(
+                *(
+                    set(admissible.get(g) or ())
+                    for g in ("weights", "mechanisms", "noise")
+                )
+            )
+            unknown = sorted(
+                k for k in params if k not in known and not k.startswith("cells-")
+            )
+            if unknown:
+                complaint = (
+                    f"{source} names {len(unknown)} parameter(s) this "
+                    f"network has nothing for, which `set_params` drops "
+                    f"silently: {unknown}"
+                )
+                if strict:
+                    raise RuntimeError(complaint)
+                warnings.warn(complaint, stacklevel=2)
+
+        return self.set_params(dict(params))
+
     def cell_stimulus(
         self,
         channel_inputs: Float[Array, "batch timestep n_channels"],
@@ -373,7 +425,7 @@ class Env(Protocol):
             return self.system.neuron_coordinates
         import numpy as _np
 
-        return _np.vstack([self.system.coordinate_array(p, all=False) for p in active])
+        return _np.vstack([self.system.coordinate_array(p, all=True) for p in active])
 
     def active_gids(self):
         coords = self.active_neuron_coordinates()
@@ -600,6 +652,10 @@ class Model(Protocol):
     def ignored_populations(self) -> set[str]:
         """Populations that backends should skip when instantiating cells/connections."""
         return set()
+
+    def params_key(self) -> str:
+        """Key under which this model's parameter sets are stored."""
+        return type(self).__name__
 
     def apply_defaults(self, env, weights: bool = True, noise: bool = True):
         if weights:
