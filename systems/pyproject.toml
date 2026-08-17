@@ -21,5 +21,17 @@ dependencies = [
 [tool.uv.sources]
 livn = { workspace = true }
 
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
 [tool.setuptools]
-py-modules = []
+packages = [
+    "systems",
+    "systems.datasets",
+    "systems.interface",
+    "systems.interface.remotes",
+    "systems.targets",
+    "systems.targets.cells",
+]
+package-dir = { systems = "." }
