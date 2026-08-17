@@ -52,7 +52,13 @@ dev = [
 ]
 
 [tool.uv]
-override-dependencies = ["jaxtyping>=0.3.9", "scipy>=1.17.1"]
+override-dependencies = [
+    "jaxtyping>=0.3.9",
+    "scipy>=1.17.1",
+    "pandas>=2.3.1",
+    "numpy>=1.26.2",
+    "xarray>=2024.1.0",
+]
 
 no-binary-package = ["mpi4py", "h5py"]
 
