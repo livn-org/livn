@@ -562,7 +562,16 @@ class Env(EnvProtocol):
     def _setup_extracellular(self, stimulus: Stimulus, current_time: float) -> None:
         n_neurons = len(self.active_neuron_coordinates())
         if stimulus.gids is None:
-            stimulus.gids = self.active_gids()
+            if len(stimulus) % max(1, n_neurons):
+                raise ValueError(
+                    f"stimulus has {len(stimulus)} channels, which is not a "
+                    f"whole number of sections per neuron over {n_neurons} "
+                    "neurons, so its gids cannot be inferred. Please pass "
+                    "`gids` naming the cell each channel belongs to"
+                )
+            stimulus.gids = np.repeat(
+                self.active_gids(), max(1, len(stimulus) // max(1, n_neurons))
+            )
         sections_per_neuron = max(1, len(stimulus) // max(1, n_neurons))
 
         if self._stim_dt is None:

@@ -147,16 +147,18 @@ class System(Protocol):
         ...
 
     def coordinate_array(
-        self, population: PopulationName, all: bool = True
+        self, population: PopulationName
     ) -> Float[Array, "n_coords ixyz=4"]:
-        """``[gid, x, y, z]`` rows for one population"""
+        """``[gid, x, y, z]`` rows for one population across every rank.
+
+        For the cells a rank simulates, see `Env.simulated_coordinates`.
+        """
         ...
 
     def transform_coordinates(
         self,
         transform: Any,
         populations: list[PopulationName] | None = None,
-        all: bool = True,
     ) -> Float[Array, "n_coords ixyz=4"]:
         """Apply a model coordinate transform per population and stack the result"""
         ...
@@ -308,15 +310,15 @@ class Env(Protocol):
         self,
         channel_inputs: Float[Array, "batch timestep n_channels"],
     ) -> "Stimulus":
-        """Transforms channel inputs into neural inputs"""
-        return self.io.cell_stimulus(
-            self.system.transform_coordinates(
-                self.model.stimulus_coordinates,
-                populations=self.active_populations(),
-                all=False,
-            ),
-            channel_inputs,
+        """Transforms channel inputs into neural inputs."""
+        from livn.stimulus import Stimulus
+
+        coordinates = self.system.transform_coordinates(
+            self.model.stimulus_coordinates,
+            populations=self.active_populations(),
         )
+        array = self.io.cell_stimulus(coordinates, channel_inputs)
+        return Stimulus(array, gids=coordinates[:, 0].astype(int))
 
     def channel_recording(
         self,
@@ -425,11 +427,45 @@ class Env(Protocol):
             return self.system.neuron_coordinates
         import numpy as _np
 
-        return _np.vstack([self.system.coordinate_array(p, all=True) for p in active])
+        return _np.vstack([self.system.coordinate_array(p) for p in active])
 
     def active_gids(self):
         coords = self.active_neuron_coordinates()
         return coords[:, 0].astype(int)
+
+    def simulated_gids(self):
+        import numpy as _np
+
+        return _np.array(
+            sorted(int(g) for cells in self.cells.values() for g in cells),
+            dtype=int,
+        )
+
+    def simulated_coordinates(self, transform=None):
+        import numpy as _np
+
+        coordinates = self.active_neuron_coordinates()
+        gids = coordinates[:, 0].astype(int)
+        mine = self.simulated_gids()
+        rows = _np.searchsorted(gids, mine)
+        if rows.size and not _np.array_equal(gids[rows], mine):
+            raise RuntimeError(
+                "this rank simulates cells the coordinate table has no row "
+                "for; the table is not the whole graph"
+            )
+        selected = coordinates[rows]
+        if transform is None:
+            return selected
+        return _np.vstack(
+            [
+                transform(
+                    selected[_np.isin(selected[:, 0].astype(int), list(cells))],
+                    population=population,
+                )
+                for population, cells in self.cells.items()
+                if cells
+            ]
+        )
 
     def record(
         self,
@@ -557,12 +593,10 @@ class Env(Protocol):
         return 0.1
 
     def recording_distances(self):
-        neuron_coordinates = self.system.transform_coordinates(
-            self.model.recording_coordinates,
-            populations=self.active_populations(),
-            all=False,
+        """Distances for the coordinates the membrane currents are recorded at."""
+        return self.io.distances(
+            self.simulated_coordinates(self.model.recording_coordinates)
         )
-        return self.io.distances(neuron_coordinates)
 
     def source_gain(
         self,

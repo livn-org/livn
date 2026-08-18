@@ -30,6 +30,12 @@ class Stimulus:
         if dt <= 0:
             raise ValueError("Stimulus dt must be positive")
         self.dt = dt
+        if gids is not None and len(gids) != array.shape[-1]:
+            raise ValueError(
+                f"stimulus has {array.shape[-1]} channels but {len(gids)} gids; "
+                "the last axis of the array and the gid list must describe the "
+                "same cells, in the same order"
+            )
         self.gids = gids
         self.input_mode = input_mode
         self.units = units

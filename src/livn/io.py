@@ -719,19 +719,22 @@ if _USES_JAX:
         c_induction = np.asarray(c_induction)
 
         batch_size, n_timesteps, n_channels = electrode_stimulus.shape
+        per_coordinate = n_gids is not None
         if n_gids is None:
             # no-jit
             n_gids = len(np.unique(c_induction[:, 1]))
 
         # sparse matrix for cell induction
         channel_ids = c_induction[:, 0].astype(int)
-        gids = c_induction[:, 1].astype(int)
         amplitudes = c_induction[:, 2]
 
-        # induction matrix [n_channels, n_gids]
+        gids = c_induction[:, 1].astype(int)
         induction_matrix = np.zeros((n_channels, n_gids))
-        unique_gids, gids_indices = np.unique(gids, return_inverse=True, size=n_gids)
-        induction = induction_matrix.at[channel_ids, gids_indices].set(amplitudes)
+        if per_coordinate:
+            columns = np.arange(c_induction.shape[0]) % n_gids
+        else:
+            _unique, columns = np.unique(gids, return_inverse=True, size=n_gids)
+        induction = induction_matrix.at[channel_ids, columns].set(amplitudes)
 
         # reduce over gids
         # Result shape: [batch, timestep, n_gids]
@@ -802,6 +805,7 @@ else:
     def calculate_cell_stimulus(
         electrode_stimulus: Float[Array, "batch timestep n_channels"],
         cell_induction: Float[Array, "n_inductions cip=3"],
+        n_gids: int | None = None,
         *args,
         **kwargs,
     ) -> Float[Array, "batch timestep n_gids"]:
@@ -813,19 +817,28 @@ else:
         cell_induction = np.asarray(cell_induction)
 
         batch_size, n_timesteps, n_channels = electrode_stimulus.shape
-        n_gids = len(np.unique(cell_induction[:, 1]))
 
         # sparse matrix for cell induction
         channel_ids = cell_induction[:, 0].astype(int)
         gids = cell_induction[:, 1].astype(int)
         amplitudes = cell_induction[:, 2]
 
+        if n_gids is None:
+            n_gids = len(np.unique(gids))
+            _, columns = np.unique(gids, return_inverse=True)
+        else:
+            if len(cell_induction) % n_gids:
+                raise ValueError(
+                    f"{len(cell_induction)} induction rows is not a whole "
+                    f"number of channels over {n_gids} coordinates"
+                )
+            columns = np.arange(len(cell_induction)) % n_gids
+
         # induction matrix [n_channels, n_gids]
         induction_matrix = np.zeros((n_channels, n_gids))
-        # handle case where gids might not start at 0 (ignored in JAX backend)
+        # handle case where channel ids do not start at 0
         _, channel_indices = np.unique(channel_ids, return_inverse=True)
-        unique_gids, gids_indices = np.unique(gids, return_inverse=True)
-        induction_matrix[channel_indices, gids_indices] = amplitudes
+        induction_matrix[channel_indices, columns] = amplitudes
 
         # reduce over gids
         # Result shape: [batch, timestep, n_gids]

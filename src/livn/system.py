@@ -223,9 +223,7 @@ def resolve_selection(
 
     coordinates = None
     if method == "patch":
-        coordinates = {
-            p: system.coordinate_array(p, all=True) for p in names if p in ranges
-        }
+        coordinates = {p: system.coordinate_array(p) for p in names if p in ranges}
 
     return selection_from_ranges(
         ranges,
@@ -1294,7 +1292,7 @@ class System:
         if self._neuron_coordinates is None:
             coordinates = np.vstack(
                 [
-                    self.coordinate_array(population_name, all=True)
+                    self.coordinate_array(population_name)
                     for population_name in self.populations
                 ]
             )
@@ -1317,25 +1315,21 @@ class System:
         )
 
     def coordinate_array(
-        self, population: types.PopulationName, all: bool = True
+        self, population: types.PopulationName
     ) -> types.Float[types.Array, "n_coords cxyz=4"]:
         return coordinate_array(
-            self._graph.cells_filepath, population, comm=self.comm, all=all
+            self._graph.cells_filepath, population, comm=self.comm, all=True
         )
 
     def transform_coordinates(
         self,
         transform: Callable,
         populations: list[str] | None = None,
-        all: bool = True,
     ) -> types.Float[types.Array, "n_coords ixyz=4"]:
         if populations is None:
             populations = self.populations
         return np.vstack(
-            [
-                transform(self.coordinate_array(p, all=all), population=p)
-                for p in populations
-            ]
+            [transform(self.coordinate_array(p), population=p) for p in populations]
         )
 
     def projections(
@@ -1640,7 +1634,7 @@ class ParallelSystem:
             yield int(row[0]), (float(row[1]), float(row[2]), float(row[3]))
 
     def coordinate_array(
-        self, population: types.PopulationName, all: bool = True
+        self, population: types.PopulationName
     ) -> types.Float[types.Array, "n_coords cxyz=4"]:
         return self._neuron_coordinates[self._population_slice(population)]
 
@@ -1648,15 +1642,11 @@ class ParallelSystem:
         self,
         transform: Callable,
         populations: list[str] | None = None,
-        all: bool = True,
     ) -> types.Float[types.Array, "n_coords ixyz=4"]:
         if populations is None:
             populations = self.populations
         return np.vstack(
-            [
-                transform(self.coordinate_array(p, all=all), population=p)
-                for p in populations
-            ]
+            [transform(self.coordinate_array(p), population=p) for p in populations]
         )
 
     def selection(

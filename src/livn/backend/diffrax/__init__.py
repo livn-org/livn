@@ -204,9 +204,7 @@ class Env(EnvProtocol):
             registry = ModuleCellRegistry(self)
             index = 0
             for population in self.active_populations():
-                coordinates = np.asarray(
-                    self.system.coordinate_array(population, all=False)
-                )
+                coordinates = np.asarray(self.system.coordinate_array(population))
                 gids = coordinates[:, 0].astype(np.int64)
                 registry.add(
                     population,
