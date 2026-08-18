@@ -428,10 +428,15 @@ class ReducedCalciumSomaDendrite(Model):
             "INH": {"StdpLinExp2SynInh"},
         }
 
-    def neuron_noise_mechanism(self, section):
+    def neuron_noise_mechanism(self, section, gid=None, index=None, seed=None):
         from neuron import h
 
-        return h.Gfluct3(section), None
+        fluct = h.Gfluct3(section)
+        if gid is not None:
+            fluct.noiseFromRandom123(
+                int(gid) + 1, int(index or 0) + 1, int(seed if seed is not None else 0)
+            )
+        return fluct, None
 
     def neuron_noise_configure(
         self,

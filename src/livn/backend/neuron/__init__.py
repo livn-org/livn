@@ -1061,7 +1061,9 @@ class Env(EnvProtocol):
                     key = f"{gid}-{idx}"
                     fluct, state = self._flucts.get(key, (None, None))
                     if fluct is None:
-                        fluct, state = self.model.neuron_noise_mechanism(sec(0.5))
+                        fluct, state = self.model.neuron_noise_mechanism(
+                            sec(0.5), gid=int(gid), index=int(idx), seed=self.seed
+                        )
                         self._flucts[key] = (fluct, state)
                     self.model.neuron_noise_configure(
                         population, fluct, state, **merged
