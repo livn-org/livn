@@ -146,6 +146,8 @@ class Env(EnvProtocol):
         self._stim_dt: float | None = None
         self._stim_step = 0
         self._stim_registered = False
+        self._stim_cb = self._update_extracellular
+        self._opsin_cb = self._update_opsin_phi
 
         # opsin (irradiance) stimulus block
         self._opsin_refs: dict[tuple[int, int], object] = {}  # (gid, sec_id) -> pp
@@ -614,7 +616,7 @@ class Env(EnvProtocol):
         self._stim_block = block
 
         if not self._stim_registered:
-            self._h.cvode.extra_scatter_gather(0, self._update_extracellular)
+            self._h.cvode.extra_scatter_gather(0, self._stim_cb)
             self._stim_registered = True
 
     def _update_extracellular(self) -> None:
@@ -709,7 +711,7 @@ class Env(EnvProtocol):
         self._opsin_block = block
 
         if not self._opsin_registered:
-            self._h.cvode.extra_scatter_gather(0, self._update_opsin_phi)
+            self._h.cvode.extra_scatter_gather(0, self._opsin_cb)
             self._opsin_registered = True
 
     def _update_opsin_phi(self) -> None:
@@ -1215,13 +1217,13 @@ class Env(EnvProtocol):
         """
         if self._stim_registered:
             try:
-                self._h.cvode.extra_scatter_gather_remove(self._update_extracellular)
+                self._h.cvode.extra_scatter_gather_remove(self._stim_cb)
             except Exception:
                 logger.debug("failed to remove extracellular callback", exc_info=True)
             self._stim_registered = False
         if self._opsin_registered:
             try:
-                self._h.cvode.extra_scatter_gather_remove(self._update_opsin_phi)
+                self._h.cvode.extra_scatter_gather_remove(self._opsin_cb)
             except Exception:
                 logger.debug("failed to remove opsin callback", exc_info=True)
             self._opsin_registered = False
