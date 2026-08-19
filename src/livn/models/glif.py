@@ -498,6 +498,8 @@ class GlifSolution(eqx.Module):
     yT: Any  # (*samples, cells, state) final state
     saturated: Any  # (*samples, cells) spike budget exhausted before t1
     solver_ok: Any  # (*samples, cells) every inner solve succeeded
+    segment_ts: Any = None  # (*samples, cells, nodes) in ms
+    segment_ys: Any = None  # (*samples, cells, nodes, len(columns))
     columns: tuple = eqx.field(static=True, default=ALL_COLUMNS)
 
     def column(self, index: int):
@@ -634,6 +636,7 @@ def _solve_cell(
     n_out,
     columns,
     diffusion,
+    segments=False,
 ):
     current = diffrax.LinearInterpolation(ts=stim_ts, ys=stim_ys)
 
@@ -705,13 +708,17 @@ def _solve_cell(
 
     ts_out = t0 + jnp.arange(n_out) * dt
     ys = solution.ys[:, jnp.asarray(columns, dtype=jnp.int32)]
-    return (
+    out = (
         resample(solution.ts, ys, ts_out),
         solution.event_times,
         solution.y1,
         solution.saturated,
         solution.solver_ok,
     )
+    if not segments:
+        return out
+
+    return out + (solution.ts, ys)
 
 
 def _solve_network(
@@ -1037,9 +1044,12 @@ class GlifNeurons(eqx.Module):
 
         if record is None:
             columns, want_threshold = ALL_COLUMNS, True
+            want_segments = False
         else:
             record = frozenset(record)
             columns, want_threshold = _columns_for(record), "threshold" in record
+
+        want_segments = bool(record) and "segments" in record
 
         if input_current is None:
             stim = jnp.zeros((2, self.n_cells))
@@ -1082,7 +1092,14 @@ class GlifNeurons(eqx.Module):
             n_out=n_out,
             columns=columns,
             diffusion=self.diffusion if diffusion is None else bool(diffusion),
+            segments=want_segments,
         )
+
+        if want_segments and self.network is not None:
+            raise NotImplementedError(
+                "record='segments' is only implemented for the uncoupled solver; the network path "
+                "does not return its native grid yet"
+            )
 
         if self.network is None:
 
@@ -1116,7 +1133,11 @@ class GlifNeurons(eqx.Module):
             outputs = solve_sample(y0[0], sample_keys[0])
         else:
             outputs = jax.vmap(solve_sample)(y0, sample_keys)
-        ys, spike_times, yT, saturated, solver_ok = outputs
+        segment_ts = segment_ys = None
+        if want_segments:
+            ys, spike_times, yT, saturated, solver_ok, segment_ts, segment_ys = outputs
+        else:
+            ys, spike_times, yT, saturated, solver_ok = outputs
 
         columns = tuple(columns)
         threshold = None
@@ -1134,6 +1155,8 @@ class GlifNeurons(eqx.Module):
             yT=yT,
             saturated=saturated,
             solver_ok=solver_ok,
+            segment_ts=segment_ts,
+            segment_ys=segment_ys,
             columns=columns,
         )
 

@@ -47,65 +47,6 @@ def intensity(voltage, threshold, sigma, tau_s):
     )
 
 
-def _interpolate(log_rate, times, spike_times, ids):
-    """log lambda at each spike time, taking each spike's value from its own cell's trace"""
-    if ids is None:
-        return jax.vmap(lambda trace, ts: jnp.interp(ts, times, trace))(
-            log_rate, spike_times
-        )
-    return jax.vmap(lambda cell, t: jnp.interp(t, times, log_rate[cell]))(
-        ids, spike_times
-    )
-
-
-def spike_nll(log_rate, spike_times, dt, *, ids=None, t0=0.0):
-    """Point-process negative log likelihood of a spike train under an intensity.
-
-    ``NLL = integral lambda dt - sum_i log lambda(t_i)``, the natural likelihood for the escape-rate
-    mechanism. The integral is a left-rectangle sum over the recording grid; the log-intensity term
-    is linearly interpolated at each (continuous) spike time, so the loss is differentiable in the
-    spike times and not only in the trace.
-
-    Args:
-        log_rate: ``(cells, times)`` log intensity on the recording grid, from :func:`log_intensity`
-        spike_times: the spikes to score, in ms. Either ``(cells, k)`` with one inf-padded row per
-            cell, or a flat ``(n,)`` array alongside ``ids``. Non-finite entries are padding and are
-            skipped.
-        dt: recording grid spacing in ms the same ``dt`` that produced ``log_rate``
-        ids: cell index per spike, when ``spike_times`` is flat
-        t0: absolute time of grid sample 0, in ms
-
-    Returns:
-        Scalar NLL, summed over cells.
-    """
-    log_rate = jnp.asarray(log_rate)
-    if log_rate.ndim != 2:
-        raise ValueError(f"log_rate must be (cells, times), got {log_rate.shape}")
-    spike_times = jnp.asarray(spike_times)
-    if ids is None and spike_times.ndim != 2:
-        raise ValueError(
-            f"spike_times must be (cells, k) without ids, got {spike_times.shape}; "
-            "pass ids= for a flat array"
-        )
-    if ids is not None and spike_times.ndim != 1:
-        raise ValueError(
-            f"spike_times must be flat when ids is given, got {spike_times.shape}"
-        )
-
-    times = t0 + jnp.arange(log_rate.shape[1]) * dt
-
-    integral = jnp.sum(jnp.exp(jnp.minimum(log_rate, EXP_CAP))) * dt
-
-    fired = jnp.isfinite(spike_times)
-    # padding is +inf, which jnp.interp would clamp to the last sample rather than ignore
-    safe = jnp.where(fired, spike_times, times[0])
-    at_spikes = _interpolate(
-        log_rate, times, safe, None if ids is None else jnp.asarray(ids)
-    )
-
-    return integral - jnp.sum(jnp.where(fired, at_spikes, 0.0))
-
-
 def refractory_mask(spike_times, times, t_ref, *, ids=None, n_cells=None):
     """Samples to keep: ``False`` inside ``[t_spike, t_spike + t_ref)`` of any spike.
 
@@ -207,3 +148,90 @@ def param_prior(params, reference, weights=None):
         total = total + jnp.asarray(weights.get(name, 1.0)) * jnp.sum(deviation**2)
 
     return total
+
+
+def spike_kernel(sim_times, rec_times, bandwidth: float = 5.0, normalize: bool = True):
+    r"""Squared RKHS distance between two spike trains, computed from spike times alone.
+
+    .. math:: d^2 = \sum_{ij} K(s_i, s_j) - 2 \sum_{ij} K(s_i, r_j) + \sum_{ij} K(r_i, r_j)
+
+    with a Gaussian :math:`K` this amounts to :math:`\|f - g\|^2` for :math:`f(t) = \sum_i K(t - s_i)`.
+
+    Args:
+        sim_times: ``(cells, k)`` simulated spike times, ``inf``-padded
+        rec_times: ``(cells, m)`` recorded spike times, ``inf``-padded
+        bandwidth: kernel width in ms, i.e. the timescale on which two spikes count as "the same spike"
+        normalize: divide by the recorded train's self-similarity, so the value is comparable across
+            cells with very different firing rates and across windows of different length
+
+    Returns:
+        scalar, summed over cells
+    """
+    import jax.numpy as jnp
+
+    sim = jnp.atleast_2d(jnp.asarray(sim_times))
+    rec = jnp.atleast_2d(jnp.asarray(rec_times))
+    sim_ok, rec_ok = jnp.isfinite(sim), jnp.isfinite(rec)
+
+    sim = jnp.where(sim_ok, sim, 0.0)
+    rec = jnp.where(rec_ok, rec, 0.0)
+
+    def gram(a, b, a_ok, b_ok):
+        d = (a[:, :, None] - b[:, None, :]) / bandwidth
+        k = jnp.exp(-0.5 * d * d)
+        return jnp.sum(
+            jnp.where(a_ok[:, :, None] & b_ok[:, None, :], k, 0.0), axis=(1, 2)
+        )
+
+    ss = gram(sim, sim, sim_ok, sim_ok)
+    sr = gram(sim, rec, sim_ok, rec_ok)
+    rr = gram(rec, rec, rec_ok, rec_ok)
+    d2 = ss - 2.0 * sr + rr
+    if normalize:
+        d2 = d2 / jnp.maximum(rr, 1.0)
+    return jnp.sum(d2)
+
+
+def _interp_at(ts, values, x):
+    """Linear interpolation of ``values(ts)`` at times ``x``, mapped over the leading cell axis."""
+    import jax.numpy as jnp
+
+    def one(t, v, q):
+        n = t.shape[-1]
+        i1 = jnp.clip(jnp.searchsorted(t, q, side="right"), 1, n - 1)
+        i0 = i1 - 1
+        t0_, t1_ = t[i0], t[i1]
+        span = t1_ - t0_
+        safe = span > 0
+        w = jnp.where(safe, (q - t0_) / jnp.where(safe, span, 1.0), 0.0)
+        return v[i0] + (v[i1] - v[i0]) * jnp.clip(w, 0.0, 1.0)
+
+    return jax.vmap(one)(ts, values, x)
+
+
+def spike_nll(log_rate, ts, spike_times):
+    r"""Point-process negative log-likelihood.
+
+    Args:
+        log_rate: ``(cells, nodes)`` log intensity at the segment nodes
+        ts: ``(cells, nodes)`` the segment node times, in ms
+        spike_times: ``(cells, k)`` recorded spike times, inf-padded
+
+    Returns:
+        scalar, summed over cells
+    """
+    import jax.numpy as jnp
+
+    log_rate = jnp.atleast_2d(log_rate)
+    ts = jnp.atleast_2d(ts)
+    rec = jnp.atleast_2d(jnp.asarray(spike_times))
+    ok = jnp.isfinite(rec)
+    rec = jnp.where(ok, rec, 0.0)
+
+    lam = jnp.exp(log_rate)
+    width = ts[..., 1:] - ts[..., :-1]
+    integral = jnp.sum(0.5 * (lam[..., 1:] + lam[..., :-1]) * width, axis=-1)
+
+    at_spikes = _interp_at(ts, log_rate, rec)
+    point = jnp.sum(jnp.where(ok, at_spikes, 0.0), axis=-1)
+    return jnp.sum(integral - point)

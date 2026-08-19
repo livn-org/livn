@@ -23,7 +23,7 @@ run.spikes.raster(dt)      # (cells, T) bool - binned, lossy, trace-safe
 
 ## `spike_nll`
 
-The point-process negative log likelihood defined as
+The point-process negative log likelihood
 
 ```
 NLL = ∫ λ dt − Σ_i log λ(t_i)
@@ -32,12 +32,12 @@ NLL = ∫ λ dt − Σ_i log λ(t_i)
 ```python
 from optimization.losses import log_intensity, spike_nll
 
-run = env.run(duration, stimulus, dt=dt)
-rate = log_intensity(run.voltage, run["threshold"].values, sigma, tau_s)
-nll = spike_nll(rate, run.spikes.padded.times, dt)
+sol = neurons.solve(..., record=frozenset({"voltage", "threshold", "spikes", "segments"}))
+rate = log_intensity(v_at_nodes, threshold_at_nodes, sigma, tau_s)
+nll = spike_nll(rate, sol.segment_ts, recorded_spike_times)
 ```
 
-It takes the log intensity, not the rate. Spikes may be given either as `(cells, k)` with one inf-padded row per cell or flat alongside `ids`.
+`log_rate` and `ts` are `(cells, nodes)` while spikes are `(cells, k)`, `inf`-padded.
 
 ### `log_intensity` / `intensity`
 
@@ -48,6 +48,24 @@ It takes the log intensity, not the rate. Spikes may be given either as `(cells,
 ```
 
 so it relies on `record_voltage()` and `record("threshold")` (see [recordable states](/models/glif#recordable-states)).
+
+## `spike_kernel`
+
+Squared RKHS distance between two spike trains, computed from spike times alone.
+
+```
+d² = ΣΣ K(sᵢ,sⱼ) − 2 ΣΣ K(sᵢ,rⱼ) + ΣΣ K(rᵢ,rⱼ)
+```
+
+```python
+from optimization.losses import spike_kernel
+
+d2 = spike_kernel(run.spikes.padded.times, recorded_times, bandwidth=5.0)
+```
+
+This is `‖f − g‖²` for `f(t) = Σ K(t − sᵢ)` with a Gaussian `K`, so it is a genuine metric on spike trains and penalizes a count mismatch as well as a timing one.
+
+Prefer `spike_nll` when fitting since it integrates the intensity rather than counting realized events, so the count discontinuity does not exist rather than being mitigated.
 
 ## `voltage_mse`
 
