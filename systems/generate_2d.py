@@ -8,6 +8,7 @@ from pathlib import Path
 
 import h5py
 from machinable import Interface
+from machinable.config import to_dict
 from machinable.utils import save_file
 from pydantic import BaseModel, Field, model_validator
 from typing import Dict, Optional
@@ -834,7 +835,10 @@ class Generate2DSystem(Interface):
                     syn_ids = np.asarray(record.syn_ids, dtype=np.uint32)
                     syn_types = np.asarray(record.syn_types, dtype=np.uint8)
                     syn_cdists = np.asarray(record.syn_cdists, dtype=np.float32)
-                    syn_locs = np.zeros_like(syn_ids, dtype=np.float32)
+                    # Mid-section, NOT 0.0. In NEURON the 0 and 1 ends of a
+                    # section are zero-area nodes for which a point process
+                    # has no membrane area to absorb its current
+                    syn_locs = np.full_like(syn_ids, 0.5, dtype=np.float32)
                     syn_secs = np.asarray(record.syn_secs, dtype=np.int16)
                     syn_layers = np.full(syn_ids.shape, layer_index, dtype=np.uint8)
                     swc_types = np.asarray(record.swc_types, dtype=np.uint8)
@@ -935,6 +939,35 @@ class Generate2DSystem(Interface):
                 },
             },
         )
+
+        self._write_provenance()
+
+    def _write_provenance(self):
+        if not self.config.output_directory:
+            return
+
+        document = {
+            "generator": f"{type(self).__module__}.{type(self).__name__}",
+            "config": to_dict(self.config),
+            "assumptions": {
+                "EXC->EXC": (
+                    "mean_degree 20 is an assumption, not literature. Moore, "
+                    "Bhumbra, Foster & Beato (2015) constrains EXC->INH (4) and "
+                    "INH->EXC (40) but reports nothing on motoneuron-to-"
+                    "motoneuron connectivity. It is kept because the "
+                    "excitatory-only recordings being fitted are correlated and "
+                    "bursting, which requires some excitatory coupling."
+                ),
+                "EXC->EXC synapse parameters": (
+                    "the cholinergic template (7 release sites, tau_decay 7.0 "
+                    "ms) is the MN->RC measurement, applied here to MN->MN."
+                ),
+            },
+        }
+        with open(
+            os.path.join(self.config.output_directory, "provenance.json"), "w"
+        ) as f:
+            json.dump(document, f, indent=2, sort_keys=True, default=str)
 
     def plot(
         self,
