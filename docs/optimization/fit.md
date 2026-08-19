@@ -1,10 +1,6 @@
 # Fit
 
-`optimization.fit.fit` is the Adam-through-simulation loop: it differentiates a
-[loss](/optimization/losses) on `env.run` output all the way back to the cell parameters and steps
-them. It works for any differentiable livn model — what it needs from `env` is a functional
-parameter setter and a differentiable `run`, which today means the [diffrax
-backend](/guide/backends).
+`optimization.fit.fit` differentiates a [loss](/optimization/losses) on `env.run` output all the way back to the cell parameters and steps them. It works for any differentiable livn model.
 
 ```python
 from optimization.fit import fit
@@ -24,22 +20,6 @@ theta, history = fit(
 ```
 
 See the [worked example](/examples/fitting) for a runnable version.
-
-## The functional-env contract
-
-This is the single easiest thing to get wrong:
-
-```python
-env = env.cells.set_params(theta)   # returns a NEW env; the original is unchanged
-```
-
-`set_params` does **not** mutate in place. The fit loop rebuilds the env from `theta` on every
-iteration and never touches the one you passed in — which is exactly what makes the objective a pure
-function of `theta`, and so differentiable at all. If you write `env.cells.set_params(theta)` and
-throw the return value away, nothing happens and no error is raised.
-
-The other thing to get right is in the loss: read spike times from `run.spikes.padded`, not
-`run.spike_times`. See [the losses page](/optimization/losses#take-spike-times-from-run-spikes-padded).
 
 ## Batching
 
@@ -67,7 +47,8 @@ joint.)
 | `loss` | `loss(run, target) -> scalar`, called with each iteration's `Run` |
 | `init` | `{name: value}` starting parameters; scalar or `(n_cells,)` |
 | `duration`, `stimulus`, `dt` | the run to repeat each step; `dt` is the [recording grid](/optimization/losses#the-grid-contract) the target and loss must agree on |
-| `optimizer`, `learning_rate`, `steps` | any optax optimizer; defaults to `adam(learning_rate)` |
+| `optimizer`, `learning_rate`, `steps` | any optax optimizer; defaults to `adam(learning_rate)`. Line-search optimizers (`optax.lbfgs`, `scale_by_backtracking_linesearch`) work unchanged |
+| `transform` | optimize in an unconstrained space — see [Transforms](#transforms). `True` uses the defaults, a `{name: bijector}` dict overrides |
 | `prior`, `prior_weight`, `prior_weights` | the [`param_prior`](/optimization/losses#param-prior) term |
 | `run_kwargs` | extra `env.run` arguments |
 | `callback` | `callback(step, theta, value)` after each step |
@@ -75,13 +56,30 @@ joint.)
 
 ## Return value
 
-`(theta, history)`. `history["loss"]` has `steps + 1` entries — one per step plus a final evaluation
-at the returned `theta`, so the last entry is the loss of what you get back.
-`history["params"][name]` tracks each parameter over the same points, which is what you plot to see
-whether a fit converged or is still moving.
+`(theta, history)`. `history["loss"]` has `steps + 1` entries — one per step plus a final evaluation at the returned `theta`, so the last entry is the loss of what you get back. `history["params"][name]` tracks each parameter over the same points, which is what you plot to see whether a fit converged or is still moving.
 
-## Bounds
+## Transforms
 
-There are none. Adam will happily push `tau_m` negative and produce `NaN`. If a fit diverges, either
-lower the learning rate or fit a transformed parameter (`log tau_m`, say) and exponentiate inside
-your loss.
+`fit` optimizes raw parameter values by default, and that is often wrong, say, if the value can only be positive. 
+
+Pass `transform=True` to fit in a space where the constraints cannot be violated:
+
+```python
+theta, history = fit(env, target, loss, {"tau_m": 8.0, "V_threshold_base": 25.0},
+                     duration=300.0, stimulus=stimulus, dt=0.05, transform=True)
+```
+
+By default, this is using:
+
+| bijector | for | example |
+|---|---|---|
+| `log` | strictly positive, no natural ceiling | `sigma`, `alpha`, `b_v` |
+| `logit` | fitted inside `[0, 1]` | `f_v`, the voltage-reset multiplier |
+| `bounded` | positive and capped, or signed and capped | `tau_m`, `g_L`, `t_ref`, `E_L`, `V_threshold_base` |
+| `identity` | genuinely unconstrained | anything unclassified |
+
+`bounded` is a logit over a box from `optimization.transforms.BOUNDS`, e.g. `V_threshold_base: (1.0, 150.0)` mV. Override either per call:
+
+```python
+fit(..., transform={"tau_m": "log", "V_threshold_base": "identity"})
+```

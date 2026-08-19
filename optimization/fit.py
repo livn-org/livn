@@ -22,6 +22,7 @@ def fit(
     prior=None,
     prior_weight: float = 1.0,
     prior_weights=None,
+    transform=None,
     run_kwargs=None,
     callback=None,
     jit: bool = True,
@@ -48,6 +49,8 @@ def fit(
             :func:`~optimization.losses.param_prior`
         prior_weight: scalar multiplier on the prior term
         prior_weights: optional per-parameter weights inside the prior term
+        transform: ``{param_name: "log"|"logit"|"identity"}`` dict. ``True`` uses
+            :data:`optimization.transforms.DEFAULT`
         run_kwargs: extra keyword arguments for ``env.run``
         callback: optional ``callback(step, theta, value)``, called after each step
         jit: compile the value-and-gradient step (set ``False`` to debug the inner objective)
@@ -62,12 +65,24 @@ def fit(
     if optimizer is None:
         optimizer = optax.adam(learning_rate)
 
+    optimizer = optax.with_extra_args_support(optimizer)
+
     run_kwargs = {"dt": dt, **(run_kwargs or {})}
+
+    spec = None
+    if transform:
+        from optimization.transforms import pack, unpack
+
+        spec = None if transform is True else dict(transform)
+
+    def constrain(raw):
+        return unpack(raw, spec) if transform else raw
 
     def simulate(theta):
         return env.cells.set_params(theta).run(duration, stimulus, **run_kwargs)
 
-    def objective(theta):
+    def objective(raw):
+        theta = constrain(raw)
         value = loss(simulate(theta), target)
         if prior is not None:
             value = value + prior_weight * param_prior(theta, prior, prior_weights)
@@ -80,22 +95,26 @@ def fit(
         value_and_grad = eqx.filter_jit(value_and_grad)
 
     theta = {name: jnp.asarray(value, dtype=float) for name, value in init.items()}
+    if transform:
+        theta = pack(theta, spec)
     opt_state = optimizer.init(theta)
 
     history: dict = {"loss": [], "params": {name: [] for name in theta}}
 
     def record(theta, value):
         history["loss"].append(float(value))
-        for name, array in theta.items():
+        for name, array in constrain(theta).items():
             history["params"][name].append(np.asarray(array))
 
     for step in range(int(steps)):
         value, grads = value_and_grad(theta)
         record(theta, value)
         if callback is not None:
-            callback(step, theta, float(value))
+            callback(step, constrain(theta), float(value))
 
-        updates, opt_state = optimizer.update(grads, opt_state, theta)
+        updates, opt_state = optimizer.update(
+            grads, opt_state, theta, value=value, grad=grads, value_fn=objective
+        )
         theta = optax.apply_updates(theta, updates)
 
     record(theta, objective(theta))
@@ -105,4 +124,4 @@ def fit(
         name: np.stack(values) for name, values in history["params"].items()
     }
 
-    return theta, history
+    return constrain(theta), history
