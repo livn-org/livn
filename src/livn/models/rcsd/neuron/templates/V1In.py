@@ -85,6 +85,7 @@ class V1In:
             "KCa",
             "CaN",
             "Ka_v1in",
+            "extracellular",
         ):
             sec.insert(mech)
 
