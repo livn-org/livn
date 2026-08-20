@@ -27,7 +27,7 @@ os.environ["LIVN_BACKEND"] = "brian2"
 
 from livn import make
 
-env = make("EI2")
+env = make("EI")
 it, t, iv, v, *_ = env.run(100)
 ```
 
@@ -73,7 +73,7 @@ os.environ["LIVN_BACKEND"] = "diffrax"
 from livn import make
 import jax
 
-env = make("EI2")
+env = make("EI")
 # Gradients through the simulation are now available
 ```
 
@@ -116,7 +116,7 @@ os.environ["LIVN_BACKEND"] = "neuron"
 
 from livn import make
 
-env = make("EI2")
+env = make("EI")
 ```
 
 ## Comparison

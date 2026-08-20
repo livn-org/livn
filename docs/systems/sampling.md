@@ -23,7 +23,7 @@ Via the CLI:
 
 ```sh
 livn systems sample \
-    system=./systems/graphs/EI2 \
+    system=./systems/graphs/EI \
     duration=5000 \
     samples=1000 \
     output_directory=./my_dataset \
@@ -31,7 +31,7 @@ livn systems sample \
 
 # Merge individual samples into a Hugging Face Dataset
 livn systems sample \
-    system=./systems/graphs/EI2 \
+    system=./systems/graphs/EI \
     output_directory=./my_dataset \
     --merge
 ```
@@ -42,7 +42,7 @@ Or equivalently in Python:
 from machinable import get
 
 sampler = get("sample", {
-    "system": "./systems/graphs/EI2",
+    "system": "./systems/graphs/EI",
     "duration": 5000,
     "samples": 1000,
     "output_directory": "./my_dataset",
@@ -55,7 +55,7 @@ sampler.merge()
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `system` | `./systems/graphs/EI2` | Path to the system |
+| `system` | `./systems/graphs/EI` | Path to the system |
 | `model` | `None` | Model class (None = system default) |
 | `duration` | `31000` | Simulation duration per sample (ms) |
 | `samples` | `100` | Number of samples to generate |
@@ -89,7 +89,7 @@ Dataset generation is parallelized via MPI using livn's `DistributedEnv`. To run
 
 ```sh
 livn systems interface.remotes.mpi sample \
-    system=./systems/graphs/EI3 \
+    system=./systems/graphs/EI \
     output_directory=./my_dataset \
     **resources='{"--n": 32}' \
     --launch
@@ -99,7 +99,7 @@ On Slurm clusters, use the `slurm` (or `tacc` for TACC systems) execution module
 
 ```sh
 livn systems slurm sample \
-    system=./systems/graphs/EI3 \
+    system=./systems/graphs/EI \
     output_directory=./my_dataset \
     **resources='{"--nodes": 2, "--ntasks-per-node": 56, "-p": "normal", "-t": "4:00:00"}' \
     --launch
@@ -116,7 +116,7 @@ With `N` MPI ranks and `nprocs_per_worker = P`:
 - `(N - 1) / P` workers run simulations in parallel
 - Each worker handles the full simulation for one sample at a time
 
-For large systems (EI3, EI4), use `nprocs_per_worker > 1` so that each simulation is itself parallelized across multiple ranks.
+For large systems (a full culture, or CA1), use `nprocs_per_worker > 1` so that each simulation is itself parallelized across multiple ranks.
 
 ## Merging samples
 
@@ -149,7 +149,7 @@ sampler.publish(repo_id="my-org/my-dataset")
 ```python
 from datasets import load_dataset
 
-dataset = load_dataset("livn-org/livn", name="EI2")
+dataset = load_dataset("livn-org/livn", name="EI")
 sample = dataset["train"][0]
 
 # Access spike data
@@ -162,11 +162,12 @@ t = sample["trial_t"][0]    # spike times
 Apply an [IO transformation](/guide/concepts/io) to see the data as it would appear in a real experiment:
 
 ```python
-from livn.io import MEA
+from livn.io import MEA, electrode_array_coordinates_for_area
 from livn.system import System
 
-system = System("./systems/graphs/EI2")
-mea = MEA.from_directory("./systems/graphs/EI2")
+system = System("./systems/graphs/EI")
+(xmin, ymin, _), (xmax, ymax, _) = system.bounding_box
+mea = MEA(electrode_array_coordinates_for_area(200, ((xmin, ymin), (xmax, ymax))))
 
 cit, ct = mea.channel_recording(system.neuron_coordinates, it, t)
 print("Channel 0 spikes:", ct[0])

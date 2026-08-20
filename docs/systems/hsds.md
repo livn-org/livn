@@ -41,7 +41,7 @@ os.environ["LIVN_HSDS"] = '{"endpoint": "http://localhost:5101"}'
 
 from livn.system import predefined, System
 
-path = predefined("EI1")
+path = predefined("EI")
 system = System(path)
 print(system.populations)  # reads from HSDS
 ```
@@ -66,6 +66,6 @@ pyodide_http.patch_all()
 import h5pyd
 
 # Connect to HSDS
-f = h5pyd.File("/EI1/cells.h5", "r", endpoint="http://localhost:5101")
+f = h5pyd.File("/EI/cells.h5", "r", endpoint="http://localhost:5101")
 print(list(f["Populations"].keys()))
 ```

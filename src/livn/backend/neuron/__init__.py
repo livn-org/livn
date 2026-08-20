@@ -494,7 +494,7 @@ class Env(EnvProtocol):
         im = mp = None
         if self.i_recs and len(active_gids):
             gid_to_index = {int(g): i for i, g in enumerate(active_gids)}
-            spn = max(1, len(self.i_recs) // len(active_gids))  # sections per neuron
+            spn = max((int(sec) for (_gid, sec) in self.i_recs), default=0) + 1
             # i_membrane_ (fast_imem) is absolute nA per segment -> microampere;
             # pack into a [n_neurons*spn, T] matrix in active_gids order
             T = max((len(rec) for rec in self.i_recs.values()), default=0)

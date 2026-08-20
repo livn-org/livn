@@ -28,6 +28,7 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = [
     "systems",
+    "systems.naming",
     "systems.datasets",
     "systems.interface",
     "systems.interface.remotes",

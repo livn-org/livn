@@ -5,18 +5,16 @@ import numpy as np
 import pytest
 
 from livn.backend import backend
-from livn.env import Env
-from livn.stimulus import Stimulus
 from livn.utils import P
+
+from conftest import livn_test_env, livn_test_mea
 
 TIMEOUT = int(os.environ.get("LIVN_TEST_TIMEOUT", 300))
 
 
 def _create_env(comm, subworld):
-    system = os.environ["LIVN_TEST_SYSTEM"]
-
-    env = Env(
-        system,
+    env = livn_test_env(
+        io=livn_test_mea(),
         comm=comm,
         subworld_size=2 if subworld else None,
     )
@@ -113,7 +111,7 @@ def test_env(mpiexec_n, subworld):
             inputs[50 + r, c] = 750
 
     stimulus = env.cell_stimulus(inputs)
-    assert np.any(stimulus > 0)
+    assert np.any(np.asarray(stimulus.array) > 0)
 
     it, t, *_ = env.run(t_end, stimulus=stimulus)
 
@@ -304,14 +302,16 @@ def test_env_continued_runs_stimulus_dt_mismatch(mpiexec_n):
 
     first_duration = 10
     first_inputs = np.full((first_duration, env.io.num_channels), 100.0)
-    first_stimulus = Stimulus(env.cell_stimulus(first_inputs), dt=1.0)
+    first_stimulus = env.cell_stimulus(first_inputs)
+    first_stimulus.dt = 1.0
 
     env.run(first_duration, stimulus=first_stimulus)
 
     second_duration = 10
     second_steps = second_duration * 2  # dt=0.5 ms
     second_inputs = np.full((second_steps, env.io.num_channels), 250.0)
-    second_stimulus = Stimulus(env.cell_stimulus(second_inputs), dt=0.5)
+    second_stimulus = env.cell_stimulus(second_inputs)
+    second_stimulus.dt = 0.5
 
     with pytest.raises(ValueError, match="Stimulus dt mismatch"):
         env.run(second_duration, stimulus=second_stimulus)

@@ -12,7 +12,7 @@ _GRAPHS = os.path.join(os.path.dirname(_HERE), "systems", "graphs")
 
 # case -> (model import path, system graph dir, selection or None)
 _CASES = {
-    "rcsd": ("livn.models.rcsd.ReducedCalciumSomaDendrite", "EI1", None),
+    "rcsd": ("livn.models.rcsd.ReducedCalciumSomaDendrite", "EI", "e1"),
     "ca1": ("livn.models.ca1.PinskyRinzel", "CA1", {"PYR": 3}),
 }
 

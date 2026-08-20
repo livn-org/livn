@@ -22,7 +22,7 @@ EVAL_MS = 200  # frozen weights
 WEIGHT_REC_DT = 1.0
 
 
-env = Env("systems/graphs/EI1").init()
+env = Env("systems/graphs/EI").init()
 env.apply_model_defaults()
 env.record_spikes()
 env.record_voltage()

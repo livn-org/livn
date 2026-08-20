@@ -14,7 +14,7 @@ Thus, the total number of MPI processes required is `N = subworld_size x num_wor
 from livn.env.distributed import DistributedEnv
 
 env = DistributedEnv(
-    "./systems/graphs/EI1",
+    "./systems/graphs/EI",
     subworld_size=3,  # MPI ranks per worker
 )
 

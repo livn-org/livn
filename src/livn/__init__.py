@@ -15,9 +15,11 @@ def get_version() -> str:
 __version__: str = get_version()
 
 
-def make(system_url: str = "hf://datasets/livn-org/livn/systems/graphs/EI1"):
-    """Initializes a default env from a system directory"""
+def make(system: str = "EI"):
+    """Initializes a default env from a predefined system, or from any URL"""
     from livn.env import Env
-    from livn.system import fetch
+    from livn.system import PREDEFINED, fetch, predefined
 
-    return Env(fetch(system_url)).init().apply_default_params()
+    source = predefined(system) if system in PREDEFINED else fetch(system)
+
+    return Env(source).init().apply_default_params()

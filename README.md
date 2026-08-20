@@ -29,7 +29,7 @@ pip install livn
 ```python
 from livn import make
 
-env = make("EI1")
+env = make("EI")
 
 env.apply_model_defaults()
 env.record_spikes()
@@ -51,15 +51,6 @@ export LIVN_BACKEND=neuron     # MPI-parallel, multi-compartment
 ```
 
 See the [documentation](https://livn-org.github.io/livn/guide/backends) for details.
-
-## Predefined systems
-
-| System | Neurons | EXC | INH | MEA channels | Description |
-|--------|---------|-----|-----|-------------|-------------|
-| **EI1** | 10 | 8 | 2 | 1 | Quick prototyping, unit tests |
-| **EI2** | 100 | 80 | 20 | 16 | Development, RL experiments |
-| **EI3** | 1,000 | 800 | 200 | 64 | Medium-scale experiments |
-| **EI4** | 10,000 | 8,000 | 2,000 | 1,024 | Large-scale experiments |
 
 ## Documentation
 

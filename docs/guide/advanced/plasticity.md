@@ -11,7 +11,7 @@ livn implements a voltage-based form of spike-timing dependent plasticity (STDP)
 ```python
 from livn import make
 
-env = make("EI1")
+env = make("EI")
 
 env.record_spikes()
 env.record_voltage()

@@ -9,7 +9,7 @@ class Run(Component):
     class Config(BaseModel):
         model_config = ConfigDict(extra="forbid")
 
-        system: str = "systems/graphs/EI1"
+        system: str = "systems/graphs/EI"
         model: ObjSpec = None
         decoding: ObjSpec = ("livn.decoding.GatherAndMerge", {"duration": 60_000})
         encoding: ObjSpec = None

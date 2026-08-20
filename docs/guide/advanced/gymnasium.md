@@ -220,7 +220,7 @@ decoding = Pipe(
 )
 
 # 4. Create the livn environment and wrap it
-livn_env = make("EI1")
+livn_env = make("EI")
 livn_env.record_spikes()
 
 gymnasium_env = GymnasiumEnv(

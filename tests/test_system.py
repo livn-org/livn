@@ -5,7 +5,7 @@ import pytest
 
 from livn.backend import backend
 
-SYSTEM_DIR = os.environ.get("LIVN_TEST_SYSTEM", "./systems/graphs/EI1")
+SYSTEM_DIR = os.environ.get("LIVN_TEST_SYSTEM", "./systems/graphs/EI")
 
 
 @pytest.fixture

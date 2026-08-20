@@ -11,15 +11,23 @@ mpirun -n {subworld_size * num_workers + 1} python examples/distributed_workers.
 import numpy as np
 
 from livn.env.distributed import DistributedEnv
+from livn.io import MEA, electrode_array_coordinates_for_area
+from livn.system import System
 from livn.types import Encoding
 from livn.decoding import ChannelRecording
+
+SYSTEM = "./systems/graphs/EI"
+
+# the cultures ship without an array, so mount one over the system's extent
+(xmin, ymin, _), (xmax, ymax, _) = System(SYSTEM).bounding_box
+mea = MEA(electrode_array_coordinates_for_area(400, ((xmin, ymin), (xmax, ymax))))
 
 
 class Constant(Encoding):
     def __call__(self, env, t_end, inputs):
         t_stim = inputs
         # Set up a 20ms stimulus in channel 1 and 4
-        channel_inputs = np.zeros([t_end, 16])
+        channel_inputs = np.zeros([t_end, env.io.num_channels])
         for r in range(20):
             for c in [1, 4]:
                 channel_inputs[t_stim + r, c] = 1.5
@@ -27,7 +35,8 @@ class Constant(Encoding):
 
 
 env = DistributedEnv(
-    "./systems/graphs/EI1",
+    SYSTEM,
+    io=mea,
     subworld_size=3,  # processors per workers
 )
 

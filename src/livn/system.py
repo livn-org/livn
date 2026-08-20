@@ -144,14 +144,20 @@ def fetch(
     return target
 
 
-def predefined(name: str = "EI1", download_directory: str = ".", force: bool = False):
-    available = (
-        [f"EI{s + 1}" for s in range(4)]
-        + [f"S{s + 1}" for s in range(4)]
-        + ["CA1", "CA1d"]
-    )
+CULTURES = ("E", "E_b", "E5I", "E5I_b", "E3I", "E3I_b", "EI", "EI_b")
+LEGACY = ("EI1", "EI2", "EI3", "EI4")
+PREDEFINED = (
+    *CULTURES,
+    *[f"S{s + 1}" for s in range(4)],
+    "CA1",
+    "CA1d",
+    *LEGACY,
+)
 
-    if name not in available:
+
+def predefined(name: str = "EI", download_directory: str = ".", force: bool = False):
+    if name not in PREDEFINED:
+        available = [n for n in PREDEFINED if n not in LEGACY]
         raise ValueError(f"'{name}' is invalid, pick one of ", available)
 
     return fetch(
@@ -162,7 +168,7 @@ def predefined(name: str = "EI1", download_directory: str = ".", force: bool = F
     )
 
 
-def make(name: str = "EI1") -> "System":
+def make(name: str = "EI") -> "System":
     system = predefined(name)
 
     return System(system)
@@ -569,9 +575,9 @@ def _to_hsds_domain(filepath):
     """Map a local file path to an HSDS domain path.
 
     The server's root_dir is systems/graphs/, so a local path like
-    .../systems/graphs/EI1/graph.h5 maps to the HSDS domain /EI1/graph.h5.
-    Relative paths like EI1/graph.h5 are used directly.
-    Absolute paths without 'graphs' (e.g. /home/pyodide/EI1/cells.h5)
+    .../systems/graphs/EI/graph.h5 maps to the HSDS domain /EI/graph.h5.
+    Relative paths like EI/graph.h5 are used directly.
+    Absolute paths without 'graphs' (e.g. /home/pyodide/EI/cells.h5)
     use the last two path components as the domain.
     """
     parts = pathlib.PurePosixPath(filepath).parts
@@ -580,7 +586,7 @@ def _to_hsds_domain(filepath):
         return "/" + "/".join(parts[idx + 1 :])
     except ValueError:
         # Extract system_name/filename from the end of the path
-        # e.g. /home/pyodide/EI1/cells.h5 -> /EI1/cells.h5
+        # e.g. /home/pyodide/EI/cells.h5 -> /EI/cells.h5
         if len(parts) >= 2:
             return "/" + "/".join(parts[-2:])
         return "/" + filepath.lstrip("/")

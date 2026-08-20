@@ -4,17 +4,53 @@ A **system** in livn defines the physical architecture of an in vitro neural net
 
 ## Predefined systems
 
-livn ships with six predefined systems hosted on [Hugging Face](https://huggingface.co/datasets/livn-org/livn) that can be loaded by name:
+livn ships a series of 2D cultures, plus a hippocampal slice model, hosted on [Hugging Face](https://huggingface.co/datasets/livn-org/livn) and loaded by name:
 
-| Name | Neurons | Populations | Description |
-|------|---------|-------------|-------------|
-| EI1 | 10 | 8 EXC / 2 INH | Minimal 2D excitatory-inhibitory culture |
-| EI2 | 100 | 80 EXC / 20 INH | Small-scale 2D EXC-INH culture |
-| EI3 | 1,000 | 800 EXC / 200 INH | Medium-scale 2D EXC-INH culture |
-| EI4 | 10,000 | 8,000 EXC / 2,000 INH | Large-scale 2D EXC-INH culture |
-| CA1 | ~100,000 | 15 cell types | Hippocampal CA1 model |
+| Name | Neurons | EXC / INH | Description |
+|------|---------|-----------|-------------|
+| `E` | 2,600 | 2600 / 0 | Excitatory only |
+| `E5I` | 2,600 | 2167 / 433 | 17% inhibitory |
+| `E3I` | 2,600 | 1950 / 650 | 25% inhibitory |
+| `EI` | 2,600 | 1300 / 1300 | Balanced |
+| `CA1` | ~10,000 | 15 cell types | Hippocampal CA1 model |
 
-The EXC-INH systems (EI1–EI4) are 2D flat cultures with an 80/20 excitatory-to-inhibitory ratio. The hippocampal system (CA1) model the CA1 region and are suitable for simulating brain slices.
+The cultures differ only in composition using the same area, same cell types, same per-projection in-degrees.
+
+### Reading a name
+
+A culture's name states its excitatory-to-inhibitory ratio, with inhibition fixed at 1:
+
+| Name | Ratio | Inhibitory share |
+|------|-------|------------------|
+| `E` | 1:0 | none |
+| `E5I` | 5:1 | 17% |
+| `E3I` | 3:1 | 25% |
+| `EI` | 1:1 | 50% |
+
+The number always follows `E`, never `I`, so `E3I` is three parts excitatory to one part inhibitory.
+
+`systems.naming` parses this convention:
+
+```python
+from systems.naming import composition_of, ratios
+
+composition_of("E3I")   # (3.0, 1.0)
+ratios("E3I")           # {'EXC': 0.75, 'INH': 0.25}
+```
+
+### Replicates
+
+Each culture has a second draw under a `_b` suffix (e.g. `EI_b`) built from the same configuration with a different RNG seed.
+
+### Scale
+
+To allow running cheaply, every culture carries three nested spatial subselections, `e1`/`e2`/`e3`, cut from 250 / 500 / 1000 um boxes at its centre:
+
+| Rung | Box | Cells (`EI`) |
+|------|-----|--------------|
+| `e1` | 250 um | ~30 |
+| `e2` | 500 um | ~120 |
+| `e3` | 1000 um | ~490 |
 
 ### Loading a system
 
@@ -22,10 +58,10 @@ The EXC-INH systems (EI1–EI4) are 2D flat cultures with an 80/20 excitatory-to
 from livn.system import predefined, make
 
 # Download and return the path to a predefined system
-system_path = predefined("EI2")
+system_path = predefined("EI")
 
 # Or use make() which returns a System object directly
-system = make("EI2")
+system = make("EI")
 ```
 
 Systems are cached locally in `./systems/graphs/` after the first download.
@@ -37,12 +73,12 @@ The `System` class provides access to all structural properties of a neural syst
 ```python
 from livn.system import System
 
-system = System("./systems/graphs/EI2")
+system = System("./systems/graphs/EI")
 
 # Cell populations
 system.populations          # ['EXC', 'INH']
-system.num_neurons          # 10
-system.population_ranges    # {'EXC': (0, 8), 'INH': (8, 2)}
+system.num_neurons          # 2600
+system.population_ranges    # {'EXC': (0, 1300), 'INH': (1300, 1300)}
 
 # Spatial layout
 system.neuron_coordinates   # [n_neurons, 4] array of [gid, x, y, z]
@@ -69,8 +105,8 @@ Neurons are organized into named populations (e.g., `"EXC"`, `"INH"`). Each popu
 
 ```python
 system.populations             # ['EXC', 'INH']
-system.population_ranges       # {'EXC': (0, 7), 'INH': (7, 3)}
-system.population_count("EXC") # 7
+system.population_ranges       # {'EXC': (0, 1300), 'INH': (1300, 1300)}
+system.population_count("EXC") # 1300
 ```
 
 ### Connectivity
@@ -128,7 +164,15 @@ env = Env({"EXC": 3, "INH": 5}).init()
 Because models key their cell factories by population name, every name has to be one the [model](/guide/concepts/model) defines.
 
 ::: warning
-A model may handle some populations implicitly. For example, `ReducedCalciumSomaDendrite(implicit_inhibition=True)` puts `"INH"` in `ignored_populations()`, so those cells are never instantiated. Pass `ReducedCalciumSomaDendrite(implicit_inhibition=False)` to simulate them explicitly.
+A model may declare that some populations should not be built. `ignored_populations()` returns the names backends skip when instantiating cells and connections; it is empty by default, so every population in the system is simulated.
+
+Override it to ablate one:
+
+```python
+class ExcitatoryOnly(ReducedCalciumSomaDendrite):
+    def ignored_populations(self):
+        return {"INH"}
+```
 :::
 
 ### Coordinates
@@ -157,7 +201,8 @@ Systems are stored on disk as a directory containing:
 | `graph.json` | System metadata (architecture, connectivity config, element provenance) |
 | `mea.json` | Default IO device configuration (optional) |
 | `model.json` | Default model configuration (optional) |
-| `params.json` | Tuned default parameters (optional) |
+| `selection/<name>.json` | Stored subselections, as resolved cell ids (optional) |
+| `params/<selection>.json` | Tuned parameters per selection, `default.json` for the whole system (optional) |
 
 
 ## Default model and IO
@@ -165,14 +210,64 @@ Systems are stored on disk as a directory containing:
 Each system can specify default configurations:
 
 ```python
-system = System("./systems/graphs/EI2")
+system = System("./systems/graphs/EI")
 
 model = system.default_model()       # e.g., ReducedCalciumSomaDendrite
 io = system.default_io()             # e.g., MEA with stored electrode layout
-params = system.default_params()     # Tuned weights and noise parameters
 ```
 
 These are used automatically by `livn.make()`.
+
+## Subselections
+
+`env.selection(name)` builds only part of a system, which is how the `e1`/`e2`/`e3` rungs are used:
+
+```python
+env = Env("./systems/graphs/EI")
+env.selection("e2")   # ~120 cells instead of 2600
+env.init()
+```
+
+A stored selection holds the resolved cell ids rather than a rule to recompute, so it names the same cells however the selection code changes. An ad-hoc selection takes a count, a fraction, or a spatial patch instead:
+
+```python
+env.selection(100)                        # 100 cells, proportional across populations
+env.selection(0.25)                       # a quarter of each population
+env.selection(0.25, method="patch")       # a centred region, keeping neighbours together
+```
+
+`method="patch"` matters when connectivity is distance-dependent. Thinning at random keeps an edge only where both endpoints survive, so in-degree collapses in proportion to the thinning. A contiguous patch keeps each cell's nearest partners and drops the distant ones, which are the weakest under a distance kernel.
+
+Even so, a subselection is a different network. For example, on `EI`, the rungs retain 3%, 11% and 37% of each cell's in-degree, so parameters fitted on the whole system do not describe a rung and vice versa. That is why each carries its own parameter file.
+
+## Tuned parameters
+
+A system ships its tuned parameters under `params/`, keyed by the model and by which selection is in force. Applying them is a method on the environment, because the choice depends on what was actually built:
+
+```python
+env = Env("./systems/graphs/EI").init()
+env.apply_default_params()                  # the whole system
+```
+
+```python
+env = Env("./systems/graphs/E")
+env.selection("e3")                          # a stored subselection
+env.init()
+env.apply_default_params()                   # -> params/e3.json
+```
+
+Each file holds one block per model and one named group per promoted solution:
+
+```json
+{
+  "ReducedCalciumSomaDendrite": {
+    "default": {"params": {"EXC_EXC-hillock-AMPA-weight": 0.31, "noise-g_e0": 1.0},
+                "meta": {"loc": 7, "retained_in_degree": 0.624}}
+  }
+}
+```
+
+Pass `group=` to pick a different one. When a system ships nothing, the model's own built-in defaults apply instead.
 
 ## Custom systems
 

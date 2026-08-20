@@ -595,7 +595,10 @@ class Env(Protocol):
     def recording_distances(self):
         """Distances for the coordinates the membrane currents are recorded at."""
         return self.io.distances(
-            self.simulated_coordinates(self.model.recording_coordinates)
+            self.system.transform_coordinates(
+                self.model.recording_coordinates,
+                populations=self.active_populations(),
+            )
         )
 
     def source_gain(

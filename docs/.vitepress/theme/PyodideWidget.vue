@@ -38,13 +38,13 @@ async function run() {
         const micropip = pyodide.pyimport("micropip");
         await micropip.install(["livn", "fsspec", "huggingface_hub", "httpcore"]);
 
-        log("Downloading EI1 system…");
+        log("Downloading EI system…");
         const result = await pyodide.runPythonAsync(`
 import json
 from livn.env import Env
 from livn.system import predefined
 
-env = Env(predefined('EI1'))
+env = Env(predefined('EI'))
 
 coords = env.io.electrode_coordinates.tolist()
 neuron_coords = env.system.neuron_coordinates.tolist()
@@ -281,7 +281,7 @@ onUnmounted(() => {
     <div class="pyodide-widget">
         <div v-if="state === 'idle'" class="widget-start">
             <p class="widget-description">
-                Load Pyodide in your browser, download the EI1 system, and
+                Load Pyodide in your browser, download the EI system, and
                 visualize neuron and electrode positions.
             </p>
             <button class="widget-btn" @click="run">
@@ -304,7 +304,7 @@ onUnmounted(() => {
 
         <div v-if="state === 'ready'" class="widget-result">
             <div class="viewer-wrapper">
-                <div class="system-name">EI1</div>
+                <div class="system-name">EI</div>
                 <div ref="containerRef" class="three-container" />
                 <div class="legend">
                     <span class="legend-item"><span class="dot dot-e" /> Excitatory ({{ systemData?.pop_coords?.EXC?.length ?? systemData?.pop_coords?.E?.length ?? '?' }})</span>

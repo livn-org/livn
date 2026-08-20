@@ -1,47 +1,47 @@
 # Standard Systems
 
-livn includes predefined systems that cover a range of scales and biological models. These systems are ready to use and come with tuned parameters, default models, and MEA configurations.
+livn includes predefined systems that cover a range of scales and biological models. These systems are ready to use and come with tuned parameters and default models.
 
 ::: tip
 This section assumes familiarity with the core [concepts](/guide/concepts/env). If you haven't already, read through the Concepts guide first.
 :::
 
-## EXC-INH systems (EI1–EI4)
+## Cultures
 
-The EXC-INH systems are 2D flat cultures with excitatory and inhibitory neuronal populations at an 80/20 ratio. They are designed to reproduce the dynamics of in vitro cultures grown on multi-electrode arrays and are the recommended starting point for most users.
+The cultures are 2D flat networks of excitatory and inhibitory neurons, built to reproduce the dynamics of in vitro preparations grown on multi-electrode arrays. They are the recommended starting point for most users.
 
-| System | Neurons | EXC | INH | MEA channels | Area (µm) | Typical use |
-|--------|---------|-----|-----|-------------|-----------|-------------|
-| **EI1** | 10 | 8 | 2 | 1 | 40 × 40 | Quick prototyping, unit tests |
-| **EI2** | 100 | 80 | 20 | 16 | 400 × 400 | Development, RL experiments |
-| **EI3** | 1,000 | 800 | 200 | 64 | 1000 × 1000 | Medium-scale experiments |
-| **EI4** | 10,000 | 8,000 | 2,000 | 1,024 | 4000 × 4000 | Large-scale experiments |
+| System | Neurons | EXC | INH | Inhibitory share | Ratio |
+|--------|---------|-----|-----|------------------|-------|
+| **`E`** | 2,600 | 2,600 | 0 | none | 1:0 |
+| **`E5I`** | 2,600 | 2,167 | 433 | 17% | 5:1 |
+| **`E3I`** | 2,600 | 1,950 | 650 | 25% | 3:1 |
+| **`EI`** | 2,600 | 1,300 | 1,300 | 50% | 1:1 |
+
+See [reading a name](/guide/concepts/system#reading-a-name).
+
+Each culture has a replicate draw under `_b` (`EI_b`, `E3I_b`) so a result can be checked against a second sample of the same composition.
 
 ### Architecture
 
-Each EI system is a 2D flat culture generated with distance-dependent Gaussian connectivity. Synaptic connections include AMPA, NMDA, and GABA_A receptor types.
+Every culture occupies the same 1.6 × 3.2 mm area with the same 2,600 cells, the same cell types, and the same per-projection in-degrees.
 
-- **Excitatory (EXC)** neurons make up 80% of the population
-- **Inhibitory (INH)** neurons make up the remaining 20%
-- Connection probability decays with distance (sigma = 200 µm)
+- Distance-dependent connectivity, exponential kernel with a 600 µm length constant
+- `EXC→EXC` in-degree 20, `EXC→INH` 4, `INH→EXC` 40
+- AMPA on excitatory targets, GABA_A on inhibitory ones
 
-See [Generating 2D systems](/systems/generate) for how to create custom 2D cultures.
+Holding the per-projection degrees fixed means each excitatory cell receives the same inhibitory convergence in every culture; what varies across the series is how concentrated that inhibition is in fewer, more divergent cells.
+
+See [Generating 2D systems](/systems/generate) for how to create custom cultures.
 
 ### Tuned parameters
 
-The synaptic parameters can be tuned (via surrogate-assisted optimization) to produce experimentally reported dynamics:
-- Spontaneous mean firing rates around **3 Hz**
-- Stimulated mean firing rates around **12 Hz**
-- Branching ratio near **1.0** (critical dynamics)
-
-See [Tuning](/systems/tuning) for details.
+Synaptic parameters are fitted (via surrogate-assisted optimization) against measured culture recordings. See [Tuning](/systems/tuning) for details.
 
 ```python
 from livn import make
 
-env = make("EI2")
-# default_params() returns the tuned weights and noise
-print(env.system.default_params())
+# make() applies whatever the system ships for this model
+env = make("EI")
 ```
 
 ## Hippocampal system (CA1)
@@ -67,7 +67,7 @@ All predefined systems can be loaded with `make()`:
 from livn import make
 
 # Downloads the system on first use, caches locally
-env = make("EI2")
+env = make("EI")
 
 env.record_spikes()
 env.record_voltage()
@@ -79,10 +79,10 @@ Or individually:
 ```python
 from livn.system import predefined, System
 
-path = predefined("EI2")
+path = predefined("EI")
 system = System(path)
 
-print(system.num_neurons)        # 100
+print(system.num_neurons)        # 2600
 print(system.populations)        # ['EXC', 'INH']
 print(system.weight_names)       # tunable weight parameters
 print(system.summary())          # neuron and projection counts

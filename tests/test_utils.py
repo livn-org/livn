@@ -6,6 +6,8 @@ import pytest
 from livn.utils import P, merge, merge_array, merge_dict
 from livn.backend import backend
 
+from conftest import livn_test_env
+
 try:
     import mpi4py  # noqa: F401
 
@@ -18,9 +20,7 @@ def _get_rank():
     if backend() == "neuron":
         # use neuron-compatible MPI
 
-        from livn.env import Env
-
-        env = Env(os.environ["LIVN_TEST_SYSTEM"])
+        env = livn_test_env()
         rank = env.rank
         env.close()
 

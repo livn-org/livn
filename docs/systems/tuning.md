@@ -14,12 +14,12 @@ A freshly generated system has bare connectivity - the synaptic weights and back
 - **Runaway**: Too much excitation, pathological hypersynchrony
 - **Unrealistic**: Wrong firing rate balance, absent oscillations, or non-critical dynamics
 
-Tuning finds parameters that produce **target dynamics**, such as:
+Tuning finds parameters that produce target dynamics, i.e. the values a recording of the real preparation reports, such as:
 
-- Mean firing rate ~1 Hz (spontaneous)
-- Branching ratio ~1.0 (near-critical dynamics)
-- Biologically plausible burst patterns and LFP spectra
-- Power-law distributed neuronal avalanches
+- a mean firing rate and how irregular the spiking is
+- how much of the population fires at all, and how correlated it is
+- burst rate, synchrony and population timescale within measured bands
+- near-critical dynamics with a branching ratio around 1, power-law avalanches
 
 ## How it works
 
@@ -31,9 +31,14 @@ livn uses **surrogate-assisted multi-objective optimization** via the [dmosopt](
 4. **Simulation evaluation**: Promising candidates are simulated to validate predictions
 5. **Iteration**: Steps 2-4 repeat for multiple epochs
 
-The `target` config option specifies a **tuning target** that defines the parameter search space, the optimization objectives, and the constraints. livn ships with `systems.targets.EI.Spontaneous` as the default target for EXC-INH systems, but you can implement your own to tune against custom data or dynamics.
+The `target` config option specifies a **tuning target** that defines the parameter search space, the optimization objectives, and the constraints. livn ships with `systems.targets.EI.Spontaneous` as the default target for the cultures. It takes the values it fits as arguments, so tuning against your own recordings does not require writing one from scratch.
 
 ## Tuning Targets
+
+::: tip
+Fitting a culture to your own measurements usually needs no code at all since the built-in [`Spontaneous`](#systems-targets-ei-spontaneous) target takes the measured values as arguments; see [tuning against your own
+measurements](#tuning-against-your-own-measurements). Read on when you need a protocol it does not cover.
+:::
 
 A tuning target is a class that subclasses `TuningTargets` and defines three things:
 
@@ -56,21 +61,20 @@ class MyTarget(TuningTargets):
 
     # --- Search space ---
 
-    def _weight_space(self):
+    def _weight_space(self, model):
         return {
-            "EXC_EXC-hillock-AMPA-weight": [0.001, 20.0, self.transform_log1p],
-            "EXC_INH-hillock-AMPA-weight": [0.001, 20.0, self.transform_log1p],
-            "INH_EXC-soma-GABA_A-weight": [0.001, 12.0, self.transform_log1p],
-            "INH_INH-soma-GABA_A-weight": [0.001, 12.0, self.transform_log1p],
+            "EXC_EXC-dend-AMPA-weight": [0.05, 10.0, self.transform_log10],
+            "INH_EXC-soma-AMPA-weight": [0.05, 10.0, self.transform_log10],
+            "EXC_INH-soma-GABA_A-weight": [0.05, 10.0, self.transform_log10],
         }
 
-    def _noise_space(self):
+    def _noise_space(self, model):
         return {
-            "noise-g_e0": [1.0, 5.0],
-            "noise-std_e": [0.005, 0.5],
+            "noise-g_e0": [0.0002, 0.02, self.transform_log10],
+            "noise-std_e": [0.0001, 0.05, self.transform_log10],
         }
 
-    def _protocol_space(self):
+    def _protocol_space(self, model):
         return {}  # additional protocol-specific parameters
 
     # --- Evaluation ---
@@ -105,10 +109,10 @@ class MyTarget(TuningTargets):
 
 ### Search space definition
 
-Override `_weight_space()`, `_noise_space()`, and `_protocol_space()` to define the parameters the optimizer will search over. Each entry maps a parameter name to its bounds:
+Override `_weight_space()`, `_noise_space()`, and `_protocol_space()` to define the parameters the optimizer will search over. Each receives the `model` the run was configured with — useful for deriving keys from what the model actually builds, and ignorable otherwise. Each entry maps a parameter name to its bounds:
 
 ```python
-def _weight_space(self):
+def _weight_space(self, model):
     return {
         "param_name": [min, max],               # identity transform
         "param_name": [min, max, transform_fn],  # with transform
@@ -127,18 +131,26 @@ The parameter names must match the names expected by [`env.set_params()`](/guide
 
 | prefix | goes to | example |
 |---|---|---|
-| `weight-`, or no prefix | `env.set_weights()` | `EXC_INH-hillock-AMPA-weight` |
+| `weight-`, or no prefix | `env.set_weights()` | `EXC_INH-soma-GABA_A-weight` |
 | `noise-` | `env.set_noise()` | `noise-g_e0` |
 | `cells-` | `env.cells.set_params()` | `cells-soma.g_pas` |
 
-Synaptic weight parameters follow the convention `{pre}_{post}-{section}-{mechanism}-weight` (e.g., `EXC_INH-hillock-AMPA-weight`) and are the search space's default, so an unprefixed name is read as a weight.
+Synaptic weight parameters follow the convention `{post}_{pre}-{section}-{mechanism}-weight` and are the search space's default, so an unprefixed name is read as a weight. The **postsynaptic** population comes first, because that is the population the synapse belongs to: on the shipped cultures the three keys are
+
+| Key | Reads as |
+|-----|----------|
+| `EXC_EXC-dend-AMPA-weight` | EXC→EXC, onto the dendrite |
+| `INH_EXC-soma-AMPA-weight` | EXC→INH, onto the soma |
+| `EXC_INH-soma-GABA_A-weight` | INH→EXC, onto the soma |
+
+A key naming a section or mechanism the network does not have selects nothing and is applied silently, so `system.weight_names` is worth checking against the graph you are tuning. Parameters of the point process itself rather than of a connection (`tau_rec`, `U`, `tau_decay`) drop the source: `EXC-dend-AMPA-tau_rec`.
 
 `cells-` reaches the physical parameters of the cells themselves rather than the synapses between them, and applies one value to every cell. Its names are the ones the cells expose (`env.cells[gid].get_params()`), which on the NEURON backend are `"<section type>.<name>"` under the same section types weight keys select on. Searching over them tunes the cell model alongside the network:
 
 ```python
-def _weight_space(self):
+def _weight_space(self, model):
     return {
-        "EXC_EXC-hillock-AMPA-weight": [0.001, 20.0, self.transform_log1p],
+        "EXC_EXC-dend-AMPA-weight": [0.05, 10.0, self.transform_log10],
         "cells-soma.g_pas": [1e-5, 1e-3, self.transform_log10],
     }
 ```
@@ -163,7 +175,7 @@ When the optimizer evaluates a candidate parameter set, it:
 If your target introduces parameters that should not be passed to `env.set_params()` (e.g., stimulus amplitude), override the target's own `set_params()`.
 
 ```python
-def _protocol_space(self):
+def _protocol_space(self, model):
     return {"stim_amplitude": [0.1, 5.0]}
 
 def set_params(self, params):
@@ -180,22 +192,109 @@ This is unaffected by the prefixes above as whatever the target does not consume
 
 ### `systems.targets.EI.Spontaneous`
 
-The default target for EXC-INH systems optimizing for spontaneous (unstimulated) activity.
+The default target for cultures runs the network unstimulated, measures its spontaneous activity, and scores it against a handful of values you can set.
 
-**Objectives:**
+**Objectives** — what the optimizer minimizes. Each is the squared distance between the measured value and its target (`mfr` in log space):
 
-| Metric | Default target | Description |
-|--------|---------------|-------------|
+| Name | Default | Description |
+|------|---------|-------------|
 | `mfr` | 1.0 Hz | Mean firing rate |
-| `branching_ratio` | 1.0 | Near-critical dynamics |
-| `burst_rate` | 0.1 Hz | Network burst frequency |
-| `burst_participation` | 0.4 | Fraction of neurons in bursts |
-| `avalanche_power_law` | 0.6 (R²) | Power-law fit quality |
-| `delta_theta_ratio` | 1.6 | LFP delta/theta ratio |
-| `spectral_slope` | -1.5 | 1/f spectral slope |
-| LFP band powers | various | Delta, theta, alpha, beta, gamma |
+| `isi_cv` | 1.2 | Coefficient of variation of the inter-spike intervals — how irregular the spiking is |
+| `active_fraction` | 1.0 | Fraction of units that fire at all |
+| `mean_channel_correlation` | *unset* | Mean pairwise correlation. Only becomes an objective when you give it a value |
 
-**Constraints:** not runaway, not quiescent, stable activity, bounded firing rates, moderate synchrony.
+To fit fewer, pass `skip_objectives`.
+
+**Constraints** — hard gates a solution has to satisfy. Each is a class constant you can override:
+
+| Constraint | Constants |
+|------------|-----------|
+| not runaway / not quiescent / is stable | `MAX_POP_RATE_PER_UNIT_HZ`, `MIN_POP_RATE_PER_UNIT_HZ`, `STABILITY_MARGIN` |
+| firing rates in band | `MAX_NEURON_RATE_HZ`, `MIN_MEAN_RATE_HZ`, `MAX_MEAN_RATE_HZ` |
+| synchrony | `SYNCHRONY_BAND`, `MIN_SYNC_PEAK`, `MAX_SYNC_PEAK` |
+| bursting | `MIN_BURST_RATE_HZ`, `MAX_BURST_RATE_HZ` |
+| liveness | `MIN_ACTIVE_FRACTION`, `MIN_POPULATION_ACTIVE` |
+| timescale and criticality | `POP_TAU_BAND_MS`, `BRANCHING_RATIO_BAND`, `MIN_AVALANCHE_R2` |
+
+**Search space** — derived from the graph rather than declared, so it follows whatever projections the system actually has (a model built with `short_term_depression=True` adds that mechanism's `tau_rec` and `U` to it). The recurrent excitatory weight is searched on its own scale and every other weight as a ratio to it (`...-weight_ratio`), which keeps the E/I balance separable from the overall drive; the OU background (`noise-g_e0`, `noise-g_i0`, `noise-std_e`, `noise-std_i`, `noise-tau_e`, `noise-tau_i`) is searched alongside it. Two optional coordinates: `adaptation=True` frees the cell's calcium-dependent potassium current and calcium removal rate, and `ignition=True` searches the recurrent weight along the measured `weight × g_e0` ignition boundary instead of on its own axis.
+
+**Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `targets` | see above | The values being fitted |
+| `overrides` | `{}` | Constraint constants, by name; `{"targets": {...}}` also works. An unknown name raises |
+| `feature_bands` | `{}` | `{feature: (lo, hi)}` used to *rank* the front, not to gate it. Matched against the recorded feature columns, which are the objective names |
+| `duration` / `warmup` | 30 000 / 1 000 ms | Measured window, and the settling time before it |
+| `readout` | `"neurons"` | `"channels"` measures through an array instead of per neuron |
+| `mea` | `None` | Array geometry (`electrode_coordinates`, `input_radius`, `output_radius`), required for `readout="channels"` |
+| `skip_objectives` / `skip_constraints` | `()` | Names to leave out |
+| `adaptation` / `ignition` | `False` | The optional search coordinates above |
+
+## Tuning against your own measurements
+
+```python
+from machinable import get
+
+tuner = get("tune", {
+    "system": "./systems/graphs/EI",
+    "target": ["systems.targets.EI.Spontaneous", {
+        # what the recording says the network does
+        "targets": {
+            "mfr": 0.51,                        # Hz
+            "isi_cv": 0.78,
+            "active_fraction": 0.48,
+            "mean_channel_correlation": 0.29,   # only if you measured one
+        },
+        # the bands a solution has to stay inside
+        "overrides": {
+            "MIN_MEAN_RATE_HZ": 0.45,
+            "MAX_MEAN_RATE_HZ": 0.89,
+            "MAX_NEURON_RATE_HZ": 7.4,
+            "MAX_SYNC_PEAK": 0.05,
+            "MAX_BURST_RATE_HZ": 0.47,
+            "BRANCHING_RATIO_BAND": [1.25, 1.37],
+        },
+        # ranking rather than gating: a solution inside every band comes out
+        # above one that merely scores well. Names are the objective features
+        "feature_bands": {
+            "mfr": [0.45, 0.89],
+            "isi_cv": [0.70, 0.95],
+        },
+        "duration": 30000.0,
+    }],
+})
+tuner.launch()
+```
+
+The same on the command line, where the target is a `[path, options]` pair:
+
+```sh
+livn systems mpi tune \
+    system=./systems/graphs/EI \
+    target='["systems.targets.EI.Spontaneous", {"targets": {"mfr": 0.51, "isi_cv": 0.78}}]' \
+    **resources='{"-n": 2}' \
+    --launch
+```
+
+Which numbers you need depends on what you can measure reliably. Only `targets` is really required since every constraint has a default.
+
+::: warning
+Measure the simulation the way you measured the culture. With `readout="neurons"` the metrics are computed per cell; with `readout="channels"` they are computed on spikes pooled per electrode, which is what an MEA recording gives you. The two do not produce the same `mfr` for the same network, so a target measured on channels has to be fitted on channels:
+
+```python
+"target": ["systems.targets.EI.Spontaneous", {
+    "readout": "channels",
+    "mea": {
+        "electrode_coordinates": [[0, 200.0, 200.0, 5.0], [1, 400.0, 200.0, 5.0]],
+        "input_radius": 50.0,
+        "output_radius": 50.0,
+    },
+    "targets": {"mfr": 0.51},
+}],
+```
+:::
+
 
 ## Writing custom tuning targets
 
@@ -227,19 +326,17 @@ class OrganoidMatch(TuningTargets):
         self.warmup = warmup
         super().__init__()
 
-    def _weight_space(self):
+    def _weight_space(self, model):
         return {
-            "EXC_EXC-hillock-AMPA-weight": [0.001, 20.0, self.transform_log1p],
-            "EXC_INH-hillock-AMPA-weight": [0.001, 20.0, self.transform_log1p],
-            "INH_EXC-soma-GABA_A-weight": [0.001, 12.0, self.transform_log1p],
-            "INH_INH-soma-GABA_A-weight": [0.001, 12.0, self.transform_log1p],
+            "EXC_EXC-dend-AMPA-weight": [0.05, 10.0, self.transform_log10],
+            "INH_EXC-soma-AMPA-weight": [0.05, 10.0, self.transform_log10],
+            "EXC_INH-soma-GABA_A-weight": [0.05, 10.0, self.transform_log10],
         }
 
-    def _noise_space(self):
+    def _noise_space(self, model):
         return {
-            "noise-g_e0": [1.0, 5.0],
-            "noise-std_e": [0.005, 0.5],
-            "noise-std_i": [0.001, 0.4],
+            "noise-g_e0": [0.0002, 0.02, self.transform_log10],
+            "noise-std_e": [0.0001, 0.05, self.transform_log10],
         }
 
     def objective_names(self):
@@ -278,7 +375,7 @@ Then run:
 
 ```sh
 livn systems mpi tune \
-    system=./systems/graphs/EI2 \
+    system=./systems/graphs/EI \
     target=systems.targets.my_organoid.OrganoidMatch \
     **resources='{"-n": 2}' \
     --launch
@@ -286,21 +383,20 @@ livn systems mpi tune \
 
 ### Extending the built-in Spontaneous target
 
-If you only need to adjust target values or add a few objectives, subclass `Spontaneous` directly instead of starting from scratch:
-
 ```python
 # systems/targets/my_spontaneous.py
 from systems.targets.EI import Spontaneous
 
-class HighActivity(Spontaneous):
-    """Spontaneous target tuned for higher firing rates."""
+class MyCulture(Spontaneous):
+    """The values measured on our own preparation."""
 
-    DEFAULT_TARGETS = {
-        **Spontaneous.DEFAULT_TARGETS,
-        "mfr": 5.0,               # higher firing rate
-        "branching_ratio": 0.95,   # slightly sub-critical
-        "burst_rate": 0.2,         # more frequent bursts
-    }
+    # constraint constants are ordinary class attributes
+    MIN_MEAN_RATE_HZ = 2.0
+    MAX_MEAN_RATE_HZ = 8.0
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("targets", {"mfr": 5.0, "isi_cv": 1.6})
+        super().__init__(**kwargs)
 ```
 
 ### Tuning with stimulus-evoked responses
@@ -321,21 +417,20 @@ class EvokedResponse(TuningTargets):
         self.stim_amplitude = 1.0  # will be optimized
         super().__init__()
 
-    def _weight_space(self):
+    def _weight_space(self, model):
         return {
-            "EXC_EXC-hillock-AMPA-weight": [0.001, 20.0, self.transform_log1p],
-            "EXC_INH-hillock-AMPA-weight": [0.001, 20.0, self.transform_log1p],
-            "INH_EXC-soma-GABA_A-weight": [0.001, 12.0, self.transform_log1p],
-            "INH_INH-soma-GABA_A-weight": [0.001, 12.0, self.transform_log1p],
+            "EXC_EXC-dend-AMPA-weight": [0.05, 10.0, self.transform_log10],
+            "INH_EXC-soma-AMPA-weight": [0.05, 10.0, self.transform_log10],
+            "EXC_INH-soma-GABA_A-weight": [0.05, 10.0, self.transform_log10],
         }
 
-    def _noise_space(self):
+    def _noise_space(self, model):
         return {
-            "noise-g_e0": [1.0, 5.0],
-            "noise-std_e": [0.005, 0.5],
+            "noise-g_e0": [0.0002, 0.02, self.transform_log10],
+            "noise-std_e": [0.0001, 0.05, self.transform_log10],
         }
 
-    def _protocol_space(self):
+    def _protocol_space(self, model):
         # Stimulus amplitude is optimized but not passed to env.set_params()
         return {"stim_amplitude": [0.1, 5.0]}
 
@@ -382,7 +477,7 @@ class EvokedResponse(TuningTargets):
 
 ```sh
 livn systems mpi tune \
-    system=./systems/graphs/EI2 \
+    system=./systems/graphs/EI \
     target=systems.targets.EI.Spontaneous \
     **resources='{"-n": 2}' \
     --launch
@@ -390,11 +485,23 @@ livn systems mpi tune \
 
 The `mpi` execution module handles `mpirun` automatically. `-n` specifies the total number of MPI ranks; at least 2 are required (one controller + one or more workers). Each worker uses `nprocs_per_worker` ranks, so the total should be `1 + num_workers * nprocs_per_worker`.
 
+To fit a [rung](/guide/concepts/system#subselections) rather than the whole culture, name it as selection:
+
+```sh
+livn systems mpi tune \
+    system=./systems/graphs/EI \
+    selection=e1 \
+    **resources='{"-n": 2}' \
+    --launch
+```
+
+The result is written to `params/e1.json`.
+
 To use a custom target, specify its dotted import path:
 
 ```sh
 livn systems mpi tune \
-    system=./systems/graphs/EI2 \
+    system=./systems/graphs/EI \
     target=systems.targets.my_organoid.OrganoidMatch \
     **resources='{"-n": 2}' \
     --launch
@@ -404,17 +511,17 @@ For larger runs with multiple workers:
 
 ```sh
 livn systems mpi tune \
-    system=./systems/graphs/EI2 \
+    system=./systems/graphs/EI \
     nprocs_per_worker=4 \
     **resources='{"-n": 65}' \
     --launch
 ```
 
-On Slurm clusters, use the `slurm` (or `tacc` for TACC systems) execution module instead:
+On Slurm clusters, use the `slurm` execution module instead:
 
 ```sh
 livn systems slurm tune \
-    system=./systems/graphs/EI2 \
+    system=./systems/graphs/EI \
     nprocs_per_worker=4 \
     **resources='{"--nodes": 2, "--ntasks-per-node": 56, "-p": "normal", "-t": "4:00:00"}' \
     --launch
@@ -428,7 +535,7 @@ The execution module handles MPI launch commands, job submission, and resource a
 from machinable import get
 
 tuner = get("tune", {
-    "system": "./systems/graphs/EI2",
+    "system": "./systems/graphs/EI",
     "target": "systems.targets.EI.Spontaneous",
     "trials": 1,
     "nprocs_per_worker": 1,
@@ -440,20 +547,28 @@ tuner.launch()
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `system` | `./systems/graphs/EI2` | Path to the generated system |
+| `system` | `./systems/graphs/EI` | Path to the generated system, or an `int` for that many unconnected cells |
+| `selection` | `None` | Stored subselection to build instead of the whole system |
 | `model` | `None` | Model class (None = system default) |
-| `target` | `systems.targets.EI.Spontaneous` | Dotted path to a `TuningTargets` subclass |
+| `target` | `systems.targets.EI.Spontaneous` | Dotted path to a `TuningTargets` subclass, or `[path, options]` |
 | `trials` | `1` | Simulation trials per evaluation |
 | `nprocs_per_worker` | `1` | MPI ranks per simulation worker |
+| `n_initial` | `100` | Initial samples **per search dimension** |
+| `population_size` | `100` | Evolutionary population |
+| `num_generations` | `10` | Generations per epoch |
+| `n_epochs` | `10` | Optimizer epochs (epoch 0 is the initial sampling) |
+| `surrogate` | `{}` | Extra surrogate settings, passed through as `surrogate_*` |
 
-The optimization runs 25 epochs with 100 initial random samples, a population size of 100, and 10 evolutionary generations per epoch.
+::: warning
+`n_initial` is a multiplier, not a count: dmosopt draws `n_initial × (number of search dimensions)` initial samples. On an 11-parameter space the default is ~1100 simulations before the surrogate gets a turn, so lower it for a short run.
+:::
 
 ### Inspecting results
 
 After optimization, inspect and extract the best parameters:
 
 ```sh
-livn systems tune system=./systems/graphs/EI2 --inspect
+livn systems tune system=./systems/graphs/EI --inspect
 ```
 
 Or in Python:
@@ -462,26 +577,47 @@ Or in Python:
 tuner.inspect()
 ```
 
-This ranks all evaluated solutions by a composite score and saves the best configuration as `params.json` in the system directory:
+This ranks all evaluated solutions and reports the front. A run produces a front, not an answer, so selecting one solution requires promotion:
+
+```sh
+livn systems tune system=./systems/graphs/EI "--promote('default', loc=0)"
+```
+
+which writes `params/default.json` (or `params/<selection>.json` when the run used one):
 
 ```json
 {
-    "EXC_EXC-hillock-AMPA-weight": 0.001,
-    "EXC_INH-hillock-AMPA-weight": 2.909,
-    "INH_EXC-soma-GABA_A-weight": 9.407,
-    "noise-g_e0": 1.0,
-    "noise-std_e": 0.329,
-    ...
+    "ReducedCalciumSomaDendrite": {
+        "default": {
+            "params": {
+                "EXC_EXC-dend-AMPA-weight": 0.31,
+                "INH_EXC-soma-AMPA-weight": 2.909,
+                "EXC_INH-soma-GABA_A-weight": 9.407,
+                "noise-g_e0": 1.0,
+                "noise-std_e": 0.329
+            },
+            "meta": {"loc": 0, "source": "...", "space": ["..."]}
+        }
+    }
 }
 ```
 
-These parameters are then automatically loaded by `livn.make()` or `system.default_params()`.
+`meta` records where the solution came from, including its position in the ranked front.
+
+These parameters are then applied by `livn.make()` or `env.apply_default_params()`.
+
+Two related commands: `--export` writes the whole front to a `front.json` next to the run (which `--promote(front=...)` can bank from later, without the run being at hand), and `--evaluate(loc=0)` re-simulates one solution and draws a raster of it. This is worth doing before promoting, since a solution can satisfy every scalar target and still be degenerate:
+
+```sh
+livn systems tune system=./systems/graphs/EI --export
+mpiexec -n 8 livn systems tune system=./systems/graphs/EI "--evaluate(loc=0)"
+```
 
 ## Tips
 
-- **Start small**: Tune on EI1 or EI2 first, then transfer insights to larger systems
+- **Start small**: Tune a small rung first (`selection=e1`), then move to the full culture. A rung is its own network, so its result is a starting point for the next one, not a set to carry over
 - **Use multiple trials**: Set `trials > 1` to reduce variance in the evaluation metrics
 - **Check for stability**: After tuning, run extended simulations (>10s) to verify the parameters produce stable dynamics
 - **Iterate**: The first round of tuning may not find optimal parameters; re-run with narrowed search bounds around promising regions
 - **Match your data**: When tuning against experimental recordings, start with the metrics you can measure most reliably (e.g., firing rate) before adding more complex objectives (e.g., LFP spectra, avalanche statistics)
-- **Log-transform weight parameters**: Synaptic weights typically span orders of magnitude; use `transform_log1p` to help the optimizer explore the space efficiently
+- **Log-transform weight parameters**: Synaptic weights typically span orders of magnitude; use `transform_log10` (or `transform_log1p`, where a bound sits at zero) to help the optimizer explore the space efficiently

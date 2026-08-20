@@ -12,11 +12,16 @@ os.environ["LIVN_BACKEND"] = "neuron"
 
 from livn.env import Env
 from livn.env.logging import with_progress_logging
-from livn.system import predefined
+from livn.io import MEA, electrode_array_coordinates_for_area
+from livn.system import predefined, System
 from livn.utils import P
 
 
-env = Env(predefined("EI1")).init()
+system = System(predefined("EI"))
+(xmin, ymin, _), (xmax, ymax, _) = system.bounding_box
+mea = MEA(electrode_array_coordinates_for_area(400, ((xmin, ymin), (xmax, ymax))))
+
+env = Env(system, io=mea).init()
 
 env.apply_model_defaults()
 env.record_spikes()

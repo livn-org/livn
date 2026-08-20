@@ -15,7 +15,7 @@ Then use livn as normal as the custom `Env` is resolved automatically:
 ```python
 from livn import make
 
-env = make("EI1")  # uses my_package.backend.Env
+env = make("EI")  # uses my_package.backend.Env
 ```
 
 ## Writing a custom backend

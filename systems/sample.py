@@ -52,7 +52,7 @@ class Sample(Interface):
         samples: int | tuple[int, int] = 100
         noise: bool = True
 
-        system: str = "./systems/graphs/EI2"
+        system: str = "./systems/graphs/EI"
         model: ObjSpec = None
         encoding: ObjSpec = "systems.sample.WithoutInput"
         decoding: ObjSpec = "systems.sample.Raw"

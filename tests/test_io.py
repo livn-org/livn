@@ -7,6 +7,8 @@ from livn import io
 from livn.system import System
 from livn.utils import P
 
+from conftest import livn_test_system
+
 try:
     import mpi4py  # noqa: F401
 
@@ -167,7 +169,7 @@ def test_potential_recording():
 @pytest.mark.mpiexec(timeout=60)
 @pytest.mark.parametrize("mpiexec_n", [1, 2])
 def test_mea_parallel(mpiexec_n):
-    system = System(os.environ["LIVN_TEST_SYSTEM"])
+    system = System(livn_test_system())
 
     q = P.gather(system.neuron_coordinates)
 

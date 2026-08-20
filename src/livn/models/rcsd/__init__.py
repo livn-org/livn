@@ -22,7 +22,6 @@ class ReducedCalciumSomaDendrite(Model):
         self,
         input_mode: str | None = None,
         refractory_period: float = 2.0,
-        implicit_inhibition: bool = False,
         renshaw_phenotype: str = "invitro",
         short_term_depression: bool = False,
     ):
@@ -44,7 +43,6 @@ class ReducedCalciumSomaDendrite(Model):
         if refractory_period < 0:
             raise ValueError(f"refractory_period must be >= 0, got {refractory_period}")
         self.refractory_period = float(refractory_period)
-        self.implicit_inhibition = bool(implicit_inhibition)
         self.short_term_depression = bool(short_term_depression)
         if renshaw_phenotype not in ("invitro", "perry"):
             raise ValueError(
@@ -59,11 +57,6 @@ class ReducedCalciumSomaDendrite(Model):
             "invitro": "V1In-Renshaw-InVitro",
             "perry": "V1In-Renshaw-Perry",
         }[self.renshaw_phenotype]
-
-    def ignored_populations(self) -> set[str]:
-        if self.implicit_inhibition:
-            return {"INH"}
-        return set()
 
     def prepare_stimulus(self, stimulus):
         modes = {

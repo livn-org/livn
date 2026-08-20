@@ -20,7 +20,7 @@ jobs:
       - run: uv run --frozen --only-group dev ruff format --check
       - run: uv run --frozen --only-group dev ruff check
 
-  download-ei1:
+  download-system:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -31,24 +31,24 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Cache EI1 system
-        id: cache-ei1
+      - name: Cache the test system
+        id: cache-system
         uses: actions/cache@v5
         with:
-          path: systems/graphs/EI1
-          key: ei1-system-v1
+          path: systems/graphs/EI
+          key: ei-system-v1
 
       - name: Install minimal dependencies
-        if: steps.cache-ei1.outputs.cache-hit != 'true'
+        if: steps.cache-system.outputs.cache-hit != 'true'
         run: uv sync --group dev
 
-      - name: Download EI1 system
-        if: steps.cache-ei1.outputs.cache-hit != 'true'
-        run: uv run tests/cli download-ei1
+      - name: Download the test system
+        if: steps.cache-system.outputs.cache-hit != 'true'
+        run: uv run tests/cli download-system
 
   test-default:
     runs-on: ubuntu-latest
-    needs: [lint, download-ei1]
+    needs: [lint, download-system]
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
@@ -58,11 +58,11 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Restore EI1 system
+      - name: Restore the test system
         uses: actions/cache/restore@v5
         with:
-          path: systems/graphs/EI1
-          key: ei1-system-v1
+          path: systems/graphs/EI
+          key: ei-system-v1
           fail-on-cache-miss: true
 
       - name: Install dependencies
@@ -73,7 +73,7 @@ jobs:
 
   test-diffrax:
     runs-on: ubuntu-latest
-    needs: [lint, download-ei1]
+    needs: [lint, download-system]
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
@@ -83,11 +83,11 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Restore EI1 system
+      - name: Restore the test system
         uses: actions/cache/restore@v5
         with:
-          path: systems/graphs/EI1
-          key: ei1-system-v1
+          path: systems/graphs/EI
+          key: ei-system-v1
           fail-on-cache-miss: true
 
       - name: Install dependencies
@@ -98,7 +98,7 @@ jobs:
 
   test-neuron:
     runs-on: ubuntu-latest
-    needs: [lint, download-ei1]
+    needs: [lint, download-system]
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
@@ -108,11 +108,11 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Restore EI1 system
+      - name: Restore the test system
         uses: actions/cache/restore@v5
         with:
-          path: systems/graphs/EI1
-          key: ei1-system-v1
+          path: systems/graphs/EI
+          key: ei-system-v1
           fail-on-cache-miss: true
 
       - name: Install system dependencies
@@ -128,7 +128,7 @@ jobs:
 
   test-brian2:
     runs-on: ubuntu-latest
-    needs: [lint, download-ei1]
+    needs: [lint, download-system]
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
@@ -138,11 +138,11 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Restore EI1 system
+      - name: Restore the test system
         uses: actions/cache/restore@v5
         with:
-          path: systems/graphs/EI1
-          key: ei1-system-v1
+          path: systems/graphs/EI
+          key: ei-system-v1
           fail-on-cache-miss: true
 
       - name: Install system dependencies
@@ -158,7 +158,7 @@ jobs:
 
   test-neuron-macos:
     runs-on: macos-latest
-    needs: [lint, download-ei1]
+    needs: [lint, download-system]
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
@@ -168,11 +168,11 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Restore EI1 system
+      - name: Restore the test system
         uses: actions/cache/restore@v5
         with:
-          path: systems/graphs/EI1
-          key: ei1-system-v1
+          path: systems/graphs/EI
+          key: ei-system-v1
           fail-on-cache-miss: true
 
       - name: Install system dependencies

@@ -4,17 +4,19 @@ set -euo pipefail
 USAGE="Usage: tests/cli <command> [options]
 
 Commands:
-  lint          Run ruff format check and lint
-  test          Run pytest for a backend
-  download-ei1  Download the EI1 test system
+  lint             Run ruff format check and lint
+  test             Run pytest for a backend
+  download-system  Download the test system (default: EI)
 
 Options for 'test':
   --backend <diffrax|neuron|brian2|none|all>  Backend to test (default: all)
-  --system  <path>                        Path to test system (default: ./systems/graphs/EI1)
+  --system  <path>                        Path to test system (default: ./systems/graphs/EI)
+  --selection <name>                      Subselection within it (default: e1, ~30 cells)
   --oversubscribe                         Pass --oversubscribe to mpiexec
   --args    <pytest-args>                  Extra arguments passed to pytest
 
-Options for 'download-ei1':
+Options for 'download-system':
+  --name      <name>  System to download (default: EI)
   --directory <path>  Download directory (default: .)
 
 Examples:
@@ -23,7 +25,7 @@ Examples:
   tests/cli test --backend neuron --oversubscribe
   tests/cli test --backend neuron --args '-x --tb=short'
   tests/cli test --backend none
-  tests/cli download-ei1
+  tests/cli download-system
 "
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -53,7 +55,8 @@ case "$cmd" in
 
   test)
     backend="all"
-    system="./systems/graphs/EI1"
+    system="./systems/graphs/EI"
+    selection="e1"
     pytest_args=""
     oversubscribe=false
 
@@ -61,6 +64,7 @@ case "$cmd" in
       case "$1" in
         --backend) backend="$2"; shift 2 ;;
         --system)  system="$2";  shift 2 ;;
+        --selection) selection="$2"; shift 2 ;;
         --oversubscribe) oversubscribe=true; shift ;;
         --args)    pytest_args="$2"; shift 2 ;;
         *) echo "Unknown option: $1"; echo "$USAGE"; exit 1 ;;
@@ -68,11 +72,12 @@ case "$cmd" in
     done
 
     export LIVN_TEST_SYSTEM="$system"
+    export LIVN_TEST_SELECTION="$selection"
 
     if [[ "$backend" == "all" ]]; then
       for b in diffrax neuron brian2; do
         echo "=== Running tests with backend: $b ==="
-        "$0" test --backend "$b" --system "$system" $($oversubscribe && echo --oversubscribe) --args "$pytest_args"
+        "$0" test --backend "$b" --system "$system" --selection "$selection" $($oversubscribe && echo --oversubscribe) --args "$pytest_args"
       done
       exit 0
     fi
@@ -107,17 +112,19 @@ case "$cmd" in
     exec env "${env_vars[@]}" pytest -x "${oversubscribe_args[@]}" $pytest_args
     ;;
 
-  download-ei1)
+  download-system)
+    name="EI"
     directory="."
 
     while [[ $# -gt 0 ]]; do
       case "$1" in
+        --name)      name="$2";      shift 2 ;;
         --directory) directory="$2"; shift 2 ;;
         *) echo "Unknown option: $1"; echo "$USAGE"; exit 1 ;;
       esac
     done
 
-    exec python -c "from livn.system import predefined; predefined('EI1', download_directory='$directory')"
+    exec python -c "from livn.system import predefined; predefined('$name', download_directory='$directory')"
     ;;
 
   help|--help|-h|"")

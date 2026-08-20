@@ -22,7 +22,7 @@ import numpy as np
 from livn import make
 from livn.stimulus import Stimulus
 
-env = make("EI2")
+env = make("EI")
 env.record_spikes()
 env.record_voltage()
 
@@ -158,7 +158,7 @@ os.environ["LIVN_BACKEND"] = "diffrax"
 import jax
 from livn import make
 
-env = make("EI2")
+env = make("EI")
 # Gradients through opsin dynamics are available
 ```
 

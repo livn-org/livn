@@ -28,7 +28,7 @@ Once installed, you can use livn as usual:
 from livn.env import Env
 from livn.system import predefined
 
-env = Env(predefined('EI1'))
+env = Env(predefined('EI'))
 env.io.electrode_coordinates
 ```
 
@@ -36,7 +36,7 @@ Note that `predefined()` downloads system files into the in-browser filesystem. 
 
 ## Interactive Demo
 
-Try it right here! Click the button to load Pyodide, download the EI1 system, and visualize neuron and electrode positions directly in your browser.
+Try it right here! Click the button to load Pyodide, download the EI system, and visualize neuron and electrode positions directly in your browser.
 
 <PyodideWidget />
 

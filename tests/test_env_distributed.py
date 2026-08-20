@@ -7,6 +7,12 @@ import pytest
 
 from livn.backend import backend
 
+from conftest import (
+    livn_test_mea,
+    livn_test_selection,
+    livn_test_system,
+)
+
 pytestmark = pytest.mark.skipif(backend() != "neuron", reason="NEURON only")
 
 T_END = 250
@@ -34,6 +40,14 @@ if backend() == "neuron":
                 for c in range(env.io.num_channels):
                     channel_inputs[50 + r, c] = STIM_AMPLITUDE
             return env.cell_stimulus(channel_inputs)
+
+
+def _distributed_env(**kwargs):
+    env = DistributedEnv(livn_test_system(), io=livn_test_mea(), **kwargs)
+    selection = livn_test_selection()
+    if selection:
+        env.selection(selection)
+    return env
 
 
 def _save_baseline(timings: dict):
@@ -70,7 +84,7 @@ def test_distributed_env_matches_standard(mpiexec_n):
 
     assert MPI.COMM_WORLD.size == mpiexec_n
 
-    system = os.environ["LIVN_TEST_SYSTEM"]
+    system = livn_test_system()
 
     tmp = os.path.join(os.path.dirname(__file__), "tmp")
     os.makedirs(tmp, exist_ok=True)
@@ -96,7 +110,7 @@ def test_distributed_env_matches_standard(mpiexec_n):
         env.close()
         return
 
-    env = DistributedEnv(system, seed=123, subworld_size=1)
+    env = _distributed_env(seed=123, subworld_size=1)
 
     # attributes should be accessible immediately after construction
     assert env.system is not None
@@ -144,8 +158,8 @@ def test_distributed_env_attribute_access(mpiexec_n):
 
     assert MPI.COMM_WORLD.size == mpiexec_n
 
-    system = os.environ["LIVN_TEST_SYSTEM"]
-    env = DistributedEnv(system, seed=42, subworld_size=1)
+    system = livn_test_system()
+    env = _distributed_env(seed=42, subworld_size=1)
 
     assert env.system is not None, "system should resolve lazily"
     assert env.system.uri == system
@@ -177,8 +191,7 @@ def test_distributed_env_multiple_inputs(mpiexec_n):
 
     assert MPI.COMM_WORLD.size == mpiexec_n
 
-    system = os.environ["LIVN_TEST_SYSTEM"]
-    env = DistributedEnv(system, seed=123, subworld_size=1)
+    env = _distributed_env(seed=123, subworld_size=1)
     env.init()
     env.record_spikes()
 
@@ -211,8 +224,7 @@ def test_distributed_env_subworld_size_gt_one(mpiexec_n):
 
     assert MPI.COMM_WORLD.size == mpiexec_n
 
-    system = os.environ["LIVN_TEST_SYSTEM"]
-    env = DistributedEnv(system, seed=123, subworld_size=2)
+    env = _distributed_env(seed=123, subworld_size=2)
 
     assert env.system is not None
     assert env.model is not None
@@ -242,8 +254,8 @@ def test_distributed_env_subworld_size_gt_one(mpiexec_n):
 @pytest.mark.mpiexec(timeout=30)
 @pytest.mark.parametrize("mpiexec_n", [3])
 def test_property_access_before_init_no_deadlock(mpiexec_n):
-    system = os.environ["LIVN_TEST_SYSTEM"]
-    env = DistributedEnv(system, seed=42, subworld_size=1)
+    system = livn_test_system()
+    env = _distributed_env(seed=42, subworld_size=1)
 
     assert env.system is not None
     assert env.io is not None
@@ -260,8 +272,7 @@ def test_property_access_before_init_no_deadlock(mpiexec_n):
 @pytest.mark.mpiexec(timeout=30)
 @pytest.mark.parametrize("mpiexec_n", [3])
 def test_property_access_after_init_no_deadlock(mpiexec_n):
-    system = os.environ["LIVN_TEST_SYSTEM"]
-    env = DistributedEnv(system, seed=42, subworld_size=1)
+    env = _distributed_env(seed=42, subworld_size=1)
     env.init()
 
     assert env.io is not None
@@ -277,7 +288,7 @@ def test_property_access_after_init_no_deadlock(mpiexec_n):
 @pytest.mark.mpiexec(timeout=120)
 @pytest.mark.parametrize("mpiexec_n", [1])
 def test_collect_baseline_timings(mpiexec_n):
-    system = os.environ["LIVN_TEST_SYSTEM"]
+    system = livn_test_system()
 
     env = Env(system, seed=123)
 
@@ -326,8 +337,7 @@ def test_distributed_init_performance(mpiexec_n):
     if baseline is None:
         pytest.skip("Run test_collect_baseline_timings[1] first")
 
-    system = os.environ["LIVN_TEST_SYSTEM"]
-    env = DistributedEnv(system, seed=123, subworld_size=1)
+    env = _distributed_env(seed=123, subworld_size=1)
     _, elapsed = _timed(env.init)
 
     allowed = _max_allowed(baseline["init"])
@@ -348,8 +358,7 @@ def test_distributed_record_spikes_performance(mpiexec_n):
     if baseline is None:
         pytest.skip("Run test_collect_baseline_timings[1] first")
 
-    system = os.environ["LIVN_TEST_SYSTEM"]
-    env = DistributedEnv(system, seed=123, subworld_size=1)
+    env = _distributed_env(seed=123, subworld_size=1)
     env.init()
 
     _, elapsed = _timed(env.record_spikes)
@@ -374,8 +383,7 @@ def test_distributed_apply_model_defaults_performance(mpiexec_n):
     if baseline["apply_model_defaults"] is None:
         pytest.skip("apply_model_defaults not supported by this system")
 
-    system = os.environ["LIVN_TEST_SYSTEM"]
-    env = DistributedEnv(system, seed=123, subworld_size=1)
+    env = _distributed_env(seed=123, subworld_size=1)
     env.init()
 
     try:
@@ -405,8 +413,7 @@ def test_distributed_set_weights_performance(mpiexec_n):
     if baseline["set_weights"] is None:
         pytest.skip("set_weights not supported by this system")
 
-    system = os.environ["LIVN_TEST_SYSTEM"]
-    env = DistributedEnv(system, seed=123, subworld_size=1)
+    env = _distributed_env(seed=123, subworld_size=1)
     env.init()
 
     weights = {name: 1.0 for name in env.weight_names}
@@ -434,8 +441,7 @@ def test_distributed_run_performance(mpiexec_n):
     if baseline is None:
         pytest.skip("Run test_collect_baseline_timings[1] first")
 
-    system = os.environ["LIVN_TEST_SYSTEM"]
-    env = DistributedEnv(system, seed=123, subworld_size=1)
+    env = _distributed_env(seed=123, subworld_size=1)
     env.init()
     env.record_spikes()
     try:

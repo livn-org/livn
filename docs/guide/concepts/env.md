@@ -9,10 +9,10 @@ The simplest way to create an environment is through `livn.make()`, which fetche
 ```python
 from livn import make
 
-env = make("EI2")
+env = make("EI")
 ```
 
-This downloads the EI2 system definition, selects the default model and IO for the active [backend](/guide/backends), and applies tuned parameters.
+This downloads the EI system definition, selects the default model and IO for the active [backend](/guide/backends), and applies tuned parameters.
 
 For more control, you can construct an `Env` directly:
 
@@ -22,7 +22,7 @@ from livn.system import predefined
 from livn.io import MEA
 from livn.models.rcsd import ReducedCalciumSomaDendrite
 
-system = predefined("EI2")
+system = predefined("EI")
 model = ReducedCalciumSomaDendrite()
 io = MEA()
 

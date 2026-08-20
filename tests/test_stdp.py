@@ -4,8 +4,8 @@ from collections import defaultdict
 import numpy as np
 import pytest
 
+from conftest import livn_test_env
 from livn.backend import backend
-from livn.env import Env
 
 _is_neuron = backend() == "neuron"
 _is_brian2 = backend() == "brian2"
@@ -70,7 +70,7 @@ class TestNeuronMechanisms:
     def test_stdp_mechanisms_exist(self):
         from neuron import h
 
-        env = Env("systems/graphs/EI1").init()
+        env = livn_test_env().init()
         try:
             sec = h.Section(name="test_mech_sec")
             pp_ampa = h.StdpLinExp2Syn(sec(0.5))
@@ -99,7 +99,7 @@ class TestNeuronMechanisms:
     def test_stdp_default_off(self):
         from neuron import h
 
-        env = Env("systems/graphs/EI1").init()
+        env = livn_test_env().init()
         try:
             sec = h.Section(name="test_default_sec")
             pp = h.StdpLinExp2Syn(sec(0.5))
@@ -115,7 +115,7 @@ class TestNeuronMechanisms:
 @_brian2_only
 class TestBrian2Variables:
     def test_conductance_variables_exist(self):
-        env = Env("systems/graphs/EI1").init()
+        env = livn_test_env().init()
         try:
             pop = env._populations["EXC"]
             for var in (
@@ -133,7 +133,7 @@ class TestBrian2Variables:
             env.close()
 
     def test_stdp_variables_exist(self):
-        env = Env("systems/graphs/EI1").init()
+        env = livn_test_env().init()
         try:
             pop = env._populations["EXC"]
             for var in (
@@ -148,7 +148,7 @@ class TestBrian2Variables:
             env.close()
 
     def test_plasticity_default_off(self):
-        env = Env("systems/graphs/EI1").init()
+        env = livn_test_env().init()
         try:
             for pop in env._populations.values():
                 assert np.all(np.array(pop.plasticity_on) == 0)
@@ -161,10 +161,7 @@ class TestBrian2Synapses:
     def test_mechanism_synapses_created(self):
         from livn.models.rcsd import ReducedCalciumSomaDendrite
 
-        env = Env(
-            "systems/graphs/EI1",
-            model=ReducedCalciumSomaDendrite(implicit_inhibition=False),
-        ).init()
+        env = livn_test_env(model=ReducedCalciumSomaDendrite()).init()
         try:
             ampa_keys = [k for k in env._synapses if len(k) == 3 and k[2] == "AMPA"]
             assert len(ampa_keys) > 0, "No AMPA synapses found"
@@ -175,7 +172,7 @@ class TestBrian2Synapses:
             env.close()
 
     def test_stdp_synapses_have_w_plastic(self):
-        env = Env("systems/graphs/EI1").init()
+        env = livn_test_env().init()
         try:
             for key, S in env._iter_stdp_synapses():
                 assert "w_plastic" in S.variables, f"Missing w_plastic on {key}"
@@ -187,7 +184,7 @@ class TestBrian2Synapses:
             env.close()
 
     def test_initial_w_plastic_is_one(self):
-        env = Env("systems/graphs/EI1").init()
+        env = livn_test_env().init()
         try:
             for key, S in env._iter_stdp_synapses():
                 if len(S) > 0:
@@ -202,7 +199,7 @@ class TestBrian2Synapses:
 
 class TestEnablePlasticity:
     def test_plasticity_enabled_flag(self):
-        env = Env("systems/graphs/EI1").init()
+        env = livn_test_env().init()
         try:
             env.enable_plasticity()
             assert env._plasticity_enabled is True
@@ -214,7 +211,7 @@ class TestEnablePlasticity:
 
     @_neuron_only
     def test_enable_sets_flag_neuron(self):
-        env = Env("systems/graphs/EI1").init()
+        env = livn_test_env().init()
         try:
             env.apply_model_defaults()
             env.enable_plasticity()
@@ -230,7 +227,7 @@ class TestEnablePlasticity:
 
     @_brian2_only
     def test_enable_sets_flag_brian2(self):
-        env = Env("systems/graphs/EI1").init()
+        env = livn_test_env().init()
         try:
             env.enable_plasticity()
 
@@ -241,7 +238,7 @@ class TestEnablePlasticity:
 
     @_neuron_only
     def test_disable_clears_flag_neuron(self):
-        env = Env("systems/graphs/EI1").init()
+        env = livn_test_env().init()
         try:
             env.apply_model_defaults()
             env.enable_plasticity()
@@ -254,7 +251,7 @@ class TestEnablePlasticity:
 
     @_brian2_only
     def test_disable_clears_flag_brian2(self):
-        env = Env("systems/graphs/EI1").init()
+        env = livn_test_env().init()
         try:
             env.enable_plasticity()
             env.disable_plasticity()
@@ -266,7 +263,7 @@ class TestEnablePlasticity:
 
     @_neuron_only
     def test_custom_config_neuron(self):
-        env = Env("systems/graphs/EI1").init()
+        env = livn_test_env().init()
         try:
             env.apply_model_defaults()
 
@@ -283,7 +280,7 @@ class TestEnablePlasticity:
 
     @_brian2_only
     def test_custom_config_brian2(self):
-        env = Env("systems/graphs/EI1").init()
+        env = livn_test_env().init()
         try:
             custom = {"A_ltp_exc": 0.005, "A_ltd_exc": 0.002}
             env.enable_plasticity(config=custom)
@@ -298,10 +295,7 @@ class TestEnablePlasticity:
     def test_per_population_config(self):
         from livn.models.rcsd import ReducedCalciumSomaDendrite
 
-        env = Env(
-            "systems/graphs/EI1",
-            model=ReducedCalciumSomaDendrite(implicit_inhibition=False),
-        ).init()
+        env = livn_test_env(model=ReducedCalciumSomaDendrite()).init()
         try:
             env.apply_model_defaults()
 
@@ -333,10 +327,7 @@ class TestEnablePlasticity:
     def test_enable_includes_inhibitory(self):
         from livn.models.rcsd import ReducedCalciumSomaDendrite
 
-        env = Env(
-            "systems/graphs/EI1",
-            model=ReducedCalciumSomaDendrite(implicit_inhibition=False),
-        ).init()
+        env = livn_test_env(model=ReducedCalciumSomaDendrite()).init()
         try:
             env.apply_model_defaults()
             env.enable_plasticity()
@@ -353,7 +344,7 @@ class TestEnablePlasticity:
 
     @_brian2_only
     def test_stdp_synapses_found(self):
-        env = Env("systems/graphs/EI1").init()
+        env = livn_test_env().init()
         try:
             stdp_keys = list(env._iter_stdp_synapses())
             assert len(stdp_keys) > 0, "No STDP synapses found"
@@ -369,7 +360,7 @@ class TestEnablePlasticity:
 class TestGetWeights:
     @_neuron_only
     def test_get_weights_structure_neuron(self):
-        env = Env("systems/graphs/EI1").init()
+        env = livn_test_env().init()
         try:
             env.apply_model_defaults()
             env.enable_plasticity()
@@ -391,7 +382,7 @@ class TestGetWeights:
 
     @_brian2_only
     def test_get_weights_structure_brian2(self):
-        env = Env("systems/graphs/EI1").init()
+        env = livn_test_env().init()
         try:
             env.enable_plasticity()
 
@@ -413,7 +404,7 @@ class TestGetWeights:
             env.close()
 
     def test_initial_weights_are_one(self):
-        env = Env("systems/graphs/EI1").init()
+        env = livn_test_env().init()
         try:
             if _is_neuron:
                 env.apply_model_defaults()
@@ -432,7 +423,7 @@ class TestGetWeights:
 
 class TestWeightDynamics:
     def test_weights_change_with_plasticity(self):
-        env = Env("systems/graphs/EI1").init()
+        env = livn_test_env().init()
         try:
             env.apply_model_defaults()
             env.enable_plasticity(config=_plasticity_config())
@@ -457,7 +448,7 @@ class TestWeightDynamics:
             env.close()
 
     def test_weights_frozen_without_plasticity(self):
-        env = Env("systems/graphs/EI1").init()
+        env = livn_test_env().init()
         try:
             env.apply_model_defaults()
 
@@ -486,7 +477,7 @@ class TestWeightDynamics:
 class TestRecordWeights:
     @_neuron_only
     def test_record_weights_neuron(self):
-        env = Env("systems/graphs/EI1").init()
+        env = livn_test_env().init()
         try:
             env.apply_model_defaults()
             env.enable_plasticity(config={"A_ltp": 0.01, "A_ltd": 0.005})
@@ -507,7 +498,7 @@ class TestRecordWeights:
 
     @_brian2_only
     def test_record_weights_brian2(self):
-        env = Env("systems/graphs/EI1").init()
+        env = livn_test_env().init()
         try:
             env.enable_plasticity(config={"A_ltp_exc": 0.01, "A_ltd_exc": 0.005})
             env.record_weights(dt=1.0)
@@ -531,7 +522,7 @@ class TestRecordWeights:
 
 class TestNormalizeWeights:
     def test_normalize_preserves_sum(self):
-        env = Env("systems/graphs/EI1").init()
+        env = livn_test_env().init()
         try:
             env.apply_model_defaults()
             env.enable_plasticity(config=_plasticity_config())
@@ -553,7 +544,7 @@ class TestNormalizeWeights:
             env.close()
 
     def test_normalize_custom_target(self):
-        env = Env("systems/graphs/EI1").init()
+        env = livn_test_env().init()
         try:
             env.apply_model_defaults()
             env.enable_plasticity(config=_plasticity_config())
@@ -577,7 +568,7 @@ class TestNormalizeWeights:
 
     @_neuron_only
     def test_normalize_preserves_ratios(self):
-        env = Env("systems/graphs/EI1").init()
+        env = livn_test_env().init()
         try:
             env.apply_model_defaults()
             env.enable_plasticity(config={"A_ltp": 0.01, "A_ltd": 0.005})
@@ -617,7 +608,7 @@ class TestNormalizeWeights:
             env.close()
 
     def test_normalize_respects_bounds(self):
-        env = Env("systems/graphs/EI1").init()
+        env = livn_test_env().init()
         try:
             env.apply_model_defaults()
 

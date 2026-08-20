@@ -30,7 +30,7 @@ The `stimulus_coordinates` and `recording_coordinates` methods are particularly 
 
 ## Backend-specific hooks
 
-Models are backend-aware. When you call `model.default_weights("EI2")`, the model dispatches to the appropriate backend-specific method (e.g., `neuron_default_weights` or `brian2_default_weights`) based on the active backend.
+Models are backend-aware. When you call `model.default_weights("EI")`, the model dispatches to the appropriate backend-specific method (e.g., `neuron_default_weights` or `brian2_default_weights`) based on the active backend.
 
 Each model provides backend-specific hooks that the `Env` implementation calls during initialization:
 

@@ -3,7 +3,6 @@ import os
 import numpy as np
 import pytest
 
-from livn.env import Env
 from livn.decoding import (
     Slice,
     ChannelRecording,
@@ -18,6 +17,8 @@ from livn.decoding import (
 )
 from livn.backend import backend
 from livn.run import Run
+
+from conftest import livn_test_env, livn_test_mea
 
 
 def _recording(it=None, tt=None, iv=None, vv=None, im=None, mp=None, dt=0.1):
@@ -34,7 +35,7 @@ def env_response(request):
     if not os.getenv("LIVN_BACKEND"):
         pytest.skip("no simulation backend selected")
 
-    env = Env(os.environ["LIVN_TEST_SYSTEM"])
+    env = livn_test_env(io=livn_test_mea())
 
     cache_key = f"livn/env/response-{backend()}-{env.system.name}"
 
@@ -69,7 +70,7 @@ def env_response(request):
     "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
 )
 def test_slice_decoding(env_response):
-    env = Env(os.environ["LIVN_TEST_SYSTEM"])
+    env = livn_test_env()
     if backend() == "brian2":
         env.init()
     env.record_spikes()
@@ -104,7 +105,7 @@ def test_slice_decoding(env_response):
     "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
 )
 def test_slice_float_valid(env_response):
-    env = Env(os.environ["LIVN_TEST_SYSTEM"])
+    env = livn_test_env()
     if backend() == "brian2":
         env.init()
     env.record_spikes()
@@ -728,7 +729,7 @@ class TestAvalancheAnalysis:
     "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
 )
 def test_mean_firing_rate_integration(env_response):
-    env = Env(os.environ["LIVN_TEST_SYSTEM"])
+    env = livn_test_env()
     if backend() == "brian2":
         env.init()
 
@@ -744,7 +745,7 @@ def test_mean_firing_rate_integration(env_response):
     "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
 )
 def test_active_fraction_integration(env_response):
-    env = Env(os.environ["LIVN_TEST_SYSTEM"])
+    env = livn_test_env()
     if backend() == "brian2":
         env.init()
 
@@ -759,7 +760,7 @@ def test_active_fraction_integration(env_response):
     "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
 )
 def test_stability_integration(env_response):
-    env = Env(os.environ["LIVN_TEST_SYSTEM"])
+    env = livn_test_env()
     if backend() == "brian2":
         env.init()
 
@@ -775,9 +776,10 @@ def test_stability_integration(env_response):
     "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
 )
 def test_lfp_integration(env_response):
-    env = Env(os.environ["LIVN_TEST_SYSTEM"])
-    if backend() == "brian2":
-        env.init()
+    # the LFP is read at the electrodes, so this one needs the array too --
+    # and an initialised env on every backend, since the distances are taken
+    # from the cells this rank actually holds
+    env = livn_test_env(io=livn_test_mea()).init()
     env.record_membrane_current()
 
     lfp = LFP(duration=250)
@@ -791,7 +793,7 @@ def test_lfp_integration(env_response):
     "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
 )
 def test_pipeline_integration(env_response):
-    env = Env(os.environ["LIVN_TEST_SYSTEM"])
+    env = livn_test_env()
     if backend() == "brian2":
         env.init()
     env.record_spikes()
@@ -815,7 +817,7 @@ def test_pipeline_integration(env_response):
     "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
 )
 def test_avalanche_analysis_integration(env_response):
-    env = Env(os.environ["LIVN_TEST_SYSTEM"])
+    env = livn_test_env()
     if backend() == "brian2":
         env.init()
 

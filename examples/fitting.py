@@ -22,7 +22,7 @@ from optimization.losses import voltage_mse
 DURATION, DT = 40.0, 0.5
 
 env = Env(
-    predefined("EI1"), model=GLIF.leaky_integrate_and_fire(mechanism="hard")
+    predefined("EI"), model=GLIF.leaky_integrate_and_fire(mechanism="hard")
 ).init()
 env.record_voltage(dt=DT)
 

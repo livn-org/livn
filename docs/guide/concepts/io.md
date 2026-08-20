@@ -113,13 +113,22 @@ lfp = mea.potential_recording(distances, membrane_currents)
 
 This is used by decodings like [`LFP`](/guide/concepts/decoding) for spectral analysis of the extracellular signal.
 
-### Loading from a system
+### Fitting an array to a system
 
-Predefined systems include a saved MEA configuration matched to their spatial layout:
+The cultures ship without an array so that the recording setup stays a choice of the experiment rather than a property of the network. `electrode_array_coordinates_for_area` lays out a grid over a system's extent at a given pitch:
 
 ```python
-mea = MEA.from_directory("./systems/graphs/EI2")
+from livn.io import MEA, electrode_array_coordinates_for_area
+from livn.system import System
+
+system = System("./systems/graphs/EI")
+(xmin, ymin, _), (xmax, ymax, _) = system.bounding_box
+
+mea = MEA(electrode_array_coordinates_for_area(200, ((xmin, ymin), (xmax, ymax))))
+mea.num_channels
 ```
+
+A system that does ship one (`mea.json`) is loaded with `MEA.from_directory(path)`, which is what `make()` uses for its default IO.
 
 ### Biphasic pulse stimulation
 
