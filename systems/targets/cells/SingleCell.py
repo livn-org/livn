@@ -80,7 +80,7 @@ class SingleCellModel(ReducedCalciumSomaDendrite):
         dend_type: str = "hillock",
         celsius: float = 36.0,
     ):
-        super().__init__(implicit_inhibition=True)
+        super().__init__()
         self._template_path = template
         self._cell_threshold = float(threshold)
         self._cell_v_rest = float(v_rest)

@@ -86,9 +86,17 @@ def feature_dtypes(c):
     return [(f, np.float32) for f in objective_names(c)]
 
 
-def _build_env(target, system, model, comm, subworld_size):
-    model = import_instance(model)
+def _build_env(target, system, model, comm, subworld_size, selection=None):
+    from tune import strip_removed_model_options
+
+    model = import_instance(strip_removed_model_options(model))
     if hasattr(target, "build_env"):
+        if selection is not None:
+            raise ValueError(
+                f"{type(target).__name__} builds its own env, so it owns which "
+                "cells exist; set the selection through the target instead of "
+                "overriding it here"
+            )
         return target.build_env(system, model, comm=comm, subworld_size=subworld_size)
     env = Env(
         system,
@@ -97,6 +105,8 @@ def _build_env(target, system, model, comm, subworld_size):
         comm=comm,
         subworld_size=subworld_size,
     )
+    if selection is not None:
+        env.selection(selection)
     env.init()
     return target.init(env)
 
@@ -107,19 +117,24 @@ def obj_fun_init(
     target,
     trials,
     subworld_size,
+    selection=None,
     worker=None,
 ):
     target = import_instance(target)
-    env = _build_env(target, system, model, worker.merged_comm, subworld_size)
+    env = _build_env(
+        target, system, model, worker.merged_comm, subworld_size, selection=selection
+    )
     live_envs.append(env)
     return partial(obj_fun, env=env, target=target, trials=trials)
 
 
 def controller_init(system, model, target, subworld_size):
+    from tune import strip_removed_model_options
+
     target = import_instance(target)
     env = Env(
         system,
-        model=import_instance(model),
+        model=import_instance(strip_removed_model_options(model)),
         io=target.io() if hasattr(target, "io") else None,
         comm=MPI.COMM_SELF,
         subworld_size=subworld_size,

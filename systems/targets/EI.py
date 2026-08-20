@@ -1,3 +1,5 @@
+import logging
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -21,6 +23,9 @@ from livn.decoding import (
 from livn.utils import P
 from livn.env.logging import with_progress_logging
 from systems.targets.protocol import TuningTargets
+
+
+logger = logging.getLogger(__name__)
 
 
 def _max_constraint(value, max_val, scale=None):
@@ -65,16 +70,32 @@ class Spontaneous(TuningTargets):
     MAX_MEAN_RATE_HZ = 15.0
     SYNCHRONY_BAND = (0.02, 0.25)
     MAX_SYNC_PEAK = 0.2
+    MIN_SYNC_PEAK = 0.0
     MIN_ACTIVE_FRACTION = 0.5
     MIN_POPULATION_ACTIVE = 0.05
     POP_TAU_BAND_MS = (10.0, 500.0)
     MAX_BURST_RATE_HZ = 0.2
+    MIN_BURST_RATE_HZ = 0.0
     BRANCHING_RATIO_BAND = (0.5, 1.5)
     MIN_AVALANCHE_R2 = 0.5
     MAX_POP_RATE_PER_UNIT_HZ = 20.0
     MIN_POP_RATE_PER_UNIT_HZ = 0.05
     STABILITY_MARGIN = 5.0
-    MAX_BACKGROUND_G_E0 = 0.1
+    IGNITION_SUFFIX = "_ignition"
+    IGNITION_RANGE = [0.0005, 0.1]
+    ADAPTATION_DECADES = 1.0
+    ADAPTATION_PARAMS = {
+        "cells-soma.gmax_KCa": "soma_gmax_KCa",
+        "cells-hillock.gmax_KCa": "dend_gmax_KCa",
+        "cells-soma.kCa_Ca_conc": "soma_kCa_Caconc",
+        "cells-hillock.kCa_Ca_conc": "dend_kCa_Caconc",
+    }
+    RATIO_SUFFIX = "_ratio"
+    RATIO_RANGES = {
+        "excitatory": [0.01, 100.0],
+        "inhibitory": [0.01, 100.0],
+    }
+    RELEASE_PARAM = "U"
 
     def __init__(
         self,
@@ -89,6 +110,8 @@ class Spontaneous(TuningTargets):
         section_aliases: dict | None = None,
         feature_bands: dict | None = None,
         mea: dict | None = None,
+        adaptation: bool = False,
+        ignition: bool = False,
     ):
         self._targets = {
             "mfr": 1.0,
@@ -103,6 +126,8 @@ class Spontaneous(TuningTargets):
             for name, (lo, hi) in (feature_bands or {}).items()
         }
         self.mea = mea
+        self.adaptation = bool(adaptation)
+        self.ignition = bool(ignition)
         self.skip_objectives = tuple(skip_objectives)
         self.skip_constraints = tuple(skip_constraints)
         self.readout = readout
@@ -122,6 +147,7 @@ class Spontaneous(TuningTargets):
         self.min_spike_count_for_metrics = 150
         self._env = None
         self._weight_space_cache: dict[str, list] | None = None
+        self._weight_reference: str | None = None
         self._reset_state()
 
     def _reset_state(self):
@@ -165,7 +191,7 @@ class Spontaneous(TuningTargets):
             "active_fraction_floor",
             "populations_active",
             "pop_autocorr_tau_band",
-            "burst_rate_cap",
+            "burst_rate_band",
             "branching_ratio_band",
             "avalanche_r2",
         ]
@@ -269,10 +295,10 @@ class Spontaneous(TuningTargets):
         depressing = bool(getattr(model, "short_term_depression", False))
 
         default_ranges = {
-            "excitatory": [1e-5, 10.0],
-            "inhibitory": [1e-5, 8.0],
+            "excitatory": [0.05, 10.0],
+            "inhibitory": [0.05, 10.0],
         }
-        mechanism_ranges = {"NMDA": [1e-5, 3.0]}
+        mechanism_ranges = {"NMDA": [0.05, 5.0]}
         depression_ranges = {
             "tau_rec": [50.0, 3000.0],
             # burst period the mechanism can impose
@@ -280,19 +306,34 @@ class Spontaneous(TuningTargets):
             # how fast resources deplete, i.e. how many spikes a burst lasts
         }
 
+        reference = None
+        for post, pre, section, mechanism, syn_type in found:
+            if pre in ignored or post in ignored:
+                continue
+            if post == pre and syn_type == "excitatory" and mechanism == "AMPA":
+                reference = f"{post}_{pre}-{section}-{mechanism}-weight"
+                break
+        self._weight_reference = reference
+
         weights = {}
         for post, pre, section, mechanism, syn_type in found:
             if pre in ignored or post in ignored:
                 continue
-            low, high = mechanism_ranges.get(
-                mechanism, default_ranges.get(syn_type, [0.001, 10.0])
-            )
+            key = f"{post}_{pre}-{section}-{mechanism}-weight"
 
-            weights[f"{post}_{pre}-{section}-{mechanism}-weight"] = [
-                low,
-                high,
-                self.transform_log10,
-            ]
+            if reference is not None and key != reference:
+                low, high = self.RATIO_RANGES.get(syn_type, [0.01, 100.0])
+                weights[key + self.RATIO_SUFFIX] = [low, high, self.transform_log10]
+                continue
+
+            if self.ignition:
+                low, high = self.IGNITION_RANGE
+                weights[key + self.IGNITION_SUFFIX] = [low, high, self.transform_log10]
+            else:
+                low, high = mechanism_ranges.get(
+                    mechanism, default_ranges.get(syn_type, [0.001, 10.0])
+                )
+                weights[key] = [low, high, self.transform_log10]
 
             if depressing and mechanism == "AMPA":
                 for name, (dlo, dhi) in depression_ranges.items():
@@ -307,11 +348,114 @@ class Spontaneous(TuningTargets):
         self._weight_space_cache = weights
         return weights
 
+    def decode_params(self, params: dict, model=None) -> dict:
+        decoded = super().decode_params(params, model=model)
+        decoded = self._resolve_ignition(decoded, model)
+
+        suffix = self.RATIO_SUFFIX
+        ratios = [name for name in decoded if name.endswith(suffix)]
+        if not ratios:
+            return self._resolve_release(decoded)
+
+        self._weight_space(model)  # populates `_weight_reference`
+        reference = self._weight_reference
+        if reference is None or reference not in decoded:
+            raise ValueError(
+                f"{sorted(ratios)} are relative to {reference!r}, which is not "
+                "in this vector; the ratios cannot be resolved to conductances. "
+                "The target is probably built differently from the run that "
+                "produced them."
+            )
+
+        scale = float(decoded[reference])
+        resolved = {k: v for k, v in decoded.items() if not k.endswith(suffix)}
+        for name in ratios:
+            resolved[name[: -len(suffix)]] = float(decoded[name]) * scale
+        # after the ratios, so a relative weight is an amplitude too
+        return self._resolve_release(resolved)
+
+    def _protocol_space(self, model) -> dict[str, list]:
+        """Intrinsic adaptation, when `adaptation` is on and the model has it."""
+        if not self.adaptation:
+            return {}
+
+        if model is None:
+            model = getattr(self._env, "model", None)
+
+        fitted = {}
+        if model is not None and hasattr(model, "params"):
+            try:
+                fitted = model.params("BoothRinzelKiehn-MN") or {}
+            except (KeyError, ValueError, TypeError):
+                fitted = {}
+        if not fitted:
+            raise ValueError(
+                "adaptation=True but the model exposes no "
+                "'BoothRinzelKiehn-MN' parameters to centre the bounds on; "
+                "the search would silently drop these dimensions"
+            )
+
+        span = 10.0**self.ADAPTATION_DECADES
+        space = {}
+        for key, name in self.ADAPTATION_PARAMS.items():
+            value = fitted.get(name)
+            if value is None or float(value) <= 0.0:
+                raise ValueError(
+                    f"{name!r} is {value!r}; a log-scaled bound needs a "
+                    "positive fitted value to centre on"
+                )
+            value = float(value)
+            space[key] = [value / span, value * span, self.transform_log10]
+        return space
+
+    def _resolve_ignition(self, decoded: dict, model) -> dict:
+        self._weight_space(model)  # populates `_weight_reference`
+        reference = self._weight_reference
+        if reference is None:
+            return decoded
+        key = reference + self.IGNITION_SUFFIX
+        if key not in decoded:
+            return decoded
+
+        background = decoded.get("noise-g_e0")
+        if not background:
+            raise ValueError(
+                f"{key!r} is a product with the background drive, but "
+                "'noise-g_e0' is not in this vector, so it cannot be resolved "
+                "to a weight. The target is probably built differently from "
+                "the run that produced it."
+            )
+        decoded[reference] = float(decoded.pop(key)) / float(background)
+        return decoded
+
+    def _resolve_release(self, decoded: dict) -> dict:
+        suffix = f"-{self.RELEASE_PARAM}"
+        for name, value in list(decoded.items()):
+            if not name.endswith(suffix):
+                continue
+            post, _, rest = name[: -len(suffix)].partition("-")
+            if not rest:
+                continue
+            try:
+                release = float(value)
+            except (TypeError, ValueError):
+                continue
+            if not release > 0.0:
+                continue
+            # `<post>-<section>-<mech>-U` governs every `<post>_<pre>-<section>-<mech>-weight`
+            for weight_name in list(decoded):
+                if not weight_name.endswith(f"-{rest}-weight"):
+                    continue
+                if weight_name.split("_", 1)[0] != post:
+                    continue
+                decoded[weight_name] = float(decoded[weight_name]) / release
+        return decoded
+
     def _noise_space(self, model):
         return {
-            "noise-g_e0": [0.01, self.MAX_BACKGROUND_G_E0, self.transform_log10],
-            "noise-g_i0": [0.01, 0.2, self.transform_log10],
-            "noise-std_e": [0.0003, 0.05, self.transform_log10],
+            "noise-g_e0": [0.0002, 0.02, self.transform_log10],
+            "noise-g_i0": [0.002, 0.06, self.transform_log10],
+            "noise-std_e": [0.0001, 0.05, self.transform_log10],
             "noise-std_i": [0.0005, 0.05, self.transform_log10],
             "noise-tau_e": [1.0, 40.0, self.transform_log10],
             "noise-tau_i": [4.0, 20.0],
@@ -326,7 +470,17 @@ class Spontaneous(TuningTargets):
         total_duration = int(self.warmup_duration + self.recording_duration)
 
         env.record_spikes()
+        t0 = time.time()
         self.response_data = env.run(total_duration, root_only=False)
+        local = 0
+        if self.response_data is not None and self.response_data.spike_ids is not None:
+            local = len(self.response_data.spike_ids)
+        logger.info(
+            "[phase] simulated %d ms in %.0f s (%d spikes on this rank); measuring",
+            total_duration,
+            time.time() - t0,
+            local,
+        )
 
         if return_data:
             return GatherAndMerge(
@@ -337,6 +491,7 @@ class Spontaneous(TuningTargets):
         targets = self.targets()
         result: dict = {}
         d = int(self.recording_duration)
+        _measure_started = time.time()
 
         recording_slice = Slice(
             start=self.warmup_duration,
@@ -459,6 +614,14 @@ class Spontaneous(TuningTargets):
         af_obj = (af_target - active_fraction) ** 2
         result["active_fraction"] = (af_obj, active_fraction)
 
+        if "mean_channel_correlation" in targets:
+            sync = float(self.metrics["mean_channel_correlation"])
+            sync_target = float(targets["mean_channel_correlation"])
+            result["mean_channel_correlation"] = (
+                1e3 if np.isnan(sync) else float((sync - sync_target) ** 2),
+                sync,
+            )
+
         avalanche_result = None
         if total_spike_count > 0:
             n_bins_target = max(50, total_spike_count // 15)
@@ -479,6 +642,11 @@ class Spontaneous(TuningTargets):
             if name not in self.skip_objectives
         }
         self.objectives = result
+        logger.info(
+            "[phase] measured %d channel-level spikes in %.0f s",
+            self.metrics.get("total_spikes", 0) or 0,
+            time.time() - _measure_started,
+        )
         return result
 
     def _readout(self, env, data):
@@ -554,13 +722,10 @@ class Spontaneous(TuningTargets):
         )
 
         peak_sync = m.get("max_synchronous_peak", float("nan"))
-        if peak_sync is None or (isinstance(peak_sync, float) and np.isnan(peak_sync)):
-            peak_c = -1.0
-        elif peak_sync <= self.MAX_SYNC_PEAK:
-            peak_c = 1.0 + (self.MAX_SYNC_PEAK - peak_sync)
-        else:
-            peak_c = -1.0 - (peak_sync - self.MAX_SYNC_PEAK) * 10.0
-        result["max_synchronous_peak"] = (float(peak_c), float(peak_sync))
+        result["max_synchronous_peak"] = (
+            float(_band_constraint(peak_sync, self.MIN_SYNC_PEAK, self.MAX_SYNC_PEAK)),
+            float(peak_sync),
+        )
 
         mean_rate = m.get("mfr", float("nan"))
         result["min_mean_firing_rate"] = (
@@ -594,10 +759,10 @@ class Spontaneous(TuningTargets):
         )
 
         burst_rate = m.get("burst_rate", float("nan"))
-        result["burst_rate_cap"] = (
+        result["burst_rate_band"] = (
             float(
-                _max_constraint(
-                    burst_rate, self.MAX_BURST_RATE_HZ, scale=self.MAX_BURST_RATE_HZ
+                _band_constraint(
+                    burst_rate, self.MIN_BURST_RATE_HZ, self.MAX_BURST_RATE_HZ
                 )
             ),
             float(burst_rate),
