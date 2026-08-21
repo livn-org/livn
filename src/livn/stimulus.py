@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from livn.types import Array, Float, Int
@@ -14,6 +14,28 @@ if "ax" in os.environ.get("LIVN_BACKEND", ""):
     _USES_JAX = True
 else:
     import numpy as np
+
+
+STIMULUS_CHUNK_MB_ENV = "LIVN_STIMULUS_CHUNK_MB"
+DEFAULT_STIMULUS_CHUNK_MB = 64.0
+
+
+def chunk_bytes() -> float:
+    given = os.environ.get(STIMULUS_CHUNK_MB_ENV)
+    if given is None:
+        return DEFAULT_STIMULUS_CHUNK_MB * 2**20
+    try:
+        limit = float(given)
+    except ValueError:
+        raise ValueError(
+            f"{STIMULUS_CHUNK_MB_ENV}={given!r} is not a number of megabytes"
+        ) from None
+    if limit <= 0:
+        raise ValueError(
+            f"{STIMULUS_CHUNK_MB_ENV}={given!r} must be positive: a window has "
+            "to hold at least one timestep"
+        )
+    return limit * 2**20
 
 
 def section_positions(gids):
@@ -29,19 +51,43 @@ def section_positions(gids):
 class Stimulus:
     def __init__(
         self,
-        array: Float[Array, "timestep n_gids"],
+        array: Float[Array, "timestep n_gids"] | None = None,
         dt: float = 1.0,
         gids: Int[Array, "n_gids"] | None = None,
         input_mode: str = "extracellular",
         units: str | None = None,
         sections: Int[Array, "n_gids"] | None = None,
+        source: "Callable[[float, float], Array] | None" = None,
+        extent: float | None = None,
         **extra,
     ):
-        self.array = array
+        if source is not None:
+            if array is not None:
+                raise ValueError(
+                    "a stimulus is either an array or a `source` that renders "
+                    "one on demand, not both"
+                )
+            if gids is None:
+                raise ValueError(
+                    "a deferred stimulus has no array to count columns from, so "
+                    "it must name the `gids` its source will produce"
+                )
+            if extent is None:
+                raise ValueError(
+                    "a deferred stimulus must say how long it is (`extent`), "
+                    "since its source will render whatever window it is asked "
+                    "for and could not otherwise be run past"
+                )
+        elif array is None:
+            raise ValueError("a stimulus needs either an `array` or a `source`")
+
+        self._array = array
+        self._source = source
+        self._extent = None if extent is None else float(extent)
         if dt <= 0:
             raise ValueError("Stimulus dt must be positive")
         self.dt = dt
-        if gids is not None and len(gids) != array.shape[-1]:
+        if gids is not None and array is not None and len(gids) != array.shape[-1]:
             raise ValueError(
                 f"stimulus has {array.shape[-1]} channels but {len(gids)} gids; "
                 "the last axis of the array and the gid list must describe the "
@@ -65,19 +111,73 @@ class Stimulus:
         self.extra = extra
 
     @property
+    def deferred(self) -> bool:
+        """Whether this stimulus renders windows on demand."""
+        return self._source is not None
+
+    @property
+    def array(self):
+        """The whole stimulus, rendering it first if it is deferred."""
+        if self._array is None:
+            self._array = self.window(0.0, self._extent)
+        return self._array
+
+    @array.setter
+    def array(self, value):
+        self._array = value
+
+    @property
+    def width(self) -> int:
+        """Number of columns, without rendering anything."""
+        if self.gids is not None:
+            return len(self.gids)
+        return self._array.shape[-1]
+
+    @property
     def duration(self) -> float:
+        if self._extent is not None:
+            return self._extent
         return self.array.shape[0] * self.dt
 
-    def __iter__(self):
-        """`(gid, section, series)` per column."""
+    def window(self, start_ms: float, stop_ms: float):
+        """Values over `[start_ms, stop_ms)`, at this stimulus's own `dt`."""
+        if self._source is None:
+            lo = max(0, int(round(start_ms / self.dt)))
+            hi = max(lo, int(round(stop_ms / self.dt)))
+            return np.asarray(self._array)[lo:hi]
+
+        rendered = np.asarray(self._source(float(start_ms), float(stop_ms)))
+        if rendered.ndim != 2 or rendered.shape[-1] != self.width:
+            raise ValueError(
+                f"the source rendered {rendered.shape} for [{start_ms:g}, "
+                f"{stop_ms:g}) ms, but this stimulus has {self.width} columns. "
+                "Every window has to carry the same columns in the same order, "
+                "or a value lands on a compartment it was not meant for"
+            )
+        return rendered
+
+    def columns(self):
+        """`(gid, section)` per column, without rendering any values."""
         gids = self.gids
+        if gids is None:
+            raise ValueError(
+                "this stimulus does not say which cell each column belongs to, "
+                "so its columns cannot be named; pass `gids`"
+            )
         if self.sections is not None:
-            yield from zip(gids, self.sections, self.array.T)
+            for gid, section in zip(gids, self.sections):
+                yield int(gid), int(section)
             return
 
         per_cell = self.sections_per_cell
-        for column, (gid, series) in enumerate(zip(gids, self.array.T)):
-            yield gid, column % per_cell, series
+        for column, gid in enumerate(gids):
+            yield int(gid), column % per_cell
+
+    def __iter__(self):
+        """`(gid, section, series)` per column."""
+        array = self.array.T
+        for column, (gid, section) in enumerate(self.columns()):
+            yield gid, section, array[column]
 
     @property
     def sections_per_cell(self) -> int:
@@ -90,7 +190,7 @@ class Stimulus:
         return max(1, len(self.gids) // max(1, distinct))
 
     def __len__(self):
-        return self.array.shape[-1]
+        return self.width
 
     @classmethod
     def from_arg(cls, stimulus, env=None, duration=None) -> "Stimulus | None":
@@ -120,9 +220,7 @@ class Stimulus:
                     "was delivered in full. Run for at least the policy's own "
                     "length, or shorten the policy"
                 )
-            return env.cell_stimulus(
-                stimulus.window(0.0, duration, stimulus.dt), dt=stimulus.dt
-            )
+            return cls.from_policy(stimulus, env, duration)
 
         if hasattr(stimulus, "shape"):
             return cls(stimulus)
@@ -134,6 +232,28 @@ class Stimulus:
             return cls(**stimulus)
 
         raise ValueError("Invalid stimulus", stimulus)
+
+    @classmethod
+    def from_policy(cls, policy, env, duration: float) -> "Stimulus":
+        """A deferred stimulus that renders the policy window by window."""
+        dt = policy.dt
+        layout = env.cell_stimulus(policy.window(0.0, dt, dt), dt=dt)
+
+        def source(start_ms: float, stop_ms: float, _env=env, _policy=policy, _dt=dt):
+            return _env.cell_stimulus(
+                _policy.window(start_ms, stop_ms, _dt), dt=_dt
+            ).array
+
+        return cls(
+            dt=dt,
+            gids=layout.gids,
+            sections=layout.sections,
+            input_mode=layout.input_mode,
+            units=layout.units,
+            source=source,
+            extent=float(duration),
+            **layout.extra,
+        )
 
     @classmethod
     def from_conductance(
@@ -441,29 +561,37 @@ class Stimulus:
         return arr
 
     def tree_flatten(self):
-        children = [self.array]
+        # `_array` rather than `array`, so flattening a deferred stimulus does not materialize
+        children = [self._array]
         aux = (
             self.dt,
             self.gids,
             self.input_mode,
             self.units,
             self.sections,
+            self._source,
+            self._extent,
             self.extra,
         )
         return children, aux
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        dt, gids, input_mode, units, sections, extra = aux
-        return cls(
-            array=children[0],
+        dt, gids, input_mode, units, sections, source, extent, extra = aux
+        stimulus = cls(
+            array=None if source is not None else children[0],
             dt=dt,
             gids=gids,
             sections=sections,
             input_mode=input_mode,
             units=units,
+            source=source,
+            extent=extent,
             **extra,
         )
+        if source is not None and children[0] is not None:
+            stimulus._array = children[0]
+        return stimulus
 
 
 if _USES_JAX:

@@ -144,6 +144,8 @@ class Env(EnvProtocol):
         self._stim_segments: list = []
         self._stim_rows: dict[tuple[int, int], int] = {}
         self._stim_block: np.ndarray | None = None
+        self._stim_streams: list[dict] = []
+        self._stim_idle = False
         self._stim_dt: float | None = None
         self._stim_step = 0
         self._stim_registered = False
@@ -410,6 +412,7 @@ class Env(EnvProtocol):
         h = self._h
         self.duration = duration
         current_time = self.t
+        self._prune_stim_streams(current_time)
 
         if stimulus is not None:
             stimulus = Stimulus.from_arg(stimulus, env=self, duration=duration)
@@ -580,10 +583,23 @@ class Env(EnvProtocol):
             raise ValueError("Stimulus dt mismatch; call clear() before rerunning")
 
         start_step = int(round(current_time / stimulus.dt))
+        rows, columns = self._stim_rows_for(stimulus)
+        if not rows:
+            return
 
-        pending = []
-        for gid, section_id, series in stimulus:
-            gid, section_id = int(gid), int(section_id)
+        if stimulus.deferred:
+            self._install_stim_stream(stimulus, rows, columns, start_step)
+        else:
+            self._install_stim_block(stimulus, rows, columns, start_step)
+
+        if not self._stim_registered:
+            self._h.cvode.extra_scatter_gather(0, self._stim_cb)
+            self._stim_registered = True
+
+    def _stim_rows_for(self, stimulus: Stimulus) -> tuple[list, list]:
+        """`(block rows, stimulus columns)` for what this rank can drive."""
+        rows, columns = [], []
+        for column, (gid, section_id) in enumerate(stimulus.columns()):
             if not self.pc.gid_exists(gid):
                 continue
             cell = self._find_cell(gid)
@@ -595,25 +611,23 @@ class Env(EnvProtocol):
             self._h.pop_section()
             if not has_extracellular:
                 continue
-            pending.append(((gid, section_id), sec(0.5), np.asarray(series)))
 
-        if not pending:
-            return
-
-        rows = []
-        for key, seg, _values in pending:
+            key = (gid, section_id)
             row = self._stim_rows.get(key)
             if row is None:
                 row = len(self._stim_segments)
                 self._stim_rows[key] = row
-                self._stim_segments.append(seg)
+                self._stim_segments.append(sec(0.5))
             rows.append(row)
+            columns.append(column)
+        return rows, columns
 
-        dtype = np.promote_types(
-            max((v.dtype for _k, _s, v in pending), key=lambda d: d.itemsize),
-            np.float32,
-        )
-        end_step = max(start_step + len(v) for _k, _s, v in pending)
+    def _install_stim_block(self, stimulus, rows, columns, start_step) -> None:
+        """Hold the whole command, indexed `[section, absolute step]`."""
+        values = np.asarray(stimulus.array)
+        dtype = np.promote_types(values.dtype, np.float32)
+        end_step = start_step + values.shape[0]
+
         width = end_step
         previous = self._stim_block
         if previous is not None:
@@ -623,28 +637,102 @@ class Env(EnvProtocol):
         block = np.zeros((len(self._stim_segments), width), dtype=dtype)
         if previous is not None:
             block[: previous.shape[0], : previous.shape[1]] = previous
-        for row, (_key, _seg, values) in zip(rows, pending):
-            block[row, start_step : start_step + len(values)] = values
+        for row, column in zip(rows, columns):
+            block[row, start_step:end_step] = values[:, column]
         self._stim_block = block
 
-        if not self._stim_registered:
-            self._h.cvode.extra_scatter_gather(0, self._stim_cb)
-            self._stim_registered = True
+    def _install_stim_stream(self, stimulus, rows, columns, start_step) -> None:
+        from livn.stimulus import chunk_bytes
+
+        itemsize = np.dtype(np.float64).itemsize
+        chunk_steps = max(1, int(chunk_bytes() // max(1, stimulus.width * itemsize)))
+
+        self._stim_streams.append(
+            {
+                "stimulus": stimulus,
+                "rows": np.asarray(rows, dtype=np.int64),
+                "columns": np.asarray(columns, dtype=np.int64),
+                "start_step": start_step,
+                "n_steps": int(round(stimulus.duration / stimulus.dt)),
+                "chunk_steps": chunk_steps,
+                "chunk": None,
+                "chunk_start": 0,
+                "chunk_stop": 0,
+            }
+        )
+
+    def _prune_stim_streams(self, current_time: float) -> None:
+        if not self._stim_streams or not self._stim_dt:
+            return
+        idx = int(current_time / self._stim_dt)
+        self._stim_streams = [
+            stream
+            for stream in self._stim_streams
+            if idx < stream["start_step"] + stream["n_steps"]
+        ]
 
     def _update_extracellular(self) -> None:
-        block = self._stim_block
-        if block is None or self._closed or not self._stim_segments:
+        if self._closed or not self._stim_segments:
             return
-        # block columns are at stimulus dt; map the current sim step (sim dt)
-        # to real time, then to a stimulus-resolution column index.
+        block = self._stim_block
+        streams = self._stim_streams
+        if block is None and not streams:
+            if not self._stim_idle:
+                for seg in self._stim_segments:
+                    seg.e_extracellular = 0.0
+                self._stim_idle = True
+            return
+        self._stim_idle = False
+
         current_time = self._stim_step * (self._dt or 0.025)
         idx = int(current_time / self._stim_dt) if self._stim_dt else 0
-        if idx >= block.shape[1]:
-            idx = block.shape[1] - 1
-        col = block[:, idx]
+
+        if not streams:
+            col = block[:, min(idx, block.shape[1] - 1)]
+        else:
+            col = np.zeros(len(self._stim_segments), dtype=np.float64)
+            if block is not None:
+                held = block[:, min(idx, block.shape[1] - 1)]
+                col[: len(held)] = held
+            for stream in streams:
+                self._accumulate_stim_stream(stream, idx, col)
+
         for i, seg in enumerate(self._stim_segments):
             seg.e_extracellular = float(col[i])
         self._stim_step += 1
+
+    def _accumulate_stim_stream(self, stream, idx: int, col) -> None:
+        offset = idx - stream["start_step"]
+        if offset >= stream["n_steps"]:
+            stream["chunk"] = None
+            stream["chunk_start"] = stream["chunk_stop"] = 0
+            return
+        if offset < 0:
+            return
+
+        if not stream["chunk_start"] <= idx < stream["chunk_stop"]:
+            self._refill_stim_stream(stream, idx)
+            if not stream["chunk_start"] <= idx < stream["chunk_stop"]:
+                return
+        col[stream["rows"]] += stream["chunk"][:, idx - stream["chunk_start"]]
+
+    def _refill_stim_stream(self, stream, idx: int) -> None:
+        stimulus = stream["stimulus"]
+        first = max(idx, stream["start_step"])
+        start_ms = (first - stream["start_step"]) * stimulus.dt
+        stop_ms = min(start_ms + stream["chunk_steps"] * stimulus.dt, stimulus.duration)
+
+        rendered = np.asarray(stimulus.window(start_ms, stop_ms))
+        if rendered.shape[0] == 0:
+            stream["chunk"] = None
+            stream["chunk_start"] = stream["chunk_stop"] = 0
+            return
+
+        stream["chunk"] = np.ascontiguousarray(
+            rendered[:, stream["columns"]].T, dtype=np.float64
+        )
+        stream["chunk_start"] = first
+        stream["chunk_stop"] = first + rendered.shape[0]
 
     def _soma_seg(self, cell):
         """Middle segment of the cell's soma section (fallback: first section)."""
@@ -1249,6 +1337,8 @@ class Env(EnvProtocol):
         self._stim_segments = []
         self._stim_rows = {}
         self._stim_block = None
+        self._stim_streams = []
+        self._stim_idle = False
         self._stim_dt = None
         self._stim_step = 0
         self._opsin_pps = []
@@ -1272,6 +1362,7 @@ class Env(EnvProtocol):
         self._stim_segments = []
         self._stim_rows = {}
         self._stim_block = None
+        self._stim_streams = []
         self._opsin_pps = []
         self._opsin_block = None
         self._opsin_refs.clear()

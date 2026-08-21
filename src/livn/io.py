@@ -69,15 +69,17 @@ def _check_stimulus_size(n_timesteps: int, n_gids: int, itemsize: int, n_reached
     reach = ""
     if n_reached is not None and n_reached < n_gids:
         reach = f", of which {n_reached:,} are within reach of the driven channels"
+    from livn.stimulus import STIMULUS_CHUNK_MB_ENV
+
     raise MemoryError(
         f"a [{n_timesteps:,} x {n_gids:,}] stimulus of "
         f"{itemsize}-byte values is {size / 2**30:.1f} GiB, over the "
         f"{limit / 2**30:.1f} GiB ceiling.\n"
-        f"A stimulus is dense in time AND cells: {n_timesteps:,} timesteps over "
-        f"{n_gids:,} cells{reach}. Deliver it as several `run` calls so the "
-        "quiet stretches cost nothing, and pass a `Policy` rather than an array "
-        "so only the reached cells get a column. Raise "
-        f"{MAX_STIMULUS_GB_ENV} (in GiB) to override."
+        f"A stimulus is dense in time and cells: {n_timesteps:,} timesteps over "
+        f"{n_gids:,} cells{reach}. Pass a `Policy` to `run` rather than an "
+        "array as a policy is expanded onto cells one "
+        f"window at a time and never held whole ({STIMULUS_CHUNK_MB_ENV} sizes "
+        "the window). Raise {MAX_STIMULUS_GB_ENV} (in GiB) to override."
     )
 
 

@@ -584,9 +584,10 @@ class Culture(TuningTargets):
     def record(self, env, return_data=False):
         self._reset_state()
         resting_duration = int(self.warmup_duration + self.recording_duration)
-        total_duration = resting_duration
-        if self.stimulus is not None:
-            total_duration += int(self.stimulus.duration_ms)
+        evoked_duration = (
+            math.ceil(self.stimulus.duration_ms) if self.stimulus is not None else 0
+        )
+        total_duration = resting_duration + evoked_duration
 
         env.record_spikes()
         t0 = time.time()
@@ -616,8 +617,8 @@ class Culture(TuningTargets):
                 dt=dt,
             )
             evoked = env.run(
-                int(self.stimulus.duration_ms),
-                stimulus=env.cell_stimulus(pulses(), dt=dt),
+                evoked_duration,
+                stimulus=pulses,
                 root_only=False,
             )
             self.response_data = (
