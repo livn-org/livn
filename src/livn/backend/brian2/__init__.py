@@ -433,8 +433,7 @@ class Env(EnvProtocol):
         b2.defaultclock.dt = dt * b2.ms
 
         if stimulus is not None:
-            if not isinstance(stimulus, Stimulus):
-                stimulus = Stimulus.from_arg(stimulus)
+            stimulus = Stimulus.from_arg(stimulus, env=self, duration=duration)
             stimulus = self.model.prepare_stimulus(stimulus)
 
         if stimulus is None:

@@ -313,16 +313,19 @@ class Env(Protocol):
     def cell_stimulus(
         self,
         channel_inputs: Float[Array, "batch timestep n_channels"],
+        dt: float = 1.0,
     ) -> "Stimulus":
         """Transforms channel inputs into neural inputs."""
-        from livn.stimulus import Stimulus
+        from livn.policy import Policy
+
+        if isinstance(channel_inputs, Policy):
+            channel_inputs = channel_inputs()
 
         coordinates = self.system.transform_coordinates(
             self.model.stimulus_coordinates,
             populations=self.active_populations(),
         )
-        array = self.io.cell_stimulus(coordinates, channel_inputs)
-        return Stimulus(array, gids=coordinates[:, 0].astype(int))
+        return self.io.cell_stimulus(coordinates, channel_inputs, dt=dt)
 
     def channel_recording(
         self,

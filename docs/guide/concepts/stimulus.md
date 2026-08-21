@@ -43,7 +43,7 @@ stim = Stimulus(array=np.zeros((4000, 10)), dt=0.05)
 
 ### From channel inputs
 
-When using an [MEA](/guide/concepts/io), you typically specify inputs per electrode channel rather than per neuron. The MEA's `cell_stimulus` method transforms channel inputs into per-neuron stimulation:
+When using an [MEA](/guide/concepts/io), you typically specify inputs per electrode channel rather than per neuron. `cell_stimulus` applies such an input and returns a `Stimulus`:
 
 ```python
 from livn.io import MEA
@@ -52,18 +52,21 @@ mea = MEA()
 channel_inputs = np.zeros((100, mea.num_channels))
 channel_inputs[:, 5] = 0.5  # stimulate channel 5
 
-cell_stim = mea.cell_stimulus(system.neuron_coordinates, channel_inputs)
-stim = Stimulus(array=cell_stim, dt=1.0)
+stim = mea.cell_stimulus(system.neuron_coordinates, channel_inputs, dt=1.0)
 ```
 
-### Biphasic pulses
+The result carries a column only for the sections the inputs actually reach (via `stim.gids` and `stim.sections`; `stim.expand(gids, sections)` provides the all-to-all).
 
-For MEA-style experiments, a [policy](#policies) builds charge-balanced biphasic pulses in channel space, which `cell_stimulus` then delivers:
+### Policies
+
+A policy produces a `[timestep, n_channels]` array of per-channel commands (the input-side counterpart to a `Decoding`).
+
+A policy's `amplitude` is a commanded amplitude in channel space, and carries no physical unit. What the number means is the IO layer's business so the same policy can be used for different IO layers.
 
 ```python
 from livn.policy import BiphasicPulsePolicy
 
-channel_inputs = BiphasicPulsePolicy(
+pulses = BiphasicPulsePolicy(
     n_channels=16,
     channels=[5, 6],          # channels to stimulate
     amplitude=1.5,            # commanded amplitude, see below
@@ -72,17 +75,27 @@ channel_inputs = BiphasicPulsePolicy(
     pulse_times=[0.0, 50.0],  # onset times
     dt=0.05,                  # timestep resolution
     cathodic_first=True,      # cathodic phase first (standard)
-)()
-stim = Stimulus(array=mea.cell_stimulus(coordinates, channel_inputs), dt=0.05)
+)
+
+env.run(100.0, stimulus=pulses)
 ```
 
-### Policies
+A run too short to deliver the whole policy is refused rather than truncated. Use `start_ms` to offset it within the run.
 
-A policy produces a `[timestep, n_channels]` array of per-channel commands (the input-side counterpart to a `Decoding`).
+::: tip Let the env allocate
+A per-cell stimulus is dense in both time and cells, driving memory usage. For example, a pulse train spanning a long run is almost entirely zeros but on a 2600-cell graph running 117 s run at `dt=0.1`, the dense stimulus would amount to ~22 GB!
 
-A policy's `amplitude` is a commanded amplitude in channel space, and carries no physical unit. What the number means is the IO layer's business so the same policy can be used for different IO layers.
+To avoid that, use policies so the env can materialize only the window it is about to simulate, and only for the cells the driven channels reach. Alternatively, where a run has quiet stretches, simulate them as their own `run` call with no stimulus at all:
 
-The units below are different in that they describe what reaches a cell, which is downstream of the IO layer and genuinely known.
+```python
+env.run(20_000)                # free-running, nothing allocated
+env.run(1_000, stimulus=...)   # only allocated here
+```
+
+To prevent accidental allocation, `livn` does not allocate stimuli larger than 5 GiB. Raise `LIVN_MAX_STIMULUS_GB` if you really mean it.
+:::
+
+The units below only describe what reaches a cell, which is downstream of the IO layer and genuinely known.
 
 ### From conductance values
 

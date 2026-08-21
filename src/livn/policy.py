@@ -46,6 +46,25 @@ class Policy(BaseModel, Jsonable):
     def __call__(self, observation: Any = None) -> "Array":
         raise NotImplementedError
 
+    @property
+    def extent_ms(self) -> float | None:
+        """How long the command runs, or `None` when it does not say.
+
+        Used to refuse a run too short to deliver it."""
+        return None
+
+    def window(self, start_ms: float, stop_ms: float, dt: float) -> "Array":
+        full = _np.asarray(self(None))
+        lo = max(0, int(round(start_ms / dt)))
+        hi = max(lo, int(round(stop_ms / dt)))
+        if lo >= len(full):
+            return _zeros(max(0, hi - lo), full.shape[-1])
+        window = full[lo:hi]
+        if len(window) < hi - lo:
+            pad = _zeros(hi - lo - len(window), full.shape[-1])
+            window = _np.concatenate([window, pad], axis=0)
+        return window
+
     def serialize(self) -> dict:
         return self.model_dump()
 
@@ -285,6 +304,10 @@ class PulseSweepPolicy(ElectrodePolicy):
         """How long the sweep itself lasts, excluding `start_ms`."""
         return self.n_trials * self.trial_ms
 
+    @property
+    def extent_ms(self) -> float:
+        return self.start_ms + self.duration_ms
+
     def schedule(self, start_ms: float | None = None) -> list[tuple[float, float]]:
         """`(pulse time, amplitude)` per trial, in order.
 
@@ -303,24 +326,45 @@ class PulseSweepPolicy(ElectrodePolicy):
             for trial, index in enumerate(order)
         ]
 
-    def __call__(self, observation: Any = None) -> "Array":
-        n_channels, channels = self._resolved()
-        dt = self.dt
+    def window(self, start_ms: float, stop_ms: float, dt: float) -> "Array":
+        return self._render(start_ms, stop_ms, dt, strict=False)
 
+    def __call__(self, observation: Any = None) -> "Array":
         total = (
             self.start_ms + self.duration_ms if self.total_ms is None else self.total_ms
         )
-        n_steps = int(round(total / dt))
+        return self._render(0.0, total, self.dt, strict=True)
+
+    def _render(
+        self, start_ms: float, stop_ms: float, dt: float, strict: bool
+    ) -> "Array":
+        n_channels, channels = self._resolved()
+
+        n_steps = max(0, int(round((stop_ms - start_ms) / dt)))
         inputs = _zeros(n_steps, n_channels)
 
         width = max(1, int(round(self.pulse_ms / dt)))
         for at, amplitude in self.schedule():
+            at = at - start_ms
+            if at + self.pulse_ms <= 0 or at >= stop_ms - start_ms:
+                if strict:
+                    raise ValueError(
+                        f"a pulse at {at + start_ms:g} ms does not fit in a "
+                        f"{stop_ms - start_ms:g} ms run"
+                    )
+                continue
             start = int(round(at / dt))
             end = start + width
             if end > n_steps:
-                raise ValueError(
-                    f"a pulse at {at:g} ms does not fit in a {total:g} ms run"
-                )
+                if not strict:
+                    end = n_steps
+                    if start >= end:
+                        continue
+                else:
+                    raise ValueError(
+                        f"a pulse at {at + start_ms:g} ms does not fit in a "
+                        f"{stop_ms - start_ms:g} ms run"
+                    )
             half = start + max(1, width // 2)
             for channel in channels:
                 inputs = _write(inputs, slice(start, half), channel, -amplitude)

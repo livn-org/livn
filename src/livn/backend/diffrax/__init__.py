@@ -278,9 +278,16 @@ class Env(EnvProtocol):
         **kwargs,
     ):
         if stimulus is not None:
-            if not isinstance(stimulus, Stimulus):
-                stimulus = Stimulus.from_arg(stimulus)
+            stimulus = Stimulus.from_arg(stimulus, env=self, duration=duration)
             stimulus = self.model.prepare_stimulus(stimulus)
+            if stimulus.gids is not None:
+                from livn.io import section_labels
+
+                coordinates = self.system.transform_coordinates(
+                    self.model.stimulus_coordinates,
+                    populations=self.active_populations(),
+                )
+                stimulus = stimulus.expand(*section_labels(coordinates))
 
         input_current = None
         if stimulus is not None:

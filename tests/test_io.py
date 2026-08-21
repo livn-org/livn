@@ -95,6 +95,19 @@ def test_calculate_cell_stimulus():
     assert result[1, 1, 1] == 1.1 * 0.6
 
 
+def test_cell_stimulus_keeps_the_command_precision():
+    cell_induction = np.array([[0, 0, 0.5], [0, 1, 0.25]])
+
+    for dtype in (np.float32, np.float64):
+        command = np.ones((1, 4, 1), dtype=dtype)
+        result = io.calculate_cell_stimulus(command, cell_induction, n_gids=2)
+
+        assert np.asarray(result).dtype == dtype, (
+            f"a {np.dtype(dtype).name} command came back as {np.asarray(result).dtype}"
+        )
+        assert np.allclose(np.asarray(result)[0, 0], [0.5, 0.25])
+
+
 def test_channel_recording():
     mapping = np.array(
         [

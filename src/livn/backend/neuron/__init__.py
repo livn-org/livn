@@ -142,6 +142,7 @@ class Env(EnvProtocol):
 
         # extracellular stimulus block
         self._stim_segments: list = []
+        self._stim_rows: dict[tuple[int, int], int] = {}
         self._stim_block: np.ndarray | None = None
         self._stim_dt: float | None = None
         self._stim_step = 0
@@ -411,8 +412,7 @@ class Env(EnvProtocol):
         current_time = self.t
 
         if stimulus is not None:
-            if not isinstance(stimulus, Stimulus):
-                stimulus = Stimulus.from_arg(stimulus)
+            stimulus = Stimulus.from_arg(stimulus, env=self, duration=duration)
             stimulus = self.model.prepare_stimulus(stimulus)
             if stimulus.input_mode == "irradiance":
                 self._setup_opsin_stimulus(stimulus, current_time)
@@ -574,8 +574,6 @@ class Env(EnvProtocol):
             stimulus.gids = np.repeat(
                 self.active_gids(), max(1, len(stimulus) // max(1, n_neurons))
             )
-        sections_per_neuron = max(1, len(stimulus) // max(1, n_neurons))
-
         if self._stim_dt is None:
             self._stim_dt = stimulus.dt
         elif not math.isclose(self._stim_dt, stimulus.dt, rel_tol=0.0, abs_tol=1e-12):
@@ -583,14 +581,11 @@ class Env(EnvProtocol):
 
         start_step = int(round(current_time / stimulus.dt))
 
-        # Collect (segment, values) for sections that carry an extracellular
-        # mechanism, then size the block once.
-        pending: list[tuple[object, np.ndarray]] = []
-        for count, (gid, series) in enumerate(stimulus):
-            gid = int(gid)
+        pending = []
+        for gid, section_id, series in stimulus:
+            gid, section_id = int(gid), int(section_id)
             if not self.pc.gid_exists(gid):
                 continue
-            section_id = count % sections_per_neuron
             cell = self._find_cell(gid)
             if cell is None or section_id >= len(cell.sections):
                 continue
@@ -600,19 +595,36 @@ class Env(EnvProtocol):
             self._h.pop_section()
             if not has_extracellular:
                 continue
-            pending.append((sec(0.5), np.asarray(series, dtype=np.float64)))
+            pending.append(((gid, section_id), sec(0.5), np.asarray(series)))
 
         if not pending:
             return
 
-        end_step = start_step + max(len(v) for _seg, v in pending)
-        base_segs = len(self._stim_segments)
-        block = np.zeros((base_segs + len(pending), end_step), dtype=np.float64)
-        if self._stim_block is not None:
-            block[:base_segs, : self._stim_block.shape[1]] = self._stim_block
-        for j, (seg, values) in enumerate(pending):
-            self._stim_segments.append(seg)
-            block[base_segs + j, start_step : start_step + len(values)] = values
+        rows = []
+        for key, seg, _values in pending:
+            row = self._stim_rows.get(key)
+            if row is None:
+                row = len(self._stim_segments)
+                self._stim_rows[key] = row
+                self._stim_segments.append(seg)
+            rows.append(row)
+
+        dtype = np.promote_types(
+            max((v.dtype for _k, _s, v in pending), key=lambda d: d.itemsize),
+            np.float32,
+        )
+        end_step = max(start_step + len(v) for _k, _s, v in pending)
+        width = end_step
+        previous = self._stim_block
+        if previous is not None:
+            width = max(width, previous.shape[1])
+            dtype = np.promote_types(dtype, previous.dtype)
+
+        block = np.zeros((len(self._stim_segments), width), dtype=dtype)
+        if previous is not None:
+            block[: previous.shape[0], : previous.shape[1]] = previous
+        for row, (_key, _seg, values) in zip(rows, pending):
+            block[row, start_step : start_step + len(values)] = values
         self._stim_block = block
 
         if not self._stim_registered:
@@ -652,7 +664,7 @@ class Env(EnvProtocol):
             stimulus.gids = self.active_gids()
         h = self._h
 
-        for gid, series in stimulus:
+        for gid, _section_id, series in stimulus:
             gid = int(gid)
             if not self.pc.gid_exists(gid):
                 continue
@@ -678,9 +690,6 @@ class Env(EnvProtocol):
         phi_stim = stimulus.convert_to("photon_flux")
         if phi_stim.gids is None:
             phi_stim.gids = self.active_gids()
-        n_neurons = len(self.active_neuron_coordinates())
-        sections_per_neuron = max(1, len(phi_stim) // max(1, n_neurons))
-
         if self._opsin_dt is None:
             self._opsin_dt = phi_stim.dt
         elif not math.isclose(self._opsin_dt, phi_stim.dt, rel_tol=0.0, abs_tol=1e-12):
@@ -689,9 +698,8 @@ class Env(EnvProtocol):
         start_step = int(round(current_time / phi_stim.dt))
 
         pending: list[tuple[object, np.ndarray]] = []
-        for count, (gid, series) in enumerate(phi_stim):
-            gid = int(gid)
-            section_id = count % sections_per_neuron
+        for gid, section_id, series in phi_stim:
+            gid, section_id = int(gid), int(section_id)
             pp = self._opsin_refs.get((gid, section_id))
             if pp is None:
                 continue
@@ -1239,6 +1247,7 @@ class Env(EnvProtocol):
         self.t = 0.0
         self._dt = None
         self._stim_segments = []
+        self._stim_rows = {}
         self._stim_block = None
         self._stim_dt = None
         self._stim_step = 0
@@ -1261,6 +1270,7 @@ class Env(EnvProtocol):
         # Detach the cvode callbacks before any section they reference is freed.
         self._unregister_stim_callback()
         self._stim_segments = []
+        self._stim_rows = {}
         self._stim_block = None
         self._opsin_pps = []
         self._opsin_block = None

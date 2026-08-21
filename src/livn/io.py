@@ -42,6 +42,77 @@ _H_EFF_UM = (ELECTRODE_RADIUS_UM**2 + CULTURE_HEIGHT_UM**2) ** 0.5
 DEFAULT_RECORDING_GAIN = 1000.0 / (4.0 * _PI * 0.0003 * MIN_DISTANCE_UM)
 DEFAULT_STIMULATION_GAIN = 1000.0 * 3.5 / (4.0 * _PI * _H_EFF_UM)
 
+DEFAULT_MAX_STIMULUS_GB = 5.0
+MAX_STIMULUS_GB_ENV = "LIVN_MAX_STIMULUS_GB"
+
+
+def _max_stimulus_bytes() -> float:
+    """The ceiling in bytes; `0` or `inf` in the environment removes it."""
+    given = os.environ.get(MAX_STIMULUS_GB_ENV)
+    if given is None:
+        return DEFAULT_MAX_STIMULUS_GB * 2**30
+    try:
+        limit = float(given)
+    except ValueError:
+        raise ValueError(
+            f"{MAX_STIMULUS_GB_ENV}={given!r} is not a number of gigabytes"
+        ) from None
+    return float("inf") if limit <= 0 else limit * 2**30
+
+
+def _check_stimulus_size(n_timesteps: int, n_gids: int, itemsize: int, n_reached=None):
+    limit = _max_stimulus_bytes()
+    size = float(n_timesteps) * float(n_gids) * float(itemsize)
+    if size <= limit:
+        return
+
+    reach = ""
+    if n_reached is not None and n_reached < n_gids:
+        reach = f", of which {n_reached:,} are within reach of the driven channels"
+    raise MemoryError(
+        f"a [{n_timesteps:,} x {n_gids:,}] stimulus of "
+        f"{itemsize}-byte values is {size / 2**30:.1f} GiB, over the "
+        f"{limit / 2**30:.1f} GiB ceiling.\n"
+        f"A stimulus is dense in time AND cells: {n_timesteps:,} timesteps over "
+        f"{n_gids:,} cells{reach}. Deliver it as several `run` calls so the "
+        "quiet stretches cost nothing, and pass a `Policy` rather than an array "
+        "so only the reached cells get a column. Raise "
+        f"{MAX_STIMULUS_GB_ENV} (in GiB) to override."
+    )
+
+
+def section_labels(neuron_coordinates):
+    """`(gids, sections)` for every coordinate row."""
+    import numpy as _np
+
+    gids = _np.asarray(neuron_coordinates)[:, 0].astype(_np.int64)
+    seen: dict[int, int] = {}
+    sections = _np.empty(len(gids), dtype=_np.int64)
+    for row, gid in enumerate(gids):
+        gid = int(gid)
+        sections[row] = seen.get(gid, 0)
+        seen[gid] = sections[row] + 1
+    return gids, sections
+
+
+def coupled_sections(neuron_coordinates, cell_induction, dense: bool = False):
+    """`(gids, sections, keep)` for non-zero columns."""
+    import numpy as _np
+
+    induction = _np.asarray(cell_induction)
+    n_rows = len(_np.asarray(neuron_coordinates))
+
+    if dense:
+        reached = _np.any(induction != 0.0, axis=0)
+    else:
+        columns = _np.arange(len(induction)) % max(1, n_rows)
+        reached = _np.zeros(n_rows, dtype=bool)
+        _np.logical_or.at(reached, columns, induction[:, 2] != 0.0)
+
+    keep = _np.flatnonzero(reached)
+    gids, sections = section_labels(neuron_coordinates)
+    return gids[keep], sections[keep], keep
+
 
 def _induction_shape(distances_um, electrode_radius_um, culture_height_um):
     """1 at the electrode surface, falling as 1/sqrt(r^2 + h^2)."""
@@ -219,8 +290,9 @@ class IO(Jsonable):
         self,
         neuron_coordinates: Float[Array, "n_coords ixyz=4"],
         channel_inputs: Float[Array, "batch timestep n_channels"],
-    ) -> Float[Array, "batch timestep n_gids"]:
-        """Transforms channel inputs into neural inputs"""
+        dt: float = 1.0,
+    ) -> "Stimulus":
+        """Transforms channel inputs into neural inputs."""
         raise NotImplementedError("Please specify an IO")
 
     def channel_recording(
@@ -327,8 +399,11 @@ class MEA(IO):
         self,
         neuron_coordinates: Float[Array, "n_coords ixyz=4"],
         channel_inputs: Float[Array, "batch timestep n_channels"],
-    ) -> Float[Array, "batch timestep n_gids"]:
-        """Map per-channel current commands (µA) to extracellular voltages (mV)."""
+        dt: float = 1.0,
+    ) -> "Stimulus":
+        """Map per-channel inputs (uA) to extracellular voltages (mV)."""
+        from livn.stimulus import Stimulus
+
         autobatch = False
         if len(channel_inputs.shape) == 2:
             autobatch = True
@@ -339,14 +414,24 @@ class MEA(IO):
 
             self._cell_induction = self.cell_induction(distances)
 
+        gids, sections, keep = coupled_sections(
+            neuron_coordinates, self._cell_induction
+        )
         stimulus = calculate_cell_stimulus(
-            channel_inputs, self._cell_induction, n_gids=len(neuron_coordinates)
+            channel_inputs,
+            self._cell_induction,
+            n_gids=len(neuron_coordinates),
+            keep=keep,
         )
 
-        if autobatch:
-            return stimulus[0]
-
-        return stimulus
+        return Stimulus(
+            stimulus[0] if autobatch else stimulus,
+            dt=dt,
+            gids=gids,
+            sections=sections,
+            input_mode="extracellular",
+            units="mV",
+        )
 
     def channel_recording(
         self,
@@ -558,12 +643,23 @@ class LightArray(IO):
         if self._cell_induction is None:
             self._cell_induction = self.cell_induction(neuron_coordinates)
 
-        irradiance = np.einsum("...tf,fg->...tg", channel_inputs, self._cell_induction)
+        gids, sections, keep = coupled_sections(
+            neuron_coordinates, self._cell_induction, dense=True
+        )
+        _check_stimulus_size(
+            int(channel_inputs.shape[-2]),
+            len(keep),
+            np.promote_types(channel_inputs.dtype, np.float32).itemsize,
+            n_reached=len(keep),
+        )
+        irradiance = np.einsum(
+            "...tf,fg->...tg", channel_inputs, self._cell_induction[:, keep]
+        )
 
         if autobatch:
             irradiance = irradiance[0]
 
-        return Stimulus.from_irradiance(irradiance, dt=dt)
+        return Stimulus.from_irradiance(irradiance, dt=dt, gids=gids, sections=sections)
 
     def channel_recording(
         self,
@@ -799,6 +895,7 @@ if _USES_JAX:
         electrode_stimulus: Float[Array, "batch timestep n_channels"],
         c_induction: Float[Array, "n_inductions cip=3"],
         n_gids: int | None = None,
+        keep: "Int[Array, 'n_keep'] | None" = None,
     ) -> Float[Array, "batch timestep n_gids"]:
         """
         Calculate the stimulus strength for each cell gid and each timestep
@@ -818,12 +915,22 @@ if _USES_JAX:
         amplitudes = c_induction[:, 2]
 
         gids = c_induction[:, 1].astype(int)
-        induction_matrix = np.zeros((n_channels, n_gids))
+        _check_stimulus_size(
+            n_timesteps,
+            n_gids if keep is None else len(keep),
+            np.promote_types(stimulus.dtype, np.float32).itemsize,
+            n_reached=int(np.count_nonzero(c_induction[:, 2])) or None,
+        )
+        induction_matrix = np.zeros(
+            (n_channels, n_gids), dtype=np.promote_types(stimulus.dtype, np.float32)
+        )
         if per_coordinate:
             columns = np.arange(c_induction.shape[0]) % n_gids
         else:
             _unique, columns = np.unique(gids, return_inverse=True, size=n_gids)
         induction = induction_matrix.at[channel_ids, columns].set(amplitudes)
+        if keep is not None:
+            induction = induction[:, keep]
 
         # reduce over gids
         # Result shape: [batch, timestep, n_gids]
@@ -858,6 +965,7 @@ else:
         cell_induction: Float[Array, "n_inductions cip=3"],
         n_gids: int | None = None,
         *args,
+        keep: "Int[Array, 'n_keep'] | None" = None,
         **kwargs,
     ) -> Float[Array, "batch timestep n_gids"]:
         """
@@ -885,11 +993,20 @@ else:
                 )
             columns = np.arange(len(cell_induction)) % n_gids
 
-        # induction matrix [n_channels, n_gids]
-        induction_matrix = np.zeros((n_channels, n_gids))
+        dtype = np.promote_types(electrode_stimulus.dtype, np.float32)
+        _check_stimulus_size(
+            n_timesteps,
+            n_gids if keep is None else len(keep),
+            dtype.itemsize,
+            n_reached=int(np.count_nonzero(cell_induction[:, 2])) or None,
+        )
+
+        induction_matrix = np.zeros((n_channels, n_gids), dtype=dtype)
         # handle case where channel ids do not start at 0
         _, channel_indices = np.unique(channel_ids, return_inverse=True)
         induction_matrix[channel_indices, columns] = amplitudes
+        if keep is not None:
+            induction_matrix = induction_matrix[:, keep]
 
         # reduce over gids
         # Result shape: [batch, timestep, n_gids]

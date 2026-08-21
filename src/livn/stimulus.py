@@ -16,6 +16,16 @@ else:
     import numpy as np
 
 
+def section_positions(gids):
+    seen: dict[int, int] = {}
+    out = []
+    for gid in gids:
+        gid = int(gid)
+        out.append(seen.get(gid, 0))
+        seen[gid] = out[-1] + 1
+    return np.asarray(out)
+
+
 class Stimulus:
     def __init__(
         self,
@@ -24,6 +34,7 @@ class Stimulus:
         gids: Int[Array, "n_gids"] | None = None,
         input_mode: str = "extracellular",
         units: str | None = None,
+        sections: Int[Array, "n_gids"] | None = None,
         **extra,
     ):
         self.array = array
@@ -36,7 +47,19 @@ class Stimulus:
                 "the last axis of the array and the gid list must describe the "
                 "same cells, in the same order"
             )
+        if sections is not None:
+            if gids is None:
+                raise ValueError(
+                    "`sections` names the section of each gid, so it "
+                    "cannot be given without `gids`"
+                )
+            if len(sections) != len(gids):
+                raise ValueError(
+                    f"{len(sections)} sections for {len(gids)} gids; a column is "
+                    "one section of one cell, so the two must line up"
+                )
         self.gids = gids
+        self.sections = sections
         self.input_mode = input_mode
         self.units = units
         self.extra = extra
@@ -46,18 +69,60 @@ class Stimulus:
         return self.array.shape[0] * self.dt
 
     def __iter__(self):
-        yield from zip(self.gids, self.array.T)
+        """`(gid, section, series)` per column."""
+        gids = self.gids
+        if self.sections is not None:
+            yield from zip(gids, self.sections, self.array.T)
+            return
+
+        per_cell = self.sections_per_cell
+        for column, (gid, series) in enumerate(zip(gids, self.array.T)):
+            yield gid, column % per_cell, series
+
+    @property
+    def sections_per_cell(self) -> int:
+        """Columns each cell has, for a stimulus that does not say."""
+        if self.gids is None:
+            return 1
+        import builtins
+
+        distinct = len(builtins.set(int(g) for g in self.gids))
+        return max(1, len(self.gids) // max(1, distinct))
 
     def __len__(self):
         return self.array.shape[-1]
 
     @classmethod
-    def from_arg(cls, stimulus) -> "Stimulus | None":
+    def from_arg(cls, stimulus, env=None, duration=None) -> "Stimulus | None":
         if stimulus is None:
             return None
 
         if isinstance(stimulus, cls):
             return stimulus
+
+        from livn.policy import Policy
+
+        if isinstance(stimulus, Policy):
+            if env is None or duration is None:
+                raise ValueError(
+                    "a Policy commands channels, not cells, and only covers "
+                    "the window being simulated. Pass it to "
+                    "`env.run(duration, stimulus=policy)`, which supplies both "
+                    "or call `env.cell_stimulus(policy())` to convert one by "
+                    "hand"
+                )
+            extent = stimulus.extent_ms
+            if extent is not None and extent > duration + 1e-9:
+                raise ValueError(
+                    f"a {duration:g} ms run cannot deliver a {extent:g} ms "
+                    f"{type(stimulus).__name__}: the pulses past the end would "
+                    "be dropped and the run would look like a protocol that "
+                    "was delivered in full. Run for at least the policy's own "
+                    "length, or shorten the policy"
+                )
+            return env.cell_stimulus(
+                stimulus.window(0.0, duration, stimulus.dt), dt=stimulus.dt
+            )
 
         if hasattr(stimulus, "shape"):
             return cls(stimulus)
@@ -279,6 +344,64 @@ class Stimulus:
             **stimulus.extra,
         )
 
+    def expand(self, gids, sections=None) -> "Stimulus":
+        """Widen to the full column ordering `gids`/`sections` describe."""
+        target_gids = np.asarray(gids)
+        if self.gids is None:
+            raise ValueError(
+                "a stimulus with no `gids` does not say which columns it holds, "
+                "so it cannot be widened; it is already assumed to be full width"
+            )
+
+        target_sections = (
+            np.asarray(sections)
+            if sections is not None
+            else section_positions(target_gids)
+        )
+        own_sections = (
+            self.sections
+            if self.sections is not None
+            else section_positions(np.asarray(self.gids))
+        )
+
+        width = len(target_gids)
+        if (
+            width == self.array.shape[-1]
+            and np.array_equal(np.asarray(self.gids), target_gids)
+            and np.array_equal(np.asarray(own_sections), target_sections)
+        ):
+            return self
+
+        column = {
+            (int(g), int(s)): i
+            for i, (g, s) in enumerate(zip(target_gids, target_sections))
+        }
+        take = []
+        into = []
+        for own, (g, s) in enumerate(zip(np.asarray(self.gids), own_sections)):
+            found = column.get((int(g), int(s)))
+            if found is not None:
+                take.append(own)
+                into.append(found)
+
+        array = np.asarray(self.array)
+        full = np.zeros(array.shape[:-1] + (width,), dtype=array.dtype)
+        if take:
+            if _USES_JAX:
+                full = full.at[..., np.asarray(into)].set(array[..., np.asarray(take)])
+            else:
+                full[..., np.asarray(into)] = array[..., np.asarray(take)]
+
+        return Stimulus(
+            full,
+            dt=self.dt,
+            gids=target_gids,
+            sections=target_sections,
+            input_mode=self.input_mode,
+            units=self.units,
+            **self.extra,
+        )
+
     def to_array(self, duration: float, dt: float):
         """Resample and pad/trim to simulation time grid.
 
@@ -319,16 +442,24 @@ class Stimulus:
 
     def tree_flatten(self):
         children = [self.array]
-        aux = (self.dt, self.gids, self.input_mode, self.units, self.extra)
+        aux = (
+            self.dt,
+            self.gids,
+            self.input_mode,
+            self.units,
+            self.sections,
+            self.extra,
+        )
         return children, aux
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        dt, gids, input_mode, units, extra = aux
+        dt, gids, input_mode, units, sections, extra = aux
         return cls(
             array=children[0],
             dt=dt,
             gids=gids,
+            sections=sections,
             input_mode=input_mode,
             units=units,
             **extra,
