@@ -2,7 +2,11 @@ import numpy as np
 import pytest
 
 from livn.stimulus import Stimulus
-from livn.policy import BiphasicPulsePolicy, MonophasicPulsePolicy
+from livn.policy import (
+    BiphasicPulsePolicy,
+    MonophasicPulsePolicy,
+    PulseSweepPolicy,
+)
 
 
 class TestStimulus:
@@ -107,7 +111,7 @@ class TestBiphasicPulse:
         assert policy.dt == 0.05
         assert policy.pulse_times == [0.0]
         assert policy.amplitude == 1.5
-        assert policy.channels.tolist() == [0]
+        assert policy.channels == [0]
         assert policy.cathodic_first is True
 
     def test_single_pulse_duration(self):
@@ -191,7 +195,7 @@ class TestBiphasicPulse:
         channels = np.array([0, 1, 2])
         policy = BiphasicPulsePolicy(n_channels=64, channels=channels)
         arr = policy()
-        assert policy.channels.tolist() == [0, 1, 2]
+        assert policy.channels == [0, 1, 2]
         for c in range(3):
             assert np.any(arr[:, c] != 0)
 
@@ -239,7 +243,7 @@ class TestMonophasicPulse:
         assert policy.dt == 1.0
         assert policy.pulse_times == [0.0]
         assert policy.pulse_width == 1.0
-        assert policy.channels.tolist() == [0]
+        assert policy.channels == [0]
 
     def test_single_pulse_duration(self):
         policy = MonophasicPulsePolicy(
@@ -308,7 +312,7 @@ class TestMonophasicPulse:
         channels = np.array([2, 5])
         policy = MonophasicPulsePolicy(n_channels=16, channels=channels)
         arr = policy()
-        assert policy.channels.tolist() == [2, 5]
+        assert policy.channels == [2, 5]
         assert np.any(arr[:, 2] != 0)
         assert np.any(arr[:, 5] != 0)
         assert np.all(arr[:, 0] == 0)
@@ -434,3 +438,103 @@ class TestStimulusJax:
         result = f(stim)
         assert result.shape == (11,)
         np.testing.assert_allclose(np.asarray(result), 1.0)
+
+
+class TestPulseSweep:
+    def test_schedule_cycles_the_amplitudes(self):
+        policy = PulseSweepPolicy(
+            amplitudes=(300.0, 600.0), repeats=2, trial_ms=2000.0, onset_ms=1000.0
+        )
+        assert policy.n_trials == 4
+        assert policy.duration_ms == 8000.0
+        assert policy.schedule() == [
+            (1000.0, 300.0),
+            (3000.0, 600.0),
+            (5000.0, 300.0),
+            (7000.0, 600.0),
+        ]
+
+    def test_the_schedule_is_absolute_so_a_run_can_start_free_running(self):
+        policy = PulseSweepPolicy(
+            amplitudes=(1.0,), repeats=2, trial_ms=100.0, onset_ms=50.0
+        )
+        assert [t for t, _ in policy.schedule(1000.0)] == [1050.0, 1150.0]
+
+        moved = policy.model_copy(update={"start_ms": 1000.0})
+        assert moved.schedule() == policy.schedule(1000.0)
+
+    def test_an_explicit_order_overrides_the_cycle(self):
+        policy = PulseSweepPolicy(
+            amplitudes=(1.0, 2.0),
+            repeats=2,
+            order=(1, 1, 0, 0),
+            trial_ms=100.0,
+            onset_ms=50.0,
+        )
+        assert [a for _, a in policy.schedule()] == [2.0, 2.0, 1.0, 1.0]
+
+    def test_an_order_that_does_not_match_the_sweep_is_refused(self):
+        with pytest.raises(ValueError, match="order names 3 trials"):
+            PulseSweepPolicy(amplitudes=(1.0, 2.0), repeats=2, order=(0, 1, 0))
+        with pytest.raises(ValueError, match="order names amplitude 5"):
+            PulseSweepPolicy(amplitudes=(1.0, 2.0), repeats=2, order=(5, 0, 1, 0))
+
+    def test_a_pulse_that_does_not_fit_its_trial_is_refused(self):
+        with pytest.raises(ValueError, match="outside it"):
+            PulseSweepPolicy(trial_ms=1000.0, onset_ms=1000.0)
+        with pytest.raises(ValueError, match="does not fit inside its trial"):
+            PulseSweepPolicy(trial_ms=1000.0, onset_ms=999.9, pulse_ms=1.0)
+        with pytest.raises(ValueError, match="at least one amplitude"):
+            PulseSweepPolicy(amplitudes=())
+
+    def test_the_array_carries_each_pulse_at_its_own_amplitude(self):
+        policy = PulseSweepPolicy(
+            amplitudes=(300.0, 600.0),
+            repeats=1,
+            trial_ms=100.0,
+            onset_ms=50.0,
+            pulse_ms=0.2,
+            dt=0.1,
+        ).for_array(8, [3])
+        arr = policy()
+
+        assert arr.shape == (2000, 8)  # 2 trials x 100 ms at dt 0.1
+        # nothing anywhere but the driven electrode
+        assert sorted(set(np.nonzero(arr)[1].tolist())) == [3]
+        assert sorted(set(np.abs(arr[arr != 0]).tolist())) == [300.0, 600.0]
+        # biphasic and charge balanced, so a real electrode does not polarise
+        assert np.sum(arr[:, 3]) == pytest.approx(0.0, abs=1e-3)
+        assert arr[500, 3] == pytest.approx(-300.0)
+        assert arr[501, 3] == pytest.approx(300.0)
+
+    def test_a_sweep_without_an_array_says_so_rather_than_guessing(self):
+        policy = PulseSweepPolicy(amplitudes=(1.0,))
+        # the schedule is knowable without one; the array is not
+        assert policy.schedule()
+        with pytest.raises(ValueError, match="no array to drive"):
+            policy()
+
+    def test_a_pulse_past_the_end_of_the_run_is_refused(self):
+        policy = PulseSweepPolicy(
+            amplitudes=(1.0,), repeats=4, trial_ms=100.0, onset_ms=50.0
+        ).for_array(4, [0], total_ms=120.0)
+        with pytest.raises(ValueError, match="does not fit in a 120 ms run"):
+            policy()
+
+    def test_channels_outside_the_array_are_refused(self):
+        with pytest.raises(ValueError, match="outside a 4-channel array"):
+            PulseSweepPolicy(amplitudes=(1.0,)).for_array(4, [9])
+
+    def test_serialize_roundtrip(self):
+        policy = PulseSweepPolicy(
+            amplitudes=(300.0, 600.0),
+            repeats=2,
+            trial_ms=200.0,
+            onset_ms=100.0,
+            order=(1, 0, 0, 1),
+            start_ms=50.0,
+            dt=0.1,
+        ).for_array(8, [2])
+        restored = PulseSweepPolicy.from_json(policy.as_json())
+        assert restored.schedule() == policy.schedule()
+        np.testing.assert_array_equal(policy(), restored())

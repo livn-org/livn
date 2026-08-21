@@ -58,20 +58,31 @@ stim = Stimulus(array=cell_stim, dt=1.0)
 
 ### Biphasic pulses
 
-For MEA-style experiments, create charge-balanced biphasic electrical pulses:
+For MEA-style experiments, a [policy](#policies) builds charge-balanced biphasic pulses in channel space, which `cell_stimulus` then delivers:
 
 ```python
-stim = Stimulus.biphasic_pulse(
+from livn.policy import BiphasicPulsePolicy
+
+channel_inputs = BiphasicPulsePolicy(
     n_channels=16,
     channels=[5, 6],          # channels to stimulate
-    amplitude=1.5,            # µA
+    amplitude=1.5,            # commanded amplitude, see below
     phase_duration=0.2,       # ms per phase
     interphase_gap=0.05,      # ms between phases
     pulse_times=[0.0, 50.0],  # onset times
     dt=0.05,                  # timestep resolution
     cathodic_first=True,      # cathodic phase first (standard)
-)
+)()
+stim = Stimulus(array=mea.cell_stimulus(coordinates, channel_inputs), dt=0.05)
 ```
+
+### Policies
+
+A policy produces a `[timestep, n_channels]` array of per-channel commands (the input-side counterpart to a `Decoding`).
+
+A policy's `amplitude` is a commanded amplitude in channel space, and carries no physical unit. What the number means is the IO layer's business so the same policy can be used for different IO layers.
+
+The units below are different in that they describe what reaches a cell, which is downstream of the IO layer and genuinely known.
 
 ### From conductance values
 
