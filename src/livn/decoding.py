@@ -9,6 +9,45 @@ from livn.types import Decoding
 from livn.utils import P
 
 
+def merged_spikes(signal: Run, env=None) -> tuple[list, list]:
+    comm = getattr(env, "comm", None)
+    it, tt = signal.spike_ids, signal.spike_times
+    all_it = P.gather(it.tolist() if it is not None else [], comm=comm)
+    all_tt = P.gather(tt.tolist() if tt is not None else [], comm=comm)
+
+    merged_it: list = []
+    merged_tt: list = []
+    if all_it and all_tt:
+        for ii, ts in zip(all_it, all_tt):
+            merged_it.extend(ii)
+            merged_tt.extend(ts)
+    return merged_it, merged_tt
+
+
+def merged_spike_ids(signal: Run, env=None) -> list:
+    comm = getattr(env, "comm", None)
+    it = signal.spike_ids
+    gathered = P.gather(it.tolist() if it is not None else [], comm=comm)
+
+    merged: list = []
+    if gathered:
+        for part in gathered:
+            merged.extend(part)
+    return merged
+
+
+def merged_spike_times(signal: Run, env=None) -> list:
+    comm = getattr(env, "comm", None)
+    tt = signal.spike_times
+    gathered = P.gather(tt.tolist() if tt is not None else [], comm=comm)
+
+    merged: list = []
+    if gathered:
+        for part in gathered:
+            merged.extend(part)
+    return merged
+
+
 class Slice(Decoding):
     """Slice decoding
 
@@ -265,18 +304,10 @@ class PopulationRateMetrics(Decoding):
     bin_size: float = 100.0
 
     def __call__(self, signal: Run, env=None):
-        tt = signal.spike_times
-
-        local_spikes = tt.tolist() if tt is not None else []
-        all_spikes = P.gather(local_spikes, comm=env.comm)
+        merged = merged_spike_times(signal, env)
 
         result = None
         if P.is_root(comm=env.comm):
-            merged: list = []
-            if all_spikes:
-                for s in all_spikes:
-                    merged.extend(s)
-
             duration = float(self.duration)
             n_bins = max(2, int(duration / self.bin_size))
             if merged:
@@ -311,22 +342,10 @@ class ISICV(Decoding):
     min_spikes_per_unit: int = 5
 
     def __call__(self, signal: Run, env=None):
-        it, tt = signal.spike_ids, signal.spike_times
-
-        local_it = it.tolist() if it is not None else []
-        local_tt = tt.tolist() if tt is not None else []
-        all_it = P.gather(local_it, comm=env.comm)
-        all_tt = P.gather(local_tt, comm=env.comm)
+        merged_it, merged_tt = merged_spikes(signal, env)
 
         result = None
         if P.is_root(comm=env.comm):
-            merged_it: list = []
-            merged_tt: list = []
-            if all_it and all_tt:
-                for ii, ts in zip(all_it, all_tt):
-                    merged_it.extend(ii)
-                    merged_tt.extend(ts)
-
             isi_cvs: list = []
             if merged_tt:
                 merged_it_arr = np.asarray(merged_it)
@@ -371,18 +390,10 @@ class PopulationAutocorrTau(Decoding):
     max_lag: float = 5000.0
 
     def __call__(self, signal: Run, env=None):
-        tt = signal.spike_times
-
-        local_spikes = tt.tolist() if tt is not None else []
-        all_spikes = P.gather(local_spikes, comm=env.comm)
+        merged = merged_spike_times(signal, env)
 
         result = None
         if P.is_root(comm=env.comm):
-            merged = []
-            if all_spikes:
-                for s in all_spikes:
-                    merged.extend(s)
-
             duration = float(self.duration)
             tau = float(self.bin_size)
             n_bins = max(2, int(duration / self.bin_size))
@@ -433,22 +444,10 @@ class BurstRate(Decoding):
     min_floor: float = 3.0
 
     def __call__(self, signal: Run, env=None):
-        it, tt = signal.spike_ids, signal.spike_times
-
-        local_it = it.tolist() if it is not None else []
-        local_tt = tt.tolist() if tt is not None else []
-        all_it = P.gather(local_it, comm=env.comm)
-        all_tt = P.gather(local_tt, comm=env.comm)
+        merged_it, merged_tt = merged_spikes(signal, env)
 
         result = None
         if P.is_root(comm=env.comm):
-            merged_it: list = []
-            merged_tt: list = []
-            if all_it and all_tt:
-                for ii, ts in zip(all_it, all_tt):
-                    merged_it.extend(ii)
-                    merged_tt.extend(ts)
-
             duration = float(self.duration)
             burst_rate = 0.0
             n_bursts = 0
@@ -489,22 +488,10 @@ class PeakSynchrony(Decoding):
     bin_size: float = 2.0
 
     def __call__(self, signal: Run, env=None):
-        it, tt = signal.spike_ids, signal.spike_times
-
-        local_it = it.tolist() if it is not None else []
-        local_tt = tt.tolist() if tt is not None else []
-        all_it = P.gather(local_it, comm=env.comm)
-        all_tt = P.gather(local_tt, comm=env.comm)
+        merged_it, merged_tt = merged_spikes(signal, env)
 
         result = None
         if P.is_root(comm=env.comm):
-            merged_it: list = []
-            merged_tt: list = []
-            if all_it and all_tt:
-                for ii, ts in zip(all_it, all_tt):
-                    merged_it.extend(ii)
-                    merged_tt.extend(ts)
-
             duration = float(self.duration)
             peak = 0.0
             max_count = 0
@@ -538,22 +525,10 @@ class PairwiseChannelCorrelation(Decoding):
     min_units: int = 2
 
     def __call__(self, signal: Run, env=None):
-        it, tt = signal.spike_ids, signal.spike_times
-
-        local_it = it.tolist() if it is not None else []
-        local_tt = tt.tolist() if tt is not None else []
-        all_it = P.gather(local_it, comm=env.comm)
-        all_tt = P.gather(local_tt, comm=env.comm)
+        merged_it, merged_tt = merged_spikes(signal, env)
 
         result = None
         if P.is_root(comm=env.comm):
-            merged_it: list = []
-            merged_tt: list = []
-            if all_it and all_tt:
-                for ii, ts in zip(all_it, all_tt):
-                    merged_it.extend(ii)
-                    merged_tt.extend(ts)
-
             duration = float(self.duration)
             mean_corr = 0.0
             n_pairs = 0
@@ -603,18 +578,10 @@ class PerUnitFiringRate(Decoding):
     """
 
     def __call__(self, signal: Run, env=None):
-        it = signal.spike_ids
-
-        local_it = it.tolist() if it is not None else []
-        all_it = P.gather(local_it, comm=env.comm)
+        merged = merged_spike_ids(signal, env)
 
         result = None
         if P.is_root(comm=env.comm):
-            merged: list = []
-            if all_it:
-                for ii in all_it:
-                    merged.extend(ii)
-
             duration_s = float(self.duration) / 1000.0
             rates: dict = {}
             if merged:
@@ -746,6 +713,193 @@ class PopulationActiveFraction(Decoding):
         }
 
 
+def baks(spike_times, time, alpha: float = 4.77, beta: float | None = None):
+    """Bayesian Adaptive Kernel Smoother rate estimate.
+
+    Kernel smoothing with a bandwidth inferred per time point under a Bayesian
+    prior, after Ahmadi et al. (https://github.com/nurahmadi/BAKS).
+
+    Args:
+        spike_times: Spike times in seconds
+        time: Time points to estimate the rate at, in seconds
+        alpha: Shape parameter of the bandwidth prior
+        beta: Scale parameter; ``None`` uses the reference default
+            ``n_spikes ** 0.42``
+
+    Returns:
+        ``(rate, h)`` rate in Hz at each time point, and the adaptive
+        bandwidth used there
+    """
+    from scipy.special import gamma
+
+    spikes = np.asarray(spike_times, dtype=np.float64).reshape(-1)
+    t = np.asarray(time, dtype=np.float64).reshape(-1)
+    n = spikes.size
+    if n == 0:
+        return np.zeros_like(t), np.zeros_like(t)
+
+    b = float(n) ** (0.42 if beta is None else float(beta))
+
+    # (n_spikes, n_time)
+    delta = t[None, :] - spikes[:, None]
+    base = delta**2 / 2.0 + 1.0 / b
+    h = (gamma(alpha) / gamma(alpha + 0.5)) * (
+        (base ** (-alpha)).sum(axis=0) / (base ** (-alpha - 0.5)).sum(axis=0)
+    )
+
+    # kernels are evaluated only within 6 bandwidths, as in the reference
+    within = np.abs(delta) <= 6.0 * h[None, :]
+    exponent = np.full(delta.shape, -np.inf)
+    scale = np.broadcast_to(h[None, :], delta.shape)
+    exponent[within] = -(delta[within] ** 2) / (2.0 * scale[within] ** 2)
+    rate = ((1.0 / (np.sqrt(2.0 * np.pi) * h[None, :])) * np.exp(exponent)).sum(axis=0)
+
+    return rate, h
+
+
+class PopulationSpikeDensity(Decoding):
+    """Per-population rate and activity features from a spike-density estimate.
+
+    Each cell's rate is estimated with :func:`baks` on ``temporal_resolution``
+    bins over the window, and the population features are reduced from those
+    estimates in a way a spike count cannot reproduce:
+
+    - ``mean_rate`` averages over active cells only. A cell counts as active
+      when its mean estimated rate is above zero, which needs at least two
+      spikes in the window (one spike leaves the estimate identically zero), so
+      a population where a tenth of the cells fire fast does not read as a slow
+      population.
+    - ``fraction_active`` is those active cells over the population's simulated
+      cell count.
+    - ``mean/std_fraction_active_per_bin`` interpolate each cell's rate onto
+      ``stability_resolution`` bins and count it active in a bin when the
+      estimate there reaches ``active_threshold``. Unlike
+      :class:`PopulationActiveFraction`, which asks whether a cell spiked in a
+      bin, this asks whether the smoothed rate says it was firing so a cell
+      stays active across the gaps between its spikes.
+    - ``rate_cv`` is ``std/mean`` of that per-bin fraction: how steadily the
+      population fires.
+
+    Returns each as ``{population: value}``, plus ``n_total``/``n_active``.
+    """
+
+    temporal_resolution: float = 2.0
+    stability_resolution: float = 2.0
+    active_threshold: float | dict[str, float] = 0.01
+    baks_alpha: float = 4.77
+    baks_beta: float | None = None
+
+    def _thresholds(self, pops: list[str]) -> np.ndarray:
+        if isinstance(self.active_threshold, dict):
+            unknown = sorted(set(self.active_threshold) - set(pops))
+            if unknown:
+                raise ValueError(
+                    f"active_threshold names {unknown}, which the system has no "
+                    f"population for; it has {sorted(pops)}"
+                )
+            return np.array(
+                [float(self.active_threshold.get(p, 0.0)) for p in pops],
+                dtype=np.float64,
+            )
+        return np.full(len(pops), float(self.active_threshold), dtype=np.float64)
+
+    def __call__(self, signal: Run, env=None):
+        it, tt = signal.spike_ids, signal.spike_times
+
+        ranges = env.system.population_ranges
+        pops = sorted(ranges, key=lambda p: ranges[p][0])  # ascending start gid
+        starts = np.array([ranges[p][0] for p in pops], dtype=np.int64)
+        ends = np.array([ranges[p][0] + ranges[p][1] for p in pops], dtype=np.int64)
+
+        time_bins = np.arange(0.0, float(self.duration), self.temporal_resolution)
+        if time_bins.size < 2:
+            raise ValueError(
+                f"a {self.duration} ms window holds fewer than two "
+                f"{self.temporal_resolution} ms density bins"
+            )
+
+        t_start, t_stop = float(time_bins[0]), float(time_bins[-1])
+        stability_bins = np.arange(
+            t_start, t_stop + self.temporal_resolution, self.stability_resolution
+        )
+        centers = stability_bins + self.stability_resolution / 2.0
+
+        thresholds = self._thresholds(pops)
+        n_active = np.zeros(len(pops), dtype=np.int64)
+        rate_sum = np.zeros(len(pops), dtype=np.float64)
+        active_per_bin = np.zeros((len(pops), centers.size), dtype=np.int64)
+
+        if it is not None and tt is not None and len(it):
+            gids = np.asarray(it, dtype=np.int64)
+            times = np.asarray(tt, dtype=np.float64)
+            keep = (times >= t_start) & (times <= t_stop)
+            gids, times = gids[keep], times[keep]
+
+            order = np.argsort(gids, kind="stable")
+            gids, times = gids[order], times[order]
+            unique, offsets = np.unique(gids, return_index=True)
+            trains = np.split(times, offsets[1:])
+            pop_of = np.searchsorted(starts, unique, side="right") - 1
+
+            for k, gid in enumerate(unique):
+                i = int(pop_of[k])
+                if i < 0 or gid >= ends[i]:
+                    continue
+                spikes = trains[k]
+                if spikes.size < 2:
+                    continue
+                rate = baks(
+                    spikes / 1000.0,
+                    time_bins / 1000.0,
+                    alpha=self.baks_alpha,
+                    beta=self.baks_beta,
+                )[0]
+                mean_rate = float(rate.mean())
+                if mean_rate > 0.0:
+                    n_active[i] += 1
+                    rate_sum[i] += mean_rate
+                interpolated = np.interp(centers, time_bins, rate)
+                active_per_bin[i] += interpolated >= thresholds[i]
+
+        cells = np.array([len(env.cells.get(p, {})) for p in pops], dtype=np.int64)
+        n_active, rate_sum, active_per_bin, cells = P.reduce_sum(
+            n_active, rate_sum, active_per_bin, cells, all=True, comm=env.comm
+        )
+
+        mean_rate: dict = {}
+        fraction_active: dict = {}
+        mean_fraction: dict = {}
+        std_fraction: dict = {}
+        rate_cv: dict = {}
+        totals: dict = {}
+        actives: dict = {}
+        for i, p in enumerate(pops):
+            total = int(cells[i])
+            if total <= 0:
+                continue
+            active = int(n_active[i])
+            totals[p] = total
+            actives[p] = active
+            mean_rate[p] = float(rate_sum[i] / active) if active else 0.0
+            fraction_active[p] = active / total
+            fraction = np.asarray(active_per_bin[i], dtype=np.float64) / total
+            mean_fraction[p] = float(fraction.mean())
+            std_fraction[p] = float(fraction.std())
+            rate_cv[p] = (
+                float(std_fraction[p] / mean_fraction[p]) if mean_fraction[p] else 0.0
+            )
+
+        return {
+            "mean_rate": mean_rate,
+            "fraction_active": fraction_active,
+            "mean_fraction_active_per_bin": mean_fraction,
+            "std_fraction_active_per_bin": std_fraction,
+            "rate_cv": rate_cv,
+            "n_total": totals,
+            "n_active": actives,
+        }
+
+
 class Stability(Decoding):
     tail_window: float = 1000.0
     max_rate_hz: float = 20.0
@@ -753,17 +907,11 @@ class Stability(Decoding):
     bin_size: float = 100.0
 
     def __call__(self, signal: Run, env=None):
-        tt = signal.spike_times
-
-        local_spikes = tt.tolist() if tt is not None else []
-        all_spikes = P.gather(local_spikes, comm=env.comm)
+        merged_spikes_ = merged_spike_times(signal, env)
 
         result = None
         if P.is_root(comm=env.comm):
-            merged_spikes = []
-            if all_spikes:
-                for spikes in all_spikes:
-                    merged_spikes.extend(spikes)
+            merged_spikes = merged_spikes_
 
             merged_spikes = np.array(merged_spikes) if merged_spikes else np.array([])
 
@@ -950,17 +1098,11 @@ class AvalancheAnalysis(Decoding):
     bin_width: float = 4.0
 
     def __call__(self, signal: Run, env=None):
-        tt = signal.spike_times
-
-        local_spikes = tt.tolist() if tt is not None else []
-        all_spikes = P.gather(local_spikes, comm=env.comm)
+        merged_spikes_ = merged_spike_times(signal, env)
 
         result = None
         if P.is_root(comm=env.comm):
-            merged_spikes = []
-            if all_spikes:
-                for spikes in all_spikes:
-                    merged_spikes.extend(spikes)
+            merged_spikes = merged_spikes_
             merged_spikes = np.sort(merged_spikes)
 
             if len(merged_spikes) > 0:
