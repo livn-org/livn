@@ -1277,3 +1277,251 @@ class ArrowDataset(GatherAndMerge):
             )
 
         return Dataset(pa.concat_tables(tables))
+
+
+def stimulus_response(
+    it: np.ndarray,
+    tt: np.ndarray,
+    n_units: int,
+    onset_ms: float,
+    *,
+    window_ms: float | None = None,
+    pre_ms: float = 1000.0,
+    post_ms: float = 500.0,
+    bin_size: float = 10.0,
+    tail_ms: float = 4000.0,
+    threshold_k: float = 3.0,
+) -> dict:
+    if tt.size == 0:
+        return {}
+    extent = float(window_ms) if window_ms is not None else float(tt.max() + bin_size)
+    if onset_ms - pre_ms < 0 or onset_ms + post_ms > extent:
+        return {}
+
+    n_units = max(int(n_units), 1)
+    pre = (tt >= onset_ms - pre_ms) & (tt < onset_ms)
+    post = (tt >= onset_ms) & (tt < onset_ms + post_ms)
+
+    baseline_hz = float(pre.sum()) / (pre_ms / 1000.0) / n_units
+    response_hz = float(post.sum()) / (post_ms / 1000.0) / n_units
+
+    f: dict = {
+        "evoked_rate_hz": response_hz - baseline_hz,
+        "response_gain": (
+            response_hz / baseline_hz if baseline_hz > 0 else float("nan")
+        ),
+    }
+
+    f |= _histogram(
+        tt,
+        n_units,
+        onset_ms,
+        pre_ms=pre_ms,
+        post_ms=post_ms,
+        bin_size=bin_size,
+        tail_ms=tail_ms,
+        threshold_k=threshold_k,
+    )
+    responded = responders(
+        it,
+        pre,
+        post,
+        width=_bincount_width(it, n_units),
+        pre_ms=pre_ms,
+        post_ms=post_ms,
+    )
+    f["response_probability"] = float(responded.sum()) / n_units
+    return f
+
+
+def _bincount_width(it, n_units: int) -> int:
+    return max(int(it.max()) + 1 if it.size else 0, int(n_units))
+
+
+def _histogram(
+    tt, n_units, onset_ms, *, pre_ms, post_ms, bin_size, tail_ms, threshold_k
+) -> dict:
+    """Peak, latency and duration off the peri-stimulus histogram."""
+    scale = 1000.0 / bin_size / n_units  # counts per bin -> Hz per unit
+
+    n_pre = max(1, int(pre_ms // bin_size))
+    pre_counts, _ = np.histogram(
+        tt, bins=n_pre, range=(onset_ms - n_pre * bin_size, onset_ms)
+    )
+    median = float(np.median(pre_counts))
+    mad = float(np.median(np.abs(pre_counts - median)))
+    threshold = median + threshold_k * 1.4826 * max(mad, 1.0 / 1.4826)
+
+    n_post = max(1, int(post_ms // bin_size))
+    post_counts, _ = np.histogram(
+        tt, bins=n_post, range=(onset_ms, onset_ms + n_post * bin_size)
+    )
+    peak = int(np.argmax(post_counts))
+
+    f = {"response_peak_hz": float(post_counts[peak]) * scale}
+
+    if post_counts[peak] > threshold:
+        f["response_latency_ms"] = (peak + 0.5) * bin_size
+    else:
+        f["response_latency_ms"] = float("nan")
+
+    n_tail = max(1, int(tail_ms // bin_size))
+    tail, _ = np.histogram(
+        tt, bins=n_tail, range=(onset_ms, onset_ms + n_tail * bin_size)
+    )
+    above = np.flatnonzero(tail > threshold)
+    if above.size == 0:
+        f["response_duration_ms"] = float("nan")
+        return f
+
+    start = int(above[0])
+    quiet = tail[start:] <= threshold
+    settled = np.flatnonzero(
+        np.convolve(quiet.astype(int), np.ones(3, dtype=int), mode="valid") == 3
+    )
+    f["response_duration_ms"] = (
+        float(settled[0] * bin_size) if settled.size else float("nan")
+    )
+    return f
+
+
+def responders(it, pre, post, *, width, pre_ms, post_ms) -> np.ndarray:
+    expected = post_ms / pre_ms  # scale a baseline count to the response window
+    pre_counts = np.bincount(it[pre], minlength=width).astype(np.float64)
+    post_counts = np.bincount(it[post], minlength=width).astype(np.float64)
+
+    return post_counts > pre_counts * expected + 1.0
+
+
+def recruitment_threshold(curve: dict[float, float], *, recruited: float = 0.5) -> dict:
+    if len(curve) < 2:
+        return {}
+
+    amplitudes = sorted(curve)
+    probabilities = [curve[a] for a in amplitudes]
+    above = [a for a in amplitudes if curve[a] >= recruited]
+
+    if not above:
+        return {
+            "censored": "above",
+            "below_mv": None,
+            "above_mv": None,
+            "highest_tested_mv": amplitudes[-1],
+            "probability_at_highest": probabilities[-1],
+            "amplitudes_mv": amplitudes,
+            "probabilities": probabilities,
+        }
+
+    crossing = min(above)
+    lower = [a for a in amplitudes if a < crossing]
+    return {
+        "censored": None if lower else "below",
+        "below_mv": max(lower) if lower else None,
+        "above_mv": crossing,
+        "highest_tested_mv": amplitudes[-1],
+        "probability_at_highest": probabilities[-1],
+        "amplitudes_mv": amplitudes,
+        "probabilities": probabilities,
+    }
+
+
+def sorted_spikes(signal: Run, env=None):
+    it, tt = merged_spikes(signal, env)
+    order = np.argsort(np.asarray(tt), kind="stable") if tt else []
+    return (
+        np.asarray(it, dtype=np.int64)[order],
+        np.asarray(tt, dtype=np.float64)[order],
+    )
+
+
+def unit_count(env) -> int:
+    gids = getattr(getattr(env, "system", None), "gids", None)
+    return max(len(gids) if gids is not None else 0, 1)
+
+
+def electrode_positions(env) -> dict:
+    coordinates = getattr(getattr(env, "io", None), "electrode_coordinates", None)
+    if coordinates is None:
+        return {}
+    return {int(row[0]): (float(row[1]), float(row[2])) for row in coordinates}
+
+
+class StimulusResponse(Decoding):
+    """What a network does in post_ms after a pulse.
+
+    Measured against the baseline immediately before it, in the same window, so
+    drift and a quiet electrode cancel in the ratio.
+    """
+
+    onset_ms: float = 0.0
+    pre_ms: float = 1000.0
+    post_ms: float = 500.0
+    bin_size: float = 10.0
+    tail_ms: float = 4000.0
+    threshold_k: float = 3.0
+
+    def __call__(self, signal: Run, env=None):
+        comm = getattr(env, "comm", None)
+        it, tt = sorted_spikes(signal, env)
+
+        result = None
+        if P.is_root(comm=comm):
+            result = stimulus_response(
+                it,
+                tt,
+                unit_count(env),
+                float(self.onset_ms),
+                window_ms=float(self.duration),
+                pre_ms=self.pre_ms,
+                post_ms=self.post_ms,
+                bin_size=self.bin_size,
+                tail_ms=self.tail_ms,
+                threshold_k=self.threshold_k,
+            )
+
+        return P.broadcast(result, comm=comm)
+
+
+class RecruitmentCurve(Decoding):
+    schedule: list[tuple[float, float]] = []
+    """`(pulse time in ms from the start of this run, amplitude in mV)`."""
+
+    pre_ms: float = 1000.0
+    post_ms: float = 500.0
+    recruited: float = 0.5
+
+    def __call__(self, signal: Run, env=None):
+        comm = getattr(env, "comm", None)
+        it, tt = sorted_spikes(signal, env)
+
+        result = None
+        if P.is_root(comm=comm):
+            units = unit_count(env)
+            extent = float(self.duration)
+            width = _bincount_width(it, units)
+
+            by_amplitude: dict[float, list[float]] = {}
+            for at, amplitude in self.schedule:
+                by_amplitude.setdefault(float(amplitude), []).append(
+                    self._recruited(it, tt, float(at), extent, units, width)
+                )
+
+            curve = {a: float(np.median(v)) for a, v in by_amplitude.items() if v}
+            result = {
+                "curve": curve,
+                **recruitment_threshold(curve, recruited=self.recruited),
+            }
+
+        return P.broadcast(result, comm=comm)
+
+    def _recruited(self, it, tt, at: float, extent: float, units: int, width: int):
+        """Fraction of the array that answered this one pulse."""
+        if tt.size == 0 or at - self.pre_ms < 0 or at + self.post_ms > extent:
+            return 0.0
+
+        pre = (tt >= at - self.pre_ms) & (tt < at)
+        post = (tt >= at) & (tt < at + self.post_ms)
+        responded = responders(
+            it, pre, post, width=width, pre_ms=self.pre_ms, post_ms=self.post_ms
+        )
+        return float(responded.sum()) / units
