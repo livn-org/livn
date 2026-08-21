@@ -292,7 +292,11 @@ class Env(Protocol):
                 )
             )
             unknown = sorted(
-                k for k in params if k not in known and not k.startswith("cells-")
+                k
+                for k in params
+                if k not in known
+                and not k.startswith("cells-")
+                and not k.startswith("io-")
             )
             if unknown:
                 complaint = (
@@ -393,6 +397,7 @@ class Env(Protocol):
         weights = {}
         noise = {}
         cells = {}
+        io = {}
 
         for k, v in params.items():
             if k.startswith("noise-"):
@@ -401,6 +406,8 @@ class Env(Protocol):
                 weights[k.replace("weight-", "")] = v
             elif k.startswith("cells-"):
                 cells[k.replace("cells-", "", 1)] = v
+            elif k.startswith("io-"):
+                io[k.replace("io-", "", 1)] = v
             else:
                 weights[k] = v
 
@@ -411,6 +418,12 @@ class Env(Protocol):
             env.set_noise(noise)
         if cells:
             env = env.cells.set_params(cells)
+        if io:
+            if getattr(self, "io", None) is None:
+                raise ValueError(
+                    f"no io on this env, {sorted('io-' + k for k in io)} is invalid"
+                )
+            self.io.set_params(io)
 
         return env
 

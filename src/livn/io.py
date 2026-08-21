@@ -33,35 +33,114 @@ if "ax" in backend():
 else:
     import numpy as np
 
+MIN_DISTANCE_UM = 5.0
+ELECTRODE_RADIUS_UM = 15.0
+CULTURE_HEIGHT_UM = 50.0
+_PI = 3.141592653589793
+_H_EFF_UM = (ELECTRODE_RADIUS_UM**2 + CULTURE_HEIGHT_UM**2) ** 0.5
+
+DEFAULT_RECORDING_GAIN = 1000.0 / (4.0 * _PI * 0.0003 * MIN_DISTANCE_UM)
+DEFAULT_STIMULATION_GAIN = 1000.0 * 3.5 / (4.0 * _PI * _H_EFF_UM)
+
+
+def _induction_shape(distances_um, electrode_radius_um, culture_height_um):
+    """1 at the electrode surface, falling as 1/sqrt(r^2 + h^2)."""
+    h_eff = (electrode_radius_um**2 + culture_height_um**2) ** 0.5
+    return h_eff / np.sqrt(distances_um**2 + h_eff**2)
+
+
+def _source_shape(distances_um, min_distance_um):
+    """1 at the electrode surface, falling as 1/r with a floor on r."""
+    return min_distance_um / (distances_um + min_distance_um)
+
 
 if _USES_JAX:
 
     class PointSourceModel(eqx.Module):
-        sigma_S_per_mm: float = eqx.field(default=0.0003, static=True)
-        min_distance_um: float = eqx.field(default=5.0, static=True)
+        stimulation_gain: float = eqx.field(
+            default=DEFAULT_STIMULATION_GAIN, static=True
+        )
+        recording_gain: float = eqx.field(default=DEFAULT_RECORDING_GAIN, static=True)
+        min_distance_um: float = eqx.field(default=MIN_DISTANCE_UM, static=True)
+        electrode_radius_um: float = eqx.field(default=ELECTRODE_RADIUS_UM, static=True)
+        culture_height_um: float = eqx.field(default=CULTURE_HEIGHT_UM, static=True)
 
         def source_gain(self, distances_um):
-            r_mm = (distances_um + self.min_distance_um) / 1000.0
-            factor = 1.0 / (4.0 * np.pi * self.sigma_S_per_mm)
-            return factor * (1.0 / r_mm)
+            return self.recording_gain * _source_shape(
+                distances_um, self.min_distance_um
+            )
+
+        def induction_gain(self, distances_um):
+            return self.stimulation_gain * _induction_shape(
+                distances_um, self.electrode_radius_um, self.culture_height_um
+            )
 
         def potential_recording(self, gain, membrane_currents):
             return np.matmul(gain, membrane_currents)
+
+        def set_params(self, params: dict) -> "PointSourceModel":
+            unknown = sorted(k for k in params if not hasattr(self, k))
+            if unknown:
+                raise KeyError(f"{unknown} are not parameters of {type(self).__name__}")
+            import dataclasses
+
+            return dataclasses.replace(self, **{k: float(v) for k, v in params.items()})
+
+        def serialize(self) -> dict:
+            return {
+                "stimulation_gain": float(self.stimulation_gain),
+                "recording_gain": float(self.recording_gain),
+                "min_distance_um": float(self.min_distance_um),
+                "electrode_radius_um": float(self.electrode_radius_um),
+                "culture_height_um": float(self.culture_height_um),
+            }
 
 else:
 
     class PointSourceModel:
-        def __init__(self, sigma_S_per_mm=0.0003, min_distance_um=5.0):
-            self.sigma_S_per_mm = sigma_S_per_mm
+        def __init__(
+            self,
+            stimulation_gain=DEFAULT_STIMULATION_GAIN,
+            recording_gain=DEFAULT_RECORDING_GAIN,
+            min_distance_um=MIN_DISTANCE_UM,
+            electrode_radius_um=ELECTRODE_RADIUS_UM,
+            culture_height_um=CULTURE_HEIGHT_UM,
+        ):
+            self.stimulation_gain = stimulation_gain
+            self.recording_gain = recording_gain
             self.min_distance_um = min_distance_um
+            self.electrode_radius_um = electrode_radius_um
+            self.culture_height_um = culture_height_um
 
         def source_gain(self, distances_um):
-            r_mm = (distances_um + self.min_distance_um) / 1000.0
-            factor = 1.0 / (4.0 * np.pi * self.sigma_S_per_mm)
-            return factor * (1.0 / r_mm)
+            return self.recording_gain * _source_shape(
+                distances_um, self.min_distance_um
+            )
+
+        def induction_gain(self, distances_um):
+            return self.stimulation_gain * _induction_shape(
+                distances_um, self.electrode_radius_um, self.culture_height_um
+            )
 
         def potential_recording(self, gain, membrane_currents):
             return np.matmul(gain, membrane_currents)
+
+        def set_params(self, params: dict) -> "PointSourceModel":
+            unknown = sorted(k for k in params if not hasattr(self, k))
+            if unknown:
+                raise KeyError(f"{unknown} are not parameters of {type(self).__name__}")
+            for name, value in params.items():
+                setattr(self, name, float(value))
+            return self
+
+        def serialize(self) -> dict:
+            return {
+                "stimulation_gain": float(self.stimulation_gain),
+                "recording_gain": float(self.recording_gain),
+                "min_distance_um": float(self.min_distance_um),
+                "electrode_radius_um": float(self.electrode_radius_um),
+                "culture_height_um": float(self.culture_height_um),
+            }
 
 
 def _empty_array():
@@ -81,6 +160,43 @@ class IO(Jsonable):
         return cls.from_json(
             os.path.join(directory, cls.__name__.lower() + ".json"), comm=comm
         )
+
+    def parameter_children(self) -> dict:
+        return {}
+
+    def set_params(self, params: dict) -> "IO":
+        children = self.parameter_children()
+        own: dict = {}
+        nested: dict = {}
+        for key, value in params.items():
+            head, _, rest = key.partition("-")
+            if rest and head in children:
+                nested.setdefault(head, {})[rest] = value
+            else:
+                own[key] = value
+
+        for name, values in nested.items():
+            setattr(self, name, children[name].set_params(values))
+
+        for name, value in own.items():
+            if not hasattr(self, name):
+                raise KeyError(
+                    f"{name!r} is not a parameter of {type(self).__name__}"
+                    + (f"; its children are {sorted(children)}" if children else "")
+                )
+            setattr(self, name, float(value))
+
+        self.invalidate()
+        return self
+
+    def invalidate(self) -> None:
+        if getattr(self, "_cell_induction", None) is not None:
+            self._cell_induction = None
+        if getattr(self, "cell_measurement", None) is not None:
+            self.cell_measurement = None
+        for child in self.parameter_children().values():
+            if hasattr(child, "invalidate"):
+                child.invalidate()
 
     @property
     def num_channels(self) -> int:
@@ -179,10 +295,15 @@ class MEA(IO):
         self.output_radius = output_radius
         if volume_conductor is None:
             volume_conductor = PointSourceModel()
+        elif isinstance(volume_conductor, dict):
+            volume_conductor = PointSourceModel(**volume_conductor)
         self.volume_conductor = volume_conductor
 
         self.cell_measurement = None
         self._cell_induction = None
+
+    def parameter_children(self) -> dict:
+        return {"volume_conductor": self.volume_conductor}
 
     @property
     def num_channels(self) -> int:
@@ -197,6 +318,9 @@ class MEA(IO):
             "electrode_coordinates": self.electrode_coordinates,
             "input_radius": self.input_radius,
             "output_radius": self.output_radius,
+            "volume_conductor": self.volume_conductor.serialize()
+            if hasattr(self.volume_conductor, "serialize")
+            else None,
         }
 
     def cell_stimulus(
@@ -306,7 +430,9 @@ class MEA(IO):
         self,
         distances: Float[Array, "n_distances cip=3"],
     ) -> Float[Array, "n_amplitudes cip=3"]:
-        return disk_electrode_model(distances)
+        return with_amplitude(
+            distances, self.volume_conductor.induction_gain(distances[:, -1])
+        )
 
     def channel_contribution(
         self,
@@ -502,6 +628,9 @@ class ComposedIO(IO):
         self.inputs = inputs
         self.outputs = outputs
 
+    def parameter_children(self) -> dict:
+        return {"inputs": self.inputs, "outputs": self.outputs}
+
     @property
     def num_channels(self) -> int:
         return self.outputs.num_channels
@@ -647,6 +776,10 @@ def electrode_array_coordinates_for_area(
 
 if _USES_JAX:
 
+    def with_amplitude(distances, amplitudes):
+        """`distances` with its last column replaced."""
+        return distances.at[:, -1].set(amplitudes)
+
     def relative_distance(
         distances: Float[Array, "n_distances cip=3"],
         boundary: float,
@@ -661,50 +794,6 @@ if _USES_JAX:
             distances = distances[distances[:, -1] <= boundary]
         distances = distances.at[:, -1].set(distances[:, -1] / boundary)
         return distances
-
-    def point_source_model(
-        distances: Float[Array, "n_distances cip=3"],
-        tissue_resistivity_ohm_m: float = 3.5,
-        per_unit_current_uA: float = 1.0,
-        min_distance_um: float = 5.0,
-    ) -> Float[Array, "n_amplitudes cip=3"]:
-        """
-        Compute the per-microamp amplitude using V = (pI)/(4πr).
-        """
-        current_A = per_unit_current_uA * 1e-6
-        r_values = distances[:, -1]
-        r = (r_values + min_distance_um) * 1e-6  # cap small distances
-        eV = (tissue_resistivity_ohm_m * current_A) / (4 * np.pi * r)
-        amplitudes = distances.at[:, -1].set(eV * 1000)  # mV per uA
-
-        return amplitudes
-
-    def disk_electrode_model(
-        distances: Float[Array, "n_distances cip=3"],
-        tissue_resistivity_ohm_m: float = 3.5,
-        per_unit_current_uA: float = 1.0,
-        electrode_radius_um: float = 15.0,
-        culture_height_um: float = 50.0,
-    ) -> Float[Array, "n_amplitudes cip=3"]:
-        """
-        Compute extracellular potential for in vitro planar MEA setup
-
-        V ~ (pI)/(4π) * 1/sqrt(r^2 + h^2)
-
-        where h is an effective height parameter that accounts for
-        the disk electrode geometry and finite medium
-        """
-        current_A = per_unit_current_uA * 1e-6
-
-        # effective distance
-        r_um = distances[:, -1]
-        h_eff_um = np.sqrt(electrode_radius_um**2 + culture_height_um**2)
-        r_eff = np.sqrt(r_um**2 + h_eff_um**2) * 1e-6  # meters
-
-        eV = (tissue_resistivity_ohm_m * current_A) / (4 * np.pi * r_eff)
-        amplitudes = distances.at[:, -1].set(eV * 1000)  # mV per uA
-
-        return amplitudes
 
     def calculate_cell_stimulus(
         electrode_stimulus: Float[Array, "batch timestep n_channels"],
@@ -744,6 +833,12 @@ if _USES_JAX:
 
 else:
 
+    def with_amplitude(distances, amplitudes):
+        """`distances` with its last column replaced."""
+        out = np.array(distances, copy=True)
+        out[:, -1] = amplitudes
+        return out
+
     def relative_distance(
         distances: Float[Array, "n_distances cip=3"],
         boundary: float,
@@ -756,50 +851,6 @@ else:
         if filter_out_of_bounds:
             distances = distances[distances[:, -1] <= boundary]
         distances[:, -1] = distances[:, -1] / boundary
-        return distances
-
-    def point_source_model(
-        distances: Float[Array, "n_distances cip=3"],
-        tissue_resistivity_ohm_m: float = 3.5,
-        per_unit_current_uA: float = 1.0,
-        min_distance_um: float = 5.0,
-    ) -> Float[Array, "n_amplitudes cip=3"]:
-        """
-        Compute the per-microamp amplitude using V = (pI)/(4πr).
-        """
-        distances = np.asarray(distances)
-        current_A = per_unit_current_uA * 1e-6
-        r = (distances[:, -1] + min_distance_um) * 1e-6
-        eV = (tissue_resistivity_ohm_m * current_A) / (4 * np.pi * r)
-        distances[:, -1] = eV * 1000  # mV per uA
-
-        return distances
-
-    def disk_electrode_model(
-        distances: Float[Array, "n_distances cip=3"],
-        tissue_resistivity_ohm_m: float = 3.5,
-        per_unit_current_uA: float = 1.0,
-        electrode_radius_um: float = 15.0,
-        culture_height_um: float = 50.0,
-    ) -> Float[Array, "n_amplitudes cip=3"]:
-        """
-        Compute extracellular potential for in vitro planar MEA setup
-
-        V ~ (pI)/(4π) * 1/sqrt(r^2 + h^2)
-
-        where h is an effective height parameter that accounts for
-        the disk electrode geometry and finite medium
-        """
-        current_A = per_unit_current_uA * 1e-6
-
-        # effective distance
-        r_um = distances[:, -1]
-        h_eff_um = np.sqrt(electrode_radius_um**2 + culture_height_um**2)
-        r_eff = np.sqrt(r_um**2 + h_eff_um**2) * 1e-6  # meters
-
-        eV = (tissue_resistivity_ohm_m * current_A) / (4 * np.pi * r_eff)
-        distances[:, -1] = eV * 1000  # mV per uA
-
         return distances
 
     def calculate_cell_stimulus(
