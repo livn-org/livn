@@ -31,12 +31,12 @@ livn uses **surrogate-assisted multi-objective optimization** via the [dmosopt](
 4. **Simulation evaluation**: Promising candidates are simulated to validate predictions
 5. **Iteration**: Steps 2-4 repeat for multiple epochs
 
-The `target` config option specifies a **tuning target** that defines the parameter search space, the optimization objectives, and the constraints. livn ships with `systems.targets.EI.Spontaneous` as the default target for the cultures. It takes the values it fits as arguments, so tuning against your own recordings does not require writing one from scratch.
+The `target` config option specifies a **tuning target** that defines the parameter search space, the optimization objectives, and the constraints. livn ships with `systems.targets.EI.Culture` as the default target for the cultures. It takes the values it fits as arguments, so tuning against your own recordings does not require writing one from scratch.
 
 ## Tuning Targets
 
 ::: tip
-Fitting a culture to your own measurements usually needs no code at all since the built-in [`Spontaneous`](#systems-targets-ei-spontaneous) target takes the measured values as arguments; see [tuning against your own
+Fitting a culture to your own measurements usually needs no code at all since the built-in [`Culture`](#systems-targets-ei-culture) target takes the measured values as arguments; see [tuning against your own
 measurements](#tuning-against-your-own-measurements). Read on when you need a protocol it does not cover.
 :::
 
@@ -190,9 +190,9 @@ This is unaffected by the prefixes above as whatever the target does not consume
 
 ## Built-in targets
 
-### `systems.targets.EI.Spontaneous`
+### `systems.targets.EI.Culture`
 
-The default target for cultures runs the network unstimulated, measures its spontaneous activity, and scores it against a handful of values you can set.
+The default target for cultures measures a free-running network and scores it against a handful of values you can set. Give it a `stimulus` and it also delivers a pulse train after the measured window and fits the network's recruitment curve, read with `livn.decoding.RecruitmentCurve`.
 
 **Objectives** — what the optimizer minimizes. Each is the squared distance between the measured value and its target (`mfr` in log space):
 
@@ -230,6 +230,8 @@ To fit fewer, pass `skip_objectives`.
 | `mea` | `None` | Array geometry (`electrode_coordinates`, `input_radius`, `output_radius`), required for `readout="channels"` |
 | `skip_objectives` / `skip_constraints` | `()` | Names to leave out |
 | `adaptation` / `ignition` | `False` | The optional search coordinates above |
+| `stimulus` | `None` | A `Protocol` (a `livn.policy.PulseSweepPolicy` plus the baseline, the recovery time and the driving electrode) to deliver after the measured window. Requires `readout='channels'`. Adds the `stimulus_threshold` objective and the `io-volume_conductor-stimulation_gain` coordinate. The sweep is `len(amplitudes) * repeats * trial_ms` of extra simulation, and `trial_ms` has to leave `recovery_ms` of quiet between one response and the next pulse's baseline &mdash; spend the budget on spacing before repeats |
+| `stimulus_threshold` | `{}` | The bracket the culture's own recruitment crossed in, as `livn.decoding.recruitment_threshold` reports it |
 
 ## Tuning against your own measurements
 
@@ -238,7 +240,7 @@ from machinable import get
 
 tuner = get("tune", {
     "system": "./systems/graphs/EI",
-    "target": ["systems.targets.EI.Spontaneous", {
+    "target": ["systems.targets.EI.Culture", {
         # what the recording says the network does
         "targets": {
             "mfr": 0.51,                        # Hz
@@ -272,7 +274,7 @@ The same on the command line, where the target is a `[path, options]` pair:
 ```sh
 livn systems mpi tune \
     system=./systems/graphs/EI \
-    target='["systems.targets.EI.Spontaneous", {"targets": {"mfr": 0.51, "isi_cv": 0.78}}]' \
+    target='["systems.targets.EI.Culture", {"targets": {"mfr": 0.51, "isi_cv": 0.78}}]' \
     **resources='{"-n": 2}' \
     --launch
 ```
@@ -283,7 +285,7 @@ Which numbers you need depends on what you can measure reliably. Only `targets` 
 Measure the simulation the way you measured the culture. With `readout="neurons"` the metrics are computed per cell; with `readout="channels"` they are computed on spikes pooled per electrode, which is what an MEA recording gives you. The two do not produce the same `mfr` for the same network, so a target measured on channels has to be fitted on channels:
 
 ```python
-"target": ["systems.targets.EI.Spontaneous", {
+"target": ["systems.targets.EI.Culture", {
     "readout": "channels",
     "mea": {
         "electrode_coordinates": [[0, 200.0, 200.0, 5.0], [1, 400.0, 200.0, 5.0]],
@@ -381,13 +383,13 @@ livn systems mpi tune \
     --launch
 ```
 
-### Extending the built-in Spontaneous target
+### Extending the built-in Culture target
 
 ```python
-# systems/targets/my_spontaneous.py
-from systems.targets.EI import Spontaneous
+# systems/targets/my_culture.py
+from systems.targets.EI import Culture
 
-class MyCulture(Spontaneous):
+class MyCulture(Culture):
     """The values measured on our own preparation."""
 
     # constraint constants are ordinary class attributes
@@ -399,78 +401,6 @@ class MyCulture(Spontaneous):
         super().__init__(**kwargs)
 ```
 
-### Tuning with stimulus-evoked responses
-
-To tune parameters that reproduce stimulus-evoked dynamics (e.g., evoked potentials, response latencies), use `_protocol_space()` and `set_params()` to introduce stimulus parameters alongside the standard weight/noise search space:
-
-```python
-# systems/targets/evoked.py
-import numpy as np
-from systems.targets.protocol import TuningTargets
-from livn.decoding import MeanFiringRate, Slice
-
-class EvokedResponse(TuningTargets):
-    """Tune for stimulus-evoked responses."""
-
-    def __init__(self, target_evoked_rate: float = 12.0):
-        self.target_evoked_rate = target_evoked_rate
-        self.stim_amplitude = 1.0  # will be optimized
-        super().__init__()
-
-    def _weight_space(self, model):
-        return {
-            "EXC_EXC-dend-AMPA-weight": [0.05, 10.0, self.transform_log10],
-            "INH_EXC-soma-AMPA-weight": [0.05, 10.0, self.transform_log10],
-            "EXC_INH-soma-GABA_A-weight": [0.05, 10.0, self.transform_log10],
-        }
-
-    def _noise_space(self, model):
-        return {
-            "noise-g_e0": [0.0002, 0.02, self.transform_log10],
-            "noise-std_e": [0.0001, 0.05, self.transform_log10],
-        }
-
-    def _protocol_space(self, model):
-        # Stimulus amplitude is optimized but not passed to env.set_params()
-        return {"stim_amplitude": [0.1, 5.0]}
-
-    def set_params(self, params):
-        remaining = params.copy()
-        self.stim_amplitude = remaining.pop("stim_amplitude")
-        return remaining
-
-    def objective_names(self):
-        return ["evoked_rate"]
-
-    def constraint_names(self):
-        return ["not_quiescent"]
-
-    def __call__(self, env):
-        warmup, stim_start, stim_dur, post = 2000, 5000, 500, 3000
-        total = int(warmup + stim_start + stim_dur + post)
-
-        env.record_spikes()
-        env.record_voltage()
-        data = env.run(total)
-
-        # Measure post-stimulus firing rate
-        post_stim = Slice(
-            start=stim_start + stim_dur,
-            stop=stim_start + stim_dur + post,
-        )(data)
-        mfr = MeanFiringRate(duration=post)(post_stim, env)
-        rate = mfr["rate_hz"] if mfr else 0.0
-
-        objectives = {
-            "evoked_rate": [((rate - self.target_evoked_rate) ** 2, rate)],
-        }
-        constraints = {
-            "not_quiescent": [(1.0 if rate > 0.1 else -1.0, rate)],
-        }
-
-        return objectives, constraints
-```
-
 ## Running the tuner
 
 ### Via the CLI
@@ -478,7 +408,7 @@ class EvokedResponse(TuningTargets):
 ```sh
 livn systems mpi tune \
     system=./systems/graphs/EI \
-    target=systems.targets.EI.Spontaneous \
+    target=systems.targets.EI.Culture \
     **resources='{"-n": 2}' \
     --launch
 ```
@@ -536,7 +466,7 @@ from machinable import get
 
 tuner = get("tune", {
     "system": "./systems/graphs/EI",
-    "target": "systems.targets.EI.Spontaneous",
+    "target": "systems.targets.EI.Culture",
     "trials": 1,
     "nprocs_per_worker": 1,
 })
@@ -550,7 +480,7 @@ tuner.launch()
 | `system` | `./systems/graphs/EI` | Path to the generated system, or an `int` for that many unconnected cells |
 | `selection` | `None` | Stored subselection to build instead of the whole system |
 | `model` | `None` | Model class (None = system default) |
-| `target` | `systems.targets.EI.Spontaneous` | Dotted path to a `TuningTargets` subclass, or `[path, options]` |
+| `target` | `systems.targets.EI.Culture` | Dotted path to a `TuningTargets` subclass, or `[path, options]` |
 | `trials` | `1` | Simulation trials per evaluation |
 | `nprocs_per_worker` | `1` | MPI ranks per simulation worker |
 | `n_initial` | `100` | Initial samples **per search dimension** |

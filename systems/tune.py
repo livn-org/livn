@@ -91,7 +91,7 @@ class Tune(Interface):
         system: str | int = "./systems/graphs/EI"
         selection: str | None = None
         model: ObjSpec = "livn.models.rcsd.ReducedCalciumSomaDendrite"
-        target: ObjSpec = "systems.targets.EI.Spontaneous"
+        target: ObjSpec = "systems.targets.EI.Culture"
         trials: int = 1
         nprocs_per_worker: int = 1
         n_initial: int = 100
@@ -140,6 +140,7 @@ class Tune(Interface):
     def version_spontaneous_recording(
         self,
         file: str,
+        condition: str = "spontaneous",
         readout: str = "channels",
         duration: float | None = None,
         warmup: float | None = None,
@@ -148,10 +149,19 @@ class Tune(Interface):
         adaptation: bool = False,
         ignition: bool = False,
     ):
-        with open(file) as f:
-            document = json.load(f)["pooled"]
-        measured = document["ei_targets"]
-        features = document.get("summary", {}).get("features") or {}
+        from systems.targets.schema import FREE_RUNNING, read_target
+
+        if condition not in FREE_RUNNING:
+            raise ValueError(
+                f"condition {condition!r} measures windows containing a "
+                f"stimulus. Tune on {' or '.join(FREE_RUNNING)} instead."
+            )
+
+        block = read_target(file, condition)
+        measured = block.ei_targets
+        features = block.summary.features
+        if duration is None:
+            duration = float(block.window_ms)
 
         mea = None
         metadata = os.path.join(
@@ -197,7 +207,7 @@ class Tune(Interface):
             spec = features.get(feature)
             if not spec:
                 continue
-            lo, hi = spec.get("q_lo"), spec.get("q_hi")
+            lo, hi = spec.q_lo, spec.q_hi
             if lo is None or hi is None:
                 continue
             slack = (hi - lo) / 2.0 * (widen_factor - 1.0)
@@ -232,16 +242,16 @@ class Tune(Interface):
 
         for feature, constraint in (("pop_autocorr_tau", "pop_autocorr_tau_band"),):
             spec = features.get(feature)
-            if spec and spec.get("q_lo") is not None and spec.get("min") is not None:
-                if abs(spec["q_lo"] - spec["min"]) <= 1e-9:
+            if spec and spec.q_lo is not None and spec.min is not None:
+                if abs(spec.q_lo - spec.min) <= 1e-9:
                     skip_constraints.append(constraint)
 
         options = {
             "overrides": overrides,
             "feature_bands": {
-                name: (spec["q_lo"], spec["q_hi"])
+                name: (spec.q_lo, spec.q_hi)
                 for name, spec in features.items()
-                if spec is not None and spec.get("q_lo") is not None
+                if spec is not None and spec.q_lo is not None
             },
             "readout": readout,
             "mea": mea,
@@ -255,11 +265,41 @@ class Tune(Interface):
         if warmup is not None:
             options["warmup"] = float(warmup)
 
-        composed = {"target": ["systems.targets.EI.Spontaneous", options]}
+        composed = {"target": ["systems.targets.EI.Culture", options]}
         if selection is not None:
             composed["selection"] = selection
         if system is not None:
             composed["system"] = system
+        return composed
+
+    def version_culture_recording(
+        self,
+        file: str,
+        resting: str = "interstimulus",
+        evoked: str = "evoked",
+        repeats: int = 4,
+        trial_ms: float = 6000.0,
+        **kwargs,
+    ):
+        from systems.targets.EI import Protocol
+        from systems.targets.schema import read_target
+
+        composed = self.version_spontaneous_recording(file, condition=resting, **kwargs)
+        options = dict(composed["target"][1])
+
+        block = read_target(file, evoked)
+        if block.threshold is None:
+            raise ValueError(
+                f"{evoked!r} block of {file!r} has no threshold to fit; its "
+                "recruitment curve was too short to read"
+            )
+
+        options["stimulus"] = Protocol.from_block(
+            block, repeats=int(repeats), trial_ms=float(trial_ms)
+        ).model_dump()
+        options["stimulus_threshold"] = block.threshold.model_dump()
+
+        composed["target"] = ["systems.targets.EI.Culture", options]
         return composed
 
     def version_rcsd(self, short_term_depression: bool = False):
@@ -978,7 +1018,6 @@ class Tune(Interface):
     def _optimization(self):
         interfaces = list(self.interfaces)
         if len(interfaces) == 1:
-            self._purge_stale_cache(interfaces[0])
             return interfaces[0]
         if not interfaces:
             raise ValueError("no optimization has been launched for this config")

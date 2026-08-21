@@ -87,9 +87,7 @@ def feature_dtypes(c):
 
 
 def _build_env(target, system, model, comm, subworld_size, selection=None):
-    from tune import strip_removed_model_options
-
-    model = import_instance(strip_removed_model_options(model))
+    model = import_instance(model)
     if hasattr(target, "build_env"):
         if selection is not None:
             raise ValueError(
@@ -129,12 +127,10 @@ def obj_fun_init(
 
 
 def controller_init(system, model, target, subworld_size):
-    from tune import strip_removed_model_options
-
     target = import_instance(target)
     env = Env(
         system,
-        model=import_instance(strip_removed_model_options(model)),
+        model=import_instance(model),
         io=target.io() if hasattr(target, "io") else None,
         comm=MPI.COMM_SELF,
         subworld_size=subworld_size,

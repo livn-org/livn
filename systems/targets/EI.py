@@ -1,8 +1,10 @@
 import logging
+import math
 import time
 from types import SimpleNamespace
 
 import numpy as np
+from pydantic import Field, model_validator
 
 from livn.decoding import (
     ActiveFraction,
@@ -17,9 +19,11 @@ from livn.decoding import (
     PopulationActiveFraction,
     PopulationAutocorrTau,
     PopulationRateMetrics,
+    RecruitmentCurve,
     Slice,
     Stability,
 )
+from livn.policy import PulseSweepPolicy
 from livn.utils import P
 from livn.env.logging import with_progress_logging
 from systems.targets.protocol import TuningTargets
@@ -64,7 +68,97 @@ def _band_constraint(value, lo, hi, edge_slope=2.0, inside_penalty=0.1):
     return 1.0 - (abs(v - center) / max(half, 1e-6)) * inside_penalty
 
 
-class Spontaneous(TuningTargets):
+class Protocol(PulseSweepPolicy):
+    trial_ms: float = Field(default=6000.0, gt=0)
+    """Spacing between pulses."""
+
+    pre_ms: float = Field(default=1000.0, gt=0)
+    """Baseline taken from this long before each pulse."""
+
+    post_ms: float = Field(default=500.0, gt=0)
+    """The response proper, over which gain and latency are measured."""
+
+    recovery_ms: float = Field(default=4000.0, ge=0)
+    """Quiet time required between one response ending and the next baseline."""
+
+    electrode: int | None = None
+    """Driving channels"""
+
+    @classmethod
+    def from_block(cls, block, **overrides) -> "Protocol":
+        amplitudes = block.amplitudes_mv
+        if len(amplitudes) < 2:
+            raise ValueError(
+                f"{block.condition!r} block carries {len(amplitudes)} < 2 amplitude(s)"
+            )
+        if not block.onsets_ms:
+            raise ValueError(
+                f"{block.condition!r} block records no pulse times, so "
+                "there is nowhere to put the stimulus"
+            )
+
+        return cls(
+            amplitudes=amplitudes,
+            onset_ms=float(block.onsets_ms[0]),
+            **overrides,
+        )
+
+    @model_validator(mode="after")
+    def _the_measurement_fits_the_trial(self):
+        if self.electrode is not None and not self.channels:
+            self.channels = [self.electrode]
+        if self.onset_ms < self.pre_ms:
+            raise ValueError(
+                f"the pulse falls {self.onset_ms:g} ms into its trial but the "
+                f"baseline is {self.pre_ms:g} ms, so there is not enough before "
+                "it to measure the response against"
+            )
+        if self.onset_ms + self.post_ms > self.trial_ms:
+            raise ValueError(
+                f"a {self.post_ms:g} ms response after a pulse at "
+                f"{self.onset_ms:g} ms runs past the {self.trial_ms:g} ms trial"
+            )
+        if self.recovery_ms and self.quiet_ms < self.recovery_ms:
+            raise ValueError(
+                f"a {self.trial_ms:g} ms trial leaves {self.quiet_ms:g} ms "
+                f"between the end of one response and the start of the next "
+                f"pulse's baseline, and the network needs {self.recovery_ms:g} "
+                f"ms to be back where it started. Give the trial at least "
+                f"{self.pre_ms + self.post_ms + self.recovery_ms:g} ms, or "
+                "lower `recovery_ms` if this preparation really does settle "
+                "faster"
+            )
+        return self
+
+    @property
+    def quiet_ms(self) -> float:
+        """Undriven time between a response ending and the next baseline."""
+        return self.trial_ms - self.pre_ms - self.post_ms
+
+
+def threshold_miss(measured: dict, simulated: dict) -> float:
+    if not measured or not simulated:
+        return float("nan")
+
+    def point(bracket: dict) -> float:
+        amplitudes = [float(a) for a in bracket.get("amplitudes_mv") or ()]
+        step = (
+            amplitudes[-1] / amplitudes[-2]
+            if len(amplitudes) >= 2 and amplitudes[-2] > 0
+            else 1.0
+        )
+
+        censored = bracket.get("censored")
+        if censored == "above":
+            return float(bracket["highest_tested_mv"]) * step
+        if censored == "below":
+            return float(bracket["above_mv"]) / step
+        return math.sqrt(float(bracket["below_mv"]) * float(bracket["above_mv"]))
+
+    return abs(math.log10(point(measured)) - math.log10(point(simulated)))
+
+
+class Culture(TuningTargets):
     MAX_NEURON_RATE_HZ = 50.0
     MIN_MEAN_RATE_HZ = 0.2
     MAX_MEAN_RATE_HZ = 15.0
@@ -96,6 +190,7 @@ class Spontaneous(TuningTargets):
         "inhibitory": [0.01, 100.0],
     }
     RELEASE_PARAM = "U"
+    STIMULUS_GAIN_DECADES = 2.0
 
     def __init__(
         self,
@@ -112,6 +207,8 @@ class Spontaneous(TuningTargets):
         mea: dict | None = None,
         adaptation: bool = False,
         ignition: bool = False,
+        stimulus: dict | None = None,
+        stimulus_threshold: dict | None = None,
     ):
         self._targets = {
             "mfr": 1.0,
@@ -119,6 +216,8 @@ class Spontaneous(TuningTargets):
             "active_fraction": 1.0,
             **(targets or {}),
         }
+        if stimulus is not None:
+            self._targets.setdefault("stimulus_threshold", 0.0)
         self.system = system
         self.section_aliases = dict(section_aliases or {})
         self.feature_bands = {
@@ -128,6 +227,8 @@ class Spontaneous(TuningTargets):
         self.mea = mea
         self.adaptation = bool(adaptation)
         self.ignition = bool(ignition)
+        self.stimulus = Protocol(**stimulus) if stimulus else None
+        self.stimulus_threshold = dict(stimulus_threshold or {})
         self.skip_objectives = tuple(skip_objectives)
         self.skip_constraints = tuple(skip_constraints)
         self.readout = readout
@@ -142,7 +243,7 @@ class Spontaneous(TuningTargets):
             else:
                 raise ValueError(f"Unknown override: {name}")
 
-        self.recording_duration = duration + warmup
+        self.recording_duration = duration
         self.warmup_duration = warmup
         self.min_spike_count_for_metrics = 150
         self._env = None
@@ -154,6 +255,7 @@ class Spontaneous(TuningTargets):
         self.response_data: tuple | None = None
         self.metrics: dict = {}
         self.objectives: dict = {}
+        self.curve: dict[float, float] = {}
 
     def io(self):
         if not self.mea:
@@ -165,6 +267,12 @@ class Spontaneous(TuningTargets):
     def init(self, env):
         if self.readout == "channels" and not len(getattr(env.io, "channel_ids", ())):
             raise RuntimeError("readout='channels' needs an `mea`.")
+        if self.stimulus is not None and self.readout != "channels":
+            raise RuntimeError(
+                f"a stimulated target reads out through the array, not "
+                f"{self.readout!r}; pass readout='channels' with the recording "
+                "set's `mea`"
+            )
         self._env = env
         return with_progress_logging(env)
 
@@ -371,13 +479,22 @@ class Spontaneous(TuningTargets):
         resolved = {k: v for k, v in decoded.items() if not k.endswith(suffix)}
         for name in ratios:
             resolved[name[: -len(suffix)]] = float(decoded[name]) * scale
-        # after the ratios, so a relative weight is an amplitude too
         return self._resolve_release(resolved)
 
     def _protocol_space(self, model) -> dict[str, list]:
-        """Intrinsic adaptation, when `adaptation` is on and the model has it."""
+        space = {}
+        if self.stimulus is not None:
+            from livn.io import DEFAULT_STIMULATION_GAIN
+
+            span = 10.0**self.STIMULUS_GAIN_DECADES
+            space["io-volume_conductor-stimulation_gain"] = [
+                DEFAULT_STIMULATION_GAIN / span,
+                DEFAULT_STIMULATION_GAIN * span,
+                self.transform_log10,
+            ]
+
         if not self.adaptation:
-            return {}
+            return space
 
         if model is None:
             model = getattr(self._env, "model", None)
@@ -396,7 +513,6 @@ class Spontaneous(TuningTargets):
             )
 
         span = 10.0**self.ADAPTATION_DECADES
-        space = {}
         for key, name in self.ADAPTATION_PARAMS.items():
             value = fitted.get(name)
             if value is None or float(value) <= 0.0:
@@ -467,11 +583,49 @@ class Spontaneous(TuningTargets):
 
     def record(self, env, return_data=False):
         self._reset_state()
-        total_duration = int(self.warmup_duration + self.recording_duration)
+        resting_duration = int(self.warmup_duration + self.recording_duration)
+        total_duration = resting_duration
+        if self.stimulus is not None:
+            total_duration += int(self.stimulus.duration_ms)
 
         env.record_spikes()
         t0 = time.time()
-        self.response_data = env.run(total_duration, root_only=False)
+
+        self.response_data = env.run(resting_duration, root_only=False)
+        if self.stimulus is not None:
+            electrode = self.stimulus.electrode
+            if electrode is None:
+                distances = np.asarray(
+                    env.io.distances(env.active_neuron_coordinates())
+                )
+                within = distances[distances[:, -1] <= float(env.io.input_radius)]
+                if within.size == 0:
+                    electrode = int(np.asarray(env.io.channel_ids)[0])
+                else:
+                    channels, counts = np.unique(
+                        within[:, 0].astype(np.int64), return_counts=True
+                    )
+                    electrode = int(channels[int(np.argmax(counts))])
+
+            dt = 0.1
+            pulses = self.stimulus.for_array(
+                len(env.io.channel_ids),
+                [electrode],
+                start_ms=0.0,
+                total_ms=self.stimulus.duration_ms,
+                dt=dt,
+            )
+            evoked = env.run(
+                int(self.stimulus.duration_ms),
+                stimulus=env.cell_stimulus(pulses(), dt=dt),
+                root_only=False,
+            )
+            self.response_data = (
+                evoked
+                if self.response_data is None
+                else self.response_data.concat(evoked)
+            )
+
         local = 0
         if self.response_data is not None and self.response_data.spike_ids is not None:
             local = len(self.response_data.spike_ids)
@@ -486,6 +640,10 @@ class Spontaneous(TuningTargets):
             return GatherAndMerge(
                 duration=total_duration, voltages=False, membrane_currents=False
             )(self.response_data, env)
+
+    @property
+    def stimulus_start(self) -> float:
+        return float(self.warmup_duration + self.recording_duration)
 
     def compute_objectives(self, env) -> dict:
         targets = self.targets()
@@ -504,6 +662,7 @@ class Spontaneous(TuningTargets):
         )
         self.metrics["population_liveness"] = liveness.get("mean_active_fraction", {})
 
+        network = env
         env, recording_data = self._readout(env, recording_data)
         it = recording_data.spike_ids
 
@@ -620,6 +779,34 @@ class Spontaneous(TuningTargets):
             result["mean_channel_correlation"] = (
                 1e3 if np.isnan(sync) else float((sync - sync_target) ** 2),
                 sync,
+            )
+
+        if self.stimulus is not None:
+            proxy, stimulated = self._readout(
+                network,
+                Slice(
+                    start=self.stimulus_start,
+                    stop=self.stimulus_start + self.stimulus.duration_ms,
+                )(self.response_data),
+            )
+
+            simulated = (
+                RecruitmentCurve(
+                    duration=int(self.stimulus.duration_ms),
+                    schedule=self.stimulus.schedule(0.0),
+                    pre_ms=float(self.stimulus.pre_ms),
+                    post_ms=float(self.stimulus.post_ms),
+                )(stimulated, proxy)
+                or {}
+            )
+            self.curve = simulated.pop("curve", {})
+            self.metrics["recruitment_curve"] = dict(self.curve)
+            self.metrics["threshold"] = simulated
+            miss = threshold_miss(self.stimulus_threshold, simulated)
+
+            result["stimulus_threshold"] = (
+                1e3 if np.isnan(miss) else float(miss),
+                miss,
             )
 
         avalanche_result = None
