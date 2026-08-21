@@ -335,6 +335,23 @@ class Tune(Interface):
     def version_renshaw(self):
         return self.version_renshaw_perry()
 
+    def version_ca1(
+        self,
+        file: str = "./systems/graphs/CA1/tuning.json",
+        problem: str = "miv",
+        selection: str | None = None,
+    ):
+        options = {"config": file, "problem": problem}
+        if selection is not None:
+            options["selection"] = selection
+        return {
+            "system": "./systems/graphs/CA1",
+            "model": "livn.models.ca1.PinskyRinzel",
+            "n_initial": 2,
+            "n_epochs": 5,
+            "target": ["systems.targets.CA1.CA1", options],
+        }
+
     @staticmethod
     def _instantiate(system, model, target):
         target = import_instance(target)
