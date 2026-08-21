@@ -240,7 +240,13 @@ class Env(EnvProtocol):
     def _record_spikes(self, population: str) -> "Env":
         return self._enable("spikes")
 
-    def _record_voltage(self, population: str, dt: float = 0.1) -> "Env":
+    def _record_voltage(self, population: str, dt: float = 0.1, gids=None) -> "Env":
+        if gids is not None:
+            raise NotImplementedError(
+                "the diffrax backend records every cell's voltage as one dense "
+                "array, so it cannot narrow the recording to particular gids. "
+                "Select the rows you want from the result instead"
+            )
         return self._enable("voltage", dt=dt)
 
     def _record_membrane_current(self, population: str, dt: float = 0.1) -> "Env":

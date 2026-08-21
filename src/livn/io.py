@@ -79,7 +79,7 @@ def _check_stimulus_size(n_timesteps: int, n_gids: int, itemsize: int, n_reached
         f"{n_gids:,} cells{reach}. Pass a `Policy` to `run` rather than an "
         "array as a policy is expanded onto cells one "
         f"window at a time and never held whole ({STIMULUS_CHUNK_MB_ENV} sizes "
-        "the window). Raise {MAX_STIMULUS_GB_ENV} (in GiB) to override."
+        f"the window). Raise {MAX_STIMULUS_GB_ENV} (in GiB) to override."
     )
 
 
@@ -277,6 +277,12 @@ class IO(Jsonable):
 
     @property
     def channel_ids(self) -> Int[Array, "n_channel_ids"]:
+        raise NotImplementedError("Please specify an IO")
+
+    def reach(
+        self, neuron_coordinates: Float[Array, "n_coords ixyz=4"]
+    ) -> Float[Array, "n_channels n_coords"]:
+        """Field induced per unit command at each coordinate row, per channel."""
         raise NotImplementedError("Please specify an IO")
 
     def _get_input_space(self) -> gymnasium.Space:
@@ -521,6 +527,13 @@ class MEA(IO):
             distances, self.volume_conductor.induction_gain(distances[:, -1])
         )
 
+    def reach(
+        self, neuron_coordinates: Float[Array, "n_coords ixyz=4"]
+    ) -> Float[Array, "n_channels n_coords"]:
+        """mV induced per uA at each coordinate row, per electrode."""
+        induction = np.asarray(self.cell_induction(self.distances(neuron_coordinates)))
+        return induction[:, -1].reshape(len(self.channel_ids), -1)
+
     def channel_contribution(
         self,
         neuron_coordinates: Float[Array, "n_coords ixyz=4"],
@@ -720,6 +733,12 @@ class LightArray(IO):
 
         return T
 
+    def reach(
+        self, neuron_coordinates: "Float[Array, 'n_coords ixyz=4']"
+    ) -> "Float[Array, 'n_channels n_coords']":
+        """Irradiance per unit source power at each coordinate row, per fiber."""
+        return np.asarray(self.cell_induction(neuron_coordinates))
+
 
 class ComposedIO(IO):
     def __init__(self, inputs: IO, outputs: IO):
@@ -744,6 +763,9 @@ class ComposedIO(IO):
         **kwargs,
     ):
         return self.inputs.cell_stimulus(neuron_coordinates, channel_inputs, **kwargs)
+
+    def reach(self, neuron_coordinates: "Float[Array, 'n_coords ixyz=4']"):
+        return self.inputs.reach(neuron_coordinates)
 
     def channel_recording(
         self,

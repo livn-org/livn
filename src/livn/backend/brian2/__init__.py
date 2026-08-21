@@ -383,11 +383,21 @@ class Env(EnvProtocol):
 
         return self
 
-    def _record_voltage(self, population: str, dt: float) -> "Env":
+    def _record_voltage(self, population: str, dt: float, gids=None) -> "Env":
+        group = self._populations[population]
+        record = True
+        if gids is not None:
+            offset = self.system.population_ranges[population][0]
+            record = sorted(
+                int(g) - int(offset)
+                for g in gids
+                if 0 <= int(g) - int(offset) < len(group)
+            )
+
         self._voltage_monitors[population] = monitor = b2.StateMonitor(
-            self._populations[population],
+            group,
             "v",
-            record=True,
+            record=record,
             dt=dt * b2.ms,
         )
 
@@ -498,7 +508,7 @@ class Env(EnvProtocol):
         gids = []
         vv = []
         for population, monitor in self._voltage_monitors.items():
-            gids.append(np.asarray(monitor.source.gids))
+            gids.append(np.asarray(monitor.source.gids)[np.asarray(monitor.record)])
             vv.append(
                 monitor.v[:, int(t_start / self._voltage_monitors_dt[population]) :]
                 / b2.mV

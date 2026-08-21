@@ -371,9 +371,11 @@ class Env(EnvProtocol):
             self._spike_gids.add(gid)
         return self
 
-    def _record_voltage(self, population: str, dt: float) -> Self:
+    def _record_voltage(self, population: str, dt: float, gids=None) -> Self:
         self.v_dt[population] = dt
         for gid, cell in self.cells.get(population, {}).items():
+            if gids is not None and int(gid) not in gids:
+                continue
             for sec_id, sec in enumerate(cell.sections):
                 vec = self._h.Vector()
                 vec.record(sec(0.5)._ref_v, dt)

@@ -70,12 +70,17 @@ class ChannelRecording(Decoding):
     spikes: bool = True
     voltages: bool = True
     membrane_currents: bool = True
+    voltage_gids: Optional[list[int]] = None
+    voltage_dt: Optional[float] = None
 
     def setup(self, env):
         if self.spikes:
             env.record_spikes()
         if self.voltages:
-            env.record_voltage()
+            options = {"gids": self.voltage_gids}
+            if self.voltage_dt is not None:
+                options["dt"] = self.voltage_dt
+            env.record_voltage(**options)
         if self.membrane_currents:
             env.record_membrane_current()
 
@@ -113,12 +118,17 @@ class GatherAndMerge(Decoding):
     spikes: bool = True
     voltages: bool = True
     membrane_currents: bool = True
+    voltage_gids: Optional[list[int]] = None
+    voltage_dt: Optional[float] = None
 
     def setup(self, env):
         if self.spikes:
             env.record_spikes()
         if self.voltages:
-            env.record_voltage()
+            options = {"gids": self.voltage_gids}
+            if self.voltage_dt is not None:
+                options["dt"] = self.voltage_dt
+            env.record_voltage(**options)
         if self.membrane_currents:
             env.record_membrane_current()
 

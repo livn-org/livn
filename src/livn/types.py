@@ -449,13 +449,28 @@ class Env(Protocol):
         coords = self.active_neuron_coordinates()
         return coords[:, 0].astype(int)
 
-    def simulated_gids(self):
+    def simulated_gids(self, everywhere: bool = False):
         import numpy as _np
 
-        return _np.array(
-            sorted(int(g) for cells in self.cells.values() for g in cells),
-            dtype=int,
-        )
+        if not everywhere:
+            return _np.array(
+                sorted(int(g) for cells in self.cells.values() for g in cells),
+                dtype=int,
+            )
+
+        ranges = getattr(self.system, "population_ranges", None) or {}
+        active = set(self.active_populations())
+        gids = {
+            gid
+            for name, (start, count) in ranges.items()
+            if name in active
+            for gid in range(int(start), int(start) + int(count))
+        }
+
+        selected = getattr(self, "_selected_gids", None)
+        if selected is not None:
+            gids &= {int(g) for g in selected}
+        return _np.array(sorted(gids), dtype=int)
 
     def simulated_coordinates(self, transform=None):
         import numpy as _np
@@ -505,6 +520,9 @@ class Env(Protocol):
                 f"cannot record {what!r}; available: {self.recordable()}"
             ) from None
 
+        if kwargs.get("gids") is not None:
+            kwargs["gids"] = self.resolve_recorded_gids(kwargs["gids"])
+
         if population is None:
             population = self.active_populations()
         if isinstance(population, (list, tuple)):
@@ -515,6 +533,32 @@ class Env(Protocol):
         handler(population, **kwargs)
 
         return self
+
+    def resolve_recorded_gids(self, gids) -> set[int]:
+        wanted = {int(g) for g in gids}
+        if not wanted:
+            raise ValueError("no gids to record. Pass `gids=None` to record every cell")
+
+        simulated = {int(g) for g in self.simulated_gids(everywhere=True)}
+        missing = sorted(wanted - simulated)
+        if missing:
+            shown = missing[:10]
+            more = (
+                ""
+                if len(missing) == len(shown)
+                else f" (+{len(missing) - len(shown)} more)"
+            )
+            selection = getattr(self, "selection_name", None)
+            because = (
+                f"; this env is restricted to the {selection!r} selection"
+                if selection
+                else ""
+            )
+            raise ValueError(
+                f"{shown}{more} have no cell in this simulation{because}. "
+                f"{len(simulated)} gids do"
+            )
+        return wanted
 
     def recordable(self) -> list[str]:
         """Signals that can be passed to :meth:`record`"""
@@ -529,12 +573,14 @@ class Env(Protocol):
     def _record_spikes(self, population: str) -> Self: ...
 
     def record_voltage(
-        self, population: str | list | tuple | None = None, dt: float = 0.1
+        self,
+        population: str | list | tuple | None = None,
+        dt: float = 0.1,
+        gids: "list | tuple | set | None" = None,
     ) -> Self:
-        """Enable voltage recording for population"""
-        return self.record("voltage", population, dt=dt)
+        return self.record("voltage", population, dt=dt, gids=gids)
 
-    def _record_voltage(self, population: str, dt: float) -> Self: ...
+    def _record_voltage(self, population: str, dt: float, gids=None) -> Self: ...
 
     def record_membrane_current(
         self, population: str | list | tuple | None = None, dt: float = 0.1
@@ -607,6 +653,27 @@ class Env(Protocol):
     def membrane_current_recording_dt(self) -> float:
         """Recording time step for membrane current traces in ms"""
         return 0.1
+
+    def stimulus_coordinates(self, simulated_only: bool = True):
+        """The sections a command couples into, as `[gid, x, y, z]` rows."""
+        coordinates = self.system.transform_coordinates(
+            self.model.stimulus_coordinates,
+            populations=self.active_populations(),
+        )
+        if not simulated_only:
+            return coordinates
+
+        import numpy as _np
+
+        built = set(int(g) for g in self.simulated_gids(everywhere=True))
+        keep = _np.asarray([int(g) in built for g in _np.asarray(coordinates)[:, 0]])
+        return _np.asarray(coordinates)[keep]
+
+    def channel_reach(self, coordinates=None):
+        """Field induced per unit command at each section, per channel."""
+        if coordinates is None:
+            coordinates = self.stimulus_coordinates()
+        return self.io.reach(coordinates)
 
     def recording_distances(self):
         """Distances for the coordinates the membrane currents are recorded at."""
