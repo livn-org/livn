@@ -240,7 +240,13 @@ class Env(EnvProtocol):
     def _record_spikes(self, population: str) -> "Env":
         return self._enable("spikes")
 
-    def _record_voltage(self, population: str, dt: float = 0.1, gids=None) -> "Env":
+    def _record_voltage(
+        self, population: str, dt: float = 0.1, gids=None, sections=None
+    ) -> "Env":
+        if sections is not None and "soma" not in {str(s) for s in sections}:
+            raise NotImplementedError(
+                f"{sections!r}: diffrax cells are single compartment recorded as 'soma'"
+            )
         if gids is not None:
             raise NotImplementedError(
                 "the diffrax backend records every cell's voltage as one dense "

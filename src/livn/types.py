@@ -577,10 +577,15 @@ class Env(Protocol):
         population: str | list | tuple | None = None,
         dt: float = 0.1,
         gids: "list | tuple | set | None" = None,
+        sections: "str | list | tuple | None" = None,
     ) -> Self:
-        return self.record("voltage", population, dt=dt, gids=gids)
+        if isinstance(sections, str):
+            sections = [sections]
+        return self.record("voltage", population, dt=dt, gids=gids, sections=sections)
 
-    def _record_voltage(self, population: str, dt: float, gids=None) -> Self: ...
+    def _record_voltage(
+        self, population: str, dt: float, gids=None, sections=None
+    ) -> Self: ...
 
     def record_membrane_current(
         self, population: str | list | tuple | None = None, dt: float = 0.1

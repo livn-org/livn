@@ -110,6 +110,7 @@ class Env(EnvProtocol):
         self.id_vec = self._h.Vector()
         self._spike_gids: set[int] = set()
         self.v_recs: dict[tuple[int, int], object] = {}
+        self.v_sections: dict[tuple[int, int], str] = {}
         self.v_dt: dict[str, float] = {}
         self.i_recs: dict[tuple[int, int], object] = {}
         self.i_dt: dict[str, float] = {}
@@ -371,15 +372,31 @@ class Env(EnvProtocol):
             self._spike_gids.add(gid)
         return self
 
-    def _record_voltage(self, population: str, dt: float, gids=None) -> Self:
+    def _record_voltage(
+        self, population: str, dt: float, gids=None, sections=None
+    ) -> Self:
+        previous = self.v_dt.get(population)
+        if previous is not None and abs(previous - dt) > 1e-12 and self.v_recs:
+            raise ValueError(
+                f"{population} voltage is already being recorded at dt="
+                f"{previous} ms, so asking for {dt} ms would leave two "
+                "resolutions in one channel; call clear() first"
+            )
         self.v_dt[population] = dt
+        wanted = None if sections is None else {str(s) for s in sections}
         for gid, cell in self.cells.get(population, {}).items():
             if gids is not None and int(gid) not in gids:
                 continue
             for sec_id, sec in enumerate(cell.sections):
+                name = sec.name().split(".")[-1]
+                if wanted is not None and name not in wanted:
+                    continue
+                if (int(gid), sec_id) in self.v_recs:
+                    continue  # already recording this compartment
                 vec = self._h.Vector()
                 vec.record(sec(0.5)._ref_v, dt)
                 self.v_recs[(int(gid), sec_id)] = vec
+                self.v_sections[(int(gid), sec_id)] = name
         return self
 
     def _record_membrane_current(self, population: str, dt: float) -> Self:
@@ -470,13 +487,13 @@ class Env(EnvProtocol):
             self.pc.psolve(target_time)
         self.t = target_time
 
-        ii, tt, iv, v, im, mp = self._collect(self.active_gids(), current_time)
+        ii, tt, iv, v, sv, im, mp = self._collect(self.active_gids(), current_time)
         self.duration = None
 
         return (
             Run(t0=current_time, duration=duration)
             .add_spikes(ii, tt)
-            .add_voltage(iv, v, dt=self.voltage_recording_dt)
+            .add_voltage(iv, v, dt=self.voltage_recording_dt, sections=sv)
             .add_current(im, mp, dt=self.membrane_current_recording_dt)
         )
 
@@ -490,11 +507,12 @@ class Env(EnvProtocol):
 
         if self.v_recs:
             iv = np.asarray([gid for (gid, _sec) in self.v_recs], dtype=np.uint32)
+            sv = np.asarray([self.v_sections[key] for key in self.v_recs])
             v = np.array(
                 [rec.as_numpy() for rec in self.v_recs.values()], dtype=np.float32
             )
         else:
-            iv = v = None
+            iv = v = sv = None
 
         im = mp = None
         if self.i_recs and len(active_gids):
@@ -519,7 +537,7 @@ class Env(EnvProtocol):
                     mp[row, :n] = arr[:n]
                     im[row] = gid
 
-        return ii, tt, iv, v, im, mp
+        return ii, tt, iv, v, sv, im, mp
 
     def _apply_delay_floor(self, dt: float) -> None:
         """Ensure every NetCon delay is >= 2*dt."""
@@ -1380,6 +1398,7 @@ class Env(EnvProtocol):
         except Exception:
             pass
         self.v_recs.clear()
+        self.v_sections.clear()
         self.i_recs.clear()
         if self.syn is not None:
             self.syn.store.clear()

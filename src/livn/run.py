@@ -287,7 +287,7 @@ class Events:
 
 @dataclass(frozen=True, eq=False)
 class Series:
-    """A regularly sampled trace per cell id.
+    """A regularly sampled trace per recording site.
 
     Args:
         ids: Cell id per row
@@ -295,12 +295,14 @@ class Series:
             sample is itself a vector (an after-spike current pair, say)
         dt: Sampling interval in ms
         t0: Absolute simulation time of sample ``0``
+        sections: Compartment name per row, where the backend records per compartment.
     """
 
     ids: "Array | None" = None
     values: "Array | None" = None
     dt: float = 0.1
     t0: float = 0.0
+    sections: "Array | None" = None
 
     kind = "series"
 
@@ -354,6 +356,7 @@ class Series:
         return replace(
             self,
             ids=_join(self.ids, other.ids),
+            sections=_join(self.sections, other.sections),
             values=lnp().concatenate([self.values, other.values], axis=0),
         )
 
@@ -390,6 +393,9 @@ class Series:
         return replace(
             self,
             ids=ids[mask],
+            sections=(
+                None if self.sections is None else np.asarray(self.sections)[mask]
+            ),
             values=None if self.values is None else np.asarray(self.values)[mask, :],
         )
 
@@ -425,6 +431,7 @@ class Run:
         t0: float | None = None,
         duration: float | None = None,
         padded: bool = False,
+        sections=None,
     ) -> "Run":
         if kind is None:
             if padded:
@@ -440,7 +447,11 @@ class Run:
             if padded:
                 raise ValueError("padded storage only applies to event channels")
             channel = Series(
-                ids=ids, values=values, dt=0.1 if dt is None else float(dt), t0=t0
+                ids=ids,
+                values=values,
+                dt=0.1 if dt is None else float(dt),
+                t0=t0,
+                sections=sections,
             )
         elif kind == "events":
             if padded:
@@ -475,11 +486,11 @@ class Run:
             return self
         return self.add("spikes", ids, times, kind="events", padded=padded)
 
-    def add_voltage(self, ids, values, dt: float = 0.1) -> "Run":
+    def add_voltage(self, ids, values, dt: float = 0.1, sections=None) -> "Run":
         """Add the ``voltage`` channel, or nothing when it was not recorded"""
         if ids is None and values is None:
             return self
-        return self.add("voltage", ids, values, dt=dt, kind="series")
+        return self.add("voltage", ids, values, dt=dt, kind="series", sections=sections)
 
     def add_current(self, ids, values, dt: float = 0.1) -> "Run":
         """Add the ``current`` channel, or nothing when it was not recorded"""
@@ -516,6 +527,11 @@ class Run:
         channel = self.channels.get(name)
         return None if channel is None else channel.values
 
+    def sections(self, name: str):
+        """Compartment name per row, where the channel records per compartment"""
+        channel = self.channels.get(name)
+        return None if channel is None else getattr(channel, "sections", None)
+
     @property
     def spikes(self) -> Events | None:
         return self.channels.get("spikes")
@@ -535,6 +551,10 @@ class Run:
     @property
     def voltage(self):
         return self.values("voltage")
+
+    @property
+    def voltage_sections(self):
+        return self.sections("voltage")
 
     @property
     def voltage_dt(self) -> float | None:
