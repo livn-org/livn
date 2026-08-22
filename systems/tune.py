@@ -88,7 +88,7 @@ class Tune(Interface):
     class Config(BaseModel):
         model_config = ConfigDict(extra="forbid")
 
-        system: str | int = "./systems/graphs/EI"
+        system: str | int | dict[str, int] = "./systems/graphs/EI"
         selection: str | None = None
         model: ObjSpec = "livn.models.rcsd.ReducedCalciumSomaDendrite"
         target: ObjSpec = "systems.targets.EI.Culture"
@@ -149,7 +149,8 @@ class Tune(Interface):
 
         return {**geometry, "pos": inside}
 
-    def version_cell(self, config: str):
+    @staticmethod
+    def version_cell(config: str):
         from systems.targets.cells.SingleCell import SingleCellOptConfig
 
         parsed = SingleCellOptConfig.from_yaml(config)
@@ -159,6 +160,15 @@ class Tune(Interface):
             "model": "livn.models.rcsd.ReducedCalciumSomaDendrite",
             "target": ["systems.targets.cells.SingleCell.SingleCell", {"config": cfg}],
         }
+
+    @staticmethod
+    def axis_cells(directory: str = "./systems/targets/cells"):
+        from glob import glob
+
+        return [
+            Tune.version_cell(path)
+            for path in sorted(glob(os.path.join(directory, "*.yaml")))
+        ]
 
     def version_spontaneous_recording(
         self,

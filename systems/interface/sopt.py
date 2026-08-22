@@ -1,10 +1,11 @@
 import os
+from collections.abc import Mapping
 from functools import partial
 
 import numpy as np
 from dmosopt import config
 from machinable import Project
-from machinable.config import Field as ConfigField
+from machinable.config import to_dict, Field as ConfigField
 from mpi4py import MPI
 from pydantic import Field
 
@@ -177,7 +178,7 @@ def obj_reduce(payload):
 
 class Sopt(Dmosopt):
     class Config(Dmosopt.Config):
-        system: str | int | None = ConfigField(None, identifying=False)
+        system: str | int | dict[str, int] | None = ConfigField(None, identifying=False)
         dopt_params: dict = Field(
             default_factory=lambda: {
                 "opt_id": "default",
@@ -227,6 +228,14 @@ class Sopt(Dmosopt):
             return {}
         if isinstance(system, int):
             return {"system": f"{system} cell" + ("s" if system != 1 else "")}
+        if isinstance(system, Mapping):
+            counts = to_dict(system)
+            return {
+                "system": ", ".join(
+                    f"{n} {population} cell" + ("s" if n != 1 else "")
+                    for population, n in counts.items()
+                )
+            }
         return super().on_compute_predicate()
 
     def evaluate_objective_at(self, x, verbose=False, **reduce_kwargs):
