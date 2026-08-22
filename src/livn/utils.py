@@ -324,6 +324,18 @@ class P:
             return 1
 
     @staticmethod
+    def comm(comm: Optional["MPI.Intracomm"] = None):
+        if comm is not None:
+            return comm
+
+        try:
+            from mpi4py import MPI
+        except ImportError:
+            return None
+
+        return MPI.COMM_WORLD
+
+    @staticmethod
     def is_root(root: int = 0, comm: Optional["MPI.Intracomm"] = None):
         root = int(root)
         if root < 0:

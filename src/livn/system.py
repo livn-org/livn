@@ -114,13 +114,7 @@ def fetch(
     comm: Optional["MPI.Intracomm"] = None,
 ):
     target = None
-    if comm is None:
-        try:
-            from mpi4py import MPI
-
-            comm = MPI.COMM_WORLD
-        except ImportError:
-            comm = None
+    comm = P.comm(comm)
     if comm is not None and comm.Get_rank() != 0:
         # await download on 0
         return comm.bcast(target)
