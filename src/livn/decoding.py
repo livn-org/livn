@@ -72,12 +72,16 @@ class ChannelRecording(Decoding):
     membrane_currents: bool = True
     voltage_gids: Optional[list[int]] = None
     voltage_dt: Optional[float] = None
+    voltage_sections: Optional[list[str]] = None
 
     def setup(self, env):
         if self.spikes:
             env.record_spikes()
         if self.voltages:
-            options = {"gids": self.voltage_gids}
+            options = {
+                "gids": self.voltage_gids,
+                "sections": self.voltage_sections,
+            }
             if self.voltage_dt is not None:
                 options["dt"] = self.voltage_dt
             env.record_voltage(**options)
@@ -120,12 +124,16 @@ class GatherAndMerge(Decoding):
     membrane_currents: bool = True
     voltage_gids: Optional[list[int]] = None
     voltage_dt: Optional[float] = None
+    voltage_sections: Optional[list[str]] = None
 
     def setup(self, env):
         if self.spikes:
             env.record_spikes()
         if self.voltages:
-            options = {"gids": self.voltage_gids}
+            options = {
+                "gids": self.voltage_gids,
+                "sections": self.voltage_sections,
+            }
             if self.voltage_dt is not None:
                 options["dt"] = self.voltage_dt
             env.record_voltage(**options)
@@ -1535,3 +1543,189 @@ class RecruitmentCurve(Decoding):
             it, pre, post, width=width, pre_ms=self.pre_ms, post_ms=self.post_ms
         )
         return float(responded.sum()) / units
+
+
+def population_gids(env) -> dict[int, str]:
+    ranges = getattr(getattr(env, "system", None), "population_ranges", None) or {}
+    return {
+        gid: name
+        for name, (start, count) in ranges.items()
+        for gid in range(int(start), int(start) + int(count))
+    }
+
+
+def peristimulus(tt, it, onsets, pre_ms: float, post_ms: float):
+    """Spikes relative to each pulse, pooled over trials."""
+    times, ids = [], []
+    tt, it = np.asarray(tt), np.asarray(it)
+    for at in onsets:
+        relative = tt - float(at)
+        keep = (relative >= -pre_ms) & (relative < post_ms)
+        times.append(relative[keep])
+        ids.append(it[keep])
+
+    if not times:
+        return np.empty(0), np.empty(0, dtype=np.int64)
+    return np.concatenate(times), np.concatenate(ids).astype(np.int64)
+
+
+class PeriStimulusHistogram(Decoding):
+    """Spikes per trial per bin, aligned to every pulse of a train."""
+
+    onsets: list[float] = Field(default_factory=list)
+    pre_ms: float = 50.0
+    post_ms: float = 150.0
+    bin_size: float = 5.0
+    populations: Optional[list[str]] = None
+
+    def setup(self, env):
+        env.record_spikes()
+
+    def __call__(self, signal: Run, env=None):
+        comm = getattr(env, "comm", None)
+        it, tt = sorted_spikes(signal, env)
+
+        result = None
+        if P.is_root(comm=comm):
+            edges = np.arange(-self.pre_ms, self.post_ms + self.bin_size, self.bin_size)
+            relative, ids = peristimulus(tt, it, self.onsets, self.pre_ms, self.post_ms)
+            trials = max(len(self.onsets), 1)
+
+            groups: dict[str, np.ndarray] = {}
+            if self.populations is None:
+                groups["all"] = np.ones(len(relative), dtype=bool)
+                sizes = {"all": unit_count(env)}
+            else:
+                where = population_gids(env)
+                sizes = {}
+                for name in self.populations:
+                    members = {g for g, p in where.items() if p == name}
+                    groups[name] = np.isin(ids, list(members))
+                    sizes[name] = max(len(members), 1)
+
+            result = {
+                "edges": edges,
+                "n_trials": trials,
+                "n_units": sizes,
+                "counts": {
+                    name: np.histogram(relative[mask], bins=edges)[0] / trials
+                    for name, mask in groups.items()
+                },
+                "spike_times": relative,
+                "spike_ids": ids,
+            }
+
+        return P.broadcast(result, comm=comm)
+
+
+def spike_waveforms(trace, times, spikes, *, pre_ms: float, post_ms: float, dt: float):
+    """Spike-aligned cutouts, aligned on the peak rather than the crossing."""
+    n_pre, n_post = int(round(pre_ms / dt)), int(round(post_ms / dt))
+    out = []
+    for at in spikes:
+        centre = int(np.searchsorted(times, at))
+        lo, hi = centre - n_pre, centre + n_post
+        if lo < 0 or hi >= len(trace):
+            continue
+        shift = int(np.argmax(trace[lo:hi])) - n_pre
+        lo, hi = lo + shift, hi + shift
+        if lo < 0 or hi >= len(trace):
+            continue
+        out.append(trace[lo:hi])
+
+    return np.asarray(out)
+
+
+def waveform_shape(waves, *, pre_ms: float, dt: float) -> dict:
+    """Peak, half-width and after-hyperpolarisation of a mean waveform."""
+    if len(waves) == 0:
+        return {}
+
+    mean = np.asarray(waves).mean(axis=0)
+    peak = float(mean.max())
+    threshold = float(np.median(mean[: max(1, int(2.0 / dt))]))
+    half = threshold + 0.5 * (peak - threshold)
+    above = np.flatnonzero(mean >= half)
+    after = mean[int(np.argmax(mean)) :]
+
+    return {
+        "threshold_mV": threshold,
+        "peak_mV": peak,
+        "amplitude_mV": peak - threshold,
+        "half_width_ms": (
+            float((above[-1] - above[0]) * dt) if len(above) > 1 else float("nan")
+        ),
+        "ahp_mV": float(after.min()) - threshold,
+        "n_spikes": int(len(waves)),
+    }
+
+
+class Waveforms(Decoding):
+    """Spike-aligned voltage cutouts, and the shape of their mean."""
+
+    pre_ms: float = 4.0
+    post_ms: float = 10.0
+    section: Optional[str] = "soma"
+    populations: Optional[list[str]] = None
+    max_spikes: int = 500
+
+    voltage_gids: Optional[list[int]] = None
+    voltage_dt: Optional[float] = 0.025
+
+    def setup(self, env):
+        env.record_spikes()
+        options = {
+            "gids": self.voltage_gids,
+            "sections": None if self.section is None else [self.section],
+        }
+        if self.voltage_dt is not None:
+            options["dt"] = self.voltage_dt
+        env.record_voltage(**options)
+
+    def __call__(self, signal: Run, env=None):
+        comm = getattr(env, "comm", None)
+        merged = signal.gather(comm=comm)
+
+        result = None
+        if P.is_root(comm=comm):
+            result = self._waveforms(merged, env)
+        return P.broadcast(result, comm=comm)
+
+    def _waveforms(self, signal: Run, env) -> dict:
+        iv = np.asarray(signal.voltage_ids if signal.voltage_ids is not None else [])
+        vv = np.asarray(signal.voltage if signal.voltage is not None else [])
+        sv = signal.voltage_sections
+        it = np.asarray(signal.spike_ids if signal.spike_ids is not None else [])
+        tt = np.asarray(signal.spike_times if signal.spike_times is not None else [])
+
+        if self.section is not None and sv is not None and len(iv):
+            keep = np.asarray(sv) == self.section
+            iv, vv = iv[keep], vv[keep]
+
+        dt = float(getattr(env, "voltage_recording_dt", self.voltage_dt or 0.1))
+        times = np.arange(vv.shape[1]) * dt if len(vv) else np.empty(0)
+        where = population_gids(env)
+
+        rows: dict[str, list] = {}
+        for row, gid in enumerate(iv.astype(np.int64)):
+            name = where.get(int(gid), "all") if self.populations is not None else "all"
+            if self.populations is not None and name not in self.populations:
+                continue
+            cut = spike_waveforms(
+                vv[row],
+                times,
+                tt[it == gid][: self.max_spikes],
+                pre_ms=self.pre_ms,
+                post_ms=self.post_ms,
+                dt=dt,
+            )
+            if len(cut):
+                rows.setdefault(name, []).append(cut)
+
+        result = {"dt": dt, "pre_ms": self.pre_ms, "waveforms": {}, "shape": {}}
+        for name, cuts in rows.items():
+            waves = np.vstack(cuts)
+            result["waveforms"][name] = waves
+            result["shape"][name] = waveform_shape(waves, pre_ms=self.pre_ms, dt=dt)
+
+        return result
