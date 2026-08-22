@@ -575,3 +575,6 @@ class DotDict:
             else:
                 result[k] = v
         return result
+
+
+NOISE_STREAM_STRIDE = 1_000_003

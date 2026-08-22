@@ -420,8 +420,12 @@ class DistributedEnv(EnvProtocol):
             return
         _state["env"].potential_recording(membrane_currents)
 
-    def clear(self) -> Self:
-        self._broadcast_to_workers("clear", ())
+    def clear(self, reseed: bool = True) -> Self:
+        self._broadcast_to_workers("clear", (reseed,))
+        return self
+
+    def reseed_noise(self, stream: int | None = None) -> Self:
+        self._broadcast_to_workers("reseed_noise", (stream,))
         return self
 
     def set_params(self, params) -> Self:

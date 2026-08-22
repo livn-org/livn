@@ -716,10 +716,18 @@ class Env(Protocol):
 
         return self
 
-    def clear(self) -> Self:
-        """Discard the simulation and reset to t=0"""
+    def clear(self, reseed: bool = True) -> Self:
+        """Discard the simulation and reset to t=0.
+
+        ``reseed`` advances the stochastic streams so the next ``run()`` is an
+        independent realisation rather than a repeat of the last one.
+        """
         ...
 
+        return self
+
+    def reseed_noise(self, stream: int | None = None) -> Self:
+        """Move every stochastic stream onto a fresh, reproducible realisation."""
         return self
 
     def close(self) -> Self:

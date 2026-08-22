@@ -14,7 +14,9 @@ from livn.backend.neuron.synapses import SynapseBuilder
 from livn.cells import CellRegistry
 from livn.run import Run
 from livn.stimulus import Stimulus
+from livn.types import Capability
 from livn.types import Env as EnvProtocol
+from livn.utils import NOISE_STREAM_STRIDE
 
 if TYPE_CHECKING:
     from mpi4py import MPI
@@ -28,6 +30,19 @@ logger.setLevel(os.getenv("LIVN_NEURON_LOGGING", "WARNING"))
 
 
 class Env(EnvProtocol):
+    capabilities = frozenset(
+        {
+            Capability.SIMULATION,
+            Capability.SELECTION,
+            Capability.MPI,
+            Capability.PER_GID_VOLTAGE,
+            Capability.NOISE,
+            Capability.PLASTICITY,
+            Capability.EXTRACELLULAR_STIMULUS,
+            Capability.CURRENT_STIMULUS,
+        }
+    )
+
     def __init__(
         self,
         system: Union["System", str, int],
@@ -76,12 +91,12 @@ class Env(EnvProtocol):
         self.pc = self._h.pc
         if subworld_size is not None:
             self.pc.subworlds(subworld_size)
-        # Read rank AFTER subworlds() so pc.id()/nhost() are subworld-local.
-        # gid registration (set_gid2node) must use the subworld-local rank.
         self.rank = int(self.pc.id())
+        self._require_comm_spans_solve_domain()
 
         # graph state
         self.cells = CellRegistry(self, comm=self.comm)
+        self._noise_stream = 0
         self._detectors: dict[int, dict] = {}  # gid -> {filter,in_nc,out_nc}
         self.syn = None
         self.conn = None
@@ -559,6 +574,24 @@ class Env(EnvProtocol):
             d = float(phys[i])
             store.get(i).delay = d if d > floor else floor
         self._delay_floor_dt = dt
+
+    def _require_comm_spans_solve_domain(self) -> None:
+        if self.comm is None:
+            return
+
+        solve_size = int(self.pc.nhost())
+        comm_size = int(self.comm.Get_size())
+        if comm_size == solve_size:
+            return
+
+        raise ValueError(
+            f"Env was given a communicator of size {comm_size}, but NEURON's "
+            f"ParallelContext solves over {solve_size} ranks. finitialize and "
+            "psolve are collective over the ParallelContext, so the two must "
+            "match or the simulation deadlocks. Pass the communicator the whole "
+            "solve runs on, or partition NEURON to match it with "
+            "subworld_size=<ranks per Env>."
+        )
 
     def _apply_init_ic(self) -> None:
         """Pin each cell's resting current via its ``init_ic``.
@@ -1360,7 +1393,44 @@ class Env(EnvProtocol):
             self._opsin_registered = False
         # IClamp uses Vector.play (no cvode callback); nothing to unregister
 
-    def clear(self) -> Self:
+    def reseed_noise(self, stream: int | None = None) -> Self:
+        if not self._flucts:
+            return self
+
+        if stream is None:
+            self._noise_stream += 1
+            stream = self._noise_stream
+        else:
+            self._noise_stream = int(stream)
+
+        base = int(self.seed if self.seed is not None else 0)
+        reseed = getattr(self.model, "neuron_noise_reseed", None)
+
+        for key, (fluct, state) in self._flucts.items():
+            gid, _, index = key.rpartition("-")
+            gid, index = int(gid), int(index)
+            if reseed is not None:
+                reseed(fluct, state, gid=gid, index=index, seed=base, stream=stream)
+                continue
+            self._reseed_mechanism(
+                fluct, gid=gid, index=index, seed=base, stream=stream
+            )
+
+        return self
+
+    @staticmethod
+    def _reseed_mechanism(mechanism, *, gid: int, index: int, seed: int, stream: int):
+        random123 = getattr(mechanism, "noiseFromRandom123", None)
+        if random123 is not None:
+            random123(gid + 1, index + 1, seed + stream * NOISE_STREAM_STRIDE)
+            return
+        new_seed = getattr(mechanism, "new_seed", None)
+        if new_seed is not None:
+            new_seed(seed + stream * NOISE_STREAM_STRIDE)
+
+    def clear(self, reseed: bool = True) -> Self:
+        if reseed:
+            self.reseed_noise()
         self.clear_recordings()
         for vec in self.w_recs.values():
             vec.resize(0)

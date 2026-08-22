@@ -520,7 +520,7 @@ class SingleCell:
 
         def probe(ic_val):
             cell.init_ic = lambda v=None, _x=ic_val: setattr(soma, "ic_constant", _x)
-            env.clear()
+            env.clear(reseed=False)
             stim = Stimulus.from_current(zeros, dt=self.record_dt, gids=gid_arr)
             _s, _t, vid, v, _c, _cc = env.run(settle_ms, stim, dt=self.sim_dt)
             vid = np.asarray(vid)
@@ -548,12 +548,12 @@ class SingleCell:
         """(Re)initialize at membrane potential ``v`` and pin the holding current
         so the cell settles there. Used to hold the passive protocol at v_hold and
         the f-I sweeps at their own holding potential (fI_hold)."""
-        env.clear()
+        env.clear(reseed=False)
         env.v_init = v  # allowed: clear() reset t to 0
         self._pin_holding(env, gid, cell, v_target=v)
 
     def _run_step(self, env, gid, amp, t0, t1, tstop):
-        env.clear()
+        env.clear(reseed=False)
         n = int(round(tstop / self.record_dt))
         cur = np.zeros((n, 1), dtype=np.float32)
         cur[int(round(t0 / self.record_dt)) : int(round(t1 / self.record_dt)), 0] = amp
@@ -571,13 +571,6 @@ class SingleCell:
         return t, trace
 
     NOISE_KEYS = ("g_e0", "g_i0", "std_e", "std_i")
-
-    @staticmethod
-    def _seed_noise(env, seed: int) -> None:
-        for fluct, _state in (getattr(env, "_flucts", None) or {}).values():
-            new_seed = getattr(fluct, "new_seed", None)
-            if new_seed is not None:
-                new_seed(int(seed))
 
     @classmethod
     def _drive_noise(cls, env) -> dict:
@@ -607,7 +600,7 @@ class SingleCell:
         counts = []
         try:
             for i, level in enumerate(self.drive.levels):
-                env.clear()
+                env.clear(reseed=False)
                 env.set_params(
                     {
                         **driving,
@@ -617,12 +610,12 @@ class SingleCell:
                         "noise-tau_i": self.drive.tau_i,
                     }
                 )
-                self._seed_noise(env, self.drive.seed + i)
+                env.reseed_noise(self.drive.seed + i)
                 run = env.run(self.drive.duration, dt=self.sim_dt)
                 ids = getattr(run, "spike_ids", None)
                 counts.append(0 if ids is None else int(np.sum(np.asarray(ids) == gid)))
         finally:
-            env.clear()
+            env.clear(reseed=False)
             env.set_params(resting)
         return np.asarray(counts, dtype=float)
 
