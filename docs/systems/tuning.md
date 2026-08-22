@@ -536,11 +536,17 @@ which writes `params/default.json` (or `params/<selection>.json` when the run us
 
 These parameters are then applied by `livn.make()` or `env.apply_default_params()`.
 
-Two related commands: `--export` writes the whole front to a `front.json` next to the run (which `--promote(front=...)` can bank from later, without the run being at hand), and `--evaluate(loc=0)` re-simulates one solution and draws a raster of it. This is worth doing before promoting, since a solution can satisfy every scalar target and still be degenerate:
+`--export` writes the whole front to a `front.json` next to the run, which `--promote(front=...)` can bank from later without the run being at hand. Before promoting it is often worth looking at the dynamics since a solution can satisfy every scalar target and still be degenerate:
 
 ```sh
 livn systems tune system=./systems/graphs/EI --export
-mpiexec -n 8 livn systems tune system=./systems/graphs/EI "--evaluate(loc=0)"
+
+livn systems mpi **resources='{"-n": 8}' run \
+    system=./systems/graphs/EI \
+    "~front('systems/storage/.../front.json', 0)" \
+    decoding='["livn.decoding.GatherAndMerge", {"duration": 65000, "voltages": false, "membrane_currents": false}]' \
+    figure='["plots.Raster", {"warmup": 5000}]' \
+    --launch
 ```
 
 ## Tips
