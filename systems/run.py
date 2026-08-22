@@ -49,12 +49,12 @@ class Run(Interface):
         if self.config.selection is not None:
             env.selection(self.config.selection)
 
+        env.init()
+
         if self.config.params is None:
             env.apply_default_params()
         else:
             env.set_params(dict(self.config.params))
-
-        env.init()
 
         decoding = import_instance(self.config.decoding)
         encoding = import_instance(self.config.encoding)
