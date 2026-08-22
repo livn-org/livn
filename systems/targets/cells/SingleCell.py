@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 
 import numpy as np
 import yaml
@@ -20,9 +21,9 @@ class StepTarget(BaseModel):
     current: list[float] = Field(default_factory=list, alias="I")
     current_factor: float = Field(1.0, alias="I_factor")
     t: list[float] | None = None
-    mean: list[float] | None = None
-    lower: list[float] | None = None
-    upper: list[float] | None = None
+    mean: list[float | None] | None = None
+    lower: list[float | None] | None = None
+    upper: list[float | None] | None = None
     V_hold: float | None = None
 
 
@@ -55,10 +56,17 @@ class DriveTarget(BaseModel):
     seed: int = 20260811
     min_spikes: float = 5.0
     min_top_fraction: float = 0.5
+    std_fraction: float = 0.33
+    tau_e: float = 33.0
+    tau_i: float = 28.5
+    mean: list[float | None] | None = None
+    lower: list[float | None] | None = None
+    upper: list[float | None] | None = None
 
 
 class SingleCellOptConfig(BaseModel):
     Template: str
+    Population: str = "EXC"
     Numerics: SingleCellNumerics
     Targets: SingleCellTargets
     Drive: DriveTarget = DriveTarget()
@@ -79,6 +87,7 @@ class SingleCellModel(ReducedCalciumSomaDendrite):
         v_rest: float = -60.0,
         dend_type: str = "hillock",
         celsius: float = 36.0,
+        population: str = "EXC",
     ):
         super().__init__()
         self._template_path = template
@@ -86,6 +95,7 @@ class SingleCellModel(ReducedCalciumSomaDendrite):
         self._cell_v_rest = float(v_rest)
         self._cell_dend_type = dend_type
         self._celsius = float(celsius)
+        self._population = population
 
     def neuron_celsius(self) -> float:
         return self._celsius
@@ -100,7 +110,7 @@ class SingleCellModel(ReducedCalciumSomaDendrite):
             cell = template_class()  # defaults; target reconfigures per eval
             return ReducedCell(cell, threshold=thr, v_rest=vr, dend_type=dt)
 
-        return {"EXC": make}
+        return {self._population: make}
 
 
 def range_distance(x, lb, ub):
@@ -122,12 +132,12 @@ class SingleCell:
         config: SingleCellOptConfig | dict | str = os.path.join(
             os.path.dirname(__file__), "motoneuron.yaml"
         ),
-        population: str = "EXC",
+        population: str | None = None,
         sim_dt: float = 0.0125,
         record_dt: float = 0.05,
     ):
         self.cfg = self._resolve_config(config)
-        self.population = population
+        self.population = population or self.cfg.Population
         self.sim_dt = float(sim_dt)
         self.record_dt = float(record_dt)
         self._decoded: dict | None = None
@@ -229,7 +239,7 @@ class SingleCell:
             "fI_error",
             "spike_amplitude_error",
             "ISI_adaptation_error",
-        ]
+        ] + (["drive_error"] if self._drive_bands() is not None else [])
 
     def feature_bands(self) -> dict:
         bands = {
@@ -253,6 +263,13 @@ class SingleCell:
         elif self.fI_mean.size:
             m = float(np.mean(self.fI_mean))
             bands["fI_error"] = (0.8 * m, 1.2 * m)
+
+        drive = self._drive_bands()
+        if drive is not None:
+            bands["drive_error"] = (
+                float(np.nanmean(drive[0])),
+                float(np.nanmean(drive[1])),
+            )
         return bands
 
     def objective_scales(self) -> dict:
@@ -269,13 +286,17 @@ class SingleCell:
             if self.spk_adapt_ub.size
             else 100.0
         )
-        return {
+        widths = {
             "rn_error": max(self.target_rn[1] - self.target_rn[0], 1.0),
             "tau_error": max(self.target_tau[1] - self.target_tau[0], 1.0),
             "fI_error": max(fI_w, 1.0),
             "spike_amplitude_error": max(spk_w, 1.0),
             "ISI_adaptation_error": max(isi_w, 1.0),
         }
+        bands = self._drive_bands()
+        if bands is not None:
+            widths["drive_error"] = max(float(np.nanmean(bands[1] - bands[0])), 1.0)
+        return widths
 
     def _drive_constraints(self, counts) -> dict:
         if not self.drive.enabled:
@@ -285,6 +306,54 @@ class SingleCell:
             "drive_sustained": (best - self.drive.min_spikes, best),
             "drive_no_inversion": (top - self.drive.min_top_fraction * best, top),
         }
+
+    def _drive_rates(self, counts) -> np.ndarray:
+        """Spike counts over the sweep as rates in Hz."""
+        seconds = max(self.drive.duration, 1e-9) / 1000.0
+        return np.asarray(counts, dtype=float) / seconds
+
+    def _drive_bands(self) -> tuple[np.ndarray, np.ndarray] | None:
+        """`(lower, upper)` per level, or None when the sweep is unscored."""
+        d = self.drive
+        if not d.enabled:
+            return None
+
+        def _arr(values):
+            return np.asarray(
+                [np.nan if v is None else float(v) for v in values], float
+            )
+
+        if d.lower is not None and d.upper is not None:
+            lower, upper = _arr(d.lower), _arr(d.upper)
+        elif d.mean is not None:
+            mean = _arr(d.mean)
+            lower, upper = 0.7 * mean, 1.3 * mean  # +/-30%, as the f-I bands do
+        else:
+            return None
+        if np.all(np.isnan(lower)) or np.all(np.isnan(upper)):
+            return None
+        if len(lower) != len(d.levels) or len(upper) != len(d.levels):
+            raise ValueError(
+                f"Drive has {len(d.levels)} levels but "
+                f"{len(lower)}/{len(upper)} band entries"
+            )
+        return lower, upper
+
+    def _drive_objective(self, counts) -> tuple[float, float] | None:
+        bands = self._drive_bands()
+        if bands is None:
+            return None
+        rates = self._drive_rates(counts)
+        lower, upper = bands
+        n = min(len(rates), len(lower))
+        scored = [
+            range_distance(rates[i], lower[i], upper[i]) ** 2
+            for i in range(n)
+            if not (np.isnan(lower[i]) or np.isnan(upper[i]))
+        ]
+        if not scored:
+            return None
+        return _finite(float(np.mean(scored))), float(np.mean(rates)) if n else 0.0
 
     def constraint_names(self) -> list[str]:
         return (
@@ -308,15 +377,36 @@ class SingleCell:
     def transform_params(self, x) -> dict:
         # x: {param: value} from the optimizer. Merge with fixed parameters and
         # stash for __call__ (applied to the cell via env.cells, not set_params).
-        decoded = dict(self.fixed)
-        decoded.update(self._from_search(x))
-        self._decoded = decoded
+        self._decoded = self._resolve(x)
         return {}
 
     def decode_params(self, x, model=None) -> dict:
-        merged = dict(self.fixed)
-        merged.update(self._from_search(x))
-        return merged
+        return self._resolve(x)
+
+    def _resolve(self, x) -> dict:
+        decoded = dict(self.fixed)
+        decoded.update(self._from_search(x))
+        return self._couple_from_axial_resistance(decoded)
+
+    @staticmethod
+    def _couple_from_axial_resistance(decoded: dict) -> dict:
+        if "Ra" not in decoded or "gc" in decoded:
+            return decoded
+
+        import math
+
+        diam = float(decoded["global_diam"])  # um
+        total = float(decoded["Ltotal"])  # um
+        pp = float(decoded["pp"])  # somatic fraction of the length
+
+        cross_cm2 = math.pi * (diam * 1e-4 / 2.0) ** 2
+        r_axial = float(decoded["Ra"]) * (total * 1e-4 / 2.0) / cross_cm2 * 1e-6
+
+        area_soma = math.pi * diam * (pp * total) * 1e-8  # cm2
+        area_dend = math.pi * diam * ((1.0 - pp) * total) * 1e-8
+        decoded = dict(decoded)
+        decoded["gc"] = pp / 2e3 * (1.0 / area_soma + 1.0 / area_dend) / r_axial
+        return decoded
 
     def set_params(self, params: dict) -> dict:
         # single-cell biophysics are not env weights/noise; nothing to route
@@ -341,6 +431,19 @@ class SingleCell:
         else:
             feasible = np.ones(len(y), dtype=bool)
 
+        if not feasible.any():
+            violated = (
+                c.columns[(c.to_numpy() < 0).any(axis=0)].tolist()
+                if isinstance(c, pd.DataFrame) and len(c.columns)
+                else []
+            )
+            warnings.warn(
+                f"no point on this front is feasible; returning the "
+                f"best-ranked one, which violates "
+                f"{', '.join(violated) or 'at least one constraint'}",
+                stacklevel=2,
+            )
+
         rank_sum = y.rank(axis=0, method="min").sum(axis=1).to_numpy()
 
         # feasible first (~feasible: 0 for feasible), then lowest rank-sum
@@ -356,7 +459,10 @@ class SingleCell:
             threshold=self.target_threshold,
             v_rest=self.v_rest,
             celsius=self.celsius,
+            population=self.population,
         )
+        if isinstance(system, int):
+            system = {self.population: system}
         env = Env(system, model=cell_model, comm=comm, subworld_size=subworld_size)
         if isinstance(system, (str, os.PathLike)):
             env.selection(1)
@@ -502,7 +608,15 @@ class SingleCell:
         try:
             for i, level in enumerate(self.drive.levels):
                 env.clear()
-                env.set_params({**driving, "noise-g_e0": float(level)})
+                env.set_params(
+                    {
+                        **driving,
+                        "noise-g_e0": float(level),
+                        "noise-std_e": float(level) * self.drive.std_fraction,
+                        "noise-tau_e": self.drive.tau_e,
+                        "noise-tau_i": self.drive.tau_i,
+                    }
+                )
                 self._seed_noise(env, self.drive.seed + i)
                 run = env.run(self.drive.duration, dt=self.sim_dt)
                 ids = getattr(run, "spike_ids", None)
@@ -615,6 +729,8 @@ class SingleCell:
         ]
         ISI_adaptation_obj = float(np.mean(adapt_dists)) if adapt_dists else np.nan
 
+        drive_obj = self._drive_objective(m["drive_counts"])
+
         objectives = {
             "rn_error": (_finite(rn_obj), rn),
             "tau_error": (_finite(tau_obj), tau),
@@ -628,6 +744,8 @@ class SingleCell:
                 float(np.nanmean(ISI["ratio"])) if len(ISI) else 0.0,
             ),
         }
+        if drive_obj is not None:
+            objectives["drive_error"] = drive_obj
 
         # --- constraints (>=0 feasible, <0 infeasible) ---------------------
         rate_diff = np.diff(rates[:-1]) if len(rates) > 2 else np.array([1.0])

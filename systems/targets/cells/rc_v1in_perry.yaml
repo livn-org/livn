@@ -4,6 +4,7 @@
 # Membrane tau is an estimate (Perry reports AHP kinetics, not membrane tau).
 Celltype: RenshawCell
 Template: livn.models.rcsd.neuron.templates.V1In.V1In
+Population: INH
 Numerics:
   adaptive: False
   use_coreneuron: True
@@ -14,6 +15,26 @@ Numerics:
   v_init: -60.0
 Record:
   soma: ['V']
+Drive:
+    enabled: True
+    # Bracket the peak. Measured with the shipped parameters, rate against
+    # g_e0 peaks at 0.03-0.3 and falls away past it as the background clamps
+    # the cell toward depolarisation block (median soma V runs -62 mV at 0.01
+    # to -18 mV at 3.0). The old [0.3 .. 6.0] window sampled the falling limb
+    # only, so nothing in the fit could see where the cell works best.
+    levels: [0.01, 0.03, 0.1, 0.3]
+    duration: 2000.0
+    seed: 20260811
+    min_spikes: 5.0
+    # The top level is 3x past the peak, so this asks the cell to stay usable
+    # when the background overshoots rather than to be flat. At 0.5 with the
+    # old window it was asking a cell not to block under a conductance ~750x
+    # its leak, which no point on the front satisfied.
+    min_top_fraction: 0.2
+    std_fraction: 0.33
+
+    tau_e: 33.0
+    tau_i: 28.5
 Targets:
   Rin:
     # Perry 2015: 233.1 +/- 11 MOhm (P0-P11; age-dependent ~155-245)

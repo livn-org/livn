@@ -1,5 +1,6 @@
 import json
 import os
+from typing import Literal
 
 from machinable import Interface, get
 from machinable.config import to_dict
@@ -97,7 +98,29 @@ class Tune(Interface):
         population_size: int = 100
         num_generations: int = 10
         n_epochs: int = 10
-        surrogate: dict = {}
+
+        class SurrogateConfig(BaseModel):
+            method_name: (
+                str
+                | Literal[
+                    "gpr",
+                    "egp",
+                    "megp",
+                    "mdgp",
+                    "mdspp",
+                    "vgp",
+                    "svgp",
+                    "spv",
+                    "siv",
+                    "crv",
+                ]
+                | None
+            ) = None
+            method_kwargs: dict = {}
+            custom_training: str | None = "dmosopt.model_transformer.joint"
+            custom_training_kwargs: dict | None = {}
+
+        surrogate: SurrogateConfig = SurrogateConfig()
 
     def _restrict_electrodes(
         self, geometry: dict, selection, readout: str, system
@@ -129,9 +152,10 @@ class Tune(Interface):
     def version_cell(self, config: str):
         from systems.targets.cells.SingleCell import SingleCellOptConfig
 
-        cfg = SingleCellOptConfig.from_yaml(config).model_dump()
+        parsed = SingleCellOptConfig.from_yaml(config)
+        cfg = parsed.model_dump()
         return {
-            "system": 1,
+            "system": {parsed.Population: 1},
             "model": "livn.models.rcsd.ReducedCalciumSomaDendrite",
             "target": ["systems.targets.cells.SingleCell.SingleCell", {"config": cfg}],
         }
