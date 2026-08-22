@@ -38,6 +38,58 @@ def chunk_bytes() -> float:
     return limit * 2**20
 
 
+CANONICAL_UNITS = {
+    "conductance": "uS",
+    "current": "nA",
+    "current_density": "mA/cm2",
+    "extracellular": "mV",
+    "irradiance": "mW/mm2",
+}
+ALTERNATE_UNITS = {"irradiance": ("photon_flux",)}
+
+
+def _checked_units(input_mode: str, units: str | None) -> str | None:
+    canonical = CANONICAL_UNITS.get(input_mode)
+    if canonical is None or units is None:
+        return canonical or units
+    if units == canonical or units in ALTERNATE_UNITS.get(input_mode, ()):
+        return units
+
+    accepted = "/".join((canonical, *ALTERNATE_UNITS.get(input_mode, ())))
+    raise ValueError(
+        f"a {input_mode!r} stimulus is measured in {accepted}, not {units!r}."
+    )
+
+
+def _is_traced(array) -> bool:
+    """Whether this array is a JAX tracer, and so has no value to look at yet."""
+    if not _USES_JAX:
+        return False
+    import jax
+
+    return isinstance(array, jax.core.Tracer)
+
+
+def check_bounds(values, bounds, input_mode: str, units: str | None = None) -> None:
+    if bounds is None:
+        return
+    array = np.asarray(values)
+    if array.size == 0 or _is_traced(array):
+        return
+
+    lo, hi = (float(b) for b in bounds)
+    smallest, largest = float(np.min(array)), float(np.max(array))
+    if smallest >= lo and largest <= hi:
+        return
+
+    unit = units or CANONICAL_UNITS.get(input_mode, "")
+    worst = smallest if (lo - smallest) > (largest - hi) else largest
+    raise ValueError(
+        f"a {input_mode!r} stimulus reaches {worst:g} {unit}, outside the "
+        f"[{lo:g}, {hi:g}] {unit} this model is defined over"
+    )
+
+
 def section_positions(gids):
     seen: dict[int, int] = {}
     out = []
@@ -107,7 +159,7 @@ class Stimulus:
         self.gids = gids
         self.sections = sections
         self.input_mode = input_mode
-        self.units = units
+        self.units = _checked_units(input_mode, units)
         self.extra = extra
 
     @property
@@ -236,6 +288,8 @@ class Stimulus:
     @classmethod
     def from_policy(cls, policy, env, duration: float) -> "Stimulus":
         """A deferred stimulus that renders the policy window by window."""
+        io = getattr(env, "io", None)
+        policy = policy.as_input_units(getattr(io, "input_units", None))
         dt = policy.dt
         layout = env.cell_stimulus(policy.window(0.0, dt, dt), dt=dt)
 

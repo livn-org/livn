@@ -8,7 +8,7 @@ class Izhikevich(Model):
         population = b2.NeuronGroup(
             n,
             f"""
-            dv/dt = (c1*v**2 + c2*v + c3 - u + Rm*(I + I_noise) + stim(t, i + {offset}))/ms : volt
+            dv/dt = (c1*v**2 + c2*v + c3 - u + Rm*(I + I_noise + stim_i(t, i + {offset})) + stim_v(t, i + {offset}))/ms : volt
             du/dt = (a*(b*v - u))  : volt
             I : amp
             I_noise : amp

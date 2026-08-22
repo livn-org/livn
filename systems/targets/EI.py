@@ -2,6 +2,7 @@ import logging
 import math
 import time
 from types import SimpleNamespace
+from typing import ClassVar
 
 import numpy as np
 from pydantic import Field, model_validator
@@ -84,6 +85,14 @@ class Protocol(PulseSweepPolicy):
     electrode: int | None = None
     """Driving channels"""
 
+    uA_per_mv: float = Field(default=1.0, gt=0)
+    """Microamps the electrode delivers per millivolt of input."""
+
+    LOWEST_RUNG_UA: ClassVar[float] = 8.0
+
+    def _render(self, start_ms: float, stop_ms: float, dt: float, strict: bool):
+        return super()._render(start_ms, stop_ms, dt, strict) * self.uA_per_mv
+
     @classmethod
     def from_block(cls, block, **overrides) -> "Protocol":
         amplitudes = block.amplitudes_mv
@@ -96,6 +105,12 @@ class Protocol(PulseSweepPolicy):
                 f"{block.condition!r} block records no pulse times, so "
                 "there is nowhere to put the stimulus"
             )
+        if min(amplitudes) <= 0:
+            raise ValueError(
+                f"{block.condition!r} block carries a {min(amplitudes):g} mV"
+            )
+
+        overrides.setdefault("uA_per_mv", cls.LOWEST_RUNG_UA / min(amplitudes))
 
         return cls(
             amplitudes=amplitudes,
@@ -190,7 +205,7 @@ class Culture(TuningTargets):
         "inhibitory": [0.01, 100.0],
     }
     RELEASE_PARAM = "U"
-    STIMULUS_GAIN_DECADES = 2.0
+    STIMULUS_GAIN_DECADES = 1.0
 
     def __init__(
         self,

@@ -145,6 +145,7 @@ class Env(EnvProtocol):
         self._stim_segments: list = []
         self._stim_rows: dict[tuple[int, int], int] = {}
         self._stim_block: np.ndarray | None = None
+        self._stim_bounds: tuple[float, float] | None = None
         self._stim_streams: list[dict] = []
         self._stim_idle = False
         self._stim_dt: float | None = None
@@ -440,8 +441,13 @@ class Env(EnvProtocol):
                 self._setup_opsin_stimulus(stimulus, current_time)
             elif stimulus.input_mode == "current":
                 self._setup_iclamp(stimulus, current_time)
-            else:
+            elif stimulus.input_mode == "extracellular":
                 self._setup_extracellular(stimulus, current_time)
+            else:
+                raise ValueError(
+                    f"the neuron backend has no mechanism for a "
+                    f"{stimulus.input_mode!r} stimulus"
+                )
 
         first_run = self.t == 0
         requested_dt = (
@@ -602,6 +608,9 @@ class Env(EnvProtocol):
         elif not math.isclose(self._stim_dt, stimulus.dt, rel_tol=0.0, abs_tol=1e-12):
             raise ValueError("Stimulus dt mismatch; call clear() before rerunning")
 
+        declares = getattr(self.model, "stimulus_bounds", None)
+        self._stim_bounds = declares(stimulus.input_mode) if declares else None
+
         start_step = int(round(current_time / stimulus.dt))
         rows, columns = self._stim_rows_for(stimulus)
         if not rows:
@@ -644,7 +653,10 @@ class Env(EnvProtocol):
 
     def _install_stim_block(self, stimulus, rows, columns, start_step) -> None:
         """Hold the whole command, indexed `[section, absolute step]`."""
+        from livn.stimulus import check_bounds
+
         values = np.asarray(stimulus.array)
+        check_bounds(values, self._stim_bounds, stimulus.input_mode, stimulus.units)
         dtype = np.promote_types(values.dtype, np.float32)
         end_step = start_step + values.shape[0]
 
@@ -737,12 +749,15 @@ class Env(EnvProtocol):
         col[stream["rows"]] += stream["chunk"][:, idx - stream["chunk_start"]]
 
     def _refill_stim_stream(self, stream, idx: int) -> None:
+        from livn.stimulus import check_bounds
+
         stimulus = stream["stimulus"]
         first = max(idx, stream["start_step"])
         start_ms = (first - stream["start_step"]) * stimulus.dt
         stop_ms = min(start_ms + stream["chunk_steps"] * stimulus.dt, stimulus.duration)
 
         rendered = np.asarray(stimulus.window(start_ms, stop_ms))
+        check_bounds(rendered, self._stim_bounds, stimulus.input_mode, stimulus.units)
         if rendered.shape[0] == 0:
             stream["chunk"] = None
             stream["chunk_start"] = stream["chunk_stop"] = 0

@@ -59,6 +59,8 @@ class ReducedCalciumSomaDendrite(Model):
         }[self.renshaw_phenotype]
 
     def prepare_stimulus(self, stimulus):
+        from livn.stimulus import check_bounds
+
         modes = {
             "extracellular",
             "current",
@@ -71,7 +73,19 @@ class ReducedCalciumSomaDendrite(Model):
                 f"ReducedCalciumSomaDendrite does not support input_mode "
                 f"'{stimulus.input_mode}'. Supported: {modes}"
             )
+        if not stimulus.deferred:
+            check_bounds(
+                stimulus.array,
+                self.stimulus_bounds(stimulus.input_mode),
+                stimulus.input_mode,
+                stimulus.units,
+            )
         return stimulus
+
+    def stimulus_bounds(self, input_mode: str) -> tuple[float, float] | None:
+        if input_mode == "extracellular":
+            return (-1000.0, 1000.0)
+        return None
 
     def opsin_config(self):
         return {
@@ -772,8 +786,8 @@ class ReducedCalciumSomaDendrite(Model):
         # --- Extracellular stimulus as current density (mA/cm2) ---
         # V_ext enters through passive conductance: I = g_pas * V_ext
         # (linearized approximation of NEURON extracellular mechanism)
-        V_ext = stim(t, i + {offset}) / mV : 1
-        I_stim_s = {p["soma_g_pas"]} * V_ext : 1
+        V_ext = stim_v(t, i + {offset}) / mV : 1
+        I_stim_s = {p["soma_g_pas"]} * V_ext + stim_i(t, i + {offset})/amp * {1000.0 / area_soma_cm2} : 1
         I_stim_d = {p["dend_g_pas"]} * V_ext : 1
 
 {synapse_blocks}{stdp_parameters}
@@ -873,8 +887,8 @@ class ReducedCalciumSomaDendrite(Model):
         E_K : 1
 
         # --- Extracellular stimulus as current density (mA/cm2) ---
-        V_ext = stim(t, i + {offset}) / mV : 1
-        I_stim_s = {p["soma_g_pas"]} * V_ext : 1
+        V_ext = stim_v(t, i + {offset}) / mV : 1
+        I_stim_s = {p["soma_g_pas"]} * V_ext + stim_i(t, i + {offset})/amp * {1000.0 / (area_soma * 1e-8)} : 1
 
 {synapse_blocks}{stdp_parameters}
         # --- Noise as current density (mA/cm2) ---

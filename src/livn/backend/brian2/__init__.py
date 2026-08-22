@@ -34,6 +34,25 @@ def _population_parameters(group) -> list[str]:
     )
 
 
+STIMULUS_TERMS = {
+    "extracellular": ("stim_v", b2.mV),
+    "current": ("stim_i", b2.nA),
+}
+
+
+def stimulus_namespace(stimulus, n_gids: int, duration: float) -> dict:
+    driven, unit = STIMULUS_TERMS[stimulus.input_mode]
+    namespace = {driven: b2.TimedArray(stimulus.array * unit, dt=stimulus.dt * b2.ms)}
+    for name, other in STIMULUS_TERMS.values():
+        if name != driven:
+            # one row held past its end, so it costs nothing to carry
+            namespace[name] = b2.TimedArray(
+                np.zeros((1, n_gids)) * other,
+                dt=max(duration, 1.0) * b2.ms,
+            )
+    return namespace
+
+
 class CellHandle(Cell):
     """Per-cell parameter handle over one row of a brian2 ``NeuronGroup``.
 
@@ -495,6 +514,14 @@ class Env(EnvProtocol):
         if stimulus is not None:
             stimulus = Stimulus.from_arg(stimulus, env=self, duration=duration)
             stimulus = self.model.prepare_stimulus(stimulus)
+            if stimulus.input_mode not in STIMULUS_TERMS:
+                raise ValueError(
+                    f"the brian2 backend has no term for a "
+                    f"{stimulus.input_mode!r} stimulus; it delivers "
+                    f"{sorted(STIMULUS_TERMS)}. The neuron backend gives this "
+                    "mode its own mechanism, and reading it as one of these "
+                    "would be a different experiment"
+                )
 
         if stimulus is None:
             stimulus = Stimulus(
@@ -546,12 +573,7 @@ class Env(EnvProtocol):
         t_start = self.t
         self._network.run(
             duration * b2.ms,
-            namespace={
-                "stim": b2.TimedArray(
-                    stimulus.array * b2.mV,
-                    dt=stimulus.dt * b2.ms,
-                )
-            },
+            namespace=stimulus_namespace(stimulus, stimulus.array.shape[-1], duration),
         )
         self.t += duration
 

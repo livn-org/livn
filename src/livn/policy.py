@@ -43,8 +43,18 @@ class Policy(BaseModel, Jsonable):
 
     model_config = ConfigDict(extra="forbid")
 
+    input_units: str | None = None
+
     def __call__(self, observation: Any = None) -> "Array":
         raise NotImplementedError
+
+    def as_input_units(self, units: str | None) -> "Policy":
+        if units is None or self.input_units is None or self.input_units == units:
+            return self
+        raise ValueError(
+            f"{type(self).__name__} uses {self.input_units!r}, "
+            f"but the array it is driving reads {units!r}."
+        )
 
     @property
     def extent_ms(self) -> float | None:
@@ -75,6 +85,9 @@ class Policy(BaseModel, Jsonable):
 
 class ElectrodePolicy(Policy):
     """A policy that drives named channels of an array of known width."""
+
+    input_units: str | None = "uA"
+    """Electrode inputs are currents"""
 
     n_channels: int | None = Field(default=None, gt=0)
     """Total channels on the array. `None` until an array is in hand."""

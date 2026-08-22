@@ -276,6 +276,11 @@ class IO(Jsonable):
         raise NotImplementedError("Please specify an IO")
 
     @property
+    def input_units(self) -> str:
+        """What the `channel_inputs` of `cell_stimulus` are measured in."""
+        raise NotImplementedError("Please specify an IO")
+
+    @property
     def channel_ids(self) -> Int[Array, "n_channel_ids"]:
         raise NotImplementedError("Please specify an IO")
 
@@ -388,6 +393,10 @@ class MEA(IO):
     @property
     def num_channels(self) -> int:
         return len(self.electrode_coordinates)
+
+    @property
+    def input_units(self) -> str:
+        return "uA"
 
     @property
     def channel_ids(self) -> Int[Array, "n_channel_ids"]:
@@ -639,6 +648,10 @@ class LightArray(IO):
         return len(self.fiber_coordinates)
 
     @property
+    def input_units(self) -> str:
+        return "mW"
+
+    @property
     def channel_ids(self) -> Int[Array, "n_channel_ids"]:
         return self.fiber_coordinates[:, 0].astype(np.int32)
 
@@ -751,6 +764,10 @@ class ComposedIO(IO):
     @property
     def num_channels(self) -> int:
         return self.outputs.num_channels
+
+    @property
+    def input_units(self) -> str:
+        return self.inputs.input_units
 
     @property
     def channel_ids(self) -> "Int[Array, 'n_channel_ids']":

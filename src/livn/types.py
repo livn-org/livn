@@ -766,6 +766,9 @@ class Model(Protocol):
     def prepare_stimulus(self, stimulus: "Stimulus") -> "Stimulus":
         return stimulus
 
+    def stimulus_bounds(self, input_mode: str) -> tuple[float, float] | None:
+        return None
+
     def recordable_states(self) -> tuple[str, ...]:
         return ()
 

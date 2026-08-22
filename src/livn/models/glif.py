@@ -1402,8 +1402,9 @@ class GLIF(Model):
         group = b2.NeuronGroup(
             n,
             f"""
-            dv/dt = (-(v - E_L) + (I + I_noise + asc_1 + asc_2)/g_L
-                     + stim(t, i + {offset}))/tau_m : volt (unless refractory)
+            dv/dt = (-(v - E_L) + (I + I_noise + asc_1 + asc_2
+                                   + stim_i(t, i + {offset}))/g_L
+                     + stim_v(t, i + {offset}))/tau_m : volt (unless refractory)
             dtheta_s/dt = -theta_decay_rate*theta_s : volt
             dtheta_v/dt = a_v*(v - E_L) - b_v*theta_v : volt (unless refractory)
             dasc_1/dt = -asc_decay_rate_1*asc_1 : amp
