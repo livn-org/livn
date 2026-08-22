@@ -1,4 +1,5 @@
 import gc
+import warnings
 from typing import TYPE_CHECKING, Optional, Union
 
 import brian2 as b2
@@ -257,59 +258,80 @@ class Env(EnvProtocol):
                     self._network.add(S)
                     continue
 
-                # Set mechanism time constants and reversal potentials on post group
                 post_group = self._populations[post]
-                for mech_name, mech_params in mechanisms.items():
-                    mech_lower = mech_name.lower()
-                    if mech_params.get("tau_rise") is not None:
-                        setattr(
-                            post_group,
-                            f"tau_rise_{mech_lower}",
-                            mech_params["tau_rise"],
+                sections = synapse.get("sections") or ["soma"]
+                proportions = synapse.get("proportions") or [1.0] * len(sections)
+
+                for section, proportion in zip(sections, proportions):
+                    compartment, sec_name = self._synapse_site(post, section)
+
+                    suffix = "_d" if compartment == "dend" else ""
+                    if f"A_ampa{suffix}" not in post_group.variables:
+                        suffix = ""
+                    for mech_name, mech_params in mechanisms.items():
+                        mech_lower = mech_name.lower()
+                        if mech_params.get("tau_rise") is not None:
+                            setattr(
+                                post_group,
+                                f"tau_rise_{mech_lower}{suffix}",
+                                mech_params["tau_rise"],
+                            )
+                        if mech_params.get("tau_decay") is not None:
+                            setattr(
+                                post_group,
+                                f"tau_decay_{mech_lower}{suffix}",
+                                mech_params["tau_decay"],
+                            )
+                        if mech_params.get("e") is not None:
+                            setattr(
+                                post_group, f"e_{mech_lower}{suffix}", mech_params["e"]
+                            )
+                        # Set NMDA Mg block parameters if present
+                        if mech_name == "NMDA":
+                            for p in ("mg", "Kd", "gamma", "vshift"):
+                                if p in mech_params and mech_params[p] is not None:
+                                    setattr(
+                                        post_group,
+                                        f"{p}_nmda{suffix}",
+                                        mech_params[p],
+                                    )
+
+                    for mech_name, mech_params in mechanisms.items():
+                        if mech_params.get("tau_decay") is None:
+                            continue
+
+                        S = self.model.brian2_mechanism_synapse(
+                            self._populations[pre],
+                            self._populations[post],
+                            mech_name,
+                            mech_params,
+                            synapse["type"],
+                            compartment=compartment,
                         )
-                    if mech_params.get("tau_decay") is not None:
-                        setattr(
-                            post_group,
-                            f"tau_decay_{mech_lower}",
-                            mech_params["tau_decay"],
-                        )
-                    if mech_params.get("e") is not None:
-                        setattr(post_group, f"e_{mech_lower}", mech_params["e"])
-                    # Set NMDA Mg block parameters if present
-                    if mech_name == "NMDA":
-                        for p in ("mg", "Kd", "gamma", "vshift"):
-                            if p in mech_params and mech_params[p] is not None:
-                                setattr(post_group, f"{p}_nmda", mech_params[p])
+                        S.add_attribute("kind")
+                        S.kind = synapse["type"]
 
-                for mech_name, mech_params in mechanisms.items():
-                    if mech_params.get("tau_decay") is None:
-                        continue
+                        S.connect(i=all_i, j=all_j)
+                        S.multiplier[:] = all_multipliers * float(proportion)
+                        S.distance[:] = all_distances
+                        S.w[:] = mech_params.get("weight", 1.0)
 
-                    S = self.model.brian2_mechanism_synapse(
-                        self._populations[pre],
-                        self._populations[post],
-                        mech_name,
-                        mech_params,
-                        synapse["type"],
-                    )
-                    S.add_attribute("kind")
-                    S.kind = synapse["type"]
+                        if hasattr(S, "w_plastic"):
+                            S.w_plastic[:] = 1.0
+                            S.last_int[:] = 0.0
+                            S.w_min[:] = 0.0
+                            S.w_max[:] = 10.0
 
-                    S.connect(i=all_i, j=all_j)
-                    S.multiplier[:] = all_multipliers
-                    S.distance[:] = all_distances
-                    S.w[:] = mech_params.get("weight", 1.0)
-
-                    if hasattr(S, "w_plastic"):
-                        S.w_plastic[:] = 1.0
-                        S.last_int[:] = 0.0
-                        S.w_min[:] = 0.0
-                        S.w_max[:] = 10.0
-
-                    self._synapses[(post, pre, mech_name)] = S
-                    self._network.add(S)
+                        self._synapses[(post, pre, sec_name, mech_name)] = S
+                        self._network.add(S)
 
         return self
+
+    def _synapse_site(self, population: str, section: str) -> tuple[str, str]:
+        site = getattr(self.model, "brian2_synapse_site", None)
+        if site is None:
+            return "soma", section
+        return site(population, section)
 
     def _set_delays(self, velocity=250.0, dt=0.025):
         """Compute delays matching miv-simulator: max(distance/velocity, 2*dt).
@@ -328,6 +350,18 @@ class Env(EnvProtocol):
 
         return self
 
+    @property
+    def weight_names(self) -> list[str]:
+        names = []
+        for key in self._synapses:
+            if len(key) != 4:
+                continue
+            post, pre, sec_name, mech = key
+            name = f"{post}_{pre}-{sec_name}-{mech}-weight"
+            if name not in names:
+                names.append(name)
+        return names or list(self.system.weight_names)
+
     def set_weights(self, weights):
         for k, v in weights.items():
             param = SynapticParam.from_string(k)
@@ -336,28 +370,37 @@ class Env(EnvProtocol):
                     f"brian2 backend cannot set the synapse mechanism parameter "
                     f"{param.param_path!r} ({k})"
                 )
-            if param.sec_type is not None and param.sec_type not in (
-                "soma",
-                "dend",
-                "basal",
-                "apical",
-            ):
-                print(f"Warning: brian2 backend does not support sections ({k})")
-
             post = param.population
             pre = param.source
             mech_name = param.syn_name  # e.g., "AMPA", "NMDA", "GABA_A"
+            sec_name = None
+            if param.sec_type is not None:
+                _, sec_name = self._synapse_site(post, param.sec_type)
 
-            if mech_name and (post, pre, mech_name) in self._synapses:
-                self._synapses[(post, pre, mech_name)].w = v
-            elif (post, pre) in self._synapses:
-                # Legacy key without mechanism
+            matched = False
+            for key, S in self._synapses.items():
+                if len(key) != 4:
+                    continue
+                if (key[0], key[1]) != (post, pre):
+                    continue
+                if mech_name is not None and key[3] != mech_name:
+                    continue
+                if sec_name is not None and key[2] != sec_name:
+                    continue
+                S.w = v
+                matched = True
+
+            if not matched and (post, pre) in self._synapses:
+                # legacy projection without per-mechanism synapses
                 self._synapses[(post, pre)].w = v
-            elif mech_name is None:
-                # Apply to all mechanisms for this (post, pre) pair
-                for key, S in self._synapses.items():
-                    if len(key) == 3 and key[0] == post and key[1] == pre:
-                        S.w = v
+                matched = True
+
+            if not matched:
+                warnings.warn(
+                    f"{k} names no synapse in this network, so it was dropped; "
+                    f"`weight_names` lists the keys it accepts",
+                    stacklevel=2,
+                )
 
         return self
 
@@ -383,7 +426,14 @@ class Env(EnvProtocol):
 
         return self
 
-    def _record_voltage(self, population: str, dt: float, gids=None) -> "Env":
+    def _record_voltage(
+        self, population: str, dt: float, gids=None, sections=None
+    ) -> "Env":
+        if sections is not None and "soma" not in {str(s) for s in sections}:
+            raise NotImplementedError(
+                f"a brian2 cell is a single compartment, recorded as 'soma', so "
+                f"{sorted(sections)} names nothing it has"
+            )
         group = self._populations[population]
         record = True
         if gids is not None:
@@ -656,8 +706,11 @@ class Env(EnvProtocol):
         for key, S in self._iter_stdp_synapses():
             if len(S) > 0:
                 post_pop = self._populations[key[0]]
+                suffix = "_d" if getattr(S, "_compartment", "soma") == "dend" else ""
                 learn_int_var = (
-                    "learn_int_exc" if S.kind == "excitatory" else "learn_int_inh"
+                    f"learn_int_exc{suffix}"
+                    if S.kind == "excitatory"
+                    else f"learn_int_inh{suffix}"
                 )
                 S.last_int[:] = getattr(post_pop, learn_int_var)[S.j]
 
@@ -679,7 +732,7 @@ class Env(EnvProtocol):
         weights = {}
         for key, S in self._iter_stdp_synapses():
             if len(S) > 0:
-                post, pre, mech = key
+                post, pre, mech = key[0], key[1], key[-1]
                 w_plastic = np.array(S.w_plastic[:])
                 i_arr = np.array(S.i[:])
                 j_arr = np.array(S.j[:])

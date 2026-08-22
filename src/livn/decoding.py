@@ -1478,6 +1478,9 @@ class StimulusResponse(Decoding):
     tail_ms: float = 4000.0
     threshold_k: float = 3.0
 
+    def setup(self, env):
+        env.record_spikes()
+
     def __call__(self, signal: Run, env=None):
         comm = getattr(env, "comm", None)
         it, tt = sorted_spikes(signal, env)
@@ -1507,6 +1510,9 @@ class RecruitmentCurve(Decoding):
     pre_ms: float = 1000.0
     post_ms: float = 500.0
     recruited: float = 0.5
+
+    def setup(self, env):
+        env.record_spikes()
 
     def __call__(self, signal: Run, env=None):
         comm = getattr(env, "comm", None)

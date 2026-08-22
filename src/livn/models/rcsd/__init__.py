@@ -560,6 +560,95 @@ class ReducedCalciumSomaDendrite(Model):
 
     # brian2
 
+    def _brian2_synapse_block(self, suffix: str, v: str, area_cm2: float) -> str:
+        s = suffix
+        # synaptic conductance in uS, voltage in mV: g * V is nA -> mA/cm2
+        syn_factor = 1e-6 / area_cm2
+
+        return f"""
+        # --- Synaptic conductances (dual-exponential, in uS) ---
+        dA_ampa{s}/dt = -A_ampa{s} / (tau_rise_ampa{s} * ms) : 1
+        dB_ampa{s}/dt = -B_ampa{s} / (tau_decay_ampa{s} * ms) : 1
+        dA_nmda{s}/dt = -A_nmda{s} / (tau_rise_nmda{s} * ms) : 1
+        dB_nmda{s}/dt = -B_nmda{s} / (tau_decay_nmda{s} * ms) : 1
+        dA_gaba_a{s}/dt = -A_gaba_a{s} / (tau_rise_gaba_a{s} * ms) : 1
+        dB_gaba_a{s}/dt = -B_gaba_a{s} / (tau_decay_gaba_a{s} * ms) : 1
+        dA_gaba_b{s}/dt = -A_gaba_b{s} / (tau_rise_gaba_b{s} * ms) : 1
+        dB_gaba_b{s}/dt = -B_gaba_b{s} / (tau_decay_gaba_b{s} * ms) : 1
+
+        g_ampa{s} = B_ampa{s} - A_ampa{s} : 1
+        g_nmda{s} = B_nmda{s} - A_nmda{s} : 1
+        g_gaba_a{s} = B_gaba_a{s} - A_gaba_a{s} : 1
+        g_gaba_b{s} = B_gaba_b{s} - A_gaba_b{s} : 1
+
+        # NMDA Mg2+ block (Jahr & Stevens)
+        mgblock{s} = 1.0 / (1.0 + exp(nmda_gamma{s} * -({v} + nmda_vshift{s})) * (nmda_mg{s} / nmda_Kd{s})) : 1
+        nmda_mg{s} : 1
+        nmda_Kd{s} : 1
+        nmda_gamma{s} : 1
+        nmda_vshift{s} : 1
+
+        # Synaptic time constants (set per projection during init)
+        tau_rise_ampa{s} : 1
+        tau_decay_ampa{s} : 1
+        tau_rise_nmda{s} : 1
+        tau_decay_nmda{s} : 1
+        tau_rise_gaba_a{s} : 1
+        tau_decay_gaba_a{s} : 1
+        tau_rise_gaba_b{s} : 1
+        tau_decay_gaba_b{s} : 1
+
+        # Synaptic reversal potentials
+        e_ampa{s} : 1
+        e_nmda{s} : 1
+        e_gaba_a{s} : 1
+        e_gaba_b{s} : 1
+
+        # Synaptic current (mA/cm2, sign: negative = inward = depolarizing for exc)
+        I_syn_ampa{s} = g_ampa{s} * ({v} - e_ampa{s}) * {syn_factor} : 1
+        I_syn_nmda{s} = g_nmda{s} * mgblock{s} * ({v} - e_nmda{s}) * {syn_factor} : 1
+        I_syn_gaba_a{s} = g_gaba_a{s} * ({v} - e_gaba_a{s}) * {syn_factor} : 1
+        I_syn_gaba_b{s} = g_gaba_b{s} * ({v} - e_gaba_b{s}) * {syn_factor} : 1
+        I_syn{s} = -(I_syn_ampa{s} + I_syn_nmda{s} + I_syn_gaba_a{s} + I_syn_gaba_b{s}) : 1
+
+        # --- STDP learning signal (excitatory rule, shared across connections) ---
+        exc_ltd{s} = int({v} > theta_ltd_exc) * (1.0 / (1.0 + exp(clip(-({v} - half_ltd_exc) * log(slope_exc), -500, 500)))) : 1
+        exc_ltp{s} = int({v} > theta_ltp_exc) * (1.0 / (1.0 + exp(clip(-({v} - half_ltp_exc) * log(slope_exc), -500, 500)))) : 1
+        sig_sat_exc{s} = 2.0 / (1.0 + exp(clip(-(-A_ltd_exc * exc_ltd{s} + A_ltp_exc * 2.0 * exc_ltp{s}) / (learning_tau_exc + 1e-20) * log(slope_exc), -500, 500))) - 1.0 : 1
+        dlearning_w_exc{s}/dt = -learning_w_exc{s} / (4.0 * ms) + plasticity_on * sig_sat_exc{s} / (125.0 * ms) : 1
+        dlearn_int_exc{s}/dt = learning_w_exc{s} / ms : 1
+
+        # --- STDP learning signal (inhibitory rule, shared across connections) ---
+        inh_ltd{s} = int({v} < theta_ltd_inh) * (1.0 / (1.0 + exp(clip(-({v} - half_ltd_inh) * log(slope_inh), -500, 500)))) : 1
+        inh_ltp{s} = int({v} < theta_ltp_inh) * (1.0 / (1.0 + exp(clip(-({v} - half_ltp_inh) * log(slope_inh), -500, 500)))) : 1
+        sig_sat_inh{s} = 2.0 / (1.0 + exp(clip(-(-A_ltd_inh * inh_ltd{s} + A_ltp_inh * 2.0 * inh_ltp{s}) / (learning_tau_inh + 1e-20) * log(slope_inh), -500, 500))) - 1.0 : 1
+        dlearning_w_inh{s}/dt = -learning_w_inh{s} / ms + plasticity_on * sig_sat_inh{s} / (125.0 * ms) : 1
+        dlearn_int_inh{s}/dt = learning_w_inh{s} / ms : 1
+"""
+
+    def _brian2_stdp_parameters(self) -> str:
+        """STDP configuration, shared by every compartment of a cell."""
+        return """
+        # STDP parameters (set by enable_plasticity)
+        plasticity_on : 1
+        theta_ltp_exc : 1
+        theta_ltd_exc : 1
+        half_ltp_exc : 1
+        half_ltd_exc : 1
+        slope_exc : 1
+        A_ltp_exc : 1
+        A_ltd_exc : 1
+        learning_tau_exc : 1
+        theta_ltp_inh : 1
+        theta_ltd_inh : 1
+        half_ltp_inh : 1
+        half_ltd_inh : 1
+        slope_inh : 1
+        A_ltp_inh : 1
+        A_ltd_inh : 1
+        learning_tau_inh : 1
+"""
+
     def _brk_equations(self, offset, params):
         p = params
 
@@ -577,9 +666,9 @@ class ReducedCalciumSomaDendrite(Model):
 
         # Compartment areas (um^2) and lengths
         L_soma = pp * Ltotal  # um
-        # L_dend = (1 - pp) * Ltotal  # um
+        L_dend = (1 - pp) * Ltotal  # um
         area_soma = math.pi * diam * L_soma  # um^2
-        # area_dend = math.pi * diam * L_dend  # um^2
+        area_dend = math.pi * diam * L_dend  # um^2
 
         # Axial resistance: same formula as in BRK.py biophys()
         # Ra is set so coupling effective conductance = gc (mS/cm2)
@@ -596,26 +685,35 @@ class ReducedCalciumSomaDendrite(Model):
         fL = ((25.0 / 293.15) * (celsius + 273.15)) / 2.0
         cao = 2.0  # mM external calcium
 
-        # gc_eff: coupling in S/cm2 = gc * 1e-3 (since gc in mS/cm2)
-        # I_coup_soma = gc_eff / (pp * (1-pp)) * (Vd - Vs)  [A/cm2]
-        # In the ODE: dVs/dt = 1/C * (...) where C in uF/cm2
-        # 1/C * I [mA/cm2] gives mV/ms since: mA/cm2 / (uF/cm2) = mA/uF = 1000 V/s = mV/ms (just right!)
-        # gc contribution: gc in mS/cm2, so gc*(Vd-Vs)/(pp*(1-pp)) in mS/cm2 * mV = uA/cm2 = 0.001 mA/cm2
-        gc_factor = gc / (pp * (1 - pp)) * 0.001  # convert to mA/cm2 per mV -> S/cm2
+        # Soma-dendrite coupling.
+        #
+        # In the ODE: 1/C * I [mA/cm2] gives mV/ms, since
+        # mA/cm2 / (uF/cm2) = mA/uF = 1000 V/s = mV/ms.
+        area_soma_cm2 = area_soma * 1e-8
+        area_dend_cm2 = area_dend * 1e-8
+        # `1/(2*ri)` is what BRK.py sets, and NEURON's `ri(0.5)` is already
+        # the section's own half-segment resistance -- so the half-section
+        # conductance is `1/ri`, twice that. Halving it here would double the
+        # separation between the compartments under load.
+        g_half_s = 2.0 * (gc / pp) * area_soma_cm2 * 1e3  # uS
+        g_half_d = 2.0 * (gc / pp) * area_dend_cm2 * 1e3  # uS
+        g_coup = 1.0 / (1.0 / g_half_s + 1.0 / g_half_d)  # uS
+        gc_soma = g_coup * 1e-6 / area_soma_cm2  # S/cm2
+        gc_dend = g_coup * 1e-6 / area_dend_cm2  # S/cm2
 
         ic_constant = p.get("ic_constant", 0.0)
         ic_constant_d = p.get("ic_constant_d", 0.0)
 
-        # Unit conversion: synaptic conductance in uS, voltage in mV
-        # g_syn * (V - e) gives nA;  convert to mA/cm2: * 1e-6 / area_cm2
-        # Sign: NEURON i = g*(v-e) is outward current; we want -i for dV/dt
-        syn_factor = 1e-6 / (area_soma * 1e-8)  # nA -> mA/cm2
+        synapse_blocks = self._brian2_synapse_block(
+            "", "Vs", area_soma_cm2
+        ) + self._brian2_synapse_block("_d", "Vd", area_dend_cm2)
+        stdp_parameters = self._brian2_stdp_parameters()
 
         return f"""
         # Soma voltage
         dVs/dt = (1000.0/{cm * cm_ratio}) * (-I_Na - I_K - I_KCa_s - I_CaN_s - I_leak_s - I_coup_s + I_noise_s + I_stim_s + I_ext + I_syn + {ic_constant}) / ms : 1
         # Dendrite voltage
-        dVd/dt = (1000.0/{cm}) * (-I_KCa_d - I_CaN_d - I_CaL_d - I_leak_d - I_coup_d + I_stim_d + {ic_constant_d}) / ms : 1
+        dVd/dt = (1000.0/{cm}) * (-I_KCa_d - I_CaN_d - I_CaL_d - I_leak_d - I_coup_d + I_noise_d + I_stim_d + I_syn_d + {ic_constant_d}) / ms : 1
 
         # --- Soma currents (mA/cm2) ---
         I_Na = {p["soma_gmax_Na"]} * m_inf_s**3 * h_s * (Vs - E_Na) : 1
@@ -631,8 +729,8 @@ class ReducedCalciumSomaDendrite(Model):
         I_leak_d = {p["dend_g_pas"]} * (Vd - ({e_pas})) : 1
 
         # --- Coupling (mA/cm2) ---
-        I_coup_s = {gc_factor} * (Vs - Vd) : 1
-        I_coup_d = {gc_factor} * (Vd - Vs) : 1
+        I_coup_s = {gc_soma} * (Vs - Vd) : 1
+        I_coup_d = {gc_dend} * (Vd - Vs) : 1
 
         # --- GHK driving force for calcium ---
         ghk_s = -({fN}) * (1.0 - (Ca_s / {cao}) * exp(Vs / {fN})) * efun_s : 1
@@ -678,86 +776,15 @@ class ReducedCalciumSomaDendrite(Model):
         I_stim_s = {p["soma_g_pas"]} * V_ext : 1
         I_stim_d = {p["dend_g_pas"]} * V_ext : 1
 
-        # --- Synaptic conductances (dual-exponential, in uS) ---
-        dA_ampa/dt = -A_ampa / (tau_rise_ampa * ms) : 1
-        dB_ampa/dt = -B_ampa / (tau_decay_ampa * ms) : 1
-        dA_nmda/dt = -A_nmda / (tau_rise_nmda * ms) : 1
-        dB_nmda/dt = -B_nmda / (tau_decay_nmda * ms) : 1
-        dA_gaba_a/dt = -A_gaba_a / (tau_rise_gaba_a * ms) : 1
-        dB_gaba_a/dt = -B_gaba_a / (tau_decay_gaba_a * ms) : 1
-        dA_gaba_b/dt = -A_gaba_b / (tau_rise_gaba_b * ms) : 1
-        dB_gaba_b/dt = -B_gaba_b / (tau_decay_gaba_b * ms) : 1
-
-        g_ampa = B_ampa - A_ampa : 1
-        g_nmda = B_nmda - A_nmda : 1
-        g_gaba_a = B_gaba_a - A_gaba_a : 1
-        g_gaba_b = B_gaba_b - A_gaba_b : 1
-
-        # NMDA Mg2+ block (Jahr & Stevens)
-        mgblock = 1.0 / (1.0 + exp(nmda_gamma * -(Vs + nmda_vshift)) * (nmda_mg / nmda_Kd)) : 1
-        nmda_mg : 1
-        nmda_Kd : 1
-        nmda_gamma : 1
-        nmda_vshift : 1
-
-        # Synaptic time constants (set per population during init)
-        tau_rise_ampa : 1
-        tau_decay_ampa : 1
-        tau_rise_nmda : 1
-        tau_decay_nmda : 1
-        tau_rise_gaba_a : 1
-        tau_decay_gaba_a : 1
-        tau_rise_gaba_b : 1
-        tau_decay_gaba_b : 1
-
-        # Synaptic reversal potentials
-        e_ampa : 1
-        e_nmda : 1
-        e_gaba_a : 1
-        e_gaba_b : 1
-
-        # Synaptic current (mA/cm2, sign: negative = inward = depolarizing for exc)
-        I_syn_ampa = g_ampa * (Vs - e_ampa) * {syn_factor} : 1
-        I_syn_nmda = g_nmda * mgblock * (Vs - e_nmda) * {syn_factor} : 1
-        I_syn_gaba_a = g_gaba_a * (Vs - e_gaba_a) * {syn_factor} : 1
-        I_syn_gaba_b = g_gaba_b * (Vs - e_gaba_b) * {syn_factor} : 1
-        I_syn = -(I_syn_ampa + I_syn_nmda + I_syn_gaba_a + I_syn_gaba_b) : 1
-
-        # --- STDP learning signal (excitatory rule, shared across connections) ---
-        exc_ltd = int(Vs > theta_ltd_exc) * (1.0 / (1.0 + exp(clip(-(Vs - half_ltd_exc) * log(slope_exc), -500, 500)))) : 1
-        exc_ltp = int(Vs > theta_ltp_exc) * (1.0 / (1.0 + exp(clip(-(Vs - half_ltp_exc) * log(slope_exc), -500, 500)))) : 1
-        sig_sat_exc = 2.0 / (1.0 + exp(clip(-(-A_ltd_exc * exc_ltd + A_ltp_exc * 2.0 * exc_ltp) / (learning_tau_exc + 1e-20) * log(slope_exc), -500, 500))) - 1.0 : 1
-        dlearning_w_exc/dt = -learning_w_exc / (4.0 * ms) + plasticity_on * sig_sat_exc / (125.0 * ms) : 1
-        dlearn_int_exc/dt = learning_w_exc / ms : 1
-
-        # --- STDP learning signal (inhibitory rule, shared across connections) ---
-        inh_ltd = int(Vs < theta_ltd_inh) * (1.0 / (1.0 + exp(clip(-(Vs - half_ltd_inh) * log(slope_inh), -500, 500)))) : 1
-        inh_ltp = int(Vs < theta_ltp_inh) * (1.0 / (1.0 + exp(clip(-(Vs - half_ltp_inh) * log(slope_inh), -500, 500)))) : 1
-        sig_sat_inh = 2.0 / (1.0 + exp(clip(-(-A_ltd_inh * inh_ltd + A_ltp_inh * 2.0 * inh_ltp) / (learning_tau_inh + 1e-20) * log(slope_inh), -500, 500))) - 1.0 : 1
-        dlearning_w_inh/dt = -learning_w_inh / ms + plasticity_on * sig_sat_inh / (125.0 * ms) : 1
-        dlearn_int_inh/dt = learning_w_inh / ms : 1
-
-        # STDP parameters (set by enable_plasticity)
-        plasticity_on : 1
-        theta_ltp_exc : 1
-        theta_ltd_exc : 1
-        half_ltp_exc : 1
-        half_ltd_exc : 1
-        slope_exc : 1
-        A_ltp_exc : 1
-        A_ltd_exc : 1
-        learning_tau_exc : 1
-        theta_ltp_inh : 1
-        theta_ltd_inh : 1
-        half_ltp_inh : 1
-        half_ltd_inh : 1
-        slope_inh : 1
-        A_ltp_inh : 1
-        A_ltd_inh : 1
-        learning_tau_inh : 1
-
+{synapse_blocks}{stdp_parameters}
         # --- Noise as current density (mA/cm2) ---
-        I_noise_s = (g_noise_e * (Vs - 0) + g_noise_i * (Vs - (-75))) * (-1e-6 / {area_soma * 1e-8}) : 1
+        # Split by compartment exactly as Gfluct3 is configured on this cell in
+        # the NEURON backend: inhibitory background on the soma, excitatory on
+        # the dendrite. Gfluct3 clips the conductance it uses at zero, so the
+        # same clip is applied here -- without it a large std_e/g_e0 ratio
+        # gives brian2 a lower effective mean conductance than NEURON.
+        I_noise_s = (clip(g_noise_i, 0, inf) * (Vs - (-75))) * (-1e-6 / {area_soma_cm2}) : 1
+        I_noise_d = (clip(g_noise_e, 0, inf) * (Vd - 0)) * (-1e-6 / {area_dend_cm2}) : 1
 
         # --- Noise conductances (updated externally via run_regularly) ---
         g_noise_e : 1
@@ -782,92 +809,64 @@ class ReducedCalciumSomaDendrite(Model):
         v = Vs * mV : volt
         """
 
-    def _prn_equations(self, offset, params):
+    def _v1in_equations(self, offset, params):
+        """Single-compartment V1 Renshaw cell, mirroring ``templates/V1In.py``.
+
+        Same channel set as the NEURON template -- Nas, Kdr, Ka_v1in, KCa, CaN
+        over a first-order calcium pool -- on a sphere-equivalent soma
+        (``L = diam``). There is no dendrite, so the coupling, the second
+        stimulus site and the dendritic recording slot all drop out.
+        """
         p = params
-        pp = p["pp"]
-        Ltotal = p["Ltotal"]
-        gc = p["gc"]
         cm = p["global_cm"]
-        cm_ratio = p["cm_ratio"]
         diam = p["global_diam"]
         e_pas = p["e_pas"]
 
-        L_soma = pp * Ltotal
-        # L_dend = (1 - pp) * Ltotal
-        area_soma = math.pi * diam * L_soma
-        # area_dend = math.pi * diam * L_dend
+        # V1In.geometry(): L = diam, one segment
+        area_soma = math.pi * diam * diam  # um^2
 
         celsius = 6.3
         fN = ((36.0 / 293.15) * (celsius + 273.15)) / 2.0
-        cao = 2.0
-
-        gc_factor = gc / (pp * (1 - pp)) * 0.001  # S/cm2
-
-        # Temperature correction for Q10=3
-        Q10 = 3.0
-        tcorr = Q10 ** ((celsius - 36.0) / 10.0)
+        cao = 2.0  # mM external calcium
 
         ic_constant = p.get("ic_constant", 0.0)
-        ic_constant_d = p.get("ic_constant_d", 0.0)
 
-        # Unit conversion: synaptic conductance in uS, voltage in mV
-        syn_factor = 1e-6 / (area_soma * 1e-8)
+        synapse_blocks = self._brian2_synapse_block("", "Vs", area_soma * 1e-8)
+        stdp_parameters = self._brian2_stdp_parameters()
 
         return f"""
-        # Soma voltage
-        dVs/dt = (1000.0/{cm * cm_ratio}) * (-I_Na - I_K - I_leak_s - I_coup_s + I_noise_s + I_stim_s + I_ext + I_syn + {ic_constant}) / ms : 1
-        # Dendrite voltage
-        dVd/dt = (1000.0/{cm}) * (-I_Ca - I_KCa - I_leak_d - I_coup_d + I_stim_d + {ic_constant_d}) / ms : 1
+        # Soma voltage (the only compartment)
+        dVs/dt = (1000.0/{cm}) * (-I_Na - I_K - I_Ka - I_KCa_s - I_CaN_s - I_leak_s + I_noise_s + I_stim_s + I_ext + I_syn + {ic_constant}) / ms : 1
 
         # --- Soma currents (mA/cm2) ---
-        I_Na = {p["soma_gmax_Na"]} * m_inf_pr**2 * h_pr * (Vs - E_Na) : 1
-        I_K = {p["soma_gmax_K"]} * n_pr * (Vs - E_K) : 1
+        I_Na = {p["soma_gmax_Na"]} * m_inf_s**3 * h_s * (Vs - E_Na) : 1
+        I_K = {p["soma_gmax_K"]} * n_s**4 * (Vs - E_K) : 1
+        I_Ka = {p["soma_gmax_Ka"]} * a_k * b_k * (Vs - E_K) : 1
+        I_KCa_s = {p["soma_gmax_KCa"]} * (Ca_s / (Ca_s + 0.0005)) * (Vs - E_K) : 1
+        I_CaN_s = {p["soma_gmax_CaN"]} * mnS**2 * hnS * ghk_s : 1
         I_leak_s = {p["soma_g_pas"]} * (Vs - ({e_pas})) : 1
 
-        # --- Dendrite currents (mA/cm2) ---
-        I_Ca = {p["dend_gmax_Ca"]} * s_pr**2 * r_pr * ghk_d : 1
-        I_KCa = {p["dend_gmax_KCa"]} * c_pr * chi_d * (Vd - E_K) : 1
-        I_leak_d = {p["dend_g_pas"]} * (Vd - ({e_pas})) : 1
+        # --- GHK driving force for calcium ---
+        ghk_s = -({fN}) * (1.0 - (Ca_s / {cao}) * exp(Vs / {fN})) * efun_s : 1
+        efun_s = int(abs(Vs / {fN}) < 1e-4) * (1.0 - Vs / {fN} / 2.0) + int(abs(Vs / {fN}) >= 1e-4) * ((Vs / {fN}) / (exp(Vs / {fN}) - 1.0 + 1e-20)) : 1
 
-        # --- Coupling (mA/cm2) ---
-        I_coup_s = {gc_factor} * (Vs - Vd) : 1
-        I_coup_d = {gc_factor} * (Vd - Vs) : 1
+        # --- Gating variables (Nas, Kdr; identical kinetics to the motoneuron) ---
+        m_inf_s = 1.0 / (1.0 + exp(-(Vs + 35.0) / 7.8)) : 1
+        dh_s/dt = (1.0 / (1.0 + exp((Vs + 55.0) / 7.0)) - h_s) / (30.0 / (exp((Vs + 50.0) / 15.0) + exp(-(Vs + 50.0) / 16.0))) / ms : 1
+        dn_s/dt = (1.0 / (1.0 + exp(-(Vs + 28.0) / 15.0)) - n_s) / (7.0 / (exp((Vs + 40.0) / 40.0) + exp(-(Vs + 40.0) / 50.0))) / ms : 1
 
-        # --- GHK for Ca ---
-        ghk_d = -({fN}) * (1.0 - (Ca_d / {cao}) * exp(Vd / {fN})) * efun_d : 1
-        efun_d = int(abs(Vd / {fN}) < 1e-4) * (1.0 - Vd / {fN} / 2.0) + int(abs(Vd / {fN}) >= 1e-4) * ((Vd / {fN}) / (exp(Vd / {fN}) - 1.0 + 1e-20)) : 1
+        # --- A-type potassium (Ka_v1in): fast activation, slow inactivation ---
+        da_k/dt = (1.0 / (1.0 + exp(-(Vs + 36.0) / 8.0)) - a_k) / (1.0 * ms) : 1
+        db_k/dt = (1.0 / (1.0 + exp((Vs + 66.0) / 8.0)) - b_k) / (15.0 * ms) : 1
 
-        # --- Na gating (HH alpha/beta with Q10) ---
-        m_inf_pr = am_pr / (am_pr + bm_pr) : 1
-        am_pr = {tcorr} * 0.32 * linoid_am : 1
-        bm_pr = {tcorr} * 0.28 * linoid_bm : 1
-        linoid_am = int(abs((-46.9 - Vs) / 4.0) < 1e-6) * 4.0 * (1.0 - (-46.9 - Vs) / 4.0 / 2.0) + int(abs((-46.9 - Vs) / 4.0) >= 1e-6) * ((-46.9 - Vs) / (exp((-46.9 - Vs) / 4.0) - 1.0 + 1e-20)) : 1
-        linoid_bm = int(abs((Vs + 19.9) / 5.0) < 1e-6) * 5.0 * (1.0 - (Vs + 19.9) / 5.0 / 2.0) + int(abs((Vs + 19.9) / 5.0) >= 1e-6) * ((Vs + 19.9) / (exp((Vs + 19.9) / 5.0) - 1.0 + 1e-20)) : 1
+        # CaN gating
+        dmnS/dt = (1.0 / (1.0 + exp((Vs + 30.0) / (-5.0))) - mnS) / (4.0 * ms) : 1
+        dhnS/dt = (1.0 / (1.0 + exp((Vs + 45.0) / 5.0)) - hnS) / (40.0 * ms) : 1
 
-        dh_pr/dt = ({tcorr} * 0.128 * exp((-43.0 - Vs) / 18.0) - h_pr * ({tcorr} * 0.128 * exp((-43.0 - Vs) / 18.0) + {tcorr} * 4.0 / (1.0 + exp((-20.0 - Vs) / 5.0)))) / ms : 1
+        # --- Calcium dynamics ---
+        dCa_s/dt = {p["soma_f_Caconc"]} * (clip(-{p["soma_alpha_Caconc"]} * (I_CaN_s - I_CaN_s_rest), 0, inf) - {p["soma_kCa_Caconc"]} * (Ca_s - 1e-5)) / ms : 1
 
-        # --- K gating ---
-        dn_pr/dt = (n_inf_pr - n_pr) / tau_n_pr / ms : 1
-        an_pr = {tcorr} * 0.016 * linoid_an : 1
-        bn_pr = {tcorr} * 0.25 * exp(-1.0 - 0.025 * Vs) : 1
-        linoid_an = int(abs((-24.9 - Vs) / 5.0) < 1e-6) * 5.0 * (1.0 - (-24.9 - Vs) / 5.0 / 2.0) + int(abs((-24.9 - Vs) / 5.0) >= 1e-6) * ((-24.9 - Vs) / (exp((-24.9 - Vs) / 5.0) - 1.0 + 1e-20)) : 1
-        n_inf_pr = an_pr / (an_pr + bn_pr + 1e-20) : 1
-        tau_n_pr = 1.0 / (an_pr + bn_pr + 1e-20) : 1
-
-        # --- Ca channel gating (s^2 * r) ---
-        ds_pr/dt = ({tcorr} * 5.0 / (1.0 + exp(0.1 * (5.0 - Vd))) - s_pr * ({tcorr} * 5.0 / (1.0 + exp(0.1 * (5.0 - Vd))) + {tcorr} * 0.2 * xs_pr / (1.0 - exp(-xs_pr) + 1e-20))) / ms : 1
-        xs_pr = -0.2 * (Vd + 8.9) + 1e-10 : 1
-        dr_pr/dt = ({tcorr} * 0.1673 * exp(-0.03035 * (Vd + 38.5)) - r_pr * ({tcorr} * 0.1673 * exp(-0.03035 * (Vd + 38.5)) + {tcorr} * 0.5 / (1.0 + exp(0.3 * (8.9 - Vd))))) / ms : 1
-
-        # --- KCa gating (c * chi_d) ---
-        dc_pr/dt = (c_inf_pr - c_pr) / tau_c_pr / ms : 1
-        c_inf_pr = clip(1.0 / (1.0 + exp(-(10.1 + Vd) / 0.1016)), 1e-20, 1.0)**0.00925 : 1
-        tau_c_pr = 3.627 * exp(0.03704 * Vd) / {tcorr} : 1
-        chi_d = clip(1.073 * sin(0.003453 * Ca_d + 0.08095) + 0.08408 * sin(0.01634 * Ca_d - 2.34) + 0.01811 * sin(0.0348 * Ca_d - 0.9918), 0, inf) : 1
-
-        # --- Ca dynamics ---
-        dCa_d/dt = (clip(-{p["dend_d_Caconc"]} * 10.0 * (I_Ca - I_Ca_d_rest), 0, inf) - {p["dend_beta_Caconc"]} * (Ca_d - 1e-5)) / ms : 1
-        I_Ca_d_rest : 1
+        I_CaN_s_rest : 1
 
         # --- Reversal potentials ---
         E_Na : 1
@@ -876,84 +875,13 @@ class ReducedCalciumSomaDendrite(Model):
         # --- Extracellular stimulus as current density (mA/cm2) ---
         V_ext = stim(t, i + {offset}) / mV : 1
         I_stim_s = {p["soma_g_pas"]} * V_ext : 1
-        I_stim_d = {p["dend_g_pas"]} * V_ext : 1
 
-        # --- Synaptic conductances (dual-exponential, in uS) ---
-        dA_ampa/dt = -A_ampa / (tau_rise_ampa * ms) : 1
-        dB_ampa/dt = -B_ampa / (tau_decay_ampa * ms) : 1
-        dA_nmda/dt = -A_nmda / (tau_rise_nmda * ms) : 1
-        dB_nmda/dt = -B_nmda / (tau_decay_nmda * ms) : 1
-        dA_gaba_a/dt = -A_gaba_a / (tau_rise_gaba_a * ms) : 1
-        dB_gaba_a/dt = -B_gaba_a / (tau_decay_gaba_a * ms) : 1
-        dA_gaba_b/dt = -A_gaba_b / (tau_rise_gaba_b * ms) : 1
-        dB_gaba_b/dt = -B_gaba_b / (tau_decay_gaba_b * ms) : 1
-
-        g_ampa = B_ampa - A_ampa : 1
-        g_nmda = B_nmda - A_nmda : 1
-        g_gaba_a = B_gaba_a - A_gaba_a : 1
-        g_gaba_b = B_gaba_b - A_gaba_b : 1
-
-        # NMDA Mg2+ block
-        mgblock = 1.0 / (1.0 + exp(nmda_gamma * -(Vs + nmda_vshift)) * (nmda_mg / nmda_Kd)) : 1
-        nmda_mg : 1
-        nmda_Kd : 1
-        nmda_gamma : 1
-        nmda_vshift : 1
-
-        tau_rise_ampa : 1
-        tau_decay_ampa : 1
-        tau_rise_nmda : 1
-        tau_decay_nmda : 1
-        tau_rise_gaba_a : 1
-        tau_decay_gaba_a : 1
-        tau_rise_gaba_b : 1
-        tau_decay_gaba_b : 1
-
-        e_ampa : 1
-        e_nmda : 1
-        e_gaba_a : 1
-        e_gaba_b : 1
-
-        I_syn_ampa = g_ampa * (Vs - e_ampa) * {syn_factor} : 1
-        I_syn_nmda = g_nmda * mgblock * (Vs - e_nmda) * {syn_factor} : 1
-        I_syn_gaba_a = g_gaba_a * (Vs - e_gaba_a) * {syn_factor} : 1
-        I_syn_gaba_b = g_gaba_b * (Vs - e_gaba_b) * {syn_factor} : 1
-        I_syn = -(I_syn_ampa + I_syn_nmda + I_syn_gaba_a + I_syn_gaba_b) : 1
-
-        # --- STDP learning signal (excitatory rule) ---
-        exc_ltd = int(Vs > theta_ltd_exc) * (1.0 / (1.0 + exp(clip(-(Vs - half_ltd_exc) * log(slope_exc), -500, 500)))) : 1
-        exc_ltp = int(Vs > theta_ltp_exc) * (1.0 / (1.0 + exp(clip(-(Vs - half_ltp_exc) * log(slope_exc), -500, 500)))) : 1
-        sig_sat_exc = 2.0 / (1.0 + exp(clip(-(-A_ltd_exc * exc_ltd + A_ltp_exc * 2.0 * exc_ltp) / (learning_tau_exc + 1e-20) * log(slope_exc), -500, 500))) - 1.0 : 1
-        dlearning_w_exc/dt = -learning_w_exc / (4.0 * ms) + plasticity_on * sig_sat_exc / (125.0 * ms) : 1
-        dlearn_int_exc/dt = learning_w_exc / ms : 1
-
-        # --- STDP learning signal (inhibitory rule) ---
-        inh_ltd = int(Vs < theta_ltd_inh) * (1.0 / (1.0 + exp(clip(-(Vs - half_ltd_inh) * log(slope_inh), -500, 500)))) : 1
-        inh_ltp = int(Vs < theta_ltp_inh) * (1.0 / (1.0 + exp(clip(-(Vs - half_ltp_inh) * log(slope_inh), -500, 500)))) : 1
-        sig_sat_inh = 2.0 / (1.0 + exp(clip(-(-A_ltd_inh * inh_ltd + A_ltp_inh * 2.0 * inh_ltp) / (learning_tau_inh + 1e-20) * log(slope_inh), -500, 500))) - 1.0 : 1
-        dlearning_w_inh/dt = -learning_w_inh / ms + plasticity_on * sig_sat_inh / (125.0 * ms) : 1
-        dlearn_int_inh/dt = learning_w_inh / ms : 1
-
-        plasticity_on : 1
-        theta_ltp_exc : 1
-        theta_ltd_exc : 1
-        half_ltp_exc : 1
-        half_ltd_exc : 1
-        slope_exc : 1
-        A_ltp_exc : 1
-        A_ltd_exc : 1
-        learning_tau_exc : 1
-        theta_ltp_inh : 1
-        theta_ltd_inh : 1
-        half_ltp_inh : 1
-        half_ltd_inh : 1
-        slope_inh : 1
-        A_ltp_inh : 1
-        A_ltd_inh : 1
-        learning_tau_inh : 1
-
+{synapse_blocks}{stdp_parameters}
         # --- Noise as current density (mA/cm2) ---
-        I_noise_s = (g_noise_e * (Vs - 0) + g_noise_i * (Vs - (-75))) * (-1e-6 / {area_soma * 1e-8}) : 1
+        # The soma is the only site, so unlike the motoneuron it carries both
+        # the excitatory and the inhibitory background -- as Gfluct3 does on
+        # this cell in the NEURON backend, clip at zero included
+        I_noise_s = (clip(g_noise_e, 0, inf) * (Vs - 0) + clip(g_noise_i, 0, inf) * (Vs - (-75))) * (-1e-6 / {area_soma * 1e-8}) : 1
 
         # --- Noise conductances (updated externally via run_regularly) ---
         g_noise_e : 1
@@ -965,17 +893,26 @@ class ReducedCalciumSomaDendrite(Model):
         amp_e : 1
         amp_i : 1
 
+        # --- External current for optogenetic injection ---
         I : amp
         I_ext = I/amp * {1000.0 / (area_soma * 1e-8)} : 1
         noise_amplitude : 1
 
-        # --- Total membrane current per compartment (mA/cm2, positive outward) ---
-        I_memb_s = I_Na + I_K + I_leak_s + I_coup_s : 1
-        I_memb_d = I_Ca + I_KCa + I_leak_d + I_coup_d : 1
+        # --- Total membrane current (mA/cm2, positive outward) ---
+        I_memb_s = I_Na + I_K + I_Ka + I_KCa_s + I_CaN_s + I_leak_s : 1
+        # No dendrite. The slot is kept so the per-cell recording layout stays
+        # (soma, dend) as it is for the motoneuron and in the NEURON backend,
+        # where the compartment this cell does not have reads back as zeros.
+        I_memb_d = 0.0 * I_memb_s : 1
 
         # v alias for voltage monitoring (Vs is dimensionless in mV, convert to volt)
         v = Vs * mV : volt
         """
+
+    def _brian2_refractory(self, v_threshold: float) -> str:
+        return (
+            f"(Vs > {v_threshold}) or (t - lastspike < {self.refractory_period} * ms)"
+        )
 
     def brian2_population_group(self, population_name, n, offset, coordinates, prng):
         import brian2 as b2
@@ -1043,7 +980,7 @@ class ReducedCalciumSomaDendrite(Model):
                 equations,
                 threshold="Vs > %f" % p["V_threshold"],
                 reset="",  # no artificial reset for biophysical model
-                refractory=2 * b2.ms,
+                refractory=self._brian2_refractory(p["V_threshold"]),
                 method=_method,
                 name=population_name,
                 dt=_dt * b2.ms,
@@ -1110,138 +1047,13 @@ class ReducedCalciumSomaDendrite(Model):
             population.area_dend_cm2 = _m.pi * _diam * ((1 - _pp) * _Ltot) * 1e-8
 
         else:
-            # INH = Pinsky-Rinzel
-            p = self.params("PinskyRinzel-PVBC")
+            # INH = V1 Renshaw cell, the same single-compartment cell the
+            # NEURON backend builds from templates/V1In.py
+            p = self.params(self._inh_params_name())
 
-            # Compute ic_constant from equilibrium condition
             v_rest = p["V_rest"]
             e_pas = p["e_pas"]
             celsius = 6.3
-            tcorr = 3.0 ** ((celsius - 36.0) / 10.0)
-
-            # Na gating at rest
-            am = tcorr * 0.32 * _linoid(-46.9 - v_rest, 4.0)
-            bm = tcorr * 0.28 * _linoid(v_rest + 19.9, 5.0)
-            m_inf_pr = am / (am + bm)
-            ah = tcorr * 0.128 * _m.exp((-43.0 - v_rest) / 18.0)
-            bh = tcorr * 4.0 / (1.0 + _m.exp((-20.0 - v_rest) / 5.0))
-            h_rest = ah / (ah + bh)
-
-            # K gating at rest
-            an = tcorr * 0.016 * _linoid(-24.9 - v_rest, 5.0)
-            bn = tcorr * 0.25 * _m.exp(-1.0 - 0.025 * v_rest)
-            n_rest = an / (an + bn)
-
-            I_Na = p["soma_gmax_Na"] * m_inf_pr**2 * h_rest * (v_rest - 50.0)
-            I_K = p["soma_gmax_K"] * n_rest * (v_rest - (-77.0))
-            I_leak = p["soma_g_pas"] * (v_rest - e_pas)
-            p = dict(p)
-            p["ic_constant"] = I_Na + I_K + I_leak
-
-            # Dendrite currents at rest
-            fN = ((36.0 / 293.15) * (celsius + 273.15)) / 2.0
-            cao = 2.0
-            cai0 = 1e-5
-
-            def _ghk_pr(v, ci, co, f):
-                nu = v / f
-                if abs(nu) < 1e-4:
-                    ef = 1.0 - nu / 2.0
-                else:
-                    ef = nu / (_m.exp(nu) - 1.0)
-                return -f * (1.0 - (ci / co) * _m.exp(nu)) * ef
-
-            a_s = tcorr * 5.0 / (1.0 + _m.exp(0.1 * (5.0 - v_rest)))
-            xs = -0.2 * (v_rest + 8.9)
-            if abs(xs) < 1e-10:
-                xs = 1e-10
-            b_s = tcorr * 0.2 * xs / (1.0 - _m.exp(-xs))
-            s_rest = a_s / (a_s + b_s)
-
-            ar = tcorr * 0.1673 * _m.exp(-0.03035 * (v_rest + 38.5))
-            br = tcorr * 0.5 / (1.0 + _m.exp(0.3 * (8.9 - v_rest)))
-            r_rest = ar / (ar + br)
-
-            x_expit = (10.1 + v_rest) / 0.1016
-            if x_expit < 0:
-                expit_val = _m.exp(x_expit) / (1.0 + _m.exp(x_expit))
-            else:
-                expit_val = 1.0 / (1.0 + _m.exp(-x_expit))
-            c_rest = max(expit_val, 1e-20) ** 0.00925
-
-            ghk_rest = _ghk_pr(v_rest, cai0, cao, fN)
-            chi_rest = (
-                1.073 * _m.sin(0.003453 * cai0 + 0.08095)
-                + 0.08408 * _m.sin(0.01634 * cai0 - 2.34)
-                + 0.01811 * _m.sin(0.0348 * cai0 - 0.9918)
-            )
-
-            I_Ca_d = p["dend_gmax_Ca"] * s_rest**2 * r_rest * ghk_rest
-            I_KCa_d = p["dend_gmax_KCa"] * c_rest * chi_rest * (v_rest - (-77.0))
-            I_leak_d = p["dend_g_pas"] * (v_rest - e_pas)
-            p["ic_constant_d"] = I_Ca_d + I_KCa_d + I_leak_d
-
-            equations = self._prn_equations(offset, p)
-
-            _use_gsl = os.environ.get("LIVN_USE_LIBGSL", "0") == "1"
-            _method = "gsl_rkf45" if _use_gsl else "euler"
-            _dt = 0.025 if _use_gsl else 0.005
-
-            population = b2.NeuronGroup(
-                n,
-                equations,
-                threshold="Vs > %f" % p["V_threshold"],
-                reset="",
-                refractory=2 * b2.ms,
-                method=_method,
-                name=population_name,
-                dt=_dt * b2.ms,
-            )
-
-            v_rest = p["V_rest"]
-            population.Vs = v_rest
-            population.Vd = v_rest
-
-            # PR gating initial conditions
-            celsius = 6.3
-            tcorr = 3.0 ** ((celsius - 36.0) / 10.0)
-
-            # Na: m_inf, h
-            am = tcorr * 0.32 * _linoid(-46.9 - v_rest, 4.0)
-            bm = tcorr * 0.28 * _linoid(v_rest + 19.9, 5.0)
-            population.h_pr = (tcorr * 0.128 * _m.exp((-43.0 - v_rest) / 18.0)) / (
-                tcorr * 0.128 * _m.exp((-43.0 - v_rest) / 18.0)
-                + tcorr * 4.0 / (1.0 + _m.exp((-20.0 - v_rest) / 5.0))
-            )
-
-            # K: n
-            an = tcorr * 0.016 * _linoid(-24.9 - v_rest, 5.0)
-            bn = tcorr * 0.25 * _m.exp(-1.0 - 0.025 * v_rest)
-            population.n_pr = an / (an + bn)
-
-            # Ca: s, r
-            a_s = tcorr * 5.0 / (1.0 + _m.exp(0.1 * (5.0 - v_rest)))
-            xs = -0.2 * (v_rest + 8.9)
-            if abs(xs) < 1e-10:
-                xs = 1e-10
-            b_s = tcorr * 0.2 * xs / (1.0 - _m.exp(-xs))
-            population.s_pr = a_s / (a_s + b_s)
-
-            ar = tcorr * 0.1673 * _m.exp(-0.03035 * (v_rest + 38.5))
-            br = tcorr * 0.5 / (1.0 + _m.exp(0.3 * (8.9 - v_rest)))
-            population.r_pr = ar / (ar + br)
-
-            # KCa: c
-            x_expit = (10.1 + v_rest) / 0.1016
-            if x_expit < 0:
-                expit_val = _m.exp(x_expit) / (1.0 + _m.exp(x_expit))
-            else:
-                expit_val = 1.0 / (1.0 + _m.exp(-x_expit))
-            population.c_pr = max(expit_val, 1e-20) ** 0.00925
-
-            population.Ca_d = 1e-5
-
-            # Resting Ca current
             fN = ((36.0 / 293.15) * (celsius + 273.15)) / 2.0
             cao = 2.0
             cai0 = 1e-5
@@ -1254,33 +1066,68 @@ class ReducedCalciumSomaDendrite(Model):
                     ef = nu / (_m.exp(nu) - 1.0)
                 return -f * (1.0 - (ci / co) * _m.exp(nu)) * ef
 
-            s_rest = (
-                float(population.s_pr[0])
-                if hasattr(population.s_pr, "__getitem__")
-                else population.s_pr
+            # Gating at rest
+            m_inf = 1.0 / (1.0 + _m.exp(-(v_rest + 35.0) / 7.8))
+            h_rest = 1.0 / (1.0 + _m.exp((v_rest + 55.0) / 7.0))
+            n_rest = 1.0 / (1.0 + _m.exp(-(v_rest + 28.0) / 15.0))
+            a_rest = 1.0 / (1.0 + _m.exp(-(v_rest + 36.0) / 8.0))
+            b_rest = 1.0 / (1.0 + _m.exp((v_rest + 66.0) / 8.0))
+            mn_rest = 1.0 / (1.0 + _m.exp((v_rest + 30.0) / (-5.0)))
+            hn_rest = 1.0 / (1.0 + _m.exp((v_rest + 45.0) / 5.0))
+
+            ghk_rest = _ghk(v_rest, cai0, cao, fN)
+
+            # Soma currents at rest
+            I_Na = p["soma_gmax_Na"] * m_inf**3 * h_rest * (v_rest - 50.0)
+            I_K = p["soma_gmax_K"] * n_rest**4 * (v_rest - (-77.0))
+            I_Ka = p["soma_gmax_Ka"] * a_rest * b_rest * (v_rest - (-77.0))
+            I_KCa = p["soma_gmax_KCa"] * (cai0 / (cai0 + 0.0005)) * (v_rest - (-77.0))
+            I_CaN = p["soma_gmax_CaN"] * mn_rest**2 * hn_rest * ghk_rest
+            I_leak = p["soma_g_pas"] * (v_rest - e_pas)
+            # what V1In.init_ic pins into `constant.mod` in NEURON
+            p = dict(p)  # copy so we can override
+            p["ic_constant"] = I_Na + I_K + I_Ka + I_KCa + I_CaN + I_leak
+
+            equations = self._v1in_equations(offset, p)
+
+            _use_gsl = os.environ.get("LIVN_USE_LIBGSL", "0") == "1"
+            _method = "gsl_rkf45" if _use_gsl else "euler"
+            _dt = 0.025 if _use_gsl else 0.005
+
+            population = b2.NeuronGroup(
+                n,
+                equations,
+                threshold="Vs > %f" % p["V_threshold"],
+                reset="",  # no artificial reset for biophysical model
+                refractory=self._brian2_refractory(p["V_threshold"]),
+                method=_method,
+                name=population_name,
+                dt=_dt * b2.ms,
             )
-            r_rest = (
-                float(population.r_pr[0])
-                if hasattr(population.r_pr, "__getitem__")
-                else population.r_pr
-            )
-            if not isinstance(s_rest, (int, float)):
-                s_rest = a_s / (a_s + b_s)
-                r_rest = ar / (ar + br)
-            population.I_Ca_d_rest = (
-                p["dend_gmax_Ca"] * s_rest**2 * r_rest * _ghk(v_rest, cai0, cao, fN)
-            )
+
+            # Initial conditions
+            population.Vs = v_rest
+            population.h_s = h_rest
+            population.n_s = n_rest
+            population.a_k = a_rest
+            population.b_k = b_rest
+            population.mnS = mn_rest
+            population.hnS = hn_rest
+            population.Ca_s = cai0
+            population.I_CaN_s_rest = I_CaN
 
             population.E_Na = 50.0
             population.E_K = -77.0
 
             _diam = p["global_diam"]
-            _Ltot = p["Ltotal"]
-            _pp = p["pp"]
             population.add_attribute("area_soma_cm2")
             population.add_attribute("area_dend_cm2")
-            population.area_soma_cm2 = _m.pi * _diam * (_pp * _Ltot) * 1e-8
-            population.area_dend_cm2 = _m.pi * _diam * ((1 - _pp) * _Ltot) * 1e-8
+            # sphere-equivalent soma, L = diam (V1In.geometry)
+            population.area_soma_cm2 = _m.pi * _diam * _diam * 1e-8
+            # No dendrite: the slot only keeps the recording layout uniform,
+            # and I_memb_d is identically zero, so the area is never load
+            # bearing -- it is non-zero because the backend requires it.
+            population.area_dend_cm2 = population.area_soma_cm2
 
         # Common: noise init
         population.g_noise_e = 0.0
@@ -1294,44 +1141,44 @@ class ReducedCalciumSomaDendrite(Model):
         population.I = 0 * b2.amp
         population.noise_amplitude = 0.0
 
-        # Synaptic conductance init
-        population.A_ampa = 0.0
-        population.B_ampa = 0.0
-        population.A_nmda = 0.0
-        population.B_nmda = 0.0
-        population.A_gaba_a = 0.0
-        population.B_gaba_a = 0.0
-        population.A_gaba_b = 0.0
-        population.B_gaba_b = 0.0
+        # Synaptic and STDP state, per compartment the cell actually has
+        for suffix in ("", "_d"):
+            if f"A_ampa{suffix}" not in population.variables:
+                continue
 
-        # Default synaptic time constants (overridden per connection)
-        population.tau_rise_ampa = 0.5
-        population.tau_decay_ampa = 3.0
-        population.tau_rise_nmda = 10.0
-        population.tau_decay_nmda = 35.0
-        population.tau_rise_gaba_a = 0.3
-        population.tau_decay_gaba_a = 6.0
-        population.tau_rise_gaba_b = 1.0
-        population.tau_decay_gaba_b = 5.0
+            # Conductances
+            for mech in ("ampa", "nmda", "gaba_a", "gaba_b"):
+                setattr(population, f"A_{mech}{suffix}", 0.0)
+                setattr(population, f"B_{mech}{suffix}", 0.0)
 
-        # Default reversal potentials
-        population.e_ampa = 0.0
-        population.e_nmda = 0.0
-        population.e_gaba_a = -60.0
-        population.e_gaba_b = -90.0
+            # Default time constants and reversal potentials, overridden per
+            # projection by the backend out of the graph config
+            setattr(population, f"tau_rise_ampa{suffix}", 0.5)
+            setattr(population, f"tau_decay_ampa{suffix}", 3.0)
+            setattr(population, f"tau_rise_nmda{suffix}", 10.0)
+            setattr(population, f"tau_decay_nmda{suffix}", 35.0)
+            setattr(population, f"tau_rise_gaba_a{suffix}", 0.3)
+            setattr(population, f"tau_decay_gaba_a{suffix}", 6.0)
+            setattr(population, f"tau_rise_gaba_b{suffix}", 1.0)
+            setattr(population, f"tau_decay_gaba_b{suffix}", 5.0)
+            setattr(population, f"e_ampa{suffix}", 0.0)
+            setattr(population, f"e_nmda{suffix}", 0.0)
+            setattr(population, f"e_gaba_a{suffix}", -60.0)
+            setattr(population, f"e_gaba_b{suffix}", -90.0)
 
-        # NMDA Mg block defaults
-        population.nmda_mg = 1.0
-        population.nmda_Kd = 3.57
-        population.nmda_gamma = 0.062
-        population.nmda_vshift = 0.0
+            # NMDA Mg block defaults
+            setattr(population, f"nmda_mg{suffix}", 1.0)
+            setattr(population, f"nmda_Kd{suffix}", 3.57)
+            setattr(population, f"nmda_gamma{suffix}", 0.062)
+            setattr(population, f"nmda_vshift{suffix}", 0.0)
 
-        # STDP init
+            # STDP signal state
+            setattr(population, f"learning_w_exc{suffix}", 0.0)
+            setattr(population, f"learn_int_exc{suffix}", 0.0)
+            setattr(population, f"learning_w_inh{suffix}", 0.0)
+            setattr(population, f"learn_int_inh{suffix}", 0.0)
+
         population.plasticity_on = 0.0
-        population.learning_w_exc = 0.0
-        population.learn_int_exc = 0.0
-        population.learning_w_inh = 0.0
-        population.learn_int_inh = 0.0
 
         # STDP parameters (defaults, overridden by enable_plasticity)
         population.theta_ltp_exc = -45.0
@@ -1373,7 +1220,13 @@ class ReducedCalciumSomaDendrite(Model):
         return synapse
 
     def brian2_mechanism_synapse(
-        self, pre_group, post_group, mechanism_name, mechanism_params, synapse_type
+        self,
+        pre_group,
+        post_group,
+        mechanism_name,
+        mechanism_params,
+        synapse_type,
+        compartment="soma",
     ):
         """Create a conductance-based synapse for a specific mechanism
 
@@ -1387,10 +1240,18 @@ class ReducedCalciumSomaDendrite(Model):
             Must contain: e, g_unit, tau_rise, tau_decay, weight
         synapse_type : str
             "excitatory" or "inhibitory"
+        compartment : str
+            ``"soma"`` or ``"dend"``; where the conductance is delivered and
+            which voltage the synapse (and its STDP signal) sees. A cell with
+            no dendrite takes everything on its soma.
         """
         import math
 
         import brian2 as b2
+
+        suffix = "_d" if compartment == "dend" else ""
+        if suffix and f"A_ampa{suffix}" not in post_group.variables:
+            suffix = ""  # single-compartment postsynaptic cell
 
         tau_rise = mechanism_params["tau_rise"]
         tau_decay = mechanism_params["tau_decay"]
@@ -1414,9 +1275,9 @@ class ReducedCalciumSomaDendrite(Model):
 
         # Choose the learning integral variable based on synapse type
         if synapse_type == "excitatory":
-            learn_int_var = "learn_int_exc"
+            learn_int_var = f"learn_int_exc{suffix}"
         else:
-            learn_int_var = "learn_int_inh"
+            learn_int_var = f"learn_int_inh{suffix}"
 
         model_eqs = """
             w : 1
@@ -1438,13 +1299,13 @@ class ReducedCalciumSomaDendrite(Model):
             delta = {learn_int_var}_post - last_int
             last_int = {learn_int_var}_post
             w_plastic = clip(w_plastic + plasticity_on_post * delta * w_plastic, w_min, w_max)
-            A_{mech_lower}_post += w * w_plastic * multiplier * {g_unit} * {factor}
-            B_{mech_lower}_post += w * w_plastic * multiplier * {g_unit} * {factor}
+            A_{mech_lower}{suffix}_post += w * w_plastic * multiplier * {g_unit} * {factor}
+            B_{mech_lower}{suffix}_post += w * w_plastic * multiplier * {g_unit} * {factor}
             """
         else:
             on_pre_code = f"""
-            A_{mech_lower}_post += w * multiplier * {g_unit} * {factor}
-            B_{mech_lower}_post += w * multiplier * {g_unit} * {factor}
+            A_{mech_lower}{suffix}_post += w * multiplier * {g_unit} * {factor}
+            B_{mech_lower}{suffix}_post += w * multiplier * {g_unit} * {factor}
             """
 
         synapse = b2.Synapses(
@@ -1459,22 +1320,34 @@ class ReducedCalciumSomaDendrite(Model):
         synapse._mechanism_params = mechanism_params
         synapse._has_stdp = has_stdp
         synapse._factor = factor
+        synapse._compartment = "dend" if suffix else "soma"
 
         return synapse
 
+    def brian2_synapse_site(self, population: str, section: str) -> tuple[str, str]:
+        if section == "soma":
+            return "soma", "soma"
+        return ("dend" if population == "EXC" else "soma"), "hillock"
+
     def brian2_noise_op(self, population_group, prng):
-        """Ornstein-Uhlenbeck noise via run_regularly (Euler-Maruyama)
+        """Ornstein-Uhlenbeck noise via run_regularly
 
         The OU process is separated from the main ODE system so that the
-        deterministic equations can use the GSL adaptive solver.  The noise
-        conductances are updated every dt with an explicit Euler-Maruyama step.
+        deterministic equations can use the GSL adaptive solver.
+
+        The update is the exact one Gfluct3 uses in the NEURON backend,
+
+            g <- g0 + (g - g0) * exp(-h/tau) + std * sqrt(1 - exp(-2h/tau)) * N(0,1)
+
+        rather than an Euler-Maruyama step. Both converge to the same process,
+        but only the exact form holds the stationary variance at ``std**2``
+        independently of the step, which is what lets a ``std_e``/``tau_e``
+        fitted under NEURON mean the same thing here.
         """
-        # Euler-Maruyama update for OU process at each timestep
-        # dg = -(g - g0)/tau * dt + amp * sqrt(2*dt/tau) * N(0,1)
         noise_update = population_group.run_regularly(
             """
-            g_noise_e += -(g_noise_e - g_e0) / tau_e * (dt/ms) + amp_e * sqrt(2.0 * (dt/ms) / tau_e) * randn()
-            g_noise_i += -(g_noise_i - g_i0) / tau_i * (dt/ms) + amp_i * sqrt(2.0 * (dt/ms) / tau_i) * randn()
+            g_noise_e = g_e0 + (g_noise_e - g_e0) * exp(-(dt/ms) / tau_e) + amp_e * sqrt(1.0 - exp(-2.0 * (dt/ms) / tau_e)) * randn()
+            g_noise_i = g_i0 + (g_noise_i - g_i0) * exp(-(dt/ms) / tau_i) + amp_i * sqrt(1.0 - exp(-2.0 * (dt/ms) / tau_i)) * randn()
             """,
             dt=population_group.clock.dt,
         )
@@ -1491,18 +1364,6 @@ class ReducedCalciumSomaDendrite(Model):
         tau_i=10.49,
         **kwargs,
     ):
-        """Configure Ornstein-Uhlenbeck noise for the two-compartment model.
-
-        The NEURON Gfluct3 applies conductance noise to each compartment:
-        - soma gets inhibitory noise only (g_i)
-        - dendrite gets excitatory noise only (g_e)
-
-        In brian2 we model this at the soma level for simplicity since the
-        noise coupling enters as I_input_s which includes both g_noise_e and g_noise_i.
-        The soma receives inhibitory fluctuations and the dendrite receives excitatory.
-        Since our equations wire g_noise_e and g_noise_i into the soma input,
-        we set: soma gets g_i (inhibitory), and we include excitatory through g_e.
-        """
         population_group.g_e0 = g_e0
         population_group.g_i0 = g_i0
         population_group.tau_e = tau_e
@@ -1517,24 +1378,5 @@ class ReducedCalciumSomaDendrite(Model):
         return self.neuron_default_noise(system)
 
     def brian2_default_weights(self, system: str):
-        neuron_weights = self.neuron_default_weights(system)
-        brian2_weights = {}
-        for k, v in neuron_weights.items():
-            # Parse: PRE_POST-section-mechanism-weight
-            parts = k.split("-")
-            pre_post = parts[0]  # e.g., "EXC_EXC"
-            if pre_post not in brian2_weights:
-                brian2_weights[pre_post] = 0.0
-            brian2_weights[pre_post] += v
-
-        return brian2_weights
-
-
-def _linoid(x, y):
-    """Safe linoid function matching NEURON's linoid"""
-    import math
-
-    if abs(x / y) < 1e-6:
-        return y * (1.0 - x / y / 2.0)
-    else:
-        return x / (math.exp(x / y) - 1.0)
+        """The NEURON weights, unchanged."""
+        return self.neuron_default_weights(system)

@@ -64,10 +64,6 @@ params = model.params("V1In-Renshaw-Perry")
 
 The two cell types form a spinal recurrent-inhibition loop where motoneurons excite Renshaw cells cholinergically, Renshaw cells inhibit motoneurons glycinergically, on the motoneuron soma.
 
-### Legacy: Pinsky-Rinzel interneuron
-
-`params("PinskyRinzel-PVBC")` is still defined and used by the brian2 backend. The diffrax backend simulates motoneurons alone (see below).
-
 ## Compartments and stimulation
 
 `stimulus_coordinates` returns two coordinates per neuron, interleaved, for every population:
@@ -78,8 +74,6 @@ coords = model.stimulus_coordinates(system.neuron_coordinates)
 ```
 
 The second coordinate sits `dx = 0.9 × L` from the soma along x, with L = 120 µm, the motoneuron's total length. `recording_coordinates` returns the same layout.
-
-Renshaw cells have no second compartment, so the NEURON backend drops any stimulus column naming a section the cell does not have, and the membrane-current row for that slot stays zero.
 
 ## Synaptic dynamics
 
@@ -101,7 +95,7 @@ weights = {
 env.set_weights(weights)
 ```
 
-`hillock` is the motoneuron's dendritic compartment. A synapse placed off-soma on a Renshaw cell resolves to its soma, since that is the only section it has. `env.weight_names` lists the keys a given network accepts.
+`hillock` is the motoneuron's dendritic compartment. A synapse placed off-soma on a Renshaw cell resolves to its soma, since that is the only section it has, but keeps the `hillock` key so the same dict addresses both cell types. `env.weight_names` lists the keys a given network accepts, and returns the same list on NEURON and brian2.
 
 ### Synaptic plasticity (STDP)
 
@@ -148,6 +142,8 @@ env.set_noise(noise_params)
 ```
 
 The Renshaw cell is exempt from the split: its soma is its only site, so it carries both the excitatory and the inhibitory component. Applying the somatic half alone would pin it near `E_i` (−75 mV) and it would never fire.
+
+The conductance in use is clipped at zero, so a `std` above its `g0` raises the mean drive rather than lowering it. Both backends do this, and both hold the fluctuation's stationary standard deviation at `std` independently of the integration step, so a fitted `std_e`/`tau_e` means the same thing on either.
 
 ## Diffrax backend
 
