@@ -170,11 +170,12 @@ class StateLayout:
     s: int
     t_ref_end: int
     size: int
+    next_forced: int = -1
 
     @classmethod
-    def of(cls, coupled: bool, escape: bool) -> "StateLayout":
+    def of(cls, coupled: bool, escape: bool, forced: bool = False) -> "StateLayout":
         size = 5
-        i_syn = s = t_ref_end = -1
+        i_syn = s = t_ref_end = next_forced = -1
         if coupled:
             i_syn = size
             size += 1
@@ -184,7 +185,12 @@ class StateLayout:
         if coupled:
             t_ref_end = size
             size += 1
-        return cls(i_syn=i_syn, s=s, t_ref_end=t_ref_end, size=size)
+        if forced:
+            next_forced = size
+            size += 1
+        return cls(
+            i_syn=i_syn, s=s, t_ref_end=t_ref_end, size=size, next_forced=next_forced
+        )
 
     @property
     def coupled(self) -> bool:
@@ -193,6 +199,10 @@ class StateLayout:
     @property
     def escape(self) -> bool:
         return self.s >= 0
+
+    @property
+    def forced(self) -> bool:
+        return self.next_forced >= 0
 
 
 def _check_level(level: int) -> int:
@@ -534,12 +544,24 @@ class GlifSolution(eqx.Module):
         return jnp.sum(jnp.isfinite(self.spike_times), axis=-1)
 
 
-def _for_population(value, n: int, offset: int):
+def _for_population(value, n: int, offset: int, rows=None):
     array = np.asarray(value, dtype=float)
     if array.ndim == 0:
         return float(array)
-    if array.shape[0] == n:
+    if array.shape[0] == n and rows is None:
         return array
+
+    if rows is not None:
+        rows = np.asarray(rows, dtype=int)
+        if array.shape[0] == n and len(rows) == n:
+            return array
+        if array.shape[0] <= int(rows.max(initial=-1)):
+            raise ValueError(
+                f"a per-cell parameter must cover the population: needed "
+                f"{int(rows.max(initial=-1)) + 1} values, got {array.shape[0]}"
+            )
+        return array[rows]
+
     if array.shape[0] < offset + n:
         raise ValueError(
             f"a per-cell parameter must cover the population: needed "
@@ -596,8 +618,17 @@ def _drift(p, layout: StateLayout, t, y, current):
         columns.append(active * _intensity(p, y))
     if layout.coupled:
         columns.append(jnp.zeros_like(v))  # t_ref_end only moves at an event
+    if layout.forced:
+        columns.append(jnp.zeros_like(v))  # next_forced only moves at an event
 
     return jnp.stack(columns, axis=-1)
+
+
+FAR_FUTURE = 1e30
+
+
+def _next_forced(forced, after):
+    return jnp.min(jnp.where(forced > after, forced, FAR_FUTURE))
 
 
 def _voltage_reset(p, y):
@@ -637,13 +668,19 @@ def _solve_cell(
     columns,
     diffusion,
     segments=False,
+    forced=None,
 ):
     current = diffrax.LinearInterpolation(ts=stim_ts, ys=stim_ys)
 
     def drift(t, y, args):
         return _drift(p, layout, t, y, current.evaluate(t))
 
-    if layout.escape:
+    if layout.forced:
+
+        def cond_fn(t, y, args, **kwargs):
+            return t - y[layout.next_forced]
+
+    elif layout.escape:
 
         def cond_fn(t, y, args, **kwargs):
             return y[layout.s]
@@ -668,6 +705,8 @@ def _solve_cell(
         ]
         if layout.escape:
             reset.append(_draw_survival(p, key, ()))
+        if layout.forced:
+            reset.append(_next_forced(forced, t_resume))
         return t_resume, jnp.stack(reset)
 
     def hold_fn(t_event, y, t_resume, ts, args, mask):
@@ -683,6 +722,8 @@ def _solve_cell(
         ]
         if layout.escape:
             held.append(ones * y[layout.s])
+        if layout.forced:
+            held.append(ones * y[layout.next_forced])
         return jnp.stack(held, axis=1)
 
     extra_terms = None
@@ -995,17 +1036,22 @@ class GlifNeurons(eqx.Module):
         """The per-cell parameter arrays"""
         return {name: getattr(self, name) for name in ALL_PARAM_NAMES}
 
-    def initial_state(self, key=None, num_samples: int = 1):
+    def initial_state(
+        self, key=None, num_samples: int = 1, layout=None, forced_spikes=None
+    ):
+        layout = self.layout if layout is None else layout
         zeros = jnp.zeros_like(self.E_L)
         columns = [self.E_L, zeros, zeros, zeros, zeros]
-        if self.layout.coupled:
+        if layout.coupled:
             columns.append(zeros)
-        if self.layout.escape:
+        if layout.escape:
             shape = (num_samples, self.n_cells)
             draw = _draw_survival(self.params(), _fallback_key(key), shape)
             columns.append(draw if num_samples > 1 else draw[0])
-        if self.layout.coupled:
+        if layout.coupled:
             columns.append(jnp.full_like(zeros, NOT_REFRACTORY))
+        if layout.forced:
+            columns.append(jnp.minimum(jnp.min(forced_spikes, axis=-1), FAR_FUTURE))
 
         return jnp.stack(jnp.broadcast_arrays(*columns), axis=-1)
 
@@ -1032,9 +1078,57 @@ class GlifNeurons(eqx.Module):
         key=None,
         num_samples: int = 1,
         diffusion: Optional[bool] = None,
+        forced_spikes=None,
+    ) -> GlifSolution:
+        return self._solve(
+            input_current=input_current,
+            t0=float(t0),
+            t1=float(t1),
+            dt=float(dt),
+            y0=y0,
+            stimulus_dt=stimulus_dt,
+            config=config,
+            record=None if record is None else frozenset(record),
+            key=key,
+            num_samples=int(num_samples),
+            diffusion=diffusion,
+            forced_spikes=forced_spikes,
+        )
+
+    @eqx.filter_jit
+    def _solve(
+        self,
+        input_current,
+        t0: float,
+        t1: float,
+        dt: float,
+        y0,
+        stimulus_dt: Optional[float],
+        config: Optional[SolverConfig],
+        record,
+        key,
+        num_samples: int,
+        diffusion: Optional[bool],
+        forced_spikes,
     ) -> GlifSolution:
         t0, t1, dt = float(t0), float(t1), float(dt)
         config = self.config if config is None else config
+        layout = self.layout
+        if forced_spikes is not None:
+            if self.network is not None:
+                raise NotImplementedError(
+                    "forced spikes are only implemented for the uncoupled solver"
+                )
+            forced_spikes = jnp.asarray(forced_spikes, dtype=jnp.result_type(float))
+            if forced_spikes.ndim == 1:
+                forced_spikes = forced_spikes[None, :]
+            if forced_spikes.ndim != 2 or forced_spikes.shape[0] != self.n_cells:
+                raise ValueError(
+                    f"forced_spikes must be (cells={self.n_cells}, k), "
+                    f"got {tuple(forced_spikes.shape)}"
+                )
+            forced_spikes = jnp.sort(forced_spikes, axis=-1)  # inf padding sorts last
+            layout = StateLayout.of(False, False, forced=True)
         n_out = int(round((t1 - t0) / dt)) + 1
         stimulus_dt = dt if stimulus_dt is None else float(stimulus_dt)
 
@@ -1071,13 +1165,16 @@ class GlifNeurons(eqx.Module):
 
         key, state_key = jr.split(_fallback_key(key))
         if y0 is None:
-            y0 = self.initial_state(state_key, num_samples)
+            y0 = self.initial_state(
+                state_key, num_samples, layout=layout, forced_spikes=forced_spikes
+            )
         y0 = jnp.asarray(y0)
-        if y0.shape[-1] != self.layout.size:
+        if y0.shape[-1] != layout.size:
             raise ValueError(
-                f"expected an initial state with {self.layout.size} columns for "
+                f"expected an initial state with {layout.size} columns for "
                 f"a {self.mechanism!r} "
-                f"{'network' if self.layout.coupled else 'population'}, "
+                f"{'network' if layout.coupled else 'population'}"
+                f"{' under forcing' if layout.forced else ''}, "
                 f"got {y0.shape[-1]}"
             )
         if y0.ndim == 2:
@@ -1087,7 +1184,7 @@ class GlifNeurons(eqx.Module):
             t0=t0,
             t1=t1,
             dt=dt,
-            layout=self.layout,
+            layout=layout,
             config=config,
             n_out=n_out,
             columns=columns,
@@ -1105,13 +1202,16 @@ class GlifNeurons(eqx.Module):
 
             def solve_sample(y0_sample, sample_key):
                 return jax.vmap(
-                    lambda p, s, y, k: _solve_cell(p, stim_ts, s, y, k, **shared),
-                    in_axes=(0, 0, 0, 0),
+                    lambda p, s, y, k, f: _solve_cell(
+                        p, stim_ts, s, y, k, forced=f, **shared
+                    ),
+                    in_axes=(0, 0, 0, 0, None if forced_spikes is None else 0),
                 )(
                     self.params(),
                     stim.T,
                     y0_sample,
                     jr.split(sample_key, self.n_cells),
+                    forced_spikes,
                 )
 
         else:
@@ -1359,10 +1459,12 @@ class GLIF(Model):
 
     def diffrax_module(self, env, key=None) -> GlifNeurons:
         weights = getattr(env, "_weights", None) or None
-        network = np.asarray(env.system.connectivity_matrix(weights=weights))
+
+        gids = np.asarray(env.simulated_gids(everywhere=True))
+        network = np.asarray(env.system.connectivity_matrix(weights=weights, gids=gids))
 
         return GlifNeurons(
-            len(env.active_gids()),
+            len(gids),
             self.params,
             level=self.level,
             mechanism=self.mechanism,
@@ -1379,7 +1481,9 @@ class GLIF(Model):
     def diffrax_default_weights(self, system: str):
         return {}
 
-    def brian2_population_group(self, population_name, n, offset, coordinates, prng):
+    def brian2_population_group(
+        self, population_name, n, offset, coordinates, prng, rows=None
+    ):
         """The same equations, as a brian2 ``NeuronGroup``.
 
         Every parameter is a group state variable rather than a namespace
@@ -1401,10 +1505,10 @@ class GLIF(Model):
 
         group = b2.NeuronGroup(
             n,
-            f"""
+            """
             dv/dt = (-(v - E_L) + (I + I_noise + asc_1 + asc_2
-                                   + stim_i(t, i + {offset}))/g_L
-                     + stim_v(t, i + {offset}))/tau_m : volt (unless refractory)
+                                   + stim_i(t, stim_index))/g_L
+                     + stim_v(t, stim_index))/tau_m : volt (unless refractory)
             dtheta_s/dt = -theta_decay_rate*theta_s : volt
             dtheta_v/dt = a_v*(v - E_L) - b_v*theta_v : volt (unless refractory)
             dasc_1/dt = -asc_decay_rate_1*asc_1 : amp
@@ -1412,6 +1516,10 @@ class GLIF(Model):
             I : amp
             I_noise : amp
             noise_amplitude : 1
+            # which column of the stimulus array is this neuron's; the backend
+            # sets it from the gid, because a selection makes the group hold a
+            # scattered subset and the group index no longer names the column
+            stim_index : integer (constant)
             tau_m : second
             E_L : volt
             g_L : siemens
@@ -1464,9 +1572,9 @@ class GLIF(Model):
             "asc_r": 1,
         }
         for name, unit in units.items():
-            setattr(group, name, _for_population(params[name], n, offset) * unit)
+            setattr(group, name, _for_population(params[name], n, offset, rows) * unit)
 
-        group.v = _for_population(params["E_L"], n, offset) * b2.mV
+        group.v = _for_population(params["E_L"], n, offset, rows) * b2.mV
 
         return group
 
