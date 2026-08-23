@@ -11,8 +11,9 @@ import numpy as np
 
 from livn.cells import CellRegistry
 from livn.run import Run
+from livn.utils import lnp
 from livn.stimulus import Stimulus
-from livn.types import Cell
+from livn.types import Capability, Cell
 from livn.types import Env as EnvProtocol
 
 if TYPE_CHECKING:
@@ -136,7 +137,7 @@ class CellHandle(Cell):
 class ModuleCellRegistry(CellRegistry):
     @property
     def gids(self) -> np.ndarray:
-        return np.asarray(self._env.active_gids(), dtype=np.int64)
+        return np.asarray(self._env.module_gids, dtype=np.int64)
 
     def get_params(self) -> dict:
         env = self._env
@@ -152,6 +153,14 @@ class ModuleCellRegistry(CellRegistry):
 
 
 class Env(EnvProtocol):
+    capabilities = frozenset(
+        {
+            Capability.SIMULATION,
+            Capability.DIFFERENTIABLE,
+            Capability.IMMUTABLE,
+        }
+    )
+
     def __init__(
         self,
         system: Union["System", str, int],
@@ -176,6 +185,14 @@ class Env(EnvProtocol):
         self.encoding = None
         self.decoding = None
 
+        self._select_spec = None
+        self._select_method = "first"
+        self._select_bounds = None
+        self._selection: dict[str, object] | None = None
+        self._selected_gids: set[int] | None = None
+        self._selected_rows: dict[str, np.ndarray] | None = None
+        self._module_gids: np.ndarray | None = None
+
         self._noise = {}
         self._weights = None
         self._recording = {}
@@ -184,7 +201,94 @@ class Env(EnvProtocol):
         self.key = jr.PRNGKey(seed)
         self.key, self.init_key, self.run_key = jr.split(self.key, 3)
 
+    def selection(self, select, method: str = "first", bounds=None) -> "Env":
+        if self.module is not None:
+            raise RuntimeError("selection() must be called before init()")
+
+        self._select_spec = select
+        self._select_method = method
+        self._select_bounds = bounds
+        self._resolve_selection()
+        self.__dict__.pop("_cells", None)
+        return self
+
+    @property
+    def selection_name(self) -> str | None:
+        spec = self._select_spec
+        return spec if isinstance(spec, str) else None
+
+    def _resolve_selection(self) -> None:
+        self._selection = self.system.selection(
+            self._select_spec,
+            populations=self.active_populations(),
+            seed=self.seed,
+            method=self._select_method,
+            bounds=self._select_bounds,
+        )
+        if self._selection is None:
+            self._selected_gids = None
+        else:
+            self._selected_gids = {
+                int(g) for gids in self._selection.values() for g in gids
+            }
+        self._materialize_geometry()
+
+    def _materialize_geometry(self) -> None:
+        rows: dict[str, np.ndarray] = {}
+        gids: list[np.ndarray] = []
+
+        selected = (
+            None
+            if self._selected_gids is None
+            else np.fromiter(sorted(self._selected_gids), dtype=np.int64)
+        )
+
+        for population in self.active_populations():
+            population_gids = np.asarray(
+                self.system.coordinate_array(population)[:, 0]
+            ).astype(np.int64)
+            if selected is None:
+                keep = np.arange(len(population_gids), dtype=np.int64)
+            else:
+                keep = np.flatnonzero(np.isin(population_gids, selected))
+            if len(keep):
+                rows[population] = keep
+                gids.append(population_gids[keep])
+
+        self._selected_rows = rows
+        self._module_gids = (
+            np.concatenate(gids) if gids else np.zeros(0, dtype=np.int64)
+        )
+
+    def _selected_coordinates(self):
+        if self._selected_rows is None:
+            self._materialize_geometry()
+
+        for population, keep in self._selected_rows.items():
+            yield population, self.system.coordinate_array(population)[keep]
+
+    @property
+    def module_gids(self) -> np.ndarray:
+        """Gids the module simulates, in module-index order."""
+        if self._module_gids is None:
+            self._materialize_geometry()
+        return self._module_gids
+
+    def simulated_gids(self, everywhere: bool = False):
+        return self.module_gids
+
+    def stimulus_coordinates(self):
+        rows = [
+            self.model.stimulus_coordinates(coordinates, population=population)
+            for population, coordinates in self._selected_coordinates()
+        ]
+        return lnp().vstack(rows) if rows else np.zeros((0, 4))
+
     def init(self):
+        if self._select_spec is not None or self._select_bounds is not None:
+            self._resolve_selection()
+        else:
+            self._materialize_geometry()
         self.module = self.model.diffrax_module(
             self,
             key=self.init_key,
@@ -195,17 +299,20 @@ class Env(EnvProtocol):
     @property
     def num_cells(self) -> int:
         """Number of cells the module simulates"""
-        return int(len(self.active_gids()))
+        return int(len(self.module_gids))
 
     @property
     def cells(self) -> CellRegistry:
         registry = self.__dict__.get("_cells")
         if registry is None:
             registry = ModuleCellRegistry(self)
+            if self._selected_rows is None:
+                self._materialize_geometry()
+
+            module_gids = self.module_gids
             index = 0
-            for population in self.active_populations():
-                coordinates = np.asarray(self.system.coordinate_array(population))
-                gids = coordinates[:, 0].astype(np.int64)
+            for population, keep in self._selected_rows.items():
+                gids = module_gids[index : index + len(keep)]
                 registry.add(
                     population,
                     {
@@ -213,7 +320,7 @@ class Env(EnvProtocol):
                         for offset, gid in enumerate(gids)
                     },
                 )
-                index += len(gids)
+                index += len(keep)
             self.__dict__["_cells"] = registry
         return registry
 
@@ -295,11 +402,7 @@ class Env(EnvProtocol):
             if stimulus.gids is not None:
                 from livn.io import section_labels
 
-                coordinates = self.system.transform_coordinates(
-                    self.model.stimulus_coordinates,
-                    populations=self.active_populations(),
-                )
-                stimulus = stimulus.expand(*section_labels(coordinates))
+                stimulus = stimulus.expand(*section_labels(self.stimulus_coordinates()))
 
         input_current = None
         if stimulus is not None:
@@ -326,26 +429,49 @@ class Env(EnvProtocol):
             **kwargs,
         )
 
+        as_gid = self._module_index_to_gid
+
         run = Run(t0=t0, duration=duration)
         if "spikes" in record:
             run = run.add_spikes(
-                it, tt, padded=getattr(self.module, "padded_spikes", False)
+                as_gid(it), tt, padded=getattr(self.module, "padded_spikes", False)
             )
         if "voltage" in record:
-            run = run.add_voltage(iv, v, dt=dt)
+            run = run.add_voltage(as_gid(iv), v, dt=dt)
         if "membrane_current" in record:
-            run = run.add_current(im, mp, dt=dt)
+            run = run.add_current(as_gid(im), mp, dt=dt)
 
         for name, (ids, values) in states.items():
-            run = run.add(name, ids, values, dt=dt, kind="series")
+            run = run.add(name, as_gid(ids), values, dt=dt, kind="series")
 
         return run
+
+    def _module_index_to_gid(self, indices):
+        if indices is None:
+            return None
+        gids = self.module_gids
+        if len(gids) == 0:
+            return indices
+        if np.array_equal(gids, np.arange(len(gids), dtype=gids.dtype)):
+            return indices
+        return jnp.asarray(gids)[jnp.asarray(indices).astype(int)]
 
     def clear_recordings(self):
         return self
 
-    def clear(self):
+    def clear(self, reseed: bool = True):
+        if reseed:
+            return self.reseed_noise()
         return self
+
+    def reseed_noise(self, stream: int | None = None):
+        env = copy.copy(self)
+        if stream is None:
+            env.key, env.run_key = jr.split(self.key)
+        else:
+            base = jr.PRNGKey(self.seed if self.seed is not None else 0)
+            env.run_key = jr.fold_in(base, int(stream))
+        return env
 
 
 def _env_tree_flatten(env):
@@ -383,6 +509,16 @@ def _env_tree_flatten(env):
         env.run_key,
         env.encoding,
         env.decoding,
+        None
+        if env._selected_gids is None
+        else tuple(sorted(int(g) for g in env._selected_gids)),
+        None
+        if env._selected_rows is None
+        else tuple(
+            (name, tuple(int(r) for r in rows))
+            for name, rows in env._selected_rows.items()
+        ),
+        None if env._module_gids is None else tuple(int(g) for g in env._module_gids),
         tuple(
             sorted(
                 (name, tuple(sorted(o.items()))) for name, o in env._recording.items()
@@ -409,6 +545,9 @@ def _env_tree_unflatten(aux, children):
         run_key,
         encoding,
         decoding,
+        selected_gids,
+        selected_rows,
+        module_gids,
         recording,
     ) = aux
 
@@ -421,6 +560,15 @@ def _env_tree_unflatten(aux, children):
         module = None
 
     env = Env(system, model, io, seed, comm, subworld_size)
+    env._selected_gids = None if selected_gids is None else set(selected_gids)
+    env._selected_rows = (
+        None
+        if selected_rows is None
+        else {name: np.asarray(rows, dtype=np.int64) for name, rows in selected_rows}
+    )
+    env._module_gids = (
+        None if module_gids is None else np.asarray(module_gids, dtype=np.int64)
+    )
     env.module = module
     env.key = key
     env._noise = noise

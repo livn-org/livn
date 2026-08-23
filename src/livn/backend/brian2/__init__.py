@@ -9,10 +9,10 @@ from numpy.random import RandomState
 from livn.cells import CellRegistry
 from livn.run import Run
 from livn.stimulus import Stimulus
-from livn.types import Cell
+from livn.types import Capability, Cell
 from livn.types import Env as EnvProtocol
 from livn.types import SynapticParam
-from livn.utils import P
+from livn.utils import NOISE_STREAM_STRIDE, P
 
 if TYPE_CHECKING:
     from mpi4py import MPI
@@ -95,6 +95,16 @@ class CellHandle(Cell):
 
 
 class Env(EnvProtocol):
+    capabilities = frozenset(
+        {
+            Capability.SIMULATION,
+            Capability.PER_GID_VOLTAGE,
+            Capability.NOISE,
+            Capability.PLASTICITY,
+            Capability.EXTRACELLULAR_STIMULUS,
+        }
+    )
+
     def __init__(
         self,
         system: Union["System", str, int],
@@ -120,7 +130,15 @@ class Env(EnvProtocol):
         self.encoding = None
         self.decoding = None
 
+        self._select_spec = None
+        self._select_method = "first"
+        self._select_bounds = None
+        self._selection: dict[str, object] | None = None
+        self._selected_gids: set[int] | None = None
+
+        self.seed = seed
         self.prng = RandomState(seed)
+        self._noise_stream = 0
         if seed is not None:
             b2.seed(seed)
 
@@ -159,6 +177,36 @@ class Env(EnvProtocol):
     def population_ranges(self):
         return self.system.population_ranges
 
+    def selection(self, select, method: str = "first", bounds=None) -> "Env":
+        if self._populations:
+            raise RuntimeError("selection() must be called before init()")
+
+        self._select_spec = select
+        self._select_method = method
+        self._select_bounds = bounds
+        self._resolve_selection()
+        return self
+
+    @property
+    def selection_name(self) -> str | None:
+        spec = self._select_spec
+        return spec if isinstance(spec, str) else None
+
+    def _resolve_selection(self) -> None:
+        self._selection = self.system.selection(
+            self._select_spec,
+            populations=self.active_populations(),
+            seed=self.seed,
+            method=self._select_method,
+            bounds=self._select_bounds,
+        )
+        if self._selection is None:
+            self._selected_gids = None
+        else:
+            self._selected_gids = {
+                int(g) for gids in self._selection.values() for g in gids
+            }
+
     def init(self):
         import logging
 
@@ -183,6 +231,8 @@ class Env(EnvProtocol):
             ignored = set(self.model.ignored_populations())
         population_ranges = self.system.population_ranges
         self.cells.clear()
+        stimulus_column = {int(g): i for i, g in enumerate(self.system.gids)}
+
         for population_name in self.system.populations:
             if population_name in ignored:
                 continue
@@ -190,18 +240,33 @@ class Env(EnvProtocol):
             offset = population_ranges[population_name][0]
             coordinates = self.system.coordinate_array(population_name)
 
+            if coordinates is not None and len(coordinates) == n:
+                gids = np.asarray(coordinates[:, 0], dtype=np.int64)
+            else:
+                gids = np.arange(offset, offset + n, dtype=np.int64)
+
+            if self._selected_gids is not None:
+                keep = np.isin(gids, np.fromiter(self._selected_gids, dtype=np.int64))
+                gids = gids[keep]
+                if coordinates is not None and len(coordinates) == n:
+                    coordinates = coordinates[keep]
+                n = int(len(gids))
+                if n == 0:
+                    continue
+
+            rows = np.asarray([stimulus_column[int(g)] for g in gids], dtype=np.int64)
+
             population = self.model.brian2_population_group(
                 population_name=population_name,
                 n=n,
                 offset=offset,
                 coordinates=coordinates,
                 prng=self.prng,
+                rows=rows,
             )
 
-            if coordinates is not None and len(coordinates) == n:
-                gids = np.asarray(coordinates[:, 0], dtype=np.int64)
-            else:
-                gids = np.arange(offset, offset + n, dtype=np.int64)
+            if "stim_index" in population.variables:
+                population.stim_index = rows
 
             population.add_attribute("kind")
             population.add_attribute("gid_offset")
@@ -223,6 +288,16 @@ class Env(EnvProtocol):
 
         return self
 
+    def _group_index(self, population: str) -> dict[int, int]:
+        """``{gid: position within the brian2 group}`` for one population."""
+        cached = self.__dict__.setdefault("_group_indices", {})
+        index = cached.get(population)
+        if index is None:
+            gids = np.asarray(self._populations[population].gids)
+            index = {int(g): i for i, g in enumerate(gids)}
+            cached[population] = index
+        return index
+
     def _load_connections(self):
         ignored = set()
         if hasattr(self.model, "ignored_populations"):
@@ -233,7 +308,14 @@ class Env(EnvProtocol):
             for pre, synapse in v.items():
                 if pre in ignored:
                     continue
-                population_ranges = self.system.population_ranges
+
+                if pre not in self._populations or post not in self._populations:
+                    # a selection can empty a population out entirely
+                    continue
+
+                # gid -> index within the group
+                pre_index = self._group_index(pre)
+                post_index = self._group_index(post)
 
                 # Build connectivity arrays
                 all_i = []
@@ -244,15 +326,31 @@ class Env(EnvProtocol):
                 for post_gid, (pre_gids, projection) in self.system.projection_array(
                     pre, post
                 ):
+                    j = post_index.get(int(post_gid))
+                    if j is None:
+                        continue  # post cell was not selected
+
                     distances = projection
                     if isinstance(projection, dict):
                         distances = projection["Connections"][0]
 
-                    all_i.append(pre_gids - population_ranges[pre][0])
-                    j = post_gid - population_ranges[post][0]
-                    all_j.append(np.full_like(pre_gids, j))
-                    all_multipliers.append(np.ones(pre_gids.size))
-                    all_distances.append(distances)
+                    pre_gids = np.asarray(pre_gids)
+                    distances = np.asarray(distances)
+
+                    rows = np.array(
+                        [pre_index.get(int(g), -1) for g in pre_gids], dtype=np.int64
+                    )
+                    reached = rows >= 0
+                    if not reached.any():
+                        continue
+
+                    all_i.append(rows[reached])
+                    all_j.append(np.full(int(reached.sum()), j, dtype=np.int64))
+                    all_multipliers.append(np.ones(int(reached.sum())))
+                    all_distances.append(distances[reached])
+
+                if not all_i:
+                    continue
 
                 all_i = np.concatenate(all_i).astype(np.int32)
                 all_j = np.concatenate(all_j).astype(np.int32)
@@ -438,6 +536,9 @@ class Env(EnvProtocol):
         return self
 
     def _record_spikes(self, population: str) -> "Env":
+        if population not in self._populations:
+            return self
+
         self._spike_monitors[population] = monitor = b2.SpikeMonitor(
             self._populations[population]
         )
@@ -448,6 +549,9 @@ class Env(EnvProtocol):
     def _record_voltage(
         self, population: str, dt: float, gids=None, sections=None
     ) -> "Env":
+        if population not in self._populations:
+            return self
+
         if sections is not None and "soma" not in {str(s) for s in sections}:
             raise NotImplementedError(
                 f"a brian2 cell is a single compartment, recorded as 'soma', so "
@@ -456,12 +560,8 @@ class Env(EnvProtocol):
         group = self._populations[population]
         record = True
         if gids is not None:
-            offset = self.system.population_ranges[population][0]
-            record = sorted(
-                int(g) - int(offset)
-                for g in gids
-                if 0 <= int(g) - int(offset) < len(group)
-            )
+            index = self._group_index(population)
+            record = sorted(index[int(g)] for g in gids if int(g) in index)
 
         self._voltage_monitors[population] = monitor = b2.StateMonitor(
             group,
@@ -814,13 +914,29 @@ class Env(EnvProtocol):
         self.clear_monitors()
         return self
 
-    def clear(self):
+    def clear(self, reseed: bool = True):
+        if reseed:
+            self.reseed_noise()
+
         self.t = 0
         self.clear_monitors()
 
         if hasattr(self, "_stimulus_dt"):
             del self._stimulus_dt
 
+        return self
+
+    def reseed_noise(self, stream: int | None = None):
+        if self.seed is None:
+            return self
+
+        if stream is None:
+            self._noise_stream += 1
+            stream = self._noise_stream
+        else:
+            self._noise_stream = int(stream)
+
+        b2.seed(int(self.seed) + stream * NOISE_STREAM_STRIDE)
         return self
 
     def clear_monitors(self):
@@ -865,6 +981,7 @@ class Env(EnvProtocol):
 
         self._network = b2.Network()
         self._populations = {}
+        self.__dict__.pop("_group_indices", None)
         self._synapses = {}
         self._noise_ops = set()
 
