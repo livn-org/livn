@@ -1370,8 +1370,9 @@ class System:
         )
 
     def connectivity_matrix(
-        self, weights: dict | None = None, seed=123
+        self, weights: dict | None = None, seed=123, gids=None
     ) -> types.Float[types.Array, "num_neurons num_neurons"]:
+        """The weighted adjacency matrix, optionally restricted to ``gids``."""
         # use numpy, not jax
         import numpy as npn
 
@@ -1399,7 +1400,11 @@ class System:
                     for pre_gid in pre_gids:
                         w[pre_gid, post_gid] = prefix * prng.random() * weight
 
-        return w
+        if gids is None:
+            return w
+
+        index = npn.asarray(gids, dtype=int)
+        return w[npn.ix_(index, index)]
 
     def summary(self) -> dict[str, int | dict[str, int]]:
         num_neurons = 0
@@ -1688,12 +1693,14 @@ class ParallelSystem:
         return iter(())
 
     def connectivity_matrix(
-        self, weights: dict | None = None, seed=123
+        self, weights: dict | None = None, seed=123, gids=None
     ) -> types.Float[types.Array, "num_neurons num_neurons"]:
+        """Unconnected, so the only thing ``gids`` changes is the size."""
         # use numpy, not jax
         import numpy as npn
 
-        return npn.zeros([self.num_neurons, self.num_neurons], dtype=npn.float32)
+        n = self.num_neurons if gids is None else len(npn.asarray(gids))
+        return npn.zeros([n, n], dtype=npn.float32)
 
     def summary(self) -> dict[str, int | dict[str, int]]:
         return {

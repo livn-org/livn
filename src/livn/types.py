@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import (
     TYPE_CHECKING,
     Any,
+    ClassVar,
     Optional,
     Protocol,
     Self,
@@ -12,6 +13,7 @@ from typing import (
 )
 import hashlib
 import pickle
+from enum import StrEnum
 
 from pydantic import BaseModel, field_validator
 
@@ -173,9 +175,13 @@ class System(Protocol):
         ...
 
     def connectivity_matrix(
-        self, weights: dict | None = None, seed: int = 123
+        self, weights: dict | None = None, seed: int = 123, gids=None
     ) -> Float[Array, "num_neurons num_neurons"]:
-        """Dense signed weight matrix or all-zero when unconnected"""
+        """Dense signed weight matrix or all-zero when unconnected.
+
+        ``gids`` restricts it to a sub-network, in the order given -- what a cell
+        selection induces.
+        """
         ...
 
     def selection(
@@ -232,9 +238,43 @@ class Cell(Protocol):
         return f"{type(self).__name__}({self._population}, gid={self._gid})"
 
 
+class Capability(StrEnum):
+    """Declares what a backend can do."""
+
+    SIMULATION = "simulation"
+    """Actually integrates. The default (no ``LIVN_BACKEND``) env does not."""
+
+    MPI = "mpi"
+    """Runs on more than one rank, distributing cells between them."""
+
+    PER_GID_VOLTAGE = "per_gid_voltage"
+    """``record_voltage(gids=...)`` can narrow the recording to named cells."""
+
+    NOISE = "noise"
+    """``set_noise()`` drives the cells with a stochastic conductance."""
+
+    REPLAYABLE_NOISE = "replayable_noise"
+    """The noise stream restarts with the simulation, so a run can be replayed."""
+
+    PLASTICITY = "plasticity"
+    """``enable_plasticity()`` lets synaptic weights evolve during a run."""
+
+    DIFFERENTIABLE = "differentiable"
+    """Gradients flow through ``run()``."""
+
+    IMMUTABLE = "immutable"
+    """Env operations return a new env instead of mutating in place."""
+
+    EXTRACELLULAR_STIMULUS = "extracellular_stimulus"
+    """Delivers an ``extracellular`` (mV) stimulus."""
+
+
 @runtime_checkable
 class Env(Protocol):
     """Protocol defining the interface for livn environments"""
+
+    capabilities: ClassVar[frozenset[Capability]] = frozenset()
+    """What this backend supports, see :class:`Capability`."""
 
     cells: "CellRegistry"
     """The simulated cells, addressable by population name or gid"""
