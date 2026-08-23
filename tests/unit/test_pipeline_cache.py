@@ -92,7 +92,6 @@ class TestPipeGetstate:
         restored = pickle.loads(data)
 
         assert restored.duration == 100
-        # _state should be empty after roundtrip (excluded by __getstate__)
         assert restored._state == {}
         assert restored._context == {}
 
@@ -160,7 +159,6 @@ class TestPipeWithGymStep:
         pipe = Pipe(stages=[GymStep(cart)], duration=100)
         h1 = hash(pipe)
 
-        # mutate gym env internal state
         cart.reset()
         cart.step(0)
 
@@ -194,7 +192,6 @@ class TestPipelineCall:
         dec = DummyDecoding(duration=100)
         enc = DummyEncoding(scale=1.0)
 
-        # first call for install
         pr = _pipeline_call(
             0,
             "action_input",
@@ -208,7 +205,6 @@ class TestPipelineCall:
         assert (0) in _state["pipelines"]
         assert len(call_log) == 1
 
-        # second call for cache hit (no decoding/encoding args)
         pr2 = _pipeline_call(
             0,
             "action_input_2",

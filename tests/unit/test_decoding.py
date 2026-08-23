@@ -15,10 +15,7 @@ from livn.decoding import (
     AvalancheAnalysis,
     ArrowDataset,
 )
-from livn.backend import backend
 from livn.run import Run
-
-from conftest import livn_test_env, livn_test_mea
 
 
 def _recording(it=None, tt=None, iv=None, vv=None, im=None, mp=None, dt=0.1):
@@ -30,116 +27,8 @@ def _recording(it=None, tt=None, iv=None, vv=None, im=None, mp=None, dt=0.1):
     )
 
 
-@pytest.fixture
-def env_response(request):
-    if not os.getenv("LIVN_BACKEND"):
-        pytest.skip("no simulation backend selected")
-
-    env = livn_test_env(io=livn_test_mea())
-
-    cache_key = f"livn/env/response-{backend()}-{env.system.name}"
-
-    response = request.config.cache.get(cache_key, None)
-    if response is None:
-        env.init()
-
-        env.record_spikes()
-        env.record_voltage()
-        env.record_membrane_current()
-
-        t_end = 250
-        inputs = np.zeros([t_end, env.io.num_channels])
-        for r in range(20):
-            for c in range(env.io.num_channels):
-                inputs[50 + r, c] = 1.5
-
-        stimulus = env.cell_stimulus(inputs)
-        response = [np.asarray(r) for r in env.run(t_end, stimulus=stimulus)]
-
-        request.config.cache.set(cache_key, [r.tolist() for r in response])
-
-        # The neuron backend keeps this env's NetCons and gid registrations in
-        # global NEURON state until close() and leaving them behind segfaults
-        # the next env's finitialize() inside NetCvode::init_events().
-        env.close()
-
-    return _recording(*[np.array(r) for r in response])
-
-
-@pytest.mark.skipif(
-    "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
-)
-def test_slice_decoding(env_response):
-    env = livn_test_env()
-    if backend() == "brian2":
-        env.init()
-    env.record_spikes()
-    env.record_voltage()
-    env.record_membrane_current()
-
-    start = 100
-    duration = 50
-    recording_dt = 0.1
-
-    ii, tt, iv, v, im, mp = Slice(start=start, stop=start + duration)(env_response)
-    orig_ii, orig_tt, orig_iv, orig_v, orig_im, orig_m = env_response
-
-    # spike times are re-based onto the window, so they land in [0, duration)
-    assert tt[tt < 0].shape[0] == 0
-    assert tt[tt >= duration].shape[0] == 0
-    # and exactly the spikes inside the window survive
-    expected_spikes = orig_tt[(orig_tt >= start) & (orig_tt < start + duration)].shape[
-        0
-    ]
-    assert tt.shape[0] == expected_spikes
-
-    expected_time_steps = int(duration / recording_dt)
-    assert v.shape[0] == orig_v.shape[0]
-    assert v.shape[1] == expected_time_steps
-
-    assert mp.shape[0] == orig_m.shape[0]
-    assert mp.shape[1] == expected_time_steps
-
-
-@pytest.mark.skipif(
-    "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
-)
-def test_slice_float_valid(env_response):
-    env = livn_test_env()
-    if backend() == "brian2":
-        env.init()
-    env.record_spikes()
-    env.record_voltage()
-    env.record_membrane_current()
-
-    recording_dt = 0.1
-    start = 10.0
-    duration = 5.0
-
-    ii, tt, iv, v, im, mp = Slice(start=start, stop=start + duration)(env_response)
-
-    # spike times should be correctly offset
-    if len(tt) > 0:
-        assert np.all(tt >= 0)
-        assert np.all(tt < duration)
-
-    expected_time_steps = int(duration / recording_dt)
-    assert v.shape[1] == expected_time_steps
-    assert mp.shape[1] == expected_time_steps
-
-    # 0.025 is not a multiple of 0.1
-    start = 0.025
-    duration = 10.0
-
-    with pytest.raises(ValueError, match="does not align with.*recording dt"):
-        Slice(start=start, stop=start + duration)(env_response)
-
-    # duration 10.025 with dt=0.1 -> fractional end index
-    start = 10.0
-    duration = 0.025
-
-    with pytest.raises(ValueError, match="does not align with.*recording dt"):
-        Slice(start=start, stop=start + duration)(env_response)
+STIMULUS_AMPLITUDE = 1.5
+RESPONSE_DURATION = 250
 
 
 class MockEnv:
@@ -209,9 +98,8 @@ def make_mock_membrane_current(n_units, duration_ms, dt=0.1, seed=42):
 class TestMeanFiringRate:
     def test_basic_computation(self):
         env = MockEnv(n_units=10)
-        duration = 1000  # 1 second
+        duration = 1000
 
-        # 20 spikes over 1 second with 10 units = 2 Hz
         it = np.array([0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9])
         tt = np.linspace(0, 999, 20)
 
@@ -222,7 +110,6 @@ class TestMeanFiringRate:
         assert "rate_hz" in result
         assert result["total_spikes"] == 20
         assert result["n_units"] == 10
-        # 20 spikes / (10 units * 1 second) = 2 Hz
         assert abs(result["rate_hz"] - 2.0) < 0.01
 
     def test_empty_spikes(self):
@@ -290,8 +177,6 @@ class MockPopulationEnv:
 
 class TestPopulationActiveFraction:
     def test_fraction_is_over_cells_per_bin(self):
-        # bin 0 = [0, 50): A cells 0 (twice) and 1 fire, B cell 10 fires
-        # bin 1 = [50, 100): A cell 2 fires, B is silent
         it = np.array([0, 0, 1, 10, 2])
         tt = np.array([1.0, 2.0, 30.0, 10.0, 60.0])
 
@@ -300,9 +185,9 @@ class TestPopulationActiveFraction:
         )
 
         assert result["n_bins"] == 2
-        assert result["mean_active_fraction"]["A"] == pytest.approx(0.375)  # .5, .25
+        assert result["mean_active_fraction"]["A"] == pytest.approx(0.375)
         assert result["std_active_fraction"]["A"] == pytest.approx(0.125)
-        assert result["mean_active_fraction"]["B"] == pytest.approx(0.25)  # .5, 0
+        assert result["mean_active_fraction"]["B"] == pytest.approx(0.25)
         assert result["std_active_fraction"]["B"] == pytest.approx(0.25)
 
     def test_populations_with_no_simulated_cells_are_absent(self):
@@ -323,7 +208,7 @@ class TestStability:
         duration = 5000
 
         np.random.seed(42)
-        n_spikes = 50  # 1 Hz per unit over 5 seconds
+        n_spikes = 50
         it, tt = make_mock_spikes(n_spikes, 10, duration)
 
         stability = Stability(duration=duration, max_rate_hz=20, min_rate_hz=0.01)
@@ -338,8 +223,8 @@ class TestStability:
         env = MockEnv(n_units=10)
         duration = 2000
 
-        it = np.repeat(np.arange(10), 50)  # 500 spikes
-        tt = np.random.uniform(1500, 2000, 500)  # all in last 500ms
+        it = np.repeat(np.arange(10), 50)
+        tt = np.random.uniform(1500, 2000, 500)
 
         stability = Stability(duration=duration, tail_window=500, max_rate_hz=10)
         result = stability(_recording(it, tt, None, None, None, None), env)
@@ -380,11 +265,10 @@ class TestLFP:
     def test_downsampling(self):
         env = MockEnv(n_units=50, n_channels=4)
         duration = 1000
-        env.membrane_current_recording_dt = 0.1  # 10kHz
+        env.membrane_current_recording_dt = 0.1
 
         im, m = make_mock_membrane_current(50, duration, dt=0.1)
 
-        # 10kHz to 1kHz
         lfp = LFP(duration=duration, downsample_hz=1000)
         result = lfp(_recording(None, None, None, None, im, m), env)
 
@@ -416,7 +300,7 @@ class TestLFPBandPower:
         env = MockEnv(n_units=50, n_channels=1)
         duration_ms = 4000
 
-        im, m = make_mock_membrane_current(50, duration_ms, dt=1.0)  # 1ms dt for 1000Hz
+        im, m = make_mock_membrane_current(50, duration_ms, dt=1.0)
 
         lfp_decoder = LFP(
             duration=duration_ms,
@@ -476,7 +360,7 @@ class TestLFPBandPower:
     def test_relative_power(self):
         env = MockEnv(n_units=50, n_channels=1)
         duration = 2000
-        im, m = make_mock_membrane_current(50, duration, dt=2.0)  # 500Hz
+        im, m = make_mock_membrane_current(50, duration, dt=2.0)
 
         lfp = LFP(
             duration=duration,
@@ -497,7 +381,6 @@ class TestPipe:
 
         it, tt = make_mock_spikes(20, 10, duration)
 
-        # Create pipeline: compute mean firing rate
         pipeline = Pipe(
             duration=duration,
             stages=[MeanFiringRate(duration=duration)],
@@ -535,7 +418,6 @@ class TestAvalancheAnalysis:
 
         tt = np.concatenate(
             [
-                # three avalanches
                 np.random.uniform(10, 20, 5),
                 np.random.uniform(60, 70, 8),
                 np.random.uniform(120, 130, 3),
@@ -560,21 +442,17 @@ class TestAvalancheAnalysis:
         env = MockEnv(n_units=50)
         duration = 2000
 
-        # Generate cascading pattern with branching ratio ~ 1
-        # Each bin generates approximately the same number of spikes as previous
         tt_list = []
         t_current = 0
         bin_width = 4.0
         n_spikes_current = 5
 
         for _ in range(20):
-            # add spikes to this bin
             spikes = np.random.uniform(
                 t_current, t_current + bin_width, n_spikes_current
             )
             tt_list.extend(spikes.tolist())
 
-            # next bin has approximately same number
             n_spikes_current = max(1, int(n_spikes_current + np.random.randn()))
             t_current += bin_width
 
@@ -601,7 +479,6 @@ class TestAvalancheAnalysis:
                 t_current, t_current + bin_width, n_spikes_current
             )
             tt_list.extend(spikes.tolist())
-            # decay
             n_spikes_current = max(0, int(n_spikes_current * 0.7))
             t_current += bin_width
 
@@ -628,7 +505,6 @@ class TestAvalancheAnalysis:
                 t_current, t_current + bin_width, n_spikes_current
             )
             tt_list.extend(spikes.tolist())
-            # growing
             n_spikes_current = int(n_spikes_current * 1.5) + 1
             t_current += bin_width
 
@@ -725,112 +601,6 @@ class TestAvalancheAnalysis:
         assert -1.0 <= result["size_power_law_r2"] <= 1.0
 
 
-@pytest.mark.skipif(
-    "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
-)
-def test_mean_firing_rate_integration(env_response):
-    env = livn_test_env()
-    if backend() == "brian2":
-        env.init()
-
-    mfr = MeanFiringRate(duration=250)
-    result = mfr(env_response, env)
-
-    assert result is not None
-    assert result["rate_hz"] >= 0
-    assert result["total_spikes"] >= 0
-
-
-@pytest.mark.skipif(
-    "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
-)
-def test_active_fraction_integration(env_response):
-    env = livn_test_env()
-    if backend() == "brian2":
-        env.init()
-
-    af = ActiveFraction(duration=250)
-    result = af(env_response, env)
-
-    assert result is not None
-    assert 0 <= result["active_fraction"] <= 1
-
-
-@pytest.mark.skipif(
-    "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
-)
-def test_stability_integration(env_response):
-    env = livn_test_env()
-    if backend() == "brian2":
-        env.init()
-
-    stability = Stability(duration=250, tail_window=100)
-    result = stability(env_response, env)
-
-    assert result is not None
-    assert "is_stable" in result
-    assert isinstance(result["is_stable"], bool)
-
-
-@pytest.mark.skipif(
-    "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
-)
-def test_lfp_integration(env_response):
-    # the LFP is read at the electrodes, so this one needs the array too --
-    # and an initialised env on every backend, since the distances are taken
-    # from the cells this rank actually holds
-    env = livn_test_env(io=livn_test_mea()).init()
-    env.record_membrane_current()
-
-    lfp = LFP(duration=250)
-    result = lfp(env_response, env)
-
-    assert result is not None
-    assert "lfp" in result
-
-
-@pytest.mark.skipif(
-    "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
-)
-def test_pipeline_integration(env_response):
-    env = livn_test_env()
-    if backend() == "brian2":
-        env.init()
-    env.record_spikes()
-    env.record_membrane_current()
-
-    pipeline = Pipe(
-        duration=250,
-        stages=[
-            Slice(start=50, stop=200),
-            MeanFiringRate(duration=150),
-        ],
-    )
-
-    result = pipeline(env_response, env)
-
-    assert result is not None
-    assert "rate_hz" in result
-
-
-@pytest.mark.skipif(
-    "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
-)
-def test_avalanche_analysis_integration(env_response):
-    env = livn_test_env()
-    if backend() == "brian2":
-        env.init()
-
-    aa = AvalancheAnalysis(duration=250, bin_width=4.0)
-    result = aa(env_response, env)
-
-    assert result is not None
-    assert "n_avalanches" in result
-    assert "branching_ratio" in result
-    assert result["n_avalanches"] >= 0
-    assert result["branching_ratio"] >= 0.0
-
-
 class TestArrowDataset:
     @pytest.fixture(autouse=True)
     def _require_datasets(self):
@@ -897,7 +667,6 @@ class TestArrowDataset:
         it, tt = make_mock_spikes(10, 10, duration, seed=0)
         ad1(_recording(it, tt, None, None, None, None), env)
 
-        # recreate — simulates object destruction/recreation
         ad2 = ArrowDataset(
             duration=duration,
             directory=directory,

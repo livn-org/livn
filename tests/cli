@@ -5,27 +5,34 @@ USAGE="Usage: tests/cli <command> [options]
 
 Commands:
   lint             Run ruff format check and lint
-  test             Run pytest for a backend
+  fast             The fast tier: tests/unit, no Env, no MPI, no simulation
+  verify           The pre-commit tiers: unit + contract + concurrency + gradients
+  test             Alias for 'verify' (kept for CI)
   download-system  Download the test system (default: EI)
 
-Options for 'test':
+Options for 'fast':
+  --args <pytest-args>    Extra arguments passed to pytest
+
+Options for 'verify' / 'test':
   --backend <diffrax|neuron|brian2|none|all>  Backend to test (default: all)
-  --system  <path>                        Path to test system (default: ./systems/graphs/EI)
-  --selection <name>                      Subselection within it (default: e1, ~30 cells)
-  --oversubscribe                         Pass --oversubscribe to mpiexec
-  --args    <pytest-args>                  Extra arguments passed to pytest
+  --system  <path>        Path to test system (default: ./systems/graphs/EI)
+  --selection <name>      Subselection within it (default: e1, ~30 cells)
+  --tier <name>           Only one tier (unit|contract|concurrency|gradients)
+  --slow                  Include the long reference comparisons
+  --fail-fast             Stop at the first failure
+  --oversubscribe         Pass --oversubscribe to mpiexec (Open MPI only; MPICH
+                          rejects it and every mpiexec test then fails)
+  --args <pytest-args>    Extra arguments passed to pytest
 
 Options for 'download-system':
   --name      <name>  System to download (default: EI)
   --directory <path>  Download directory (default: .)
 
 Examples:
-  tests/cli lint
-  tests/cli test --backend diffrax
-  tests/cli test --backend neuron --oversubscribe
-  tests/cli test --backend neuron --args '-x --tb=short'
-  tests/cli test --backend none
-  tests/cli download-system
+  tests/cli fast
+  tests/cli verify --backend diffrax
+  tests/cli verify --tier concurrency --backend neuron
+  tests/cli verify --slow
 "
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -37,12 +44,37 @@ if [[ -z "${VIRTUAL_ENV:-}" ]] && [[ -x "$PROJECT_DIR/.venv/bin/python" ]]; then
   export PATH="$VIRTUAL_ENV/bin:$PATH"
 fi
 
+# the order a failure is most likely to be informative
+VERIFY_TIERS=(unit contract concurrency gradients)
+
+backend_env() {
+  case "$1" in
+    diffrax) echo "JAX_PLATFORMS=cpu LIVN_BACKEND=diffrax" ;;
+    neuron)  echo "LIVN_BACKEND=neuron" ;;
+    brian2)  echo "LIVN_BACKEND=brian2" ;;
+    none|"") echo "LIVN_BACKEND=" ;;
+    *) echo "Unknown backend: $1" >&2; exit 1 ;;
+  esac
+}
+
+existing_tiers() {
+  local out=()
+  for tier in "$@"; do
+    if compgen -G "$PROJECT_DIR/tests/$tier/test_*.py" > /dev/null; then
+      out+=("tests/$tier")
+    fi
+  done
+  echo "${out[@]}"
+}
+
 cmd="${1:-}"
 shift || true
 
 case "$cmd" in
   lint)
-    tracked_files=$(git ls-files -- '*.py')
+    tracked_files=$(git ls-files -- '*.py' | while IFS= read -r f; do
+      if [[ -f "$f" ]]; then printf '%s\n' "$f"; fi
+    done)
     if [[ -z "$tracked_files" ]]; then
       echo "No tracked Python files found."
       exit 0
@@ -53,18 +85,43 @@ case "$cmd" in
     exec ruff check $tracked_files
     ;;
 
-  test)
+  fast)
+    pytest_args=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --args) pytest_args="$2"; shift 2 ;;
+        *) echo "Unknown option: $1"; echo "$USAGE"; exit 1 ;;
+      esac
+    done
+
+    status=0
+    echo "=== fast tier: no backend ==="
+    # shellcheck disable=SC2086
+    env JAX_PLATFORMS=cpu LIVN_BACKEND= pytest tests/unit -n auto $pytest_args || status=$?
+    echo "=== fast tier: diffrax ==="
+    # shellcheck disable=SC2086
+    env JAX_PLATFORMS=cpu LIVN_BACKEND=diffrax pytest tests/unit $pytest_args || status=$?
+    exit $status
+    ;;
+
+  verify|test)
     backend="all"
     system="./systems/graphs/EI"
     selection="e1"
+    tier=""
     pytest_args=""
     oversubscribe=false
+    slow=false
+    fail_fast=false
 
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --backend) backend="$2"; shift 2 ;;
         --system)  system="$2";  shift 2 ;;
         --selection) selection="$2"; shift 2 ;;
+        --tier) tier="$2"; shift 2 ;;
+        --slow) slow=true; shift ;;
+        --fail-fast) fail_fast=true; shift ;;
         --oversubscribe) oversubscribe=true; shift ;;
         --args)    pytest_args="$2"; shift 2 ;;
         *) echo "Unknown option: $1"; echo "$USAGE"; exit 1 ;;
@@ -76,40 +133,55 @@ case "$cmd" in
 
     if [[ "$backend" == "all" ]]; then
       for b in diffrax neuron brian2; do
-        echo "=== Running tests with backend: $b ==="
-        "$0" test --backend "$b" --system "$system" --selection "$selection" $($oversubscribe && echo --oversubscribe) --args "$pytest_args"
+        echo "=== $cmd with backend: $b ==="
+        "$0" "$cmd" --backend "$b" --system "$system" --selection "$selection" \
+          ${tier:+--tier "$tier"} \
+          $($slow && echo --slow) \
+          $($fail_fast && echo --fail-fast) \
+          $($oversubscribe && echo --oversubscribe) \
+          --args "$pytest_args"
       done
       exit 0
     fi
 
-    env_vars=()
-    case "$backend" in
-      diffrax)
-        env_vars+=(JAX_PLATFORMS=cpu LIVN_BACKEND=diffrax)
-        ;;
-      neuron)
-        env_vars+=(LIVN_BACKEND=neuron)
-        ;;
-      brian2)
-        env_vars+=(LIVN_BACKEND=brian2)
-        ;;
-      none|"")
-        env_vars+=(LIVN_BACKEND=)
-        ;;
-      *)
-        echo "Unknown backend: $backend"
-        echo "$USAGE"
-        exit 1
-        ;;
-    esac
-
-    oversubscribe_args=()
-    if $oversubscribe; then
-      oversubscribe_args=(--mpiexec "mpiexec --oversubscribe")
+    if [[ -n "$tier" ]]; then
+      paths="$(existing_tiers "$tier")"
+    else
+      paths="$(existing_tiers "${VERIFY_TIERS[@]}")"
+    fi
+    if [[ -z "$paths" ]]; then
+      echo "No test modules in the requested tier(s)."
+      exit 0
     fi
 
-    # shellcheck disable=SC2086
-    exec env "${env_vars[@]}" pytest -x "${oversubscribe_args[@]}" $pytest_args
+    extra_args=()
+    $slow && extra_args+=(-m "")
+    $fail_fast && extra_args+=(-x)
+    $oversubscribe && extra_args+=(--mpiexec "mpiexec --oversubscribe")
+
+    read -r -a env_vars <<< "$(backend_env "$backend")"
+
+    run_pytest() {
+      local target="$1"
+      echo "--- $target ---"
+      local code=0
+      # shellcheck disable=SC2086
+      env "${env_vars[@]}" pytest "$target" "${extra_args[@]}" $pytest_args || code=$?
+      if [[ $code -eq 5 ]]; then
+        echo "(nothing selected)"
+        return 0
+      fi
+      return $code
+    }
+
+    status=0
+    for path in $paths; do
+      run_pytest "$path" || status=$?
+      if $fail_fast && [[ $status -ne 0 ]]; then
+        exit $status
+      fi
+    done
+    exit $status
     ;;
 
   download-system)

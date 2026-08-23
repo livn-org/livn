@@ -2,10 +2,13 @@ import os
 import sys
 
 import pytest
+from testing.paths import REPO_ROOT
 
-sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+sys.path.append(str(REPO_ROOT))
 
 ON_CI = os.getenv("CI") == "true"
+
+pytestmark = pytest.mark.slow
 
 
 def test_using_the_dataset():

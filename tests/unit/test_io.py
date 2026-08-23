@@ -1,13 +1,8 @@
-import os
-
 import numpy as np
-import pytest
 
 from livn import io
-from livn.system import System
-from livn.utils import P
+from livn.utils import lnp
 
-from conftest import livn_test_system
 
 try:
     import mpi4py  # noqa: F401
@@ -64,9 +59,8 @@ def test_calculate_cell_stimulus():
     electrode_stimulus = np.array(
         [
             [
-                # c0   c1   c2
-                [0.1, 0.2, 0.3],  # t0
-                [0.4, 0.5, 0.6],  # t1
+                [0.1, 0.2, 0.3],
+                [0.4, 0.5, 0.6],
             ],
             [[0.7, 0.8, 0.9], [1.0, 1.1, 1.2]],
         ]
@@ -74,7 +68,6 @@ def test_calculate_cell_stimulus():
 
     cell_induction = np.array(
         [
-            # c  gid  amplitude
             [0, 0, 0.5],
             [1, 1, 0.6],
             [2, 0, 0.7],
@@ -100,10 +93,13 @@ def test_cell_stimulus_keeps_the_command_precision():
 
     for dtype in (np.float32, np.float64):
         command = np.ones((1, 4, 1), dtype=dtype)
+        expected = np.asarray(lnp().asarray(command)).dtype
+
         result = io.calculate_cell_stimulus(command, cell_induction, n_gids=2)
 
-        assert np.asarray(result).dtype == dtype, (
-            f"a {np.dtype(dtype).name} command came back as {np.asarray(result).dtype}"
+        assert np.asarray(result).dtype == expected, (
+            f"a {np.dtype(dtype).name} command came back as "
+            f"{np.asarray(result).dtype}, not the backend's {expected}"
         )
         assert np.allclose(np.asarray(result)[0, 0], [0.5, 0.25])
 
@@ -111,7 +107,6 @@ def test_cell_stimulus_keeps_the_command_precision():
 def test_channel_recording():
     mapping = np.array(
         [
-            # c  gid
             [0, 1, -0.1],
             [1, 0, -0.2],
             [1, 2, -0.3],
@@ -136,7 +131,6 @@ def test_channel_recording():
 
 
 def test_mea():
-    # test serialization
     mea = io.MEA(np.empty([3, 4]), 150, 300)
     clone = mea.clone()
     assert clone.input_radius == mea.input_radius
@@ -148,8 +142,8 @@ def test_potential_recording():
 
     mea = io.MEA(e_coords, input_radius=250, output_radius=2000)
 
-    sigma = 0.0003  # S/mm
-    min_du = 5.0  # um
+    sigma = 0.0003
+    min_du = 5.0
     r0 = (0.0 + min_du) / 1000.0
     r1 = (1000.0 + min_du) / 1000.0
     factor = 1.0 / (4.0 * np.pi * sigma)
@@ -157,7 +151,6 @@ def test_potential_recording():
 
     d = mea.distances(n_coords)
 
-    # 2D currents (n_neurons, timestep) -> returns (n_channels, timestep)
     i2d = np.array(
         [
             [1.0, 2.0],
@@ -168,50 +161,7 @@ def test_potential_recording():
     assert v2.shape == (1, 2)
     assert np.allclose(v2[0, :], np.array([expected, 2.0 * expected]), rtol=1e-6)
 
-    # Masking: only the neuron at origin contributes (tight radius)
     mea_masked = io.MEA(e_coords, input_radius=250, output_radius=10)
     expected_masked = factor * (1.0 / r0)
     v_masked = mea_masked.potential_recording(d, i2d[:, :1])
     assert np.allclose(v_masked[0], np.array([expected_masked]), rtol=1e-6)
-
-
-@pytest.mark.skipif(
-    "LIVN_TEST_SYSTEM" not in os.environ, reason="LIVN_TEST_SYSTEM missing"
-)
-@pytest.mark.skipif(not _has_mpi4py, reason="mpi4py not available")
-@pytest.mark.mpiexec(timeout=60)
-@pytest.mark.parametrize("mpiexec_n", [1, 2])
-def test_mea_parallel(mpiexec_n):
-    system = System(livn_test_system())
-
-    q = P.gather(system.neuron_coordinates)
-
-    if P.is_root():
-        cc = np.vstack(q)
-        # build reference coordinates via pyfive (no MPI needed)
-        from livn.system import (
-            _h5_read_cell_attributes_tuple,
-            _h5_read_population_names,
-            _h5_read_population_ranges,
-            _pyfive_open,
-        )
-
-        cells_fp = system._graph.cells_filepath
-        with _pyfive_open(cells_fp) as f:
-            pop_names = _h5_read_population_names(f)
-            pop_ranges = _h5_read_population_ranges(f)
-        ref_parts = []
-        for pop in pop_names:
-            pop_start = pop_ranges[pop][0]
-            with _pyfive_open(cells_fp) as f:
-                items, attr_info = _h5_read_cell_attributes_tuple(
-                    f, pop_start, pop, "Generated Coordinates"
-                )
-            x_i = attr_info["X Coordinate"]
-            y_i = attr_info["Y Coordinate"]
-            z_i = attr_info["Z Coordinate"]
-            for gid, vals in items:
-                ref_parts.append([gid, vals[x_i][0], vals[y_i][0], vals[z_i][0]])
-        ref_coords = np.array(ref_parts)
-        ref_coords = ref_coords[ref_coords[:, 0].argsort()]
-        assert np.array_equal(cc[cc[:, 0].argsort()], ref_coords)

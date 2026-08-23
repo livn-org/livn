@@ -10,95 +10,74 @@ from livn.policy import (
 
 
 class TestStimulus:
-    def test_init_with_array(self):
-        arr = np.zeros((100, 10), dtype=np.float32)
-        stim = Stimulus(arr, dt=0.1)
-        assert stim.array is arr
-        assert stim.dt == 0.1
-        assert len(stim) == 10
+    def test_the_array_is_kept_as_given_and_read_as_time_by_channel(self):
+        array = np.zeros((100, 10), dtype=np.float32)
+        stimulus = Stimulus(array, dt=0.1)
 
-    def test_init_negative_dt_raises(self):
+        assert stimulus.array is array, "the array was copied"
+        assert len(stimulus) == 10, "len() is the channel count, not the samples"
+        assert stimulus.duration == pytest.approx(10.0)
+
+    def test_duration_follows_the_sample_rate(self):
+        coarse = Stimulus(np.zeros((100, 10), dtype=np.float32), dt=0.1)
+        fine = Stimulus(np.zeros((200, 5), dtype=np.float32), dt=0.05)
+
+        assert coarse.duration == fine.duration == pytest.approx(10.0)
+
+    @pytest.mark.parametrize("dt", [0.0, -1.0])
+    def test_a_dt_that_is_not_a_duration_is_refused(self, dt):
         with pytest.raises(ValueError, match="dt must be positive"):
-            Stimulus(np.zeros((1, 1)), dt=-1.0)
+            Stimulus(np.zeros((1, 1)), dt=dt)
 
-    def test_init_zero_dt_raises(self):
-        with pytest.raises(ValueError, match="dt must be positive"):
-            Stimulus(np.zeros((1, 1)), dt=0.0)
+    def test_the_mode_the_units_and_anything_else_are_carried(self):
+        stimulus = Stimulus(
+            np.zeros((10, 4), dtype=np.float32),
+            input_mode="current",
+            units="nA",
+            wavelength_nm=473.0,
+        )
 
-    def test_init_input_mode_and_units(self):
-        arr = np.zeros((10, 4), dtype=np.float32)
-        stim = Stimulus(arr, input_mode="current", units="nA")
-        assert stim.input_mode == "current"
-        assert stim.units == "nA"
+        assert stimulus.input_mode == "current"
+        assert stimulus.units == "nA"
+        assert stimulus.extra["wavelength_nm"] == 473.0
 
-    def test_init_extra_metadata(self):
-        arr = np.zeros((10, 4), dtype=np.float32)
-        stim = Stimulus(arr, wavelength_nm=473.0)
-        assert stim.extra["wavelength_nm"] == 473.0
+    def test_from_arg_accepts_each_form_a_caller_might_have(self):
+        array = np.zeros((100, 10), dtype=np.float32)
+        existing = Stimulus(array, dt=0.5)
 
-    def test_duration_with_array(self):
-        arr = np.zeros((100, 10), dtype=np.float32)
-        stim = Stimulus(arr, dt=0.1)
-        assert stim.duration == pytest.approx(10.0)
-
-    def test_duration_with_different_dt(self):
-        arr = np.zeros((200, 5), dtype=np.float32)
-        stim = Stimulus(arr, dt=0.05)
-        assert stim.duration == pytest.approx(10.0)  # 200 * 0.05
-
-    def test_len(self):
-        arr = np.zeros((100, 64), dtype=np.float32)
-        stim = Stimulus(arr)
-        assert len(stim) == 64
-
-    def test_from_arg_stimulus(self):
-        arr = np.zeros((10, 2), dtype=np.float32)
-        original = Stimulus(arr, dt=0.5)
-        result = Stimulus.from_arg(original)
-        assert result is original
-
-    def test_from_arg_none(self):
         assert Stimulus.from_arg(None) is None
+        assert Stimulus.from_arg(existing) is existing, "a Stimulus was rebuilt"
+        assert Stimulus.from_arg(array).array is array
+        assert Stimulus.from_arg((array, 0.5)).dt == 0.5
+        assert Stimulus.from_arg({"array": array, "dt": 0.25}).dt == 0.25
 
-    def test_from_arg_array(self):
-        arr = np.zeros((100, 10), dtype=np.float32)
-        result = Stimulus.from_arg(arr)
-        assert isinstance(result, Stimulus)
-        assert result.array is arr
-
-    def test_from_arg_tuple(self):
-        arr = np.zeros((100, 10), dtype=np.float32)
-        result = Stimulus.from_arg((arr, 0.5))
-        assert result.array is arr
-        assert result.dt == 0.5
-
-    def test_from_arg_dict(self):
-        arr = np.zeros((100, 10), dtype=np.float32)
-        result = Stimulus.from_arg({"array": arr, "dt": 0.25})
-        assert result.array is arr
-        assert result.dt == 0.25
-
-    def test_from_arg_invalid_raises(self):
+    def test_from_arg_refuses_what_it_cannot_read(self):
         with pytest.raises(ValueError, match="Invalid stimulus"):
             Stimulus.from_arg("invalid")
 
-    def test_from_conductance(self):
-        arr = np.random.rand(100, 5).astype(np.float32)
-        stim = Stimulus.from_conductance(arr, dt=0.1)
-        assert stim.input_mode == "conductance"
-        assert stim.units == "uS"
+    @pytest.mark.parametrize(
+        ("constructor", "mode", "units"),
+        [
+            ("from_conductance", "conductance", "uS"),
+            ("from_current", "current", "nA"),
+            ("from_irradiance", "irradiance", "mW/mm2"),
+        ],
+    )
+    def test_a_named_constructor_sets_the_mode_and_its_canonical_unit(
+        self, constructor, mode, units
+    ):
+        array = np.random.rand(100, 5).astype(np.float32)
+        stimulus = getattr(Stimulus, constructor)(array, dt=0.1)
 
-    def test_from_current(self):
-        arr = np.random.rand(100, 5).astype(np.float32)
-        stim = Stimulus.from_current(arr, dt=0.1)
-        assert stim.input_mode == "current"
-        assert stim.units == "nA"
+        assert stimulus.input_mode == mode
+        assert stimulus.units == units
 
-    def test_from_irradiance_extra(self):
-        arr = np.random.rand(100, 3).astype(np.float32)
-        stim = Stimulus.from_irradiance(arr, dt=0.1, wavelength_nm=561.0)
-        assert stim.input_mode == "irradiance"
-        assert stim.extra["wavelength_nm"] == 561.0
+    def test_extra_metadata_survives_a_named_constructor(self):
+        stimulus = Stimulus.from_irradiance(
+            np.random.rand(100, 3).astype(np.float32), dt=0.1, wavelength_nm=561.0
+        )
+
+        assert stimulus.extra["wavelength_nm"] == 561.0
 
 
 class TestBiphasicPulse:
@@ -211,7 +190,7 @@ class TestBiphasicPulse:
             channels=[0],
             dt=0.05,
             phase_duration=0.2,
-            interphase_gap=0.1,  # 2 steps at dt=0.05
+            interphase_gap=0.1,
         )
         arr = policy()
         gap_start = int(0.2 / 0.05)
@@ -323,7 +302,6 @@ class TestMonophasicPulse:
         )
         arr = policy()
         assert policy.dt == 0.05
-        # 0.2 ms / 0.05 ms = 4
         assert np.sum(arr[:, 0] != 0) == 4
 
     def test_unstimulated_channels_zero(self):
@@ -388,6 +366,7 @@ class TestStimulusJax:
         if not _USES_JAX:
             pytest.skip("Requires JAX backend")
 
+    @pytest.mark.traces
     def test_to_array_jit(self):
         self._requires_jax_backend()
         arr = self.jnp.ones((11, 3), dtype=self.jnp.float32)
@@ -401,6 +380,7 @@ class TestStimulusJax:
         assert result.shape == (11, 3)
         np.testing.assert_allclose(np.asarray(result), 1.0)
 
+    @pytest.mark.traces
     def test_to_array_pad_jit(self):
         self._requires_jax_backend()
         arr = self.jnp.ones((5, 2), dtype=self.jnp.float32)
@@ -414,6 +394,7 @@ class TestStimulusJax:
         assert result.shape == (11, 2)
         np.testing.assert_allclose(np.asarray(result[:5]), 1.0)
 
+    @pytest.mark.traces
     def test_to_array_trim_jit(self):
         self._requires_jax_backend()
         arr = self.jnp.ones((20, 2), dtype=self.jnp.float32)
@@ -426,6 +407,7 @@ class TestStimulusJax:
         result = f(stim)
         assert result.shape == (11, 2)
 
+    @pytest.mark.traces
     def test_to_array_1d_jit(self):
         self._requires_jax_backend()
         arr = self.jnp.ones(11, dtype=self.jnp.float32)
@@ -498,18 +480,15 @@ class TestPulseSweep:
         ).for_array(8, [3])
         arr = policy()
 
-        assert arr.shape == (2000, 8)  # 2 trials x 100 ms at dt 0.1
-        # nothing anywhere but the driven electrode
+        assert arr.shape == (2000, 8)
         assert sorted(set(np.nonzero(arr)[1].tolist())) == [3]
         assert sorted(set(np.abs(arr[arr != 0]).tolist())) == [300.0, 600.0]
-        # biphasic and charge balanced, so a real electrode does not polarise
         assert np.sum(arr[:, 3]) == pytest.approx(0.0, abs=1e-3)
         assert arr[500, 3] == pytest.approx(-300.0)
         assert arr[501, 3] == pytest.approx(300.0)
 
     def test_a_sweep_without_an_array_says_so_rather_than_guessing(self):
         policy = PulseSweepPolicy(amplitudes=(1.0,))
-        # the schedule is knowable without one; the array is not
         assert policy.schedule()
         with pytest.raises(ValueError, match="no array to drive"):
             policy()

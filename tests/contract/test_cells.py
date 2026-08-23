@@ -313,7 +313,7 @@ def test_simulation_runs_after_setting_cell_params():
 
     params = env.cells.get_params()
     name = _a_param(params)
-    env = env.cells.set_params({name: params[name]})  # the values it already has
+    env = env.cells.set_params({name: params[name]})
     env.record_voltage()
 
     run = env.run(10.0)
@@ -382,28 +382,5 @@ def test_neuron_cell_handle_stands_in_for_the_cell():
 
     handle._v_rest = -61.0
     assert handle.cell._v_rest == -61.0
-
-    env.close()
-
-
-@pytest.mark.skipif(
-    backend() != "neuron", reason="only the neuron backend distributes cells over ranks"
-)
-@pytest.mark.mpiexec(n=2, timeout=TIMEOUT)
-def test_cell_params_are_global_across_ranks():
-    from mpi4py import MPI
-
-    from livn.env import Env
-
-    comm = MPI.COMM_WORLD
-    env = Env(4, comm=comm).init()
-
-    np.testing.assert_array_equal(env.cells.gids, [0, 1, 2, 3])
-    assert len(env.cells.local_gids) == 4 // comm.size
-
-    name = _a_param(env.cells.get_params())
-    env.cells.set_params({name: [1.0, 2.0, 3.0, 4.0]})
-
-    np.testing.assert_allclose(env.cells.get_params()[name], [1.0, 2.0, 3.0, 4.0])
 
     env.close()

@@ -2,4 +2,12 @@
 set -euo pipefail
 
 echo "Running lint checks..."
-exec tests/cli lint
+tests/cli lint
+
+if [[ -n "${LIVN_SKIP_FAST_TESTS:-}" ]]; then
+  echo "Skipping the fast tier (LIVN_SKIP_FAST_TESTS is set)."
+  exit 0
+fi
+
+echo "Running the fast test tier..."
+exec tests/cli fast

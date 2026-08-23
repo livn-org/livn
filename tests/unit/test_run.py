@@ -1,11 +1,3 @@
-"""Container tests for ``livn.run.Run``.
-
-These exercise the container alone, so they run identically under every
-backend -- which is the point: ``add`` / ``concat`` / ``merge`` / ``slice`` /
-``select`` must behave the same whether or not the pytree gate registered the
-class (``LIVN_BACKEND=neuron`` has no jax, ``=diffrax`` does).
-"""
-
 import numpy as np
 import pytest
 
@@ -64,7 +56,6 @@ def test_tuple_unpacking_forms():
 
 
 def test_missing_channels_are_none():
-    # the add_* helpers are a no-op when the recording was never enabled
     run = (
         Run(duration=10.0)
         .add_spikes(np.array([1]), np.array([0.5]))
@@ -88,7 +79,6 @@ def test_the_standard_channels_are_named_both_ways():
     assert set(run.drop_voltage().channels) == {"spikes", "current"}
     assert set(run.drop_current().channels) == {"spikes", "voltage"}
 
-    # immutable, composable, and a no-op when the channel was never there
     stripped = run.drop_voltage().drop_current().drop_current()
     assert set(stripped.channels) == {"spikes"}
     assert set(run.channels) == {"spikes", "voltage", "current"}
@@ -107,7 +97,6 @@ def test_add_is_immutable_and_infers_kind():
     assert isinstance(with_voltage["voltage"], Series)
     assert with_voltage.voltage_dt == 0.5
 
-    # a 2d payload is a series even without an explicit dt
     assert isinstance(run.add("x", np.array([1]), np.zeros((1, 4)))["x"], Series)
 
 
@@ -127,7 +116,6 @@ def test_concat_reapplies_the_time_offset():
     np.testing.assert_array_equal(
         joined.spike_ids, np.concatenate([a.spike_ids, b.spike_ids])
     )
-    # spike times stay inside the joined window
     assert joined.spike_times.max() < joined.duration
 
     np.testing.assert_allclose(
@@ -137,7 +125,6 @@ def test_concat_reapplies_the_time_offset():
 
 
 def test_concat_without_tracked_t0_assumes_chunks_follow():
-    """Chunked runs whose t0 is not tracked still stack, not overlap."""
     a = _run(t0=0.0, duration=10.0, seed=1)
     b = _run(t0=0.0, duration=6.0, seed=2)
 
@@ -151,7 +138,6 @@ def test_concat_without_tracked_t0_assumes_chunks_follow():
 
 
 def test_concat_of_chunks_equals_a_single_run():
-    """The acceptance criterion: chunking must be invisible, time axis included."""
     dt = 0.5
     duration = 30.0
     rng = np.random.default_rng(7)
@@ -170,7 +156,6 @@ def test_concat_of_chunks_equals_a_single_run():
         mask = (times >= start) & (times < start + 10.0)
         lo, hi = int(start / dt), int((start + 10.0) / dt)
         chunk = (
-            # backends return chunk-relative spike times
             Run(t0=start, duration=10.0)
             .add_spikes(ids[mask], times[mask] - start)
             .add_voltage(np.arange(4), voltage[:, lo:hi], dt=dt)
@@ -236,38 +221,6 @@ def test_merge_equals_the_single_process_result():
     np.testing.assert_allclose(merged.voltage, single.voltage)
 
 
-@pytest.mark.skipif(not _has_mpi4py, reason="mpi4py not available")
-@pytest.mark.skipif(
-    "ax" in backend(), reason="MPI gather not supported under the diffrax backend"
-)
-@pytest.mark.mpiexec(timeout=30)
-@pytest.mark.parametrize("mpiexec_n", [1, 2, 4])
-def test_gather_folds_the_per_rank_runs(mpiexec_n):
-    from livn.utils import P
-
-    rank = P.rank()
-    assert P.size() == mpiexec_n
-
-    run = (
-        Run(duration=10.0)
-        .add_spikes(np.array([rank]), np.array([float(rank)]))
-        .add_voltage(np.array([rank]), np.full((1, 20), float(rank)), dt=0.5)
-    )
-
-    gathered = run.gather()
-
-    if not P.is_root():
-        assert gathered is None
-        return
-
-    np.testing.assert_array_equal(gathered.spike_ids, np.arange(mpiexec_n))
-    np.testing.assert_allclose(gathered.spike_times, np.arange(mpiexec_n, dtype=float))
-    np.testing.assert_array_equal(gathered.voltage_ids, np.arange(mpiexec_n))
-    assert gathered.voltage.shape == (mpiexec_n, 20)
-    np.testing.assert_allclose(gathered.voltage[:, 0], np.arange(mpiexec_n))
-    assert gathered.duration == 10.0
-
-
 def _windowed_by_hand(run, start, stop, dt):
     it, tt, iv, vv, im, mp = run
     mask = (tt >= start) & (tt < stop)
@@ -301,7 +254,6 @@ def test_slice_metadata_and_defaults():
     assert windowed["voltage"].t0 == 105.0
     assert windowed.voltage.shape[1] == 20
 
-    # stop defaults to the end of the run
     assert run.slice(5.0).duration == 15.0
 
     with pytest.raises(ValueError, match="does not align"):
@@ -362,6 +314,7 @@ def test_pickles_roundtrip():
 
 
 @pytest.mark.skipif("ax" not in backend(), reason="requires a jax backend")
+@pytest.mark.traces
 def test_survives_jit_and_vmap_as_a_return_value():
     import jax
     import jax.numpy as jnp
@@ -388,7 +341,7 @@ def test_survives_jit_and_vmap_as_a_return_value():
     assert batched.voltage.shape == (4, 3, 20)
 
     leaves = jax.tree_util.tree_leaves(simulate(v))
-    assert len(leaves) == 2  # ids and values, metadata stays static
+    assert len(leaves) == 2
 
 
 @pytest.mark.skipif("ax" in backend(), reason="jax-free install only")
@@ -426,7 +379,6 @@ def test_a_padded_channel_reports_its_rectangle():
 def test_a_padded_channel_compacts_to_the_ragged_form():
     run, _ = _padded_run()
 
-    # padding dropped, ordered by time, one id per event
     np.testing.assert_allclose(
         np.asarray(run.spike_times), [0.5, 1.0, 2.0, 3.0, 4.0, 8.0]
     )
@@ -446,7 +398,6 @@ def test_compacting_keeps_the_rectangle_alongside():
 
 
 def test_a_padded_channel_composes_like_any_other():
-    """concat / window / select are host-side, so they see the compact form."""
     run, _ = _padded_run()
 
     windowed = run.slice(2.0, 5.0)
@@ -497,6 +448,7 @@ def test_events_are_immutable():
 
 
 @pytest.mark.skipif("ax" not in backend(), reason="needs jax")
+@pytest.mark.traces
 def test_compacting_under_a_trace_points_at_the_rectangle():
     import jax
     import jax.numpy as jnp
