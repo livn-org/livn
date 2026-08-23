@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import weakref
 from collections import defaultdict
 from typing import TYPE_CHECKING, Self, Union
 
@@ -29,17 +30,57 @@ logger = logging.getLogger(__name__)
 logger.setLevel(os.getenv("LIVN_NEURON_LOGGING", "WARNING"))
 
 
+class _EnvCallback:
+    __slots__ = ("_env", "_method")
+
+    def __init__(self, env: "Env", method: str):
+        self._env = weakref.ref(env)
+        self._method = method
+
+    @property
+    def alive(self) -> bool:
+        return self._env() is not None
+
+    def __call__(self) -> None:
+        env = self._env()
+        if env is not None:
+            getattr(env, self._method)()
+
+
+_REGISTERED_CALLBACKS: list[_EnvCallback] = []
+
+
+def _register_callback(cvode, callback: _EnvCallback) -> None:
+    cvode.extra_scatter_gather(0, callback)
+    _REGISTERED_CALLBACKS.append(callback)
+
+
+def _unregister_callback(cvode, callback: _EnvCallback) -> None:
+    try:
+        cvode.extra_scatter_gather_remove(callback)
+    except Exception:
+        logger.debug("failed to remove a cvode callback", exc_info=True)
+    try:
+        _REGISTERED_CALLBACKS.remove(callback)
+    except ValueError:
+        pass
+
+
+def _sweep_dead_callbacks(cvode) -> None:
+    for callback in [c for c in _REGISTERED_CALLBACKS if not c.alive]:
+        _unregister_callback(cvode, callback)
+
+
 class Env(EnvProtocol):
     capabilities = frozenset(
         {
             Capability.SIMULATION,
-            Capability.SELECTION,
             Capability.MPI,
             Capability.PER_GID_VOLTAGE,
             Capability.NOISE,
+            Capability.REPLAYABLE_NOISE,
             Capability.PLASTICITY,
             Capability.EXTRACELLULAR_STIMULUS,
-            Capability.CURRENT_STIMULUS,
         }
     )
 
@@ -75,18 +116,9 @@ class Env(EnvProtocol):
         self.decoding = None
         self.duration = None
 
-        # Compile mechanisms: rank 0 builds, the rest wait on it.
-        #
-        # NB this barrier is collective over ``comm``, so every rank sharing it
-        # must reach this constructor. Passing a communicator that only some of
-        # its ranks construct an Env on (e.g. COMM_WORLD from one rank while the
-        # others hold per-subworld communicators) deadlocks here.
         mech_dir = self.model.neuron_mechanisms_directory()
         if mech_dir is not None:
-            if self.comm.Get_rank() == 0:
-                mechanisms.compile_mechanisms(mech_dir)
-            if self.comm.Get_size() > 1:
-                self.comm.Barrier()
+            self._compile_mechanisms(mech_dir)
         self._h = mechanisms.configure(mech_dir)
         self.pc = self._h.pc
         if subworld_size is not None:
@@ -166,8 +198,8 @@ class Env(EnvProtocol):
         self._stim_dt: float | None = None
         self._stim_step = 0
         self._stim_registered = False
-        self._stim_cb = self._update_extracellular
-        self._opsin_cb = self._update_opsin_phi
+        self._stim_cb = _EnvCallback(self, "_update_extracellular")
+        self._opsin_cb = _EnvCallback(self, "_update_opsin_phi")
 
         # opsin (irradiance) stimulus block
         self._opsin_refs: dict[tuple[int, int], object] = {}  # (gid, sec_id) -> pp
@@ -199,6 +231,7 @@ class Env(EnvProtocol):
         return spec if isinstance(spec, str) else None
 
     def init(self) -> Self:
+        _sweep_dead_callbacks(self._h.cvode)
         self.pc.gid_clear()
         builder = CellBuilder(self.system, self.model, self.pc, self.comm)
 
@@ -575,6 +608,30 @@ class Env(EnvProtocol):
             store.get(i).delay = d if d > floor else floor
         self._delay_floor_dt = dt
 
+    def _compile_mechanisms(self, directory: str) -> None:
+        error = None
+        failure = None
+        if self.comm.Get_rank() == 0:
+            try:
+                mechanisms.compile_mechanisms(directory)
+            except Exception as e:
+                error = e
+                failure = f"{type(e).__name__}: {e}"
+
+        if self.comm.Get_size() > 1:
+            failure = self.comm.bcast(failure, root=0)
+
+        if failure is None:
+            return
+
+        if error is not None:
+            raise error
+
+        raise RuntimeError(
+            f"compiling the mechanisms in {directory} failed on rank 0, so this "
+            f"rank has nothing to load: {failure}"
+        )
+
     def _require_comm_spans_solve_domain(self) -> None:
         if self.comm is None:
             return
@@ -655,7 +712,7 @@ class Env(EnvProtocol):
             self._install_stim_block(stimulus, rows, columns, start_step)
 
         if not self._stim_registered:
-            self._h.cvode.extra_scatter_gather(0, self._stim_cb)
+            _register_callback(self._h.cvode, self._stim_cb)
             self._stim_registered = True
 
     def _stim_rows_for(self, stimulus: Stimulus) -> tuple[list, list]:
@@ -875,7 +932,7 @@ class Env(EnvProtocol):
         self._opsin_block = block
 
         if not self._opsin_registered:
-            self._h.cvode.extra_scatter_gather(0, self._opsin_cb)
+            _register_callback(self._h.cvode, self._opsin_cb)
             self._opsin_registered = True
 
     def _update_opsin_phi(self) -> None:
@@ -1374,22 +1431,11 @@ class Env(EnvProtocol):
         return self
 
     def _unregister_stim_callback(self) -> None:
-        """Detach the cvode stimulus callbacks (extracellular + opsin).
-
-        Essential on teardown as a callback left registered keeps firing after
-        this env's sections are deleted, which crashes any later env's psolve.
-        """
         if self._stim_registered:
-            try:
-                self._h.cvode.extra_scatter_gather_remove(self._stim_cb)
-            except Exception:
-                logger.debug("failed to remove extracellular callback", exc_info=True)
+            _unregister_callback(self._h.cvode, self._stim_cb)
             self._stim_registered = False
         if self._opsin_registered:
-            try:
-                self._h.cvode.extra_scatter_gather_remove(self._opsin_cb)
-            except Exception:
-                logger.debug("failed to remove opsin callback", exc_info=True)
+            _unregister_callback(self._h.cvode, self._opsin_cb)
             self._opsin_registered = False
         # IClamp uses Vector.play (no cvode callback); nothing to unregister
 
@@ -1471,6 +1517,8 @@ class Env(EnvProtocol):
         self._opsin_pps = []
         self._opsin_block = None
         self._opsin_refs.clear()
+        self._iclamp_pps = []
+        self._iclamp_block = None
 
         # Drop every NEURON reference that points at this env's sections, so
         # deleting the cells does not leave dangling recorders / point
@@ -1512,4 +1560,5 @@ class Env(EnvProtocol):
         except Exception:
             pass
         gc.collect()
+        _sweep_dead_callbacks(self._h.cvode)
         return self
