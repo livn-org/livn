@@ -4,14 +4,17 @@ from livn.types import Model
 
 
 class Izhikevich(Model):
-    def brian2_population_group(self, population_name, n, offset, coordinates, prng):
+    def brian2_population_group(
+        self, population_name, n, offset, coordinates, prng, rows=None
+    ):
         population = b2.NeuronGroup(
             n,
-            f"""
-            dv/dt = (c1*v**2 + c2*v + c3 - u + Rm*(I + I_noise + stim_i(t, i + {offset})) + stim_v(t, i + {offset}))/ms : volt
+            """
+            dv/dt = (c1*v**2 + c2*v + c3 - u + Rm*(I + I_noise + stim_i(t, stim_index)) + stim_v(t, stim_index))/ms : volt
             du/dt = (a*(b*v - u))  : volt
             I : amp
             I_noise : amp
+            stim_index : integer (constant)
             a : Hz
             b : 1
             c : volt
