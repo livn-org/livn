@@ -149,3 +149,6 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# brian2 drops a profiling trace next to the cwd when a run is interrupted
+*.btr
