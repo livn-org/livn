@@ -887,9 +887,9 @@ def _mpi_run(
     local_comm = worker_group.Split(color, key=worker_group.rank)
     sub_comm = local_comm.Dup()
     merged_comm = sub_comm.Dup()
+    local_comm.Free()
 
     if am_broker:
-        local_comm.Free()
         broker = MPICollectiveBroker(
             worker_id,
             ctrl_comm,
@@ -906,7 +906,7 @@ def _mpi_run(
 
         broker.serve()
     else:
-        worker = MPICollectiveWorker(local_comm, merged_comm, worker_id, n_groups)
+        worker = MPICollectiveWorker(sub_comm, merged_comm, worker_id, n_groups)
 
         if worker_fn is not None:
             merged_comm.bcast(args, root=0)
