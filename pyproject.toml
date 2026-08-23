@@ -49,6 +49,8 @@ dev = [
     "pytest-reportlog",
     "ruff>=0.11.5",
     "huggingface-hub>=0.3.1",
+    "pytest-xdist>=3.8.0",
+    "pytest-timeout>=2.4.0",
 ]
 
 [tool.uv]
@@ -78,6 +80,14 @@ packages = ["src/livn"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "mpiexec: run this test under mpiexec (see testing/mpiexec.py)",
+    "needs(*capabilities): skip unless the backend declares them (livn.types.Capability)",
+    "slow: a long reference comparison, deselected by default",
+    "traces: the traced path is what this test is about (fast-tier budget exemption)",
+]
+addopts = "--strict-markers -m 'not slow'"
+timeout = 300
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
