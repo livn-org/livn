@@ -59,6 +59,7 @@ class DriveTarget(BaseModel):
     std_fraction: float = 0.33
     tau_e: float = 33.0
     tau_i: float = 28.5
+    repeats: int = Field(1, ge=1)
     mean: list[float | None] | None = None
     lower: list[float | None] | None = None
     upper: list[float | None] | None = None
@@ -67,6 +68,9 @@ class DriveTarget(BaseModel):
 class SingleCellOptConfig(BaseModel):
     Template: str
     Population: str = "EXC"
+    # kept loadable, but skipped by `Tune.axis_cells` so a sweep does not
+    # spend a run refitting a cell nothing should be using
+    Retired: bool = False
     Numerics: SingleCellNumerics
     Targets: SingleCellTargets
     Drive: DriveTarget = DriveTarget()
@@ -600,20 +604,26 @@ class SingleCell:
         counts = []
         try:
             for i, level in enumerate(self.drive.levels):
-                env.clear(reseed=False)
-                env.set_params(
-                    {
-                        **driving,
-                        "noise-g_e0": float(level),
-                        "noise-std_e": float(level) * self.drive.std_fraction,
-                        "noise-tau_e": self.drive.tau_e,
-                        "noise-tau_i": self.drive.tau_i,
-                    }
-                )
-                env.reseed_noise(self.drive.seed + i)
-                run = env.run(self.drive.duration, dt=self.sim_dt)
-                ids = getattr(run, "spike_ids", None)
-                counts.append(0 if ids is None else int(np.sum(np.asarray(ids) == gid)))
+                realisations = []
+                for repeat in range(self.drive.repeats):
+                    env.clear(reseed=False)
+                    env.set_params(
+                        {
+                            **driving,
+                            "noise-g_e0": float(level),
+                            "noise-std_e": float(level) * self.drive.std_fraction,
+                            "noise-tau_e": self.drive.tau_e,
+                            "noise-tau_i": self.drive.tau_i,
+                        }
+                    )
+                    # repeat 0 keeps the seed a single-realisation run used
+                    env.reseed_noise(self.drive.seed + i + 1000 * repeat)
+                    run = env.run(self.drive.duration, dt=self.sim_dt)
+                    ids = getattr(run, "spike_ids", None)
+                    realisations.append(
+                        0 if ids is None else int(np.sum(np.asarray(ids) == gid))
+                    )
+                counts.append(float(np.mean(realisations)))
         finally:
             env.clear(reseed=False)
             env.set_params(resting)

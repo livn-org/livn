@@ -35,6 +35,8 @@ Drive:
 
     tau_e: 33.0
     tau_i: 28.5
+    # Realisations averaged per level.
+    repeats: 3
 Targets:
   Rin:
     # Perry 2015: 233.1 +/- 11 MOhm (P0-P11; age-dependent ~155-245)

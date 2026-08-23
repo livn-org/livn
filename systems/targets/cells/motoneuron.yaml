@@ -39,6 +39,8 @@ Drive:
     # at the same mean.
     tau_e: 33.0
     tau_i: 28.5
+    # Realisations averaged per level.
+    repeats: 3
 Targets:
     Rin:    
         I: [-100.0]

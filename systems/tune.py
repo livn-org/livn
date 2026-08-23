@@ -165,9 +165,12 @@ class Tune(Interface):
     def axis_cells(directory: str = "./systems/targets/cells"):
         from glob import glob
 
+        from systems.targets.cells.SingleCell import SingleCellOptConfig
+
         return [
             Tune.version_cell(path)
             for path in sorted(glob(os.path.join(directory, "*.yaml")))
+            if not SingleCellOptConfig.from_yaml(path).Retired
         ]
 
     def version_spontaneous_recording(

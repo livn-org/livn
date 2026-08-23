@@ -2,6 +2,7 @@
 Celltype: RenshawCell
 Template: livn.models.rcsd.neuron.templates.V1In.V1In
 Population: INH
+Retired: True
 Numerics:
   adaptive: False
   use_coreneuron: True
@@ -34,6 +35,8 @@ Drive:
     # at the same mean.
     tau_e: 33.0
     tau_i: 28.5
+    # Realisations averaged per level.
+    repeats: 3
 Targets:
   Rin:
     # Hoang 2018 ES-derived RC: 421.7 +/- 30.1 MOhm

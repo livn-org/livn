@@ -12,7 +12,6 @@ model = ReducedCalciumSomaDendrite()
 |--------|---------|---------|
 | `input_mode` | `None` | Override how the cell interprets a stimulus (`current_density`, `conductance`, `current`, `irradiance`). Only needed on the JAX backend, which bakes the choice into the compute graph |
 | `refractory_period` | `2.0` | Spike-detector dead time in ms |
-| `renshaw_phenotype` | `"invitro"` | Which tuned Renshaw parameter set the `INH` population uses (`"invitro"` or `"perry"`) |
 | `short_term_depression` | `False` | Wire AMPA through `DepLinExp2Syn` (Tsodyks-Markram depression, per presynaptic stream) instead of `StdpLinExp2Syn` |
 
 ## Cell types
@@ -44,19 +43,9 @@ The cell is single-compartment and uses the same Booth-Rinzel-Kiehn channel form
 - **KCa**: calcium-dependent potassium, the afterhyperpolarization that paces repetitive firing
 - plus `pas`, a `constant` resting-current pin
 
-There are two parameter sets, selected by `renshaw_phenotype`:
-
-| | `invitro` (default) | `perry` |
-|---|---|---|
-| Parameter set | `V1In-Renshaw-InVitro` | `V1In-Renshaw-Perry` |
-| Fitted against | ES-cell-derived Renshaw cells in vitro (Hoang et al. 2018) | neonatal mouse Renshaw cells (Perry et al. 2015) |
-| Input resistance target | ~420 MΩ | ~233 MΩ |
-| `V_rest` | −60.0 mV | −50.5 mV |
-| `V_threshold` | −50.0 mV | −30.8 mV |
-| Soma diameter | 19.4 µm | 16.4 µm |
+The parameters are fitted to neonatal mouse Renshaw cells (Perry et al. 2015).
 
 ```python
-model = ReducedCalciumSomaDendrite(renshaw_phenotype="perry")
 params = model.params("V1In-Renshaw-Perry")
 ```
 

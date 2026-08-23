@@ -22,13 +22,8 @@ class ReducedCalciumSomaDendrite(Model):
         self,
         input_mode: str | None = None,
         refractory_period: float = 2.0,
-        renshaw_phenotype: str = "invitro",
         short_term_depression: bool = False,
     ):
-        # Optional override for the underlying neuron's stimulus
-        # interpretation; this is only needed for the JAX
-        # backend that build the compute graph at
-        # compile time
         if input_mode is not None and input_mode not in {
             "current_density",
             "conductance",
@@ -44,19 +39,10 @@ class ReducedCalciumSomaDendrite(Model):
             raise ValueError(f"refractory_period must be >= 0, got {refractory_period}")
         self.refractory_period = float(refractory_period)
         self.short_term_depression = bool(short_term_depression)
-        if renshaw_phenotype not in ("invitro", "perry"):
-            raise ValueError(
-                f"renshaw_phenotype must be 'invitro' or 'perry', got "
-                f"{renshaw_phenotype!r}"
-            )
-        # which tuned V1In Renshaw parameter set the INH population uses
-        self.renshaw_phenotype = renshaw_phenotype
 
     def _inh_params_name(self) -> str:
-        return {
-            "invitro": "V1In-Renshaw-InVitro",
-            "perry": "V1In-Renshaw-Perry",
-        }[self.renshaw_phenotype]
+        # or "V1In-Renshaw-InVitro"
+        return "V1In-Renshaw-Perry"
 
     def prepare_stimulus(self, stimulus):
         from livn.stimulus import check_bounds
@@ -156,6 +142,33 @@ class ReducedCalciumSomaDendrite(Model):
                 "Ltotal": 120.0,
                 "e_pas": -62.0,
                 "pp": 0.1,
+                "Ra": 190.0,
+                "gc": 4.4117768218255495,
+                "cm_ratio": 7.536981416164337,
+                "global_cm": 0.9207035303115845,
+                "global_diam": 4.345423698425293,
+                "soma_g_pas": 1.1488028753936616e-05,
+                "soma_gmax_Na": 0.1394842565059662,
+                "soma_gmax_K": 0.10998242828601613,
+                "soma_gmax_KCa": 0.0062538449268322825,
+                "soma_gmax_CaN": 1.1097755617046225e-05,
+                "soma_f_Caconc": 0.0030148697264778374,
+                "soma_alpha_Caconc": 5.0000001782354415,
+                "soma_kCa_Caconc": 1.2125927144344322,
+                "dend_g_pas": 1.5652643987557022e-05,
+                "dend_gmax_CaL": 9.316833235200113e-05,
+                "dend_gmax_CaN": 0.000767890342735435,
+                "dend_gmax_KCa": 0.004930547806017893,
+                "dend_f_Caconc": 0.003239384669206284,
+                "dend_alpha_Caconc": 1.0683368078730968,
+                "dend_kCa_Caconc": 29.00676262216262,
+                "V_rest": -57.4,
+                "V_threshold": -37.0,
+            },
+            "BoothRinzelKiehn-MN-v1": {
+                "Ltotal": 120.0,
+                "e_pas": -62.0,
+                "pp": 0.1,
                 "cm_ratio": 1.777068615934255,
                 "dend_alpha_Caconc": 4.127872667411456,
                 "dend_f_Caconc": 0.001348028244331323,
@@ -199,18 +212,18 @@ class ReducedCalciumSomaDendrite(Model):
                 "V_threshold": -37.0,
             },
             "V1In-Renshaw-Perry": {
-                "global_diam": 16.41730499267578,
-                "global_cm": 1.0470783710479736,
-                "e_pas": -71.58283233642578,
-                "soma_g_pas": 3.894238398061134e-05,
-                "soma_gmax_Na": 0.05239470303058624,
-                "soma_gmax_K": 0.14435352385044098,
-                "soma_gmax_Ka": 0.015866799280047417,
-                "soma_gmax_KCa": 0.0021941864397376776,
-                "soma_gmax_CaN": 0.01926092617213726,
-                "soma_f_Caconc": 0.002321670763194561,
-                "soma_alpha_Caconc": 4.400171279907227,
-                "soma_kCa_Caconc": 24.27430534362793,
+                "global_diam": 15.670801162719727,
+                "global_cm": 1.0314580202102661,
+                "e_pas": -74.01708221435547,
+                "soma_g_pas": 2.9999999242136255e-05,
+                "soma_gmax_Na": 0.050526563078165054,
+                "soma_gmax_K": 0.10332200676202774,
+                "soma_gmax_Ka": 0.019093167036771774,
+                "soma_gmax_KCa": 0.002753025765930022,
+                "soma_gmax_CaN": 0.009249742142856121,
+                "soma_f_Caconc": 0.012550535520847662,
+                "soma_alpha_Caconc": 1.0873581573352384,
+                "soma_kCa_Caconc": 5.057104716106808,
                 "V_rest": -50.5,
                 "V_threshold": -30.8,
             },
@@ -287,7 +300,6 @@ class ReducedCalciumSomaDendrite(Model):
                 "livn.models.rcsd.neuron.templates.V1In.V1In"
             )
             celltypes["INH"]["template"] = "@" + celltypes["INH"]["template class"]
-            # V1In takes a flat param dict (not a nested {mech: params})
             celltypes["INH"]["mechanism"] = self.params(self._inh_params_name())
 
     def neuron_synapse_mechanisms(self):
@@ -663,7 +675,7 @@ class ReducedCalciumSomaDendrite(Model):
         learning_tau_inh : 1
 """
 
-    def _brk_equations(self, offset, params):
+    def _brk_equations(self, params):
         p = params
 
         # Geometry: coupling conductance
@@ -783,11 +795,13 @@ class ReducedCalciumSomaDendrite(Model):
         E_Na : 1
         E_K : 1
 
+        stim_index : integer (constant)
+
         # --- Extracellular stimulus as current density (mA/cm2) ---
         # V_ext enters through passive conductance: I = g_pas * V_ext
         # (linearized approximation of NEURON extracellular mechanism)
-        V_ext = stim_v(t, i + {offset}) / mV : 1
-        I_stim_s = {p["soma_g_pas"]} * V_ext + stim_i(t, i + {offset})/amp * {1000.0 / area_soma_cm2} : 1
+        V_ext = stim_v(t, stim_index) / mV : 1
+        I_stim_s = {p["soma_g_pas"]} * V_ext + stim_i(t, stim_index)/amp * {1000.0 / area_soma_cm2} : 1
         I_stim_d = {p["dend_g_pas"]} * V_ext : 1
 
 {synapse_blocks}{stdp_parameters}
@@ -823,7 +837,7 @@ class ReducedCalciumSomaDendrite(Model):
         v = Vs * mV : volt
         """
 
-    def _v1in_equations(self, offset, params):
+    def _v1in_equations(self, params):
         """Single-compartment V1 Renshaw cell, mirroring ``templates/V1In.py``.
 
         Same channel set as the NEURON template -- Nas, Kdr, Ka_v1in, KCa, CaN
@@ -886,9 +900,11 @@ class ReducedCalciumSomaDendrite(Model):
         E_Na : 1
         E_K : 1
 
+        stim_index : integer (constant)
+
         # --- Extracellular stimulus as current density (mA/cm2) ---
-        V_ext = stim_v(t, i + {offset}) / mV : 1
-        I_stim_s = {p["soma_g_pas"]} * V_ext + stim_i(t, i + {offset})/amp * {1000.0 / (area_soma * 1e-8)} : 1
+        V_ext = stim_v(t, stim_index) / mV : 1
+        I_stim_s = {p["soma_g_pas"]} * V_ext + stim_i(t, stim_index)/amp * {1000.0 / (area_soma * 1e-8)} : 1
 
 {synapse_blocks}{stdp_parameters}
         # --- Noise as current density (mA/cm2) ---
@@ -928,7 +944,9 @@ class ReducedCalciumSomaDendrite(Model):
             f"(Vs > {v_threshold}) or (t - lastspike < {self.refractory_period} * ms)"
         )
 
-    def brian2_population_group(self, population_name, n, offset, coordinates, prng):
+    def brian2_population_group(
+        self, population_name, n, offset, coordinates, prng, rows=None
+    ):
         import brian2 as b2
         import math as _m
 
@@ -983,7 +1001,7 @@ class ReducedCalciumSomaDendrite(Model):
             I_leak_d = p["dend_g_pas"] * (v_rest - e_pas)
             p["ic_constant_d"] = I_KCa_d + I_CaN_d + I_CaL_d + I_leak_d
 
-            equations = self._brk_equations(offset, p)
+            equations = self._brk_equations(p)
 
             _use_gsl = os.environ.get("LIVN_USE_LIBGSL", "0") == "1"
             _method = "gsl_rkf45" if _use_gsl else "euler"
@@ -1061,8 +1079,6 @@ class ReducedCalciumSomaDendrite(Model):
             population.area_dend_cm2 = _m.pi * _diam * ((1 - _pp) * _Ltot) * 1e-8
 
         else:
-            # INH = V1 Renshaw cell, the same single-compartment cell the
-            # NEURON backend builds from templates/V1In.py
             p = self.params(self._inh_params_name())
 
             v_rest = p["V_rest"]
@@ -1102,7 +1118,7 @@ class ReducedCalciumSomaDendrite(Model):
             p = dict(p)  # copy so we can override
             p["ic_constant"] = I_Na + I_K + I_Ka + I_KCa + I_CaN + I_leak
 
-            equations = self._v1in_equations(offset, p)
+            equations = self._v1in_equations(p)
 
             _use_gsl = os.environ.get("LIVN_USE_LIBGSL", "0") == "1"
             _method = "gsl_rkf45" if _use_gsl else "euler"

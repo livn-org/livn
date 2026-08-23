@@ -1,0 +1,1125 @@
+{
+    "evaluations": 9076,
+    "table_rows": 9076,
+    "epoch_entries": 9076,
+    "truncated": false,
+    "executions": 1,
+    "system": {
+        "INH": 1
+    },
+    "selection": null,
+    "model": "livn.models.rcsd.ReducedCalciumSomaDendrite",
+    "target": [
+        "systems.targets.cells.SingleCell.SingleCell",
+        {
+            "config": {
+                "Template": "livn.models.rcsd.neuron.templates.V1In.V1In",
+                "Population": "INH",
+                "Numerics": {
+                    "tstop": 2000.0,
+                    "celsius": 36.0
+                },
+                "Targets": {
+                    "Rin": {
+                        "current": [
+                            -50.0
+                        ],
+                        "current_factor": 0.001,
+                        "t": [
+                            250.0,
+                            1250.0
+                        ],
+                        "mean": null,
+                        "lower": [
+                            200.0
+                        ],
+                        "upper": [
+                            270.0
+                        ],
+                        "V_hold": null
+                    },
+                    "tau0": {
+                        "current": [
+                            -0.01
+                        ],
+                        "current_factor": 1.0,
+                        "t": [
+                            250.0,
+                            1250.0
+                        ],
+                        "mean": null,
+                        "lower": [
+                            10.0
+                        ],
+                        "upper": [
+                            22.0
+                        ],
+                        "V_hold": null
+                    },
+                    "threshold": -30.8,
+                    "V_hold": {
+                        "val": -60.0
+                    },
+                    "V_rest": {
+                        "val": -50.5
+                    },
+                    "f_I": {
+                        "current": [
+                            50.0,
+                            100.0,
+                            150.0,
+                            200.0,
+                            250.0
+                        ],
+                        "current_factor": 0.001,
+                        "t": [
+                            500.0,
+                            1500.0
+                        ],
+                        "mean": [
+                            20.0,
+                            26.0,
+                            26.0,
+                            31.0,
+                            36.0
+                        ],
+                        "lower": [
+                            12.0,
+                            18.0,
+                            18.0,
+                            22.0,
+                            27.0
+                        ],
+                        "upper": [
+                            28.0,
+                            34.0,
+                            34.0,
+                            40.0,
+                            45.0
+                        ],
+                        "V_hold": -50.5
+                    },
+                    "spike_amp": {
+                        "current": [],
+                        "current_factor": 1.0,
+                        "t": null,
+                        "mean": null,
+                        "lower": [
+                            60.0,
+                            60.0,
+                            60.0,
+                            60.0,
+                            60.0
+                        ],
+                        "upper": [
+                            80.0,
+                            80.0,
+                            80.0,
+                            80.0,
+                            80.0
+                        ],
+                        "V_hold": null
+                    },
+                    "spike_adaptation": {
+                        "current": [],
+                        "current_factor": 1.0,
+                        "t": [
+                            500.0,
+                            1500.0
+                        ],
+                        "mean": null,
+                        "lower": [
+                            1.0,
+                            1.0,
+                            1.0,
+                            1.0,
+                            1.0
+                        ],
+                        "upper": [
+                            2.2,
+                            2.2,
+                            2.2,
+                            2.2,
+                            2.2
+                        ],
+                        "V_hold": null
+                    }
+                },
+                "Drive": {
+                    "enabled": true,
+                    "levels": [
+                        0.01,
+                        0.03,
+                        0.1,
+                        0.3
+                    ],
+                    "duration": 2000.0,
+                    "seed": 20260811,
+                    "min_spikes": 5.0,
+                    "min_top_fraction": 0.2,
+                    "std_fraction": 0.33,
+                    "tau_e": 33.0,
+                    "tau_i": 28.5,
+                    "mean": null,
+                    "lower": null,
+                    "upper": null
+                },
+                "Parameters": {},
+                "Space": {
+                    "global_diam": [
+                        15.0,
+                        45.0
+                    ],
+                    "global_cm": [
+                        0.9,
+                        1.1
+                    ],
+                    "e_pas": [
+                        -75.0,
+                        -65.0
+                    ],
+                    "soma_g_pas": [
+                        3e-05,
+                        0.0002
+                    ],
+                    "soma_gmax_Na": [
+                        0.05,
+                        0.3
+                    ],
+                    "soma_gmax_K": [
+                        0.02,
+                        0.15
+                    ],
+                    "soma_gmax_Ka": [
+                        0.0,
+                        0.1
+                    ],
+                    "soma_gmax_KCa": [
+                        1e-05,
+                        0.003
+                    ],
+                    "soma_gmax_CaN": [
+                        0.0,
+                        0.02
+                    ],
+                    "soma_f_Caconc": [
+                        0.001,
+                        0.02
+                    ],
+                    "soma_alpha_Caconc": [
+                        0.2,
+                        5.0
+                    ],
+                    "soma_kCa_Caconc": [
+                        1.0,
+                        30.0
+                    ]
+                }
+            }
+        }
+    ],
+    "feature_bands": {
+        "rn_error": [
+            200.0,
+            270.0
+        ],
+        "tau_error": [
+            10.0,
+            22.0
+        ],
+        "spike_amplitude_error": [
+            60.0,
+            80.0
+        ],
+        "ISI_adaptation_error": [
+            1.0,
+            2.2
+        ],
+        "fI_error": [
+            19.4,
+            36.2
+        ]
+    },
+    "solutions": [
+        {
+            "loc": 0,
+            "objectives": {
+                "rn_error": 0.0,
+                "tau_error": 0.0,
+                "fI_error": 0.0,
+                "spike_amplitude_error": 0.0,
+                "ISI_adaptation_error": 0.0
+            },
+            "features": {
+                "rn_error": 215.66734313964844,
+                "tau_error": 10.303290367126465,
+                "fI_error": 28.600000381469727,
+                "spike_amplitude_error": 76.35162353515625,
+                "ISI_adaptation_error": 1.2001103162765503
+            },
+            "constraints": {
+                "drive_sustained": 129.0,
+                "drive_no_inversion": 62.20000076293945,
+                "monotonic_fI": 1.0,
+                "rn_constr": 1.0,
+                "tau_constr": 1.0,
+                "spike_amplitude_constr": 1.0,
+                "first_ISI_constr": 1.0,
+                "ISI_adaptation_constr": 1.0,
+                "pre_spk_count": 1.0,
+                "initial_v_constr": 1.0
+            },
+            "feasible": true,
+            "params": {
+                "global_diam": 15.670801162719727,
+                "global_cm": 1.0314580202102661,
+                "e_pas": -74.01708221435547,
+                "soma_g_pas": 2.9999999242136255e-05,
+                "soma_gmax_Na": 0.050526563078165054,
+                "soma_gmax_K": 0.10332200676202774,
+                "soma_gmax_Ka": 0.019093167036771774,
+                "soma_gmax_KCa": 0.002753025765930022,
+                "soma_gmax_CaN": 0.009249742142856121,
+                "soma_f_Caconc": 0.012550535520847662,
+                "soma_alpha_Caconc": 1.0873581573352384,
+                "soma_kCa_Caconc": 5.057104716106808
+            }
+        },
+        {
+            "loc": 1,
+            "objectives": {
+                "rn_error": 0.0,
+                "tau_error": 0.0,
+                "fI_error": 0.20000000298023224,
+                "spike_amplitude_error": 0.0,
+                "ISI_adaptation_error": 0.0
+            },
+            "features": {
+                "rn_error": 214.2394256591797,
+                "tau_error": 10.675898551940918,
+                "fI_error": 28.0,
+                "spike_amplitude_error": 75.55451965332031,
+                "ISI_adaptation_error": 1.0785833597183228
+            },
+            "constraints": {
+                "drive_sustained": 98.0,
+                "drive_no_inversion": 80.4000015258789,
+                "monotonic_fI": 1.0,
+                "rn_constr": 1.0,
+                "tau_constr": 1.0,
+                "spike_amplitude_constr": 1.0,
+                "first_ISI_constr": 1.0,
+                "ISI_adaptation_constr": 1.0,
+                "pre_spk_count": 1.0,
+                "initial_v_constr": 1.0
+            },
+            "feasible": true,
+            "params": {
+                "global_diam": 15.745916366577148,
+                "global_cm": 1.0295805931091309,
+                "e_pas": -74.39620971679688,
+                "soma_g_pas": 2.9999999242136255e-05,
+                "soma_gmax_Na": 0.05091574043035507,
+                "soma_gmax_K": 0.11780131608247757,
+                "soma_gmax_Ka": 0.01871543563902378,
+                "soma_gmax_KCa": 0.0027689362428589192,
+                "soma_gmax_CaN": 0.009253469295799732,
+                "soma_f_Caconc": 0.011514082798848838,
+                "soma_alpha_Caconc": 1.0907376023253386,
+                "soma_kCa_Caconc": 5.191617716057883
+            }
+        },
+        {
+            "loc": 2,
+            "objectives": {
+                "rn_error": 0.0,
+                "tau_error": 0.0,
+                "fI_error": 3.4000000953674316,
+                "spike_amplitude_error": 0.0,
+                "ISI_adaptation_error": 0.0
+            },
+            "features": {
+                "rn_error": 219.1509246826172,
+                "tau_error": 10.374176025390625,
+                "fI_error": 31.399999618530273,
+                "spike_amplitude_error": 76.38500213623047,
+                "ISI_adaptation_error": 1.1573477983474731
+            },
+            "constraints": {
+                "drive_sustained": 109.0,
+                "drive_no_inversion": 71.19999694824219,
+                "monotonic_fI": 1.0,
+                "rn_constr": 1.0,
+                "tau_constr": 1.0,
+                "spike_amplitude_constr": 1.0,
+                "first_ISI_constr": 1.0,
+                "ISI_adaptation_constr": 1.0,
+                "pre_spk_count": 1.0,
+                "initial_v_constr": 1.0
+            },
+            "feasible": true,
+            "params": {
+                "global_diam": 15.726158142089844,
+                "global_cm": 1.0514063835144043,
+                "e_pas": -75.0,
+                "soma_g_pas": 2.9999999242136255e-05,
+                "soma_gmax_Na": 0.050739482045173645,
+                "soma_gmax_K": 0.10895363241434097,
+                "soma_gmax_Ka": 0.018207013607025146,
+                "soma_gmax_KCa": 0.0028367060870266338,
+                "soma_gmax_CaN": 0.00806485116481781,
+                "soma_f_Caconc": 0.010888184611339854,
+                "soma_alpha_Caconc": 1.6670829953823174,
+                "soma_kCa_Caconc": 7.471832932012364
+            }
+        },
+        {
+            "loc": 3,
+            "objectives": {
+                "rn_error": 0.0,
+                "tau_error": 0.0,
+                "fI_error": 10.0,
+                "spike_amplitude_error": 0.0,
+                "ISI_adaptation_error": 0.0
+            },
+            "features": {
+                "rn_error": 201.85707092285156,
+                "tau_error": 11.199628829956055,
+                "fI_error": 22.200000762939453,
+                "spike_amplitude_error": 77.0751724243164,
+                "ISI_adaptation_error": 1.124815821647644
+            },
+            "constraints": {
+                "drive_sustained": 108.0,
+                "drive_no_inversion": 63.400001525878906,
+                "monotonic_fI": 1.0,
+                "rn_constr": 1.0,
+                "tau_constr": 1.0,
+                "spike_amplitude_constr": 1.0,
+                "first_ISI_constr": 1.0,
+                "ISI_adaptation_constr": 1.0,
+                "pre_spk_count": 1.0,
+                "initial_v_constr": 1.0
+            },
+            "feasible": true,
+            "params": {
+                "global_diam": 16.079097747802734,
+                "global_cm": 1.03074049949646,
+                "e_pas": -72.47453308105469,
+                "soma_g_pas": 3.800350896199234e-05,
+                "soma_gmax_Na": 0.05000000074505806,
+                "soma_gmax_K": 0.09537877887487411,
+                "soma_gmax_Ka": 0.018706385046243668,
+                "soma_gmax_KCa": 0.0028135785394265123,
+                "soma_gmax_CaN": 0.013448445126414299,
+                "soma_f_Caconc": 0.02000000203195368,
+                "soma_alpha_Caconc": 1.0873236194897966,
+                "soma_kCa_Caconc": 4.075448140472258
+            }
+        },
+        {
+            "loc": 4,
+            "objectives": {
+                "rn_error": 0.0,
+                "tau_error": 1.9647639989852905,
+                "fI_error": 0.0,
+                "spike_amplitude_error": 0.0,
+                "ISI_adaptation_error": 0.0
+            },
+            "features": {
+                "rn_error": 210.2080535888672,
+                "tau_error": 8.598299980163574,
+                "fI_error": 24.0,
+                "spike_amplitude_error": 75.45926666259766,
+                "ISI_adaptation_error": 1.1997681856155396
+            },
+            "constraints": {
+                "drive_sustained": 177.0,
+                "drive_no_inversion": 145.60000610351562,
+                "monotonic_fI": 1.0,
+                "rn_constr": 1.0,
+                "tau_constr": 1.0,
+                "spike_amplitude_constr": 1.0,
+                "first_ISI_constr": 1.0,
+                "ISI_adaptation_constr": 1.0,
+                "pre_spk_count": 1.0,
+                "initial_v_constr": 1.0
+            },
+            "feasible": true,
+            "params": {
+                "global_diam": 18.10446548461914,
+                "global_cm": 1.0241461992263794,
+                "e_pas": -65.42066955566406,
+                "soma_g_pas": 5.422396498033777e-05,
+                "soma_gmax_Na": 0.05000000074505806,
+                "soma_gmax_K": 0.14851941168308258,
+                "soma_gmax_Ka": 0.012482056394219398,
+                "soma_gmax_KCa": 0.002067475712119294,
+                "soma_gmax_CaN": 0.002394932322204113,
+                "soma_f_Caconc": 0.02000000203195368,
+                "soma_alpha_Caconc": 2.2423054659429416,
+                "soma_kCa_Caconc": 2.2098918527813036
+            }
+        },
+        {
+            "loc": 5,
+            "objectives": {
+                "rn_error": 0.0,
+                "tau_error": 0.0,
+                "fI_error": 0.0,
+                "spike_amplitude_error": 0.06825254112482071,
+                "ISI_adaptation_error": 0.0
+            },
+            "features": {
+                "rn_error": 208.353271484375,
+                "tau_error": 10.972579002380371,
+                "fI_error": 26.600000381469727,
+                "spike_amplitude_error": 79.62844848632812,
+                "ISI_adaptation_error": 1.3737367391586304
+            },
+            "constraints": {
+                "drive_sustained": 122.0,
+                "drive_no_inversion": 70.5999984741211,
+                "monotonic_fI": 1.0,
+                "rn_constr": 1.0,
+                "tau_constr": 1.0,
+                "spike_amplitude_constr": 1.0,
+                "first_ISI_constr": 1.0,
+                "ISI_adaptation_constr": 1.0,
+                "pre_spk_count": 1.0,
+                "initial_v_constr": 1.0
+            },
+            "feasible": true,
+            "params": {
+                "global_diam": 16.27577781677246,
+                "global_cm": 1.0670878887176514,
+                "e_pas": -73.4854736328125,
+                "soma_g_pas": 5.3042320359963924e-05,
+                "soma_gmax_Na": 0.056756582111120224,
+                "soma_gmax_K": 0.10014579445123672,
+                "soma_gmax_Ka": 0.01616954244673252,
+                "soma_gmax_KCa": 0.0030000006799287137,
+                "soma_gmax_CaN": 0.009509019553661346,
+                "soma_f_Caconc": 0.004343571218359863,
+                "soma_alpha_Caconc": 1.7240963673015213,
+                "soma_kCa_Caconc": 9.083846250421917
+            }
+        },
+        {
+            "loc": 6,
+            "objectives": {
+                "rn_error": 0.0,
+                "tau_error": 1.8618198737385683e-05,
+                "fI_error": 0.20000000298023224,
+                "spike_amplitude_error": 0.0,
+                "ISI_adaptation_error": 0.0
+            },
+            "features": {
+                "rn_error": 218.80088806152344,
+                "tau_error": 9.995685577392578,
+                "fI_error": 25.0,
+                "spike_amplitude_error": 77.6680908203125,
+                "ISI_adaptation_error": 1.2449599504470825
+            },
+            "constraints": {
+                "drive_sustained": 129.0,
+                "drive_no_inversion": 62.20000076293945,
+                "monotonic_fI": 1.0,
+                "rn_constr": 1.0,
+                "tau_constr": 1.0,
+                "spike_amplitude_constr": 1.0,
+                "first_ISI_constr": 1.0,
+                "ISI_adaptation_constr": 1.0,
+                "pre_spk_count": 1.0,
+                "initial_v_constr": 1.0
+            },
+            "feasible": true,
+            "params": {
+                "global_diam": 15.320024490356445,
+                "global_cm": 1.0670881271362305,
+                "e_pas": -66.33207702636719,
+                "soma_g_pas": 4.116881973459385e-05,
+                "soma_gmax_Na": 0.05588233843445778,
+                "soma_gmax_K": 0.11134357750415802,
+                "soma_gmax_Ka": 0.019450748339295387,
+                "soma_gmax_KCa": 0.002601157301939212,
+                "soma_gmax_CaN": 0.009359127841889858,
+                "soma_f_Caconc": 0.008824326567847695,
+                "soma_alpha_Caconc": 1.8916402271107637,
+                "soma_kCa_Caconc": 5.832563620216805
+            }
+        },
+        {
+            "loc": 7,
+            "objectives": {
+                "rn_error": 0.0,
+                "tau_error": 0.0,
+                "fI_error": 0.0,
+                "spike_amplitude_error": 0.16213515400886536,
+                "ISI_adaptation_error": 0.0
+            },
+            "features": {
+                "rn_error": 221.51329040527344,
+                "tau_error": 10.984359741210938,
+                "fI_error": 28.799999237060547,
+                "spike_amplitude_error": 79.13822937011719,
+                "ISI_adaptation_error": 1.1881017684936523
+            },
+            "constraints": {
+                "drive_sustained": 131.0,
+                "drive_no_inversion": 57.79999923706055,
+                "monotonic_fI": 1.0,
+                "rn_constr": 1.0,
+                "tau_constr": 1.0,
+                "spike_amplitude_constr": 1.0,
+                "first_ISI_constr": 1.0,
+                "ISI_adaptation_constr": 1.0,
+                "pre_spk_count": 1.0,
+                "initial_v_constr": 1.0
+            },
+            "feasible": true,
+            "params": {
+                "global_diam": 15.0,
+                "global_cm": 0.9656147956848145,
+                "e_pas": -71.3832778930664,
+                "soma_g_pas": 5.839426376041956e-05,
+                "soma_gmax_Na": 0.05000000074505806,
+                "soma_gmax_K": 0.0979401096701622,
+                "soma_gmax_Ka": 0.018380647525191307,
+                "soma_gmax_KCa": 0.0030000006799287137,
+                "soma_gmax_CaN": 0.008180038072168827,
+                "soma_f_Caconc": 0.015943123806066207,
+                "soma_alpha_Caconc": 1.9311781183320544,
+                "soma_kCa_Caconc": 5.490862063919745
+            }
+        },
+        {
+            "loc": 8,
+            "objectives": {
+                "rn_error": 0.0,
+                "tau_error": 0.0,
+                "fI_error": 61.0,
+                "spike_amplitude_error": 0.0,
+                "ISI_adaptation_error": 0.0
+            },
+            "features": {
+                "rn_error": 213.29147338867188,
+                "tau_error": 10.671280860900879,
+                "fI_error": 38.599998474121094,
+                "spike_amplitude_error": 76.74266815185547,
+                "ISI_adaptation_error": 1.19426429271698
+            },
+            "constraints": {
+                "drive_sustained": 129.0,
+                "drive_no_inversion": 63.20000076293945,
+                "monotonic_fI": 1.0,
+                "rn_constr": 1.0,
+                "tau_constr": 1.0,
+                "spike_amplitude_constr": 1.0,
+                "first_ISI_constr": 1.0,
+                "ISI_adaptation_constr": 1.0,
+                "pre_spk_count": 1.0,
+                "initial_v_constr": 1.0
+            },
+            "feasible": true,
+            "params": {
+                "global_diam": 15.822193145751953,
+                "global_cm": 1.0268869400024414,
+                "e_pas": -74.98417663574219,
+                "soma_g_pas": 3.032223685295321e-05,
+                "soma_gmax_Na": 0.05070866271853447,
+                "soma_gmax_K": 0.10424252599477768,
+                "soma_gmax_Ka": 0.018637673929333687,
+                "soma_gmax_KCa": 0.002825037999649321,
+                "soma_gmax_CaN": 0.008051802404224873,
+                "soma_f_Caconc": 0.012947003510175931,
+                "soma_alpha_Caconc": 1.5122819998461767,
+                "soma_kCa_Caconc": 8.300327305537005
+            }
+        },
+        {
+            "loc": 9,
+            "objectives": {
+                "rn_error": 0.0,
+                "tau_error": 0.0,
+                "fI_error": 0.20000000298023224,
+                "spike_amplitude_error": 0.027559103444218636,
+                "ISI_adaptation_error": 0.0
+            },
+            "features": {
+                "rn_error": 205.13015747070312,
+                "tau_error": 10.943609237670898,
+                "fI_error": 24.399999618530273,
+                "spike_amplitude_error": 79.0384750366211,
+                "ISI_adaptation_error": 1.430134892463684
+            },
+            "constraints": {
+                "drive_sustained": 117.0,
+                "drive_no_inversion": 70.5999984741211,
+                "monotonic_fI": 1.0,
+                "rn_constr": 1.0,
+                "tau_constr": 1.0,
+                "spike_amplitude_constr": 1.0,
+                "first_ISI_constr": 1.0,
+                "ISI_adaptation_constr": 1.0,
+                "pre_spk_count": 1.0,
+                "initial_v_constr": 1.0
+            },
+            "feasible": true,
+            "params": {
+                "global_diam": 16.292236328125,
+                "global_cm": 1.0694901943206787,
+                "e_pas": -72.60491943359375,
+                "soma_g_pas": 5.641920506604947e-05,
+                "soma_gmax_Na": 0.0569363534450531,
+                "soma_gmax_K": 0.09967388957738876,
+                "soma_gmax_Ka": 0.016366824507713318,
+                "soma_gmax_KCa": 0.0030000006799287137,
+                "soma_gmax_CaN": 0.00960930623114109,
+                "soma_f_Caconc": 0.003983600286456577,
+                "soma_alpha_Caconc": 1.6774970016334771,
+                "soma_kCa_Caconc": 8.382958238390689
+            }
+        },
+        {
+            "loc": 10,
+            "objectives": {
+                "rn_error": 0.0,
+                "tau_error": 0.0,
+                "fI_error": 97.80000305175781,
+                "spike_amplitude_error": 0.0,
+                "ISI_adaptation_error": 0.0
+            },
+            "features": {
+                "rn_error": 202.37640380859375,
+                "tau_error": 13.482898712158203,
+                "fI_error": 39.79999923706055,
+                "spike_amplitude_error": 76.59065246582031,
+                "ISI_adaptation_error": 1.1835297346115112
+            },
+            "constraints": {
+                "drive_sustained": 119.0,
+                "drive_no_inversion": 66.19999694824219,
+                "monotonic_fI": 1.0,
+                "rn_constr": 1.0,
+                "tau_constr": 1.0,
+                "spike_amplitude_constr": 1.0,
+                "first_ISI_constr": 1.0,
+                "ISI_adaptation_constr": 1.0,
+                "pre_spk_count": 1.0,
+                "initial_v_constr": 1.0
+            },
+            "feasible": true,
+            "params": {
+                "global_diam": 15.706975936889648,
+                "global_cm": 1.049846887588501,
+                "e_pas": -75.0,
+                "soma_g_pas": 2.9999999242136255e-05,
+                "soma_gmax_Na": 0.05079697072505951,
+                "soma_gmax_K": 0.10913244634866714,
+                "soma_gmax_Ka": 0.018959810957312584,
+                "soma_gmax_KCa": 0.0028838655175702312,
+                "soma_gmax_CaN": 0.00701299449428916,
+                "soma_f_Caconc": 0.017627681585419882,
+                "soma_alpha_Caconc": 1.466348922797303,
+                "soma_kCa_Caconc": 7.3884429320445735
+            }
+        },
+        {
+            "loc": 11,
+            "objectives": {
+                "rn_error": 0.0,
+                "tau_error": 0.0,
+                "fI_error": 0.20000000298023224,
+                "spike_amplitude_error": 0.031023915857076645,
+                "ISI_adaptation_error": 0.0
+            },
+            "features": {
+                "rn_error": 207.96417236328125,
+                "tau_error": 13.116272926330566,
+                "fI_error": 30.399999618530273,
+                "spike_amplitude_error": 77.9908218383789,
+                "ISI_adaptation_error": 1.1980172395706177
+            },
+            "constraints": {
+                "drive_sustained": 132.0,
+                "drive_no_inversion": 60.599998474121094,
+                "monotonic_fI": 1.0,
+                "rn_constr": 1.0,
+                "tau_constr": 1.0,
+                "spike_amplitude_constr": 1.0,
+                "first_ISI_constr": 1.0,
+                "ISI_adaptation_constr": 1.0,
+                "pre_spk_count": 1.0,
+                "initial_v_constr": 1.0
+            },
+            "feasible": true,
+            "params": {
+                "global_diam": 15.499292373657227,
+                "global_cm": 1.0073461532592773,
+                "e_pas": -73.57015991210938,
+                "soma_g_pas": 3.2283205655403435e-05,
+                "soma_gmax_Na": 0.05172380432486534,
+                "soma_gmax_K": 0.10108157992362976,
+                "soma_gmax_Ka": 0.019109562039375305,
+                "soma_gmax_KCa": 0.0028436257761054982,
+                "soma_gmax_CaN": 0.009928512386977673,
+                "soma_f_Caconc": 0.016875528041442177,
+                "soma_alpha_Caconc": 1.1594218584248204,
+                "soma_kCa_Caconc": 4.96298706795415
+            }
+        },
+        {
+            "loc": 12,
+            "objectives": {
+                "rn_error": 0.0,
+                "tau_error": 0.0,
+                "fI_error": 1.600000023841858,
+                "spike_amplitude_error": 0.0,
+                "ISI_adaptation_error": 1162.402587890625
+            },
+            "features": {
+                "rn_error": 210.68740844726562,
+                "tau_error": 10.20881462097168,
+                "fI_error": 22.399999618530273,
+                "spike_amplitude_error": 71.68903350830078,
+                "ISI_adaptation_error": 1.7632547616958618
+            },
+            "constraints": {
+                "drive_sustained": 137.0,
+                "drive_no_inversion": 63.599998474121094,
+                "monotonic_fI": 1.0,
+                "rn_constr": 1.0,
+                "tau_constr": 1.0,
+                "spike_amplitude_constr": 1.0,
+                "first_ISI_constr": 1.0,
+                "ISI_adaptation_constr": 1.0,
+                "pre_spk_count": 1.0,
+                "initial_v_constr": 1.0
+            },
+            "feasible": true,
+            "params": {
+                "global_diam": 15.0,
+                "global_cm": 1.0431857109069824,
+                "e_pas": -65.89833068847656,
+                "soma_g_pas": 0.00010300335270585492,
+                "soma_gmax_Na": 0.054692938923835754,
+                "soma_gmax_K": 0.13229990005493164,
+                "soma_gmax_Ka": 0.018853457644581795,
+                "soma_gmax_KCa": 0.0015687656491680867,
+                "soma_gmax_CaN": 0.003666540142148733,
+                "soma_f_Caconc": 0.012402090385284224,
+                "soma_alpha_Caconc": 2.4353087690145716,
+                "soma_kCa_Caconc": 2.3114257591074003
+            }
+        },
+        {
+            "loc": 13,
+            "objectives": {
+                "rn_error": 0.0,
+                "tau_error": 0.0,
+                "fI_error": 2.5999999046325684,
+                "spike_amplitude_error": 2.503283739089966,
+                "ISI_adaptation_error": 0.0
+            },
+            "features": {
+                "rn_error": 216.59942626953125,
+                "tau_error": 10.738053321838379,
+                "fI_error": 20.600000381469727,
+                "spike_amplitude_error": 81.3702163696289,
+                "ISI_adaptation_error": 1.3949246406555176
+            },
+            "constraints": {
+                "drive_sustained": 124.0,
+                "drive_no_inversion": 77.19999694824219,
+                "monotonic_fI": 1.0,
+                "rn_constr": 1.0,
+                "tau_constr": 1.0,
+                "spike_amplitude_constr": 1.0,
+                "first_ISI_constr": 1.0,
+                "ISI_adaptation_constr": 1.0,
+                "pre_spk_count": 1.0,
+                "initial_v_constr": 1.0
+            },
+            "feasible": true,
+            "params": {
+                "global_diam": 15.643373489379883,
+                "global_cm": 1.0997200012207031,
+                "e_pas": -71.59505462646484,
+                "soma_g_pas": 3.3487111068097875e-05,
+                "soma_gmax_Na": 0.06835976988077164,
+                "soma_gmax_K": 0.11886204779148102,
+                "soma_gmax_Ka": 0.01889720931649208,
+                "soma_gmax_KCa": 0.0025707504996984715,
+                "soma_gmax_CaN": 0.006149910390377045,
+                "soma_f_Caconc": 0.004442989386619287,
+                "soma_alpha_Caconc": 4.403693327417793,
+                "soma_kCa_Caconc": 6.928862498540938
+            }
+        },
+        {
+            "loc": 14,
+            "objectives": {
+                "rn_error": 0.0,
+                "tau_error": 0.10336727648973465,
+                "fI_error": 33.0,
+                "spike_amplitude_error": 0.0,
+                "ISI_adaptation_error": 0.0
+            },
+            "features": {
+                "rn_error": 227.9936981201172,
+                "tau_error": 9.678492546081543,
+                "fI_error": 36.79999923706055,
+                "spike_amplitude_error": 77.075439453125,
+                "ISI_adaptation_error": 1.2274549007415771
+            },
+            "constraints": {
+                "drive_sustained": 190.0,
+                "drive_no_inversion": 38.0,
+                "monotonic_fI": 1.0,
+                "rn_constr": 1.0,
+                "tau_constr": 1.0,
+                "spike_amplitude_constr": 1.0,
+                "first_ISI_constr": 1.0,
+                "ISI_adaptation_constr": 1.0,
+                "pre_spk_count": 1.0,
+                "initial_v_constr": 1.0
+            },
+            "feasible": true,
+            "params": {
+                "global_diam": 15.423977851867676,
+                "global_cm": 1.031585693359375,
+                "e_pas": -74.33943939208984,
+                "soma_g_pas": 2.9999999242136255e-05,
+                "soma_gmax_Na": 0.050618961453437805,
+                "soma_gmax_K": 0.07855100184679031,
+                "soma_gmax_Ka": 0.01900460198521614,
+                "soma_gmax_KCa": 0.002682815300583833,
+                "soma_gmax_CaN": 0.007502067368477583,
+                "soma_f_Caconc": 0.01296821227295346,
+                "soma_alpha_Caconc": 1.2291872578228906,
+                "soma_kCa_Caconc": 6.134684966993045
+            }
+        },
+        {
+            "loc": 15,
+            "objectives": {
+                "rn_error": 0.0,
+                "tau_error": 9.400676727294922,
+                "fI_error": 0.800000011920929,
+                "spike_amplitude_error": 0.0,
+                "ISI_adaptation_error": 10580.0
+            },
+            "features": {
+                "rn_error": 231.5826416015625,
+                "tau_error": 6.933947563171387,
+                "fI_error": 29.0,
+                "spike_amplitude_error": 71.82186126708984,
+                "ISI_adaptation_error": 2.020317554473877
+            },
+            "constraints": {
+                "drive_sustained": 116.0,
+                "drive_no_inversion": 81.80000305175781,
+                "monotonic_fI": 1.0,
+                "rn_constr": 1.0,
+                "tau_constr": 1.0,
+                "spike_amplitude_constr": 1.0,
+                "first_ISI_constr": 1.0,
+                "ISI_adaptation_constr": 1.0,
+                "pre_spk_count": 1.0,
+                "initial_v_constr": 1.0
+            },
+            "feasible": true,
+            "params": {
+                "global_diam": 15.0,
+                "global_cm": 1.041663646697998,
+                "e_pas": -65.22228240966797,
+                "soma_g_pas": 0.00011247563088545576,
+                "soma_gmax_Na": 0.05463773012161255,
+                "soma_gmax_K": 0.1431075930595398,
+                "soma_gmax_Ka": 0.01660839468240738,
+                "soma_gmax_KCa": 0.0015979079933223336,
+                "soma_gmax_CaN": 0.003069257363677025,
+                "soma_f_Caconc": 0.013726155781357333,
+                "soma_alpha_Caconc": 2.3855797221025323,
+                "soma_kCa_Caconc": 2.5114745315554576
+            }
+        },
+        {
+            "loc": 16,
+            "objectives": {
+                "rn_error": 0.0,
+                "tau_error": 0.0157281756401062,
+                "fI_error": 17.200000762939453,
+                "spike_amplitude_error": 0.0,
+                "ISI_adaptation_error": 562496.25
+            },
+            "features": {
+                "rn_error": 209.1712188720703,
+                "tau_error": 9.874588012695312,
+                "fI_error": 15.800000190734863,
+                "spike_amplitude_error": 78.39775085449219,
+                "ISI_adaptation_error": 8.108081817626953
+            },
+            "constraints": {
+                "drive_sustained": 163.0,
+                "drive_no_inversion": 134.39999389648438,
+                "monotonic_fI": 1.0,
+                "rn_constr": 1.0,
+                "tau_constr": 1.0,
+                "spike_amplitude_constr": 1.0,
+                "first_ISI_constr": 1.0,
+                "ISI_adaptation_constr": 1.0,
+                "pre_spk_count": 1.0,
+                "initial_v_constr": 1.0
+            },
+            "feasible": true,
+            "params": {
+                "global_diam": 17.876815795898438,
+                "global_cm": 1.0449589490890503,
+                "e_pas": -72.76383972167969,
+                "soma_g_pas": 2.9999999242136255e-05,
+                "soma_gmax_Na": 0.06327012926340103,
+                "soma_gmax_K": 0.13628733158111572,
+                "soma_gmax_Ka": 0.013681191019713879,
+                "soma_gmax_KCa": 0.002609812381980831,
+                "soma_gmax_CaN": 0.007932850159704685,
+                "soma_f_Caconc": 0.0010306328050567982,
+                "soma_alpha_Caconc": 2.4041234742397424,
+                "soma_kCa_Caconc": 7.944098493373044
+            }
+        },
+        {
+            "loc": 17,
+            "objectives": {
+                "rn_error": 0.0,
+                "tau_error": 7.021451950073242,
+                "fI_error": 17.200000762939453,
+                "spike_amplitude_error": 2.0163607597351074,
+                "ISI_adaptation_error": 0.0
+            },
+            "features": {
+                "rn_error": 236.9007110595703,
+                "tau_error": 7.350197792053223,
+                "fI_error": 15.399999618530273,
+                "spike_amplitude_error": 80.8115005493164,
+                "ISI_adaptation_error": 1.4732739925384521
+            },
+            "constraints": {
+                "drive_sustained": 136.0,
+                "drive_no_inversion": 59.79999923706055,
+                "monotonic_fI": 1.0,
+                "rn_constr": 1.0,
+                "tau_constr": 1.0,
+                "spike_amplitude_constr": 1.0,
+                "first_ISI_constr": 1.0,
+                "ISI_adaptation_constr": 1.0,
+                "pre_spk_count": 1.0,
+                "initial_v_constr": 1.0
+            },
+            "feasible": true,
+            "params": {
+                "global_diam": 16.15366554260254,
+                "global_cm": 1.0744582414627075,
+                "e_pas": -71.22480773925781,
+                "soma_g_pas": 4.190337858744897e-05,
+                "soma_gmax_Na": 0.05822810158133507,
+                "soma_gmax_K": 0.08975611627101898,
+                "soma_gmax_Ka": 0.015237984247505665,
+                "soma_gmax_KCa": 0.0028606785463055873,
+                "soma_gmax_CaN": 0.014138150960206985,
+                "soma_f_Caconc": 0.0049856136453744915,
+                "soma_alpha_Caconc": 1.354433235537986,
+                "soma_kCa_Caconc": 4.568876412137108
+            }
+        },
+        {
+            "loc": 18,
+            "objectives": {
+                "rn_error": 0.0,
+                "tau_error": 2.8762924671173096,
+                "fI_error": 19055.80078125,
+                "spike_amplitude_error": 0.0,
+                "ISI_adaptation_error": 18037.890625
+            },
+            "features": {
+                "rn_error": 203.504638671875,
+                "tau_error": 8.304036140441895,
+                "fI_error": 160.8000030517578,
+                "spike_amplitude_error": 72.2413101196289,
+                "ISI_adaptation_error": 2.174971580505371
+            },
+            "constraints": {
+                "drive_sustained": 141.0,
+                "drive_no_inversion": 116.80000305175781,
+                "monotonic_fI": 1.0,
+                "rn_constr": 1.0,
+                "tau_constr": 1.0,
+                "spike_amplitude_constr": 1.0,
+                "first_ISI_constr": 1.0,
+                "ISI_adaptation_constr": 1.0,
+                "pre_spk_count": 1.0,
+                "initial_v_constr": 1.0
+            },
+            "feasible": true,
+            "params": {
+                "global_diam": 18.11865234375,
+                "global_cm": 1.0587719678878784,
+                "e_pas": -67.52546691894531,
+                "soma_g_pas": 8.55346443131566e-05,
+                "soma_gmax_Na": 0.05000000074505806,
+                "soma_gmax_K": 0.14561672508716583,
+                "soma_gmax_Ka": 0.011874948628246784,
+                "soma_gmax_KCa": 0.0016949130916693383,
+                "soma_gmax_CaN": 0.0,
+                "soma_f_Caconc": 0.02000000203195368,
+                "soma_alpha_Caconc": 2.0518002129892965,
+                "soma_kCa_Caconc": 3.0012470529047257
+            }
+        },
+        {
+            "loc": 19,
+            "objectives": {
+                "rn_error": 0.0,
+                "tau_error": 36.30781936645508,
+                "fI_error": 26.200000762939453,
+                "spike_amplitude_error": 259.7981262207031,
+                "ISI_adaptation_error": 1674.9755859375
+            },
+            "features": {
+                "rn_error": 248.84765625,
+                "tau_error": 3.974402904510498,
+                "fI_error": 30.399999618530273,
+                "spike_amplitude_error": 96.07035827636719,
+                "ISI_adaptation_error": 2.018120050430298
+            },
+            "constraints": {
+                "drive_sustained": 384.0,
+                "drive_no_inversion": 40.20000076293945,
+                "monotonic_fI": 1.0,
+                "rn_constr": 1.0,
+                "tau_constr": 1.0,
+                "spike_amplitude_constr": 1.0,
+                "first_ISI_constr": 1.0,
+                "ISI_adaptation_constr": 1.0,
+                "pre_spk_count": 1.0,
+                "initial_v_constr": 1.0
+            },
+            "feasible": true,
+            "params": {
+                "global_diam": 20.4951171875,
+                "global_cm": 1.0299726724624634,
+                "e_pas": -72.4341049194336,
+                "soma_g_pas": 0.0001938862696988508,
+                "soma_gmax_Na": 0.11178141087293625,
+                "soma_gmax_K": 0.08304163813591003,
+                "soma_gmax_Ka": 0.004233631771057844,
+                "soma_gmax_KCa": 0.0008513241576530646,
+                "soma_gmax_CaN": 0.008123626932501793,
+                "soma_f_Caconc": 0.0024709895174157893,
+                "soma_alpha_Caconc": 5.0000001782354415,
+                "soma_kCa_Caconc": 7.970347878431022
+            }
+        }
+    ]
+}
