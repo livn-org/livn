@@ -197,6 +197,7 @@ class Env(EnvProtocol):
         self._stim_idle = False
         self._stim_dt: float | None = None
         self._stim_step = 0
+        self._stim_last_key: int | None = None
         self._stim_registered = False
         self._stim_cb = _EnvCallback(self, "_update_extracellular")
         self._opsin_cb = _EnvCallback(self, "_update_opsin_phi")
@@ -482,6 +483,7 @@ class Env(EnvProtocol):
         current_time = self.t
         self._prune_stim_streams(current_time)
         self._stim_idle = False
+        self._stim_last_key = None
 
         if stimulus is not None:
             stimulus = Stimulus.from_arg(stimulus, env=self, duration=duration)
@@ -828,9 +830,15 @@ class Env(EnvProtocol):
 
         current_time = self._stim_step * (self._dt or 0.025)
         idx = int(current_time / self._stim_dt) if self._stim_dt else 0
+        self._stim_step += 1
+
+        key = idx if streams else min(idx, block.shape[1] - 1)
+        if key == self._stim_last_key:
+            return
+        self._stim_last_key = key
 
         if not streams:
-            col = block[:, min(idx, block.shape[1] - 1)]
+            col = block[:, key]
         else:
             col = np.zeros(len(self._stim_segments), dtype=np.float64)
             if block is not None:
@@ -838,8 +846,6 @@ class Env(EnvProtocol):
                 col[: len(held)] = held
             for stream in streams:
                 self._accumulate_stim_stream(stream, idx, col)
-
-        self._stim_step += 1
 
         # skip the segment write loop when column is all zero
         if not col.any():
@@ -1522,6 +1528,7 @@ class Env(EnvProtocol):
         self._stim_idle = False
         self._stim_dt = None
         self._stim_step = 0
+        self._stim_last_key = None
         self._opsin_pps = []
         self._opsin_block = None
         self._opsin_dt = None
