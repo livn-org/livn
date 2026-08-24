@@ -147,6 +147,7 @@ ASSIGNED {
 	exp_i
 	amp_e	(umho)
 	amp_i	(umho)
+	t_last	(ms)		: when the conductances were last advanced
 	donotuse
 }
 
@@ -189,9 +190,7 @@ INITIAL {
 		exp_i = exp(-h/tau_i)
 		amp_i = std_i * sqrt( (1-exptrap(2, -2*h/tau_i)) )
 	    }
-       if ((tau_e != 0) || (tau_i != 0)) {
-	   net_send(h, 1)
-       }
+       t_last = t
 }
 
 VERBATIM
@@ -224,7 +223,16 @@ VERBATIM
 ENDVERBATIM
 }
 
-:BEFORE BREAKPOINT {
+: Advance the Ornstein-Uhlenbeck conductances inline, once per `h`.
+BEFORE BREAKPOINT {
+	if ((tau_e != 0) || (tau_i != 0)) {
+		if (t - t_last >= h - 1e-9) {
+			oup()
+			t_last = t
+		}
+	}
+}
+
 PROCEDURE foo() {
 	if (on > 0) {
 		g_e = g_e0 + g_e1
@@ -313,11 +321,9 @@ VERBATIM
 ENDVERBATIM
 }
 
+: Kept so the mechanism is still a valid NetCon target; the conductances are
+: advanced by BEFORE BREAKPOINT, not by an event.
 NET_RECEIVE (w) {
-    if (flag==1) {
-	oup()
-	net_send(h, 1)
-    }
 }
 
 
