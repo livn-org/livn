@@ -32,11 +32,16 @@ class _NeuronTimingLogger:
 
         self._h = h
         self.env = env
-        self.rank = P.rank()
+
+        self.rank = int(getattr(env, "rank", P.rank()))
+        comm = getattr(env, "comm", None)
+        self._sole_domain = comm is None or P.size(comm=comm) == P.size()
         self.log_interval_sim = float(log_interval_sim)
         self.log_interval_wall = float(log_interval_wall)
         self.tick_dt = float(tick_dt) if tick_dt is not None else self.log_interval_sim
-        self.use_tqdm = progress and _tqdm is not None and self.rank == 0
+        self.use_tqdm = (
+            progress and _tqdm is not None and self.rank == 0 and self._sole_domain
+        )
 
         now = time.time()
         self._last_log_wall = now
@@ -122,7 +127,12 @@ class _NeuronTimingLogger:
             # didn't override tick_dt explicitly.
             self.tick_dt = self.log_interval_sim
         if progress is not None:
-            new_use_tqdm = bool(progress) and _tqdm is not None and self.rank == 0
+            new_use_tqdm = (
+                bool(progress)
+                and _tqdm is not None
+                and self.rank == 0
+                and self._sole_domain
+            )
             if not new_use_tqdm:
                 self._close_bar()
             self.use_tqdm = new_use_tqdm
