@@ -17,7 +17,7 @@ pytestmark = [
 ]
 
 T_END = 250
-STIM_AMPLITUDE = 400
+STIM_AMPLITUDE = 250.0
 
 if backend() == "neuron":
     from livn.decoding import GatherAndMerge

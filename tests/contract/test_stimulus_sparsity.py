@@ -215,7 +215,7 @@ def test_a_policy_is_delivered_over_the_run_it_is_handed_to():
     sweep = PulseSweepPolicy(
         n_channels=len(env.io.channel_ids),
         channels=[0],
-        amplitudes=(150.0, 300.0),
+        amplitudes=(125.0, 250.0),
         repeats=2,
         trial_ms=200.0,
         onset_ms=50.0,

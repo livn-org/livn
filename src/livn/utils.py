@@ -466,6 +466,32 @@ class P:
     ):
         return reduce_sum(*data, comm=comm, root=root, all=all)
 
+    @staticmethod
+    def stable_hash(keys, seed: int = 0):
+        """A 64-bit value per key, the same on every rank."""
+        import numpy as _np
+
+        u64 = _np.uint64
+        mask = u64(0xFFFFFFFFFFFFFFFF)
+        golden = u64(0x9E3779B97F4A7C15)
+        with _np.errstate(over="ignore"):  # wrapping is the point, not an error
+            x = (
+                _np.asarray(keys).astype(u64)
+                + u64(int(seed) & 0xFFFFFFFFFFFFFFFF)
+                + golden
+            ) & mask
+            x = (x ^ (x >> u64(30))) * u64(0xBF58476D1CE4E5B9)
+            x = (x ^ (x >> u64(27))) * u64(0x94D049BB133111EB)
+        return x ^ (x >> u64(31))
+
+    @staticmethod
+    def stable_uniform(keys, seed: int = 0, low: float = 0.0, high: float = 1.0):
+        """A uniform draw in `[low, high)` per key, the same on every rank."""
+        import numpy as _np
+
+        unit = P.stable_hash(keys, seed).astype(_np.float64) / float(1 << 64)
+        return low + unit * (high - low)
+
 
 @contextmanager
 def timed(message: str, enabled: bool = True):

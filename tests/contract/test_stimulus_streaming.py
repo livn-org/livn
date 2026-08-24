@@ -52,7 +52,7 @@ def _sweep(env, repeats=2, trial_ms=200.0):
     return PulseSweepPolicy(
         n_channels=len(env.io.channel_ids),
         channels=[0],
-        amplitudes=(150.0, 300.0),
+        amplitudes=(125.0, 250.0),
         repeats=repeats,
         trial_ms=trial_ms,
         onset_ms=50.0,

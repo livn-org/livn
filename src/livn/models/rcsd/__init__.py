@@ -3,9 +3,12 @@ from __future__ import annotations
 import math
 import os
 
+import numpy as _onp
+
 from livn import types
 from livn.backend import backend
 from livn.types import Model
+from livn.utils import P
 
 _USES_JAX = False
 
@@ -24,6 +27,8 @@ class ReducedCalciumSomaDendrite(Model):
         refractory_period: float = 2.0,
         short_term_depression: bool = False,
         dendrite_offset: float = 108.0,
+        dendrite_orientation: str = "random",
+        dendrite_orientation_seed: int = 20260824,
     ):
         if input_mode is not None and input_mode not in {
             "current_density",
@@ -41,6 +46,14 @@ class ReducedCalciumSomaDendrite(Model):
         self.refractory_period = float(refractory_period)
         self.short_term_depression = bool(short_term_depression)
         self.dendrite_offset = float(dendrite_offset)
+        if dendrite_orientation not in {"random", "aligned"}:
+            raise ValueError(
+                f"Unknown dendrite_orientation {dendrite_orientation!r}; "
+                "expected 'random' (each cell points its own way) or 'aligned' "
+                "(every cell along +x)"
+            )
+        self.dendrite_orientation = dendrite_orientation
+        self.dendrite_orientation_seed = int(dendrite_orientation_seed)
 
     def _inh_params_name(self) -> str:
         # or "V1In-Renshaw-InVitro"
@@ -94,23 +107,35 @@ class ReducedCalciumSomaDendrite(Model):
         population: str | None = None,
     ) -> types.Float[types.Array, "n_stim_coords ixyz=4"]:
         """
-        Transform neuron coordinates for two-compartment model stimulation
+        Where the two compartments sample the extracellular field.
 
-            gid, x, y, z -> gid, x + dendrite_offset, y, z
+            gid, x, y, z -> gid, x + dx(gid), y + dy(gid), z
 
         Returns:
             [2*n_neurons, 4] with interleaved soma/dendrite coordinates
             soma0, dend0, soma1, dend1, ...
         """
-        dx = self.dendrite_offset
-
         n_neurons = neuron_coordinates.shape[0]
+
+        if self.dendrite_orientation == "aligned":
+            dx = _onp.full(n_neurons, self.dendrite_offset)
+            dy = _onp.zeros(n_neurons)
+        else:
+            angles = P.stable_uniform(
+                _onp.asarray(neuron_coordinates)[:, 0],
+                seed=self.dendrite_orientation_seed,
+                high=2.0 * math.pi,
+            )
+            dx = self.dendrite_offset * _onp.cos(angles)
+            dy = self.dendrite_offset * _onp.sin(angles)
 
         dend_coords = neuron_coordinates.copy()
         if _USES_JAX:
             dend_coords = dend_coords.at[:, 1].add(dx)
+            dend_coords = dend_coords.at[:, 2].add(dy)
         else:
             dend_coords[:, 1] += dx
+            dend_coords[:, 2] += dy
 
         # interleave soma0, dend0, soma1, dend1, ...
         stacked = np.stack([neuron_coordinates, dend_coords], axis=1)  # [n, 2, 4]

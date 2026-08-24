@@ -78,7 +78,7 @@ def _gather_and_merge(comm, *values):
     return None
 
 
-STIM_AMPLITUDE = 400.0
+STIM_AMPLITUDE = 250.0
 """uA. 750 induced ~1413 mV at the nearest section, outside the +/-1000 mV
 the reduced model declares itself defined over (``stimulus_bounds``)."""
 
@@ -316,7 +316,7 @@ def test_continuing_a_run_at_a_different_stimulus_dt_is_refused(mpiexec_n):
         first.dt = 1.0
         env.run(10, stimulus=first)
 
-        second = env.cell_stimulus(np.full((20, env.io.num_channels), 250.0))
+        second = env.cell_stimulus(np.full((20, env.io.num_channels), 150.0))
         second.dt = 0.5
 
         with pytest.raises(ValueError, match="Stimulus dt mismatch"):

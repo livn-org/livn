@@ -18,7 +18,7 @@ from livn.run import Run
 from livn.stimulus import Stimulus
 from livn.types import Capability
 from livn.types import Env as EnvProtocol
-from livn.utils import NOISE_STREAM_STRIDE
+from livn.utils import NOISE_STREAM_STRIDE, P
 
 if TYPE_CHECKING:
     from mpi4py import MPI
@@ -1566,13 +1566,18 @@ class Env(EnvProtocol):
 
     @staticmethod
     def _reseed_mechanism(mechanism, *, gid: int, index: int, seed: int, stream: int):
+        """Put a noise mechanism on a stream of its own, the same on every rank."""
         random123 = getattr(mechanism, "noiseFromRandom123", None)
         if random123 is not None:
             random123(gid + 1, index + 1, seed + stream * NOISE_STREAM_STRIDE)
             return
         new_seed = getattr(mechanism, "new_seed", None)
         if new_seed is not None:
-            new_seed(seed + stream * NOISE_STREAM_STRIDE)
+            # nested, not summed: `gid + index` would give the same value for
+            # (0, 1) and (1, 0), seeding two different sites identically
+            site = P.stable_hash(index, seed=int(P.stable_hash(gid)))
+            drawn = P.stable_hash(site, seed=seed + stream * NOISE_STREAM_STRIDE)
+            new_seed(int(drawn % 2_147_483_647))
 
     def clear(self, reseed: bool = True) -> Self:
         if reseed:
