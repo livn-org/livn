@@ -516,6 +516,9 @@ def _h5_read_graph(f, pre_start, post_start, pre, post, namespaces=None):
             edge_start = int(dest_pointer[ptr_start + d])
             edge_end = int(dest_pointer[ptr_start + d + 1])
 
+            if edge_end == edge_start:
+                continue
+
             pre_gids = (
                 source_index[edge_start:edge_end].astype(numpy.uint32) + pre_start
             )

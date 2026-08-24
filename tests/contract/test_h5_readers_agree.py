@@ -204,8 +204,16 @@ class TestPyfiveVsNeuroh5:
         pop_names = list(pop_ranges.keys())
 
         f_conns = _pyfive_open(connections_filepath)
+        # only the pairs the file actually has; asking neuroh5 for a missing
+        # projection aborts the process rather than raising
+        stored = {
+            post: list(f_conns[f"Projections/{post}"].keys())
+            for post in f_conns["Projections"].keys()
+        }
         for post in pop_names:
             for pre in pop_names:
+                if pre not in stored.get(post, []):
+                    continue
                 (graph, _) = scatter_read_graph(
                     connections_filepath,
                     comm=comm,
