@@ -164,7 +164,6 @@ class BRK:
         self.soma.insert("Nas")
         self.soma.insert("CaN")
         self.soma.insert("KCa")
-        self.soma.insert("extracellular")  # For stimulation
 
         self.soma.gmax_Nas = self.soma_gmax_Na
         self.soma.gmax_Kdr = self.soma_gmax_K
@@ -185,7 +184,6 @@ class BRK:
         self.dend.insert("KCa")
         self.dend.insert("Ca_conc")
         self.dend.insert("K_conc")
-        self.dend.insert("extracellular")  # For stimulation
 
         self.dend.f_Ca_conc = self.dend_f_Caconc
         self.dend.alpha_Ca_conc = self.dend_alpha_Caconc

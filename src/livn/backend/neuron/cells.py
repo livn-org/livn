@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from bisect import bisect_right
 from typing import Protocol, runtime_checkable
 
@@ -29,6 +30,44 @@ class NeuronCell(Protocol):
     def init_ic(self, v_rest: float) -> None: ...  # optional resting-current pin
     def resting_potential(self) -> float | None: ...
     def measure_ic(self) -> None: ...
+    def axial_couplings(self) -> list: ...
+
+
+def segment_at(sec, x: float):
+    n = int(sec.nseg)
+    index = min(n - 1, max(0, int(float(x) * n)))
+    return sec((index + 0.5) / n)
+
+
+def half_axial_resistance(seg) -> float:
+    """Axial resistance (MOhm) of half a segment, along its own length."""
+    sec = seg.sec
+    half_length_cm = (float(sec.L) / int(sec.nseg)) * 1e-4 / 2.0
+    radius_cm = float(seg.diam) * 1e-4 / 2.0
+    if radius_cm <= 0.0:
+        return 0.0
+    return float(sec.Ra) * half_length_cm / (math.pi * radius_cm**2) * 1e-6
+
+
+def axial_couplings(sections) -> list[tuple[int, object, int, object, float]]:
+    by_name = {sec.name(): i for i, sec in enumerate(sections)}
+    found = []
+    for child_index, sec in enumerate(sections):
+        parent = sec.parentseg()
+        if parent is None:
+            continue
+        parent_index = by_name.get(parent.sec.name())
+        if parent_index is None:
+            continue  # parent is outside this cell
+        child_seg = segment_at(sec, 0.0)
+        parent_seg = segment_at(parent.sec, parent.x)
+        resistance = half_axial_resistance(child_seg) + half_axial_resistance(
+            parent_seg
+        )
+        if resistance <= 0.0:
+            continue
+        found.append((child_index, child_seg, parent_index, parent_seg, resistance))
+    return found
 
 
 class ReducedCell:
@@ -109,6 +148,10 @@ class ReducedCell:
     def resting_potential(self) -> float | None:
         """The potential this cell pins its resting current at."""
         return None if self._v_rest is None else float(self._v_rest)
+
+    def axial_couplings(self):
+        """Junctions between this cell's sections."""
+        return axial_couplings(self.sections)
 
     def measure_ic(self) -> None:
         """Read this cell's currents and pin them, without initializing."""
@@ -246,6 +289,10 @@ class MorphologyCell:
     def resting_potential(self) -> float | None:
         """The potential this cell pins its resting current at."""
         return None if self._v_rest is None else float(self._v_rest)
+
+    def axial_couplings(self):
+        """Junctions between this cell's sections."""
+        return axial_couplings(self.sections)
 
     def measure_ic(self) -> None:
         """Read this cell's currents and pin them, without initializing."""

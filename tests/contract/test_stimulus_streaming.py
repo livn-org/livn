@@ -219,13 +219,13 @@ def test_a_run_handed_no_stimulus_is_not_stimulated_by_the_last_one():
     sweep = _sweep(env)
 
     env.run(sweep.duration_ms, stimulus=sweep)
-    for seg in env._stim_segments:
-        seg.e_extracellular = 12.0
+    for clamp in env._stim_clamps:
+        clamp.amp = 12.0
 
     env.run(50.0)
 
     assert not env._stim_streams, "the finished command is still installed"
-    assert all(seg.e_extracellular == 0.0 for seg in env._stim_segments)
+    assert all(clamp.amp == 0.0 for clamp in env._stim_clamps)
 
 
 @neuron_only
@@ -238,7 +238,7 @@ def test_a_streamed_command_stops_when_it_ends():
 
     stream = env._stim_streams[0]
     last = stream["start_step"] + stream["n_steps"] - 1
-    col = np.zeros(len(env._stim_segments))
+    col = np.zeros(len(env._stim_rows))
 
     env._accumulate_stim_stream(stream, last + 1, col)
     assert not col.any(), "the command kept driving after it was over"

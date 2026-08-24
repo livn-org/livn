@@ -65,8 +65,8 @@ def test_installing_a_stimulus_again_reuses_its_rows():
         f"the block grew a row per install: {heights}. Four calls on the same "
         "sections must occupy the same four rows they did on the first."
     )
-    assert env._stim_block.shape[0] == len(env._stim_segments)
-    assert len(set(map(id, env._stim_segments))) == len(env._stim_segments)
+    assert env._stim_block.shape[0] == len(env._stim_rows)
+    assert len(set(env._stim_rows.values())) == len(env._stim_rows)
 
 
 def test_the_block_carries_the_command_precision_not_double_it():

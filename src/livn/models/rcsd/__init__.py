@@ -23,6 +23,7 @@ class ReducedCalciumSomaDendrite(Model):
         input_mode: str | None = None,
         refractory_period: float = 2.0,
         short_term_depression: bool = False,
+        dendrite_offset: float = 108.0,
     ):
         if input_mode is not None and input_mode not in {
             "current_density",
@@ -39,6 +40,7 @@ class ReducedCalciumSomaDendrite(Model):
             raise ValueError(f"refractory_period must be >= 0, got {refractory_period}")
         self.refractory_period = float(refractory_period)
         self.short_term_depression = bool(short_term_depression)
+        self.dendrite_offset = float(dendrite_offset)
 
     def _inh_params_name(self) -> str:
         # or "V1In-Renshaw-InVitro"
@@ -94,14 +96,13 @@ class ReducedCalciumSomaDendrite(Model):
         """
         Transform neuron coordinates for two-compartment model stimulation
 
-            gid, x, y, z -> gid, x + pp * L, y, z
+            gid, x, y, z -> gid, x + dendrite_offset, y, z
 
         Returns:
             [2*n_neurons, 4] with interleaved soma/dendrite coordinates
             soma0, dend0, soma1, dend1, ...
         """
-        L = 120.0  # 37.6
-        dx = 0.9 * L
+        dx = self.dendrite_offset
 
         n_neurons = neuron_coordinates.shape[0]
 

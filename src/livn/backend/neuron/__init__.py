@@ -187,9 +187,17 @@ class Env(EnvProtocol):
         )
         self._h.celsius = self._celsius
 
-        # extracellular stimulus block
-        self._stim_segments: list = []
+        # Extracellular stimulus
         self._stim_rows: dict[tuple[int, int], int] = {}
+        self._stim_clamps: list = []
+        self._stim_clamp_rows: dict[tuple[int, int], int] = {}
+        self._stim_driven: set[int] = set()
+        self._stim_junctions: list[tuple[int, int, int, int, float]] = []
+        self._stim_j_row_a = np.empty(0, dtype=np.int64)
+        self._stim_j_row_b = np.empty(0, dtype=np.int64)
+        self._stim_j_clamp_a = np.empty(0, dtype=np.int64)
+        self._stim_j_clamp_b = np.empty(0, dtype=np.int64)
+        self._stim_j_inv_r = np.empty(0, dtype=np.float64)
         self._stim_block: np.ndarray | None = None
         self._stim_bounds: tuple[float, float] | None = None
         self._stim_streams: list[dict] = []
@@ -737,31 +745,89 @@ class Env(EnvProtocol):
             _register_callback(self._h.cvode, self._stim_cb)
             self._stim_registered = True
 
+    def _stim_row(self, gid: int, section_id: int) -> int:
+        key = (int(gid), int(section_id))
+        row = self._stim_rows.get(key)
+        if row is None:
+            row = len(self._stim_rows)
+            self._stim_rows[key] = row
+        return row
+
     def _stim_rows_for(self, stimulus: Stimulus) -> tuple[list, list]:
         """`(block rows, stimulus columns)` for what this rank can drive."""
-        rows, columns = [], []
+        rows, columns, touched = [], [], set()
         for column, (gid, section_id) in enumerate(stimulus.columns()):
             if not self.pc.gid_exists(gid):
                 continue
             cell = self._find_cell(gid)
             if cell is None or section_id >= len(cell.sections):
                 continue
-            sec = cell.sections[section_id]
-            sec.push()
-            has_extracellular = self._h.ismembrane("extracellular")
-            self._h.pop_section()
-            if not has_extracellular:
-                continue
-
-            key = (gid, section_id)
-            row = self._stim_rows.get(key)
-            if row is None:
-                row = len(self._stim_segments)
-                self._stim_rows[key] = row
-                self._stim_segments.append(sec(0.5))
-            rows.append(row)
+            rows.append(self._stim_row(gid, section_id))
             columns.append(column)
+            touched.add(int(gid))
+        if touched:
+            self._build_stim_drives(touched)
         return rows, columns
+
+    def _build_stim_drives(self, gids) -> None:
+        h = self._h
+        for gid in sorted(gids):
+            if gid in self._stim_driven:
+                continue
+            self._stim_driven.add(gid)
+            cell = self._find_cell(gid)
+            couplings = getattr(cell, "axial_couplings", None)
+            if cell is None or not callable(couplings):
+                continue
+            for index_a, seg_a, index_b, seg_b, resistance in couplings():
+                clamps = []
+                for index, seg in ((index_a, seg_a), (index_b, seg_b)):
+                    key = (int(gid), int(index))
+                    which = self._stim_clamp_rows.get(key)
+                    if which is None:
+                        clamp = h.IClamp(seg)
+                        clamp.delay = 0.0
+                        clamp.dur = 1e9  # amp is what carries the command
+                        clamp.amp = 0.0
+                        which = len(self._stim_clamps)
+                        self._stim_clamps.append(clamp)
+                        self._stim_clamp_rows[key] = which
+                    clamps.append(which)
+                self._stim_junctions.append(
+                    (
+                        self._stim_row(gid, index_a),
+                        self._stim_row(gid, index_b),
+                        clamps[0],
+                        clamps[1],
+                        1.0 / float(resistance),
+                    )
+                )
+
+        if self._stim_junctions:
+            j = np.asarray(self._stim_junctions, dtype=np.float64)
+            self._stim_j_row_a = j[:, 0].astype(np.int64)
+            self._stim_j_row_b = j[:, 1].astype(np.int64)
+            self._stim_j_clamp_a = j[:, 2].astype(np.int64)
+            self._stim_j_clamp_b = j[:, 3].astype(np.int64)
+            self._stim_j_inv_r = j[:, 4]
+
+    def _apply_stim_column(self, col) -> None:
+        """Drive the clamps from a field column, in mV.
+
+        The equivalent current at compartment j is the sum over its neighbours
+        of `(V_e,k - V_e,j) / R_jk`; mV over MOhm is nA, which is what
+        `IClamp.amp` wants.
+        """
+        delta = (col[self._stim_j_row_b] - col[self._stim_j_row_a]) * self._stim_j_inv_r
+        amps = np.zeros(len(self._stim_clamps), dtype=np.float64)
+        np.add.at(amps, self._stim_j_clamp_a, delta)
+        np.add.at(amps, self._stim_j_clamp_b, -delta)
+        for clamp, amp in zip(self._stim_clamps, amps.tolist(), strict=True):
+            clamp.amp = amp
+
+    def _silence_stim(self) -> None:
+        for clamp in self._stim_clamps:
+            clamp.amp = 0.0
 
     def _install_stim_block(self, stimulus, rows, columns, start_step) -> None:
         """Hold the whole command, indexed `[section, absolute step]`."""
@@ -778,7 +844,7 @@ class Env(EnvProtocol):
             width = max(width, previous.shape[1])
             dtype = np.promote_types(dtype, previous.dtype)
 
-        block = np.zeros((len(self._stim_segments), width), dtype=dtype)
+        block = np.zeros((len(self._stim_rows), width), dtype=dtype)
         if previous is not None:
             block[: previous.shape[0], : previous.shape[1]] = previous
         for row, column in zip(rows, columns, strict=False):
@@ -816,14 +882,13 @@ class Env(EnvProtocol):
         ]
 
     def _update_extracellular(self) -> None:
-        if self._closed or not self._stim_segments:
+        if self._closed or not self._stim_clamps:
             return
         block = self._stim_block
         streams = self._stim_streams
         if block is None and not streams:
             if not self._stim_idle:
-                for seg in self._stim_segments:
-                    seg.e_extracellular = 0.0
+                self._silence_stim()
                 self._stim_idle = True
             return
 
@@ -839,24 +904,22 @@ class Env(EnvProtocol):
         if not streams:
             col = block[:, key]
         else:
-            col = np.zeros(len(self._stim_segments), dtype=np.float64)
+            col = np.zeros(len(self._stim_rows), dtype=np.float64)
             if block is not None:
                 held = block[:, min(idx, block.shape[1] - 1)]
                 col[: len(held)] = held
             for stream in streams:
                 self._accumulate_stim_stream(stream, idx, col)
 
-        # skip the segment write loop when column is all zero
+        # skip the conversion and the clamp writes when the field is all zero
         if not col.any():
             if not self._stim_idle:
-                for seg in self._stim_segments:
-                    seg.e_extracellular = 0.0
+                self._silence_stim()
                 self._stim_idle = True
             return
 
         self._stim_idle = False
-        for i, seg in enumerate(self._stim_segments):
-            seg.e_extracellular = float(col[i])
+        self._apply_stim_column(col)
 
     def _accumulate_stim_stream(self, stream, idx: int, col) -> None:
         offset = idx - stream["start_step"]
@@ -1522,8 +1585,16 @@ class Env(EnvProtocol):
         self._unregister_stim_callback()
         self.t = 0.0
         self._dt = None
-        self._stim_segments = []
         self._stim_rows = {}
+        self._stim_clamps = []
+        self._stim_clamp_rows = {}
+        self._stim_driven = set()
+        self._stim_junctions = []
+        self._stim_j_row_a = np.empty(0, dtype=np.int64)
+        self._stim_j_row_b = np.empty(0, dtype=np.int64)
+        self._stim_j_clamp_a = np.empty(0, dtype=np.int64)
+        self._stim_j_clamp_b = np.empty(0, dtype=np.int64)
+        self._stim_j_inv_r = np.empty(0, dtype=np.float64)
         self._stim_block = None
         self._stim_streams = []
         self._stim_idle = False
@@ -1548,8 +1619,16 @@ class Env(EnvProtocol):
 
         # Detach the cvode callbacks before any section they reference is freed.
         self._unregister_stim_callback()
-        self._stim_segments = []
         self._stim_rows = {}
+        self._stim_clamps = []
+        self._stim_clamp_rows = {}
+        self._stim_driven = set()
+        self._stim_junctions = []
+        self._stim_j_row_a = np.empty(0, dtype=np.int64)
+        self._stim_j_row_b = np.empty(0, dtype=np.int64)
+        self._stim_j_clamp_a = np.empty(0, dtype=np.int64)
+        self._stim_j_clamp_b = np.empty(0, dtype=np.int64)
+        self._stim_j_inv_r = np.empty(0, dtype=np.float64)
         self._stim_block = None
         self._stim_streams = []
         self._opsin_pps = []
