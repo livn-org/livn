@@ -611,17 +611,20 @@ class Culture(TuningTargets):
         if self.stimulus is not None:
             electrode = self.stimulus.electrode
             if electrode is None:
+                channel_ids = np.asarray(env.io.channel_ids)
                 distances = np.asarray(
                     env.io.distances(env.active_neuron_coordinates())
                 )
                 within = distances[distances[:, -1] <= float(env.io.input_radius)]
                 if within.size == 0:
-                    electrode = int(np.asarray(env.io.channel_ids)[0])
+                    electrode = 0
                 else:
                     channels, counts = np.unique(
                         within[:, 0].astype(np.int64), return_counts=True
                     )
-                    electrode = int(channels[int(np.argmax(counts))])
+                    driving = int(channels[int(np.argmax(counts))])
+                    found = np.flatnonzero(channel_ids == driving)
+                    electrode = int(found[0]) if found.size else 0
 
             dt = 0.1
             pulses = self.stimulus.for_array(
