@@ -1064,6 +1064,7 @@ class System:
         self._neuron_coordinates = None
         self._num_neurons = None
         self._bounding_box = None
+        self._coordinate_arrays: dict[types.PopulationName, Any] = {}
 
     def default_io(self, comm=None) -> "IO":
         from livn.io import MEA, IO
@@ -1320,9 +1321,14 @@ class System:
     def coordinate_array(
         self, population: types.PopulationName
     ) -> types.Float[types.Array, "n_coords cxyz=4"]:
-        return coordinate_array(
-            self._graph.cells_filepath, population, comm=self.comm, all=True
-        )
+        """Every cell's `[gid, x, y, z]` for a population, read once."""
+        cached = self._coordinate_arrays.get(population)
+        if cached is None:
+            cached = coordinate_array(
+                self._graph.cells_filepath, population, comm=self.comm, all=True
+            )
+            self._coordinate_arrays[population] = cached
+        return cached.copy()
 
     def transform_coordinates(
         self,

@@ -4,7 +4,14 @@ import os
 from typing import Any, TYPE_CHECKING
 
 import numpy as _np
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
 
 from livn.utils import Jsonable
 
@@ -45,8 +52,23 @@ class Policy(BaseModel, Jsonable):
 
     input_units: str | None = None
 
+    _rendered: Any = PrivateAttr(default=None)
+
     def __call__(self, observation: Any = None) -> "Array":
         raise NotImplementedError
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        super().__setattr__(name, value)
+        if not name.startswith("_"):
+            # a changed field describes a different command
+            self._rendered = None
+
+    def render(self) -> "Array":
+        if self._rendered is None:
+            rendered = _np.asarray(self(None))
+            rendered.flags.writeable = False
+            self._rendered = rendered
+        return self._rendered
 
     def as_input_units(self, units: str | None) -> "Policy":
         if units is None or self.input_units is None or self.input_units == units:
@@ -64,7 +86,7 @@ class Policy(BaseModel, Jsonable):
         return None
 
     def window(self, start_ms: float, stop_ms: float, dt: float) -> "Array":
-        full = _np.asarray(self(None))
+        full = self.render()
         lo = max(0, int(round(start_ms / dt)))
         hi = max(lo, int(round(stop_ms / dt)))
         if lo >= len(full):
