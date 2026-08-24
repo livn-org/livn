@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import sys
 import textwrap
 
 import pytest
+from testing import mpiexec as mpiexec_plugin
 from testing.mpiexec import mpi_slot
 from testing.paths import REPO_ROOT
 
@@ -92,7 +94,14 @@ STIMULUS_PROBE = textwrap.dedent(
 def _run(nranks: int, script: str) -> float:
     with mpi_slot(REPO):
         proc = subprocess.run(
-            ["mpiexec", "-n", str(nranks), sys.executable, "-c", script],
+            [
+                *shlex.split(mpiexec_plugin.MPIEXEC),
+                "-n",
+                str(nranks),
+                sys.executable,
+                "-c",
+                script,
+            ],
             capture_output=True,
             text=True,
             cwd=REPO,

@@ -414,11 +414,13 @@ class DistributedEnv(EnvProtocol):
         return unwrapped[0] if len(unwrapped) == 1 else unwrapped
 
     def potential_recording(
-        self, membrane_currents: Float[Array, "timestep n_neurons"] | None
+        self,
+        membrane_currents: Float[Array, "timestep n_neurons"] | None,
+        gids=None,
     ) -> Float[Array, "timestep n_channels"]:
         if _state["env"] is None:
             return
-        _state["env"].potential_recording(membrane_currents)
+        _state["env"].potential_recording(membrane_currents, gids)
 
     def clear(self, reseed: bool = True) -> Self:
         self._broadcast_to_workers("clear", (reseed,))

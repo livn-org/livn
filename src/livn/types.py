@@ -699,6 +699,20 @@ class Env(Protocol):
         """Recording time step for membrane current traces in ms"""
         return 0.1
 
+    @staticmethod
+    def _at_gids(coordinates, gids):
+        """Keep the coordinate rows belonging to ``gids``, in coordinate order."""
+        import numpy as _np
+
+        wanted = set(int(g) for g in _np.asarray(gids).ravel())
+        coordinates = _np.asarray(coordinates)
+        keep = _np.asarray([int(g) in wanted for g in coordinates[:, 0]], dtype=bool)
+        return coordinates[keep]
+
+    def _at_simulated_gids(self, coordinates, everywhere: bool = False):
+        """Drop the coordinate rows whose gid is not actually built."""
+        return self._at_gids(coordinates, self.simulated_gids(everywhere=everywhere))
+
     def stimulus_coordinates(self, simulated_only: bool = True):
         """The sections a command couples into, as `[gid, x, y, z]` rows."""
         coordinates = self.system.transform_coordinates(
@@ -708,11 +722,7 @@ class Env(Protocol):
         if not simulated_only:
             return coordinates
 
-        import numpy as _np
-
-        built = set(int(g) for g in self.simulated_gids(everywhere=True))
-        keep = _np.asarray([int(g) in built for g in _np.asarray(coordinates)[:, 0]])
-        return _np.asarray(coordinates)[keep]
+        return self._at_simulated_gids(coordinates, everywhere=True)
 
     def channel_reach(self, coordinates=None):
         """Field induced per unit command at each section, per channel."""
@@ -720,14 +730,19 @@ class Env(Protocol):
             coordinates = self.stimulus_coordinates()
         return self.io.reach(coordinates)
 
-    def recording_distances(self):
+    def recording_distances(self, gids=None):
         """Distances for the coordinates the membrane currents are recorded at."""
-        return self.io.distances(
-            self.system.transform_coordinates(
-                self.model.recording_coordinates,
-                populations=self.active_populations(),
-            )
+        import numpy as _np
+
+        coordinates = self.system.transform_coordinates(
+            self.model.recording_coordinates,
+            populations=self.active_populations(),
         )
+        if gids is not None:
+            gids = _np.asarray(gids).ravel()
+            if len(gids) != len(coordinates):
+                coordinates = self._at_gids(coordinates, gids)
+        return self.io.distances(coordinates)
 
     def source_gain(
         self,
@@ -742,9 +757,10 @@ class Env(Protocol):
     def potential_recording(
         self,
         membrane_currents: Float[Array, "n_neurons timestep"] | None,
+        gids=None,
     ) -> Float[Array, "n_channels timestep"]:
         return self.io.potential_recording(
-            self.recording_distances(), membrane_currents
+            self.recording_distances(gids), membrane_currents
         )
 
     def clear_recordings(self) -> Self:

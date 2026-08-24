@@ -17,12 +17,27 @@ CELLS = 20
 STEP_MS = 50.0
 
 
+_OPEN_ENVS = []
+
+
+@pytest.fixture(autouse=True)
+def _close_envs():
+    """A NEURON env per test, closed after it; leaked ones wedge later psolves."""
+    yield
+    while _OPEN_ENVS:
+        try:
+            _OPEN_ENVS.pop().close()
+        except Exception:
+            pass
+
+
 def _env():
     pytest.importorskip("livn")
     env = livn_test_env()
     env.selection(CELLS)
     env.init()
     env.record_spikes()
+    _OPEN_ENVS.append(env)
     return env
 
 

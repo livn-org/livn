@@ -18,6 +18,20 @@ neuron_only = pytest.mark.skipif(
 )
 
 
+_OPEN_ENVS = []
+
+
+@pytest.fixture(autouse=True)
+def _close_envs():
+    """A NEURON env per test, closed after it; leaked ones wedge later psolves."""
+    yield
+    while _OPEN_ENVS:
+        try:
+            _OPEN_ENVS.pop().close()
+        except Exception:
+            pass
+
+
 def _env(reach=1e9):
     pytest.importorskip("livn")
     from livn.io import MEA
@@ -28,6 +42,7 @@ def _env(reach=1e9):
     env = livn_test_env(io=MEA([[0, *centre]], input_radius=reach, output_radius=reach))
     env.selection(CELLS)
     env.init()
+    _OPEN_ENVS.append(env)
     return env
 
 
@@ -200,7 +215,7 @@ def test_a_policy_is_delivered_over_the_run_it_is_handed_to():
     sweep = PulseSweepPolicy(
         n_channels=len(env.io.channel_ids),
         channels=[0],
-        amplitudes=(300.0, 600.0),
+        amplitudes=(150.0, 300.0),
         repeats=2,
         trial_ms=200.0,
         onset_ms=50.0,

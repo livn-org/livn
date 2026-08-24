@@ -171,7 +171,9 @@ def _continued_matches_single(comm, subworld, inputs, split):
     single_potential = None
     if single_outputs[5] is not None:
         single_potential = P.reduce_sum(
-            env_single.potential_recording(single_outputs[5]), all=True, comm=comm
+            env_single.potential_recording(single_outputs[5], single_outputs[4]),
+            all=True,
+            comm=comm,
         )
     single_cit, single_ct = env_single.channel_recording(
         single_outputs[0], single_outputs[1]
@@ -202,7 +204,9 @@ def _continued_matches_single(comm, subworld, inputs, split):
     continued_potential = None
     if continued_outputs[5] is not None:
         continued_potential = P.reduce_sum(
-            env.potential_recording(continued_outputs[5]), all=True, comm=comm
+            env.potential_recording(continued_outputs[5], continued_outputs[4]),
+            all=True,
+            comm=comm,
         )
     continued_cit, continued_ct = env.channel_recording(
         continued_outputs[0], continued_outputs[1]
