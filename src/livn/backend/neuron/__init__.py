@@ -129,6 +129,7 @@ class Env(EnvProtocol):
         self.cells = CellRegistry(self, comm=self.comm)
         self._noise_stream = 0
         self._detectors: dict[int, dict] = {}  # gid -> {filter,in_nc,out_nc}
+        self._detector_gid_base = 0
         self.syn = None
         self.conn = None
         self._input_vecstims: dict[int, object] = {}
@@ -241,6 +242,7 @@ class Env(EnvProtocol):
     def init(self) -> Self:
         _sweep_dead_callbacks(self._h.cvode)
         self.pc.gid_clear()
+        self._detector_gid_base = self._detector_gid_base_for(self.system)
         builder = CellBuilder(self.system, self.model, self.pc, self.comm)
 
         ignored = (
@@ -378,6 +380,15 @@ class Env(EnvProtocol):
                 int(g) for gids in self._selection.values() for g in gids
             }
 
+    @staticmethod
+    def _detector_gid_base_for(system) -> int:
+        ranges = getattr(system, "population_ranges", None) or {}
+        try:
+            highest = max(int(start) + int(count) for start, count in ranges.values())
+        except (ValueError, TypeError):
+            highest = 0
+        return max(highest, int(getattr(system, "num_neurons", 0) or 0)) + 1
+
     def _register_cell(self, gid: int, cell) -> None:
         """Register the gid with a spike detector.
 
@@ -403,6 +414,9 @@ class Env(EnvProtocol):
             out_nc.delay = max(2.0 * 0.025, 1e-3)
             out_nc.weight[0] = 1.0
             self.pc.cell(gid, out_nc)
+            detector_gid = self._detector_gid_base + int(gid)
+            self.pc.set_gid2node(detector_gid, self.rank)
+            self.pc.cell(detector_gid, in_nc)
             self._detectors[gid] = {
                 "filter": spike_filter,
                 "in_nc": in_nc,
