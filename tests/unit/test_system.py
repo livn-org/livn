@@ -8,6 +8,13 @@ SYSTEM_DIR = os.environ.get("LIVN_TEST_SYSTEM", "./systems/graphs/EI")
 
 
 @pytest.fixture
+def system_dir():
+    if not os.path.isfile(os.path.join(SYSTEM_DIR, "graph.json")):
+        pytest.skip("No test system found")
+    return SYSTEM_DIR
+
+
+@pytest.fixture
 def cells_filepath():
     cells = os.path.join(SYSTEM_DIR, "cells.h5")
     if not os.path.isfile(cells):
@@ -171,36 +178,36 @@ class TestPyfiveReaders:
 
 
 class TestSystemWithPyfive:
-    def test_cells_meta_data(self):
+    def test_cells_meta_data(self, system_dir):
         from livn.system import System
 
-        system = System(SYSTEM_DIR)
+        system = System(system_dir)
         meta = system.cells_meta_data
         assert len(meta.population_names) > 0
         assert meta.cell_count() > 0
 
-    def test_coordinate_array(self):
+    def test_coordinate_array(self, system_dir):
         from livn.system import System
 
-        system = System(SYSTEM_DIR)
+        system = System(system_dir)
         for pop in system.populations:
             coords = system.coordinate_array(pop)
             assert coords.ndim == 2
             assert coords.shape[1] == 4
             assert coords.shape[0] == system.population_count(pop)
 
-    def test_neuron_coordinates(self):
+    def test_neuron_coordinates(self, system_dir):
         from livn.system import System
 
-        system = System(SYSTEM_DIR)
+        system = System(system_dir)
         coords = system.neuron_coordinates
         assert coords.shape[0] == system.num_neurons
         assert coords.shape[1] == 4
 
-    def test_projection_array(self):
+    def test_projection_array(self, system_dir):
         from livn.system import System
 
-        system = System(SYSTEM_DIR)
+        system = System(system_dir)
         for post, v in system.connections_config["synapses"].items():
             for pre in v:
                 projs = system.projection_array(pre, post)
@@ -209,19 +216,19 @@ class TestSystemWithPyfive:
                     assert isinstance(post_gid, (int, np.integer))
                     assert len(pre_gids) > 0
 
-    def test_connectivity_matrix(self):
+    def test_connectivity_matrix(self, system_dir):
         from livn.system import System
 
-        system = System(SYSTEM_DIR)
+        system = System(system_dir)
         w = system.connectivity_matrix()
         n = system.num_neurons
         assert w.shape == (n, n)
         assert np.count_nonzero(w) > 0
 
-    def test_summary(self):
+    def test_summary(self, system_dir):
         from livn.system import System
 
-        system = System(SYSTEM_DIR)
+        system = System(system_dir)
         s = system.summary()
         assert s["num_neurons"] > 0
         assert s["num_projections"] > 0
