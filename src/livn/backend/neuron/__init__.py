@@ -652,25 +652,45 @@ class Env(EnvProtocol):
         )
 
     def _apply_init_ic(self) -> None:
-        """Pin each cell's resting current via its ``init_ic``.
-
-        Each ``init_ic`` calls ``h.finitialize`` internally, which is a
-        collective in parallel NEURON. Ranks own different numbers of cells, so
-        we pad to the global maximum with balancing ``finitialize`` calls to keep
-        the collective count identical across ranks (otherwise psolve deadlocks).
-        """
+        """Pin each cell's resting current, initializing once per potential."""
         ic_cells = [
             cell
             for cells in self.cells.values()
             for cell in cells.values()
             if callable(getattr(cell, "init_ic", None))
         ]
-        local_n = len(ic_cells)
 
-        n_iter = local_n
-        if int(self.pc.nhost()) > 1 and self.comm is not None:
+        # grouped by potential, not collapsed to one call
+        by_potential: dict[float, list] = {}
+        separable = True
+        for cell in ic_cells:
+            resting = getattr(cell, "resting_potential", None)
+            v_rest = resting() if callable(resting) else None
+            if v_rest is None or not callable(getattr(cell, "measure_ic", None)):
+                separable = False
+                break
+            by_potential.setdefault(float(v_rest), []).append(cell)
+
+        parallel = int(self.pc.nhost()) > 1 and self.comm is not None
+        if parallel:
             from mpi4py import MPI
 
+            separable = self.comm.allreduce(separable, op=MPI.LAND)
+
+        if separable:
+            potentials = set(by_potential)
+            if parallel:
+                for other in self.comm.allgather(potentials):
+                    potentials |= other
+            for v_rest in sorted(potentials):
+                self._h.finitialize(v_rest)
+                for cell in by_potential.get(v_rest, ()):
+                    cell.measure_ic()
+            return
+
+        local_n = len(ic_cells)
+        n_iter = local_n
+        if parallel:
             n_iter = self.comm.allreduce(local_n, op=MPI.MAX)
 
         for i in range(n_iter):

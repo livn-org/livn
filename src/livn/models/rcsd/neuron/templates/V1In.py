@@ -69,6 +69,9 @@ class V1In:
 
     def init_ic(self, v_init):
         h.finitialize(v_init)
+        self.measure_ic()
+
+    def measure_ic(self):
         seg = self.soma(0.5)
         self.soma.ic_constant = -(seg.ina + seg.ik + seg.ica + seg.i_pas)
 

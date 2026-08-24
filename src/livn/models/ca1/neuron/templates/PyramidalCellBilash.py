@@ -414,6 +414,9 @@ class PyramidalCell:
 
     def init_ic(self, v_init):
         h.finitialize(v_init)
+        self.measure_ic()
+
+    def measure_ic(self):
         for sec in self.soma_list:
             for seg in sec:
                 seg.constant.ic += -(

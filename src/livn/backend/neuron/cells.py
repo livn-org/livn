@@ -27,6 +27,8 @@ class NeuronCell(Protocol):
     def spike_source(self): ...  # -> h.Segment the detector watches
     def position(self, x: float, y: float, z: float) -> None: ...
     def init_ic(self, v_rest: float) -> None: ...  # optional resting-current pin
+    def resting_potential(self) -> float | None: ...
+    def measure_ic(self) -> None: ...
 
 
 class ReducedCell:
@@ -103,6 +105,16 @@ class ReducedCell:
         fn = getattr(self._template, "init_ic", None)
         if callable(fn):
             fn(self._v_rest if v_rest is None else v_rest)
+
+    def resting_potential(self) -> float | None:
+        """The potential this cell pins its resting current at."""
+        return None if self._v_rest is None else float(self._v_rest)
+
+    def measure_ic(self) -> None:
+        """Read this cell's currents and pin them, without initializing."""
+        fn = getattr(self._template, "measure_ic", None)
+        if callable(fn):
+            fn()
 
     @property
     def template(self):
@@ -230,6 +242,16 @@ class MorphologyCell:
         fn = getattr(self._template, "init_ic", None)
         if callable(fn):
             fn(self._v_rest if v_rest is None else v_rest)
+
+    def resting_potential(self) -> float | None:
+        """The potential this cell pins its resting current at."""
+        return None if self._v_rest is None else float(self._v_rest)
+
+    def measure_ic(self) -> None:
+        """Read this cell's currents and pin them, without initializing."""
+        fn = getattr(self._template, "measure_ic", None)
+        if callable(fn):
+            fn()
 
     @property
     def template(self):
