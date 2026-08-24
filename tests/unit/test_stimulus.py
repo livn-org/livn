@@ -1,12 +1,12 @@
 import numpy as np
 import pytest
 
-from livn.stimulus import Stimulus
 from livn.policy import (
     BiphasicPulsePolicy,
     MonophasicPulsePolicy,
     PulseSweepPolicy,
 )
+from livn.stimulus import Stimulus
 
 
 class TestStimulus:

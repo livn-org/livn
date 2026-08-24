@@ -78,7 +78,7 @@ def main(args: list | None = None):
             return 0
 
         with Project(subproject_dir):
-            return machinable_cli(["get"] + args)
+            return machinable_cli(["get", *args])
 
     _print_help()
     return 128

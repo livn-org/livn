@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import faulthandler
 import logging
 import os
@@ -236,13 +237,11 @@ def enable_diagnostic_logging(
         Whether the periodic timer was armed; ``SIGUSR1`` is registered either way
     """
     faulthandler.enable(file=sys.stderr, all_threads=True)
-    try:
+    with contextlib.suppress(ValueError, OSError):
         signal.signal(
             signal.SIGUSR1,
             lambda *_: faulthandler.dump_traceback(file=sys.stderr, all_threads=True),
         )
-    except (ValueError, OSError):
-        pass
 
     if every is None or every <= 0:
         return False
@@ -253,7 +252,11 @@ def enable_diagnostic_logging(
     stream = sys.stderr
     if directory:
         os.makedirs(directory, exist_ok=True)
-        stream = open(os.path.join(directory, f"rank-{rank:04d}.txt"), "w", buffering=1)
+        # The watchdog holds this open for the life of the process, so it cannot
+        # live in a `with` block; it is tracked in `_streams` instead.
+        stream = open(  # noqa: SIM115
+            os.path.join(directory, f"rank-{rank:04d}.txt"), "w", buffering=1
+        )
         _streams.append(stream)
 
     print(

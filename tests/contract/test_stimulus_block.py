@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import os
 
 import numpy as np
@@ -25,10 +26,8 @@ def _close_envs():
     """A NEURON env per test, closed after it; leaked ones wedge later psolves."""
     yield
     while _OPEN_ENVS:
-        try:
+        with contextlib.suppress(Exception):
             _OPEN_ENVS.pop().close()
-        except Exception:
-            pass
 
 
 def _env():

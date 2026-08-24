@@ -51,7 +51,7 @@ env = Env(system, model, io).init()
 
 env.apply_model_defaults()
 
-for trials in range(3):
+for _ in range(3):
     q = time.time()
 
     inputs = np.zeros([t_end, 16])

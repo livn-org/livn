@@ -48,7 +48,7 @@ def test_named_access_matches_positions():
 def test_tuple_unpacking_forms():
     run = _run()
 
-    it, t, iv, v, *rest = run
+    it, _t, iv, _v, *rest = run
     assert len(rest) == 2
 
     it, tt, iv, vv, im, mp = run
@@ -238,7 +238,7 @@ def test_slice_matches_decoding_slice_without_an_env():
         tuple(run.slice(5.0, 15.0)),
         tuple(Slice(start=5.0, stop=15.0)(run)),
     ):
-        for a, b in zip(actual, expected):
+        for a, b in zip(actual, expected, strict=False):
             if a is None or b is None:
                 assert a is b
             else:
@@ -438,7 +438,7 @@ def test_a_batched_rectangle_has_no_ragged_form():
 
     assert run.spikes.raster(1.0).shape == (2, 3, 11)
     with pytest.raises(ValueError, match="no ragged form"):
-        run.spike_times
+        run.spike_times  # noqa: B018
 
 
 def test_events_are_immutable():

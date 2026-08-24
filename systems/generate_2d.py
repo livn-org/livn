@@ -1,18 +1,21 @@
+import json
 import math
 import os
 import uuid
-import json
 from collections import defaultdict
 from enum import IntEnum
 from pathlib import Path
+from typing import ClassVar
 
 import h5py
+import matplotlib.pyplot as plt
+import numpy as np
 from machinable import Interface
 from machinable.config import to_dict
 from machinable.utils import save_file
-from pydantic import BaseModel, Field, model_validator
-from typing import Dict, Optional
-import numpy as np
+from matplotlib.collections import LineCollection
+from matplotlib.colors import to_rgba
+from mpi4py import MPI
 from neuroh5.io import (
     NeuroH5ProjectionGen,
     read_cell_attributes,
@@ -21,13 +24,10 @@ from neuroh5.io import (
     write_cell_attributes,
     write_graph,
 )
-from mpi4py import MPI
+from pydantic import BaseModel, Field, model_validator
+
 from livn.io import LightArray, electrode_array_coordinates_for_area
 from livn.utils import import_object_by_path
-import matplotlib.pyplot as plt
-from matplotlib.collections import LineCollection
-from matplotlib.colors import to_rgba
-
 
 _SYN_TYPE_LOOKUP = {"excitatory": 0, "inhibitory": 1}
 
@@ -69,10 +69,10 @@ def _h5_get_dataset(g, dsetname, **kwargs):
 
 def create_neural_h5(
     output_filepath: str,
-    cell_distributions: Dict[str, Dict[str, int]],
-    synapses: Dict[str, Dict[str, object]],
-    population_definitions: Dict[str, int],
-    gap_junctions: Optional[Dict] = None,
+    cell_distributions: dict[str, dict[str, int]],
+    synapses: dict[str, dict[str, object]],
+    population_definitions: dict[str, int],
+    gap_junctions: dict | None = None,
 ) -> None:
     """Write the NeuroH5 ``H5Types`` group (populations and projections).
 
@@ -91,7 +91,7 @@ def create_neural_h5(
             raise ValueError(
                 f"Definitions contain a population '{pop_name}' that is not "
                 f"specified in the cell distribution populations "
-                f"({', '.join([p for p in cell_distributions])})"
+                f"({', '.join(list(cell_distributions))})"
             )
         pop_count = sum(cell_distributions[pop_name].values())
         populations.append((pop_name, pop_idx, pop_count))
@@ -99,19 +99,19 @@ def create_neural_h5(
 
     projections = []
     if gap_junctions:
-        for (post, pre), _ in gap_junctions.items():
+        for post, pre in gap_junctions:
             projections.append(
                 (population_definitions[pre], population_definitions[post])
             )
     else:
         for post, connection_dict in synapses.items():
-            for pre in connection_dict:
-                projections.append(
-                    (population_definitions[pre], population_definitions[post])
-                )
+            projections.extend(
+                (population_definitions[pre], population_definitions[post])
+                for pre in connection_dict
+            )
 
     # HDF5 enumerated type for the population label
-    mapping = {name: idx for name, idx in population_definitions.items()}
+    mapping = dict(population_definitions.items())
     dt_population_labels = h5py.special_dtype(enum=(np.uint16, mapping))
 
     with h5py.File(output_filepath, "a") as h5:
@@ -135,7 +135,7 @@ def create_neural_h5(
         dset.resize((len(populations),))
         a = np.zeros(len(populations), dtype=dt)
         start = 0
-        for enum_id, (name, idx, count) in enumerate(populations):
+        for enum_id, (_name, idx, count) in enumerate(populations):
             a[enum_id]["Start"] = start
             a[enum_id]["Count"] = count
             a[enum_id]["Population"] = idx
@@ -210,19 +210,19 @@ def disk(
 class PopulationConfig(BaseModel):
     """Specification for a population in the 2D culture."""
 
-    ratio: Optional[float] = Field(
+    ratio: float | None = Field(
         default=None, ge=0.0, description="proportion of the global cell count"
     )
-    count: Optional[int] = Field(default=None, ge=0)
+    count: int | None = Field(default=None, ge=0)
     synapse_type: str = Field("excitatory")
-    transmitter: Optional[str] = Field(
+    transmitter: str | None = Field(
         default=None,
         description=(
             "What this population releases: glutamatergic, cholinergic, "
             "gabaergic or glycinergic. Defaults from synapse_type."
         ),
     )
-    soma_only: Optional[bool] = Field(
+    soma_only: bool | None = Field(
         default=None,
         description=(
             "Single-compartment cells, which can only receive on the soma. "
@@ -277,11 +277,11 @@ class ConnectivityConfig(BaseModel):
     sigma: float = Field(
         ..., gt=0.0, description="Length constant lambda/sigma (space units)"
     )
-    mean_degree: float | Dict[str, float] = Field(
+    mean_degree: float | dict[str, float] = Field(
         default=100.0,
         description="Target average number of incoming connections per neuron",
     )
-    cutoff: Optional[float] = Field(
+    cutoff: float | None = Field(
         default=None,
         ge=0.0,
         le=1.0,
@@ -320,8 +320,8 @@ class Generate2DSystem(Interface):
         area: str = Field(default="systems.generate_2d.rectangle")
         area_kwargs: dict = Field(default_factory=dict)
         z_range: tuple[float, float] = Field(default=(0.0, 10.0))
-        total_cells: Optional[int] = Field(default=None, ge=1)
-        populations: Dict[str, PopulationConfig] = Field(
+        total_cells: int | None = Field(default=None, ge=1)
+        populations: dict[str, PopulationConfig] = Field(
             default={
                 "EXC": {"ratio": 0.8, "synapse_type": "excitatory"},
                 "INH": {"ratio": 0.2, "synapse_type": "inhibitory"},
@@ -340,7 +340,7 @@ class Generate2DSystem(Interface):
                 "allow_self_connections": False,
             }
         )
-        population_definitions: Dict[str, int] = Field(default={"EXC": 10, "INH": 11})
+        population_definitions: dict[str, int] = Field(default={"EXC": 10, "INH": 11})
         random_seed: int = 123
         output_directory: str | None = None
 
@@ -396,7 +396,7 @@ class Generate2DSystem(Interface):
                 dtype=float,
             )
         else:
-            with open(self.graph_filepath, "r") as f:
+            with open(self.graph_filepath) as f:
                 graph = json.load(f)
             area = graph["architecture"]["config"]["area"]
             bounds = (tuple(area[0]), tuple(area[1]))
@@ -432,7 +432,7 @@ class Generate2DSystem(Interface):
             raise FileExistsError("lightarray.json already exists.")
 
         if fiber_coordinates is None:
-            with open(self.graph_filepath, "r") as f:
+            with open(self.graph_filepath) as f:
                 graph = json.load(f)
             area = graph["architecture"]["config"]["area"]
             bounds = (tuple(area[0]), tuple(area[1]))
@@ -451,7 +451,7 @@ class Generate2DSystem(Interface):
 
         return la
 
-    TRANSMITTERS = {
+    TRANSMITTERS: ClassVar[dict] = {
         "glutamatergic": (
             {
                 "AMPA": {"e": 0, "g_unit": 0.0005, "tau_decay": 3.0, "tau_rise": 0.5},
@@ -508,8 +508,8 @@ class Generate2DSystem(Interface):
     def __call__(self):
         if self.config.output_directory:
             os.makedirs(self.config.output_directory, exist_ok=True)
-        counts: Dict[str, int] = {}
-        ratios: Dict[str, float] = {}
+        counts: dict[str, int] = {}
+        ratios: dict[str, float] = {}
         syn_types = {}
         total_from_counts = 0
         for pop, spec in self.config.populations.items():
@@ -536,7 +536,7 @@ class Generate2DSystem(Interface):
             allocated = 0
             for pop, ratio in ratios.items():
                 proportional = residual * ratio / ratio_sum
-                count = int(math.floor(proportional))
+                count = math.floor(proportional)
                 counts[pop] = count
                 allocated += count
                 remainders.append((pop, proportional - count))
@@ -555,7 +555,7 @@ class Generate2DSystem(Interface):
 
         populations = list(self.config.populations.keys())
         cell_distributions = {pop: {"2d": counts[pop]} for pop in populations}
-        synapse_flags: Dict[str, Dict[str, bool]] = {post: {} for post in populations}
+        synapse_flags: dict[str, dict[str, bool]] = {post: {} for post in populations}
         target_degrees = {}
         mean_degree_cfg = self.config.connectivity.mean_degree
         is_mapping = not isinstance(mean_degree_cfg, (int, float))
@@ -671,7 +671,16 @@ class Generate2DSystem(Interface):
                 length_constant = self.config.connectivity.sigma
                 allow_self = self.config.connectivity.allow_self_connections
 
-                def _kernel(lo: int, hi: int):
+                def _kernel(
+                    lo: int,
+                    hi: int,
+                    pre_info=pre_info,
+                    post_info=post_info,
+                    length_constant=length_constant,
+                    allow_self=allow_self,
+                    pre=pre,
+                    post=post,
+                ):
                     diffs = pre_info["xy"][:, None, :] - post_info["xy"][None, lo:hi, :]
                     d = np.linalg.norm(diffs, axis=2).astype(np.float32)
                     if self.config.connectivity.kernel == "gaussian":
@@ -775,14 +784,13 @@ class Generate2DSystem(Interface):
                         selected_distances = distances[selected, post_idx].astype(
                             np.float32
                         )
-                        syn_ids = []
                         record = synapses[post][int(post_gid)]
-                        for dist in selected_distances:
-                            syn_ids.append(
-                                record.add(
-                                    syn_type_index, float(dist), target_sec, target_swc
-                                )
+                        syn_ids = [
+                            record.add(
+                                syn_type_index, float(dist), target_sec, target_swc
                             )
+                            for dist in selected_distances
+                        ]
 
                         pair_edges[int(post_gid)] = (
                             selected_pre_gids,
@@ -1111,7 +1119,7 @@ class Generate2DSystem(Interface):
         if mea:
             mea_path = cells_path.parent / "mea.json"
             if mea_path.exists():
-                with open(mea_path, "r") as f:
+                with open(mea_path) as f:
                     mea = json.load(f)
                 coords = np.asarray(mea.get("electrode_coordinates", []), dtype=float)
                 print(len(coords), " channels")

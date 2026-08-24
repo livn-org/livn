@@ -60,9 +60,9 @@ def test_reach_describes_the_cells_that_were_built_not_the_graph():
     graph = env.stimulus_coordinates(simulated_only=False)
 
     assert len(built) < len(graph), "the selection left nothing out"
-    assert set(int(g) for g in built[:, 0]) == set(
+    assert {int(g) for g in built[:, 0]} == {
         int(g) for g in env.simulated_gids(everywhere=True)
-    )
+    }
     assert env.channel_reach().shape[1] == len(built)
 
 
@@ -96,9 +96,10 @@ def test_a_command_drives_the_cells_the_reach_says_it_will():
 
     wide = stimulus.expand(*section_labels(env.stimulus_coordinates(False)))
     columns = {
-        (int(g), int(s)): i for i, (g, s) in enumerate(zip(wide.gids, wide.sections))
+        (int(g), int(s)): i
+        for i, (g, s) in enumerate(zip(wide.gids, wide.sections, strict=False))
     }
-    rows = [columns[key] for key in zip(*section_labels(coordinates))]
+    rows = [columns[key] for key in zip(*section_labels(coordinates), strict=False)]
     delivered = np.asarray(wide.array)[0, rows]
 
     assert np.argmax(delivered) == np.argmax(reach)

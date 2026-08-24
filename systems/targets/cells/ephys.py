@@ -64,7 +64,7 @@ def fit_membrane_time_constant(t, v, t0, t1, rmse_max_tol=1.0):
     t_window = (t[start_index:end_index] - t[start_index]).astype(np.float64)
     v_window = v[start_index:end_index].astype(np.float64)
     try:
-        popt, pcov = curve_fit(exp_curve, t_window, v_window, p0=p0)
+        popt, _pcov = curve_fit(exp_curve, t_window, v_window, p0=p0)
     except (TypeError, RuntimeError):
         logger.info("Curve fit for membrane time constant failed")
         return np.nan, np.nan, np.nan
@@ -74,8 +74,8 @@ def fit_membrane_time_constant(t, v, t0, t1, rmse_max_tol=1.0):
 
     if rmse > rmse_max_tol:
         logger.debug(
-            "RMSE %f for the Curve fit for membrane time constant exceeded the "
-            "maximum tolerance of %f" % (rmse, rmse_max_tol)
+            f"RMSE {rmse:f} for the Curve fit for membrane time constant exceeded the "
+            f"maximum tolerance of {rmse_max_tol:f}"
         )
         return np.nan, np.nan, np.nan
 
@@ -107,14 +107,12 @@ def measure_time_constant(
     )
     noise = np.std(v[noise_interval_start_index:start_index])
 
-    if noise == 0:  # noiseless - likely a deterministic model
-        snr = np.inf
-    else:
-        snr = sig / noise
+    # a noiseless trace is likely a deterministic model
+    snr = np.inf if noise == 0 else sig / noise
     if snr < min_snr:
         logger.error(
             "measure_time_constant: signal-to-noise ratio too low for time "
-            "constant estimate ({:g} < {:g})".format(snr, min_snr)
+            f"constant estimate ({snr:g} < {min_snr:g})"
         )
         return np.nan
 
@@ -139,7 +137,7 @@ def measure_time_constant(
         )
         return np.nan
 
-    a, inv_tau, y0 = fit_membrane_time_constant(t, v, fit_start, fit_end)
+    _a, inv_tau, _y0 = fit_membrane_time_constant(t, v, fit_start, fit_end)
 
     return 1.0 / inv_tau
 
@@ -174,14 +172,14 @@ def detect_spikes(T, Y, t0, t1, before_peak=50.0):
     )
 
     dt = np.mean(np.diff(T))
-    pre_period_idxs = np.argwhere(T < t0 - before_peak).flat
+    pre_period_idxs = np.argwhere(t0 - before_peak > T).flat
     pre_peak_info = signal.find_peaks(
         Y[pre_period_idxs], height=-20.0, width=(None, int(before_peak / dt))
     )
     pre_peak_idxs = pre_peak_info[0]
     N_peaks_pre = len(pre_peak_idxs)
 
-    spk_period_idxs = np.argwhere(np.logical_and(T >= t0 - before_peak, T <= t1)).flat
+    spk_period_idxs = np.argwhere(np.logical_and(t0 - before_peak <= T, t1 >= T)).flat
     T_spk = T[spk_period_idxs]
     Y_spk = Y[spk_period_idxs]
     peak_info = signal.find_peaks(
@@ -215,12 +213,12 @@ def detect_spikes(T, Y, t0, t1, before_peak=50.0):
 
     threshold = Y_spk[T_before_idx:peak_idx][threshold_idx][0]
 
-    period_idxs = np.argwhere(np.logical_and(T >= t0, T <= t1)).flat
+    period_idxs = np.argwhere(np.logical_and(t0 <= T, t1 >= T)).flat
     T = T[period_idxs]
     Y = Y[period_idxs]
 
     # Binary-threshold crossings, then split into per-spike intervals.
-    threshold_crossings = np.diff(Y > threshold, prepend=False)
+    threshold_crossings = np.diff(threshold < Y, prepend=False)
     crossing_idx = np.argwhere(threshold_crossings)[:, 0]
     up_crossing_idx = np.argwhere(threshold_crossings)[::2, 0]
     N_peaks = len(up_crossing_idx)
@@ -234,7 +232,9 @@ def detect_spikes(T, Y, t0, t1, before_peak=50.0):
         Y_peaks = []
         T_peaks = []
         peak_amps = []
-        for j, (T_interval, peak_idx) in enumerate(zip(T_intervals, peak_idxs)):
+        for j, (T_interval, peak_idx) in enumerate(
+            zip(T_intervals, peak_idxs, strict=False)
+        ):
             if len(T_interval) < 2:
                 N_peaks -= 1
                 continue

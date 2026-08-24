@@ -51,6 +51,7 @@ dev = [
     "huggingface-hub>=0.3.1",
     "pytest-xdist>=3.8.0",
     "pytest-timeout>=2.4.0",
+    "ty==0.0.74",
 ]
 
 [tool.uv]
@@ -90,8 +91,29 @@ addopts = "--strict-markers -m 'not slow'"
 timeout = 300
 
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F"]
-ignore = ["F722", "F821"]
+select = [
+    "E4",
+    "E7",
+    "E9",
+    "F",
+    "I",
+    "UP",
+    "B",
+    "C4",
+    "SIM",
+    "RET",
+    "RUF",
+    "PERF",
+    "PIE",
+]
+ignore = [
+    "F722",
+    "F821",
+    "UP037",
+]
+
+[tool.ty.src]
+include = ["src", "optimization"]
 
 [tool.ruff.format]
 exclude = ["*.md"]

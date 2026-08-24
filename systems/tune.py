@@ -2,11 +2,12 @@ import json
 import os
 from typing import Literal
 
+import pandas as pd
 from machinable import Interface, get
 from machinable.config import to_dict
 from pydantic import BaseModel, ConfigDict
-from livn.utils import P, ObjSpec, import_instance
-import pandas as pd
+
+from livn.utils import ObjSpec, P, import_instance
 
 
 def _pj(p):
@@ -278,9 +279,13 @@ class Tune(Interface):
 
         for feature, constraint in (("pop_autocorr_tau", "pop_autocorr_tau_band"),):
             spec = features.get(feature)
-            if spec and spec.q_lo is not None and spec.min is not None:
-                if abs(spec.q_lo - spec.min) <= 1e-9:
-                    skip_constraints.append(constraint)
+            if (
+                spec
+                and spec.q_lo is not None
+                and spec.min is not None
+                and abs(spec.q_lo - spec.min) <= 1e-9
+            ):
+                skip_constraints.append(constraint)
 
         options = {
             "overrides": overrides,
@@ -570,7 +575,7 @@ class Tune(Interface):
                 f"{target!r} already exists, and runs refer to selections by "
                 "name; pass force=True to rebind it, or choose another name"
             )
-        counts = {p: int(len(g)) for p, g in resolved.items()}
+        counts = {p: len(g) for p, g in resolved.items()}
 
         if not P.is_root():
             return target
@@ -847,7 +852,7 @@ class Tune(Interface):
             )
 
         pool = sorted(agreeing or candidates, key=lambda c: -c[2])
-        chosen, chosen_space, chosen_n = pool[0]
+        chosen, _chosen_space, chosen_n = pool[0]
 
         print(
             f"NOTE: {len(candidates)} runs are stored under this config; "
@@ -885,7 +890,7 @@ class Tune(Interface):
             return
 
         h5 = optimization.load_h5()
-        n_rows, n_evals, n_epochs = self._evaluation_counts(h5)
+        n_rows, n_evals, _n_epochs = self._evaluation_counts(h5)
         print(
             "Epochs",
             h5["epochs"][-1],
@@ -943,7 +948,7 @@ class Tune(Interface):
                 print(
                     f"    note: loc={counts[0][1]} has {counts[0][0]}/{len(bands)} "
                     f"in band; the selected loc={loc} has "
-                    f"{dict((i, n) for n, i in counts)[loc]}/{len(bands)}"
+                    f"{ {i: n for n, i in counts}[loc] }/{len(bands)}"
                 )
 
         print(f"\nSelected solution (loc={loc}):")

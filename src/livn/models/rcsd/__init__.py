@@ -3,9 +3,9 @@ from __future__ import annotations
 import math
 import os
 
-from livn.types import Model
 from livn import types
 from livn.backend import backend
+from livn.types import Model
 
 _USES_JAX = False
 
@@ -113,9 +113,7 @@ class ReducedCalciumSomaDendrite(Model):
 
         # interleave soma0, dend0, soma1, dend1, ...
         stacked = np.stack([neuron_coordinates, dend_coords], axis=1)  # [n, 2, 4]
-        interleaved_coords = stacked.reshape(2 * n_neurons, 4)
-
-        return interleaved_coords
+        return stacked.reshape(2 * n_neurons, 4)
 
     def recording_coordinates(
         self,
@@ -131,7 +129,7 @@ class ReducedCalciumSomaDendrite(Model):
         """Interleave [soma_curr, 0, soma_curr, 0, ...] for BRK soma-only drive."""
         zeros = np.zeros_like(currents)
         stacked = np.stack([currents, zeros], axis=-1)  # [..., n_neurons, 2]
-        new_shape = currents.shape[:-1] + (currents.shape[-1] * 2,)
+        new_shape = (*currents.shape[:-1], currents.shape[-1] * 2)
         return stacked.reshape(new_shape)
 
     # neuron
@@ -947,8 +945,9 @@ class ReducedCalciumSomaDendrite(Model):
     def brian2_population_group(
         self, population_name, n, offset, coordinates, prng, rows=None
     ):
-        import brian2 as b2
         import math as _m
+
+        import brian2 as b2
 
         if population_name == "EXC":
             p = self.params("BoothRinzelKiehn-MN")
@@ -964,10 +963,7 @@ class ReducedCalciumSomaDendrite(Model):
 
             def _ghk(v, ci, co, f):
                 nu = v / f
-                if abs(nu) < 1e-4:
-                    ef = 1.0 - nu / 2.0
-                else:
-                    ef = nu / (_m.exp(nu) - 1.0)
+                ef = 1.0 - nu / 2.0 if abs(nu) < 0.0001 else nu / (_m.exp(nu) - 1.0)
                 return -f * (1.0 - (ci / co) * _m.exp(nu)) * ef
 
             # Gating at rest
@@ -1010,7 +1006,7 @@ class ReducedCalciumSomaDendrite(Model):
             population = b2.NeuronGroup(
                 n,
                 equations,
-                threshold="Vs > %f" % p["V_threshold"],
+                threshold="Vs > {:f}".format(p["V_threshold"]),
                 reset="",  # no artificial reset for biophysical model
                 refractory=self._brian2_refractory(p["V_threshold"]),
                 method=_method,
@@ -1042,10 +1038,7 @@ class ReducedCalciumSomaDendrite(Model):
 
             def _ghk(v, ci, co, f):
                 nu = v / f
-                if abs(nu) < 1e-4:
-                    ef = 1.0 - nu / 2.0
-                else:
-                    ef = nu / (_m.exp(nu) - 1.0)
+                ef = 1.0 - nu / 2.0 if abs(nu) < 0.0001 else nu / (_m.exp(nu) - 1.0)
                 return -f * (1.0 - (ci / co) * _m.exp(nu)) * ef
 
             ghk_s = _ghk(v_rest, cai0, cao, fN)
@@ -1090,10 +1083,7 @@ class ReducedCalciumSomaDendrite(Model):
 
             def _ghk(v, ci, co, f):
                 nu = v / f
-                if abs(nu) < 1e-4:
-                    ef = 1.0 - nu / 2.0
-                else:
-                    ef = nu / (_m.exp(nu) - 1.0)
+                ef = 1.0 - nu / 2.0 if abs(nu) < 0.0001 else nu / (_m.exp(nu) - 1.0)
                 return -f * (1.0 - (ci / co) * _m.exp(nu)) * ef
 
             # Gating at rest
@@ -1127,7 +1117,7 @@ class ReducedCalciumSomaDendrite(Model):
             population = b2.NeuronGroup(
                 n,
                 equations,
-                threshold="Vs > %f" % p["V_threshold"],
+                threshold="Vs > {:f}".format(p["V_threshold"]),
                 reset="",  # no artificial reset for biophysical model
                 refractory=self._brian2_refractory(p["V_threshold"]),
                 method=_method,
@@ -1234,7 +1224,7 @@ class ReducedCalciumSomaDendrite(Model):
         """Legacy single-synapse constructor (unused with conductance-based model)."""
         import brian2 as b2
 
-        synapse = b2.Synapses(
+        return b2.Synapses(
             pre_group,
             post_group,
             """
@@ -1246,8 +1236,6 @@ class ReducedCalciumSomaDendrite(Model):
             on_pre="I += prefix * w * multiplier * pA",
             dt=0.025 * b2.ms,
         )
-
-        return synapse
 
     def brian2_mechanism_synapse(
         self,
@@ -1374,14 +1362,13 @@ class ReducedCalciumSomaDendrite(Model):
         independently of the step, which is what lets a ``std_e``/``tau_e``
         fitted under NEURON mean the same thing here.
         """
-        noise_update = population_group.run_regularly(
+        return population_group.run_regularly(
             """
             g_noise_e = g_e0 + (g_noise_e - g_e0) * exp(-(dt/ms) / tau_e) + amp_e * sqrt(1.0 - exp(-2.0 * (dt/ms) / tau_e)) * randn()
             g_noise_i = g_i0 + (g_noise_i - g_i0) * exp(-(dt/ms) / tau_i) + amp_i * sqrt(1.0 - exp(-2.0 * (dt/ms) / tau_i)) * randn()
             """,
             dt=population_group.clock.dt,
         )
-        return noise_update
 
     def brian2_noise_configure(
         self,

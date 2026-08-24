@@ -17,5 +17,5 @@ else:
         globals().update(
             {k: getattr(_mod, k) for k in dir(_mod) if not k.startswith("_")}
         )
-    except ImportError:
-        raise ImportError(f"livn: backend not found: {backend()}")
+    except ImportError as e:
+        raise ImportError(f"livn: backend not found: {backend()}") from e

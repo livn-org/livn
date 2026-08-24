@@ -3,15 +3,14 @@ import pytest
 
 pytest.importorskip("diffrax")
 
-import jax.numpy as jnp  # noqa: E402
+import jax.numpy as jnp
 
-from livn.backend.diffrax import Env  # noqa: E402
-from livn.models.eventloop import SolverConfig  # noqa: E402
-from livn.models.glif import GLIF  # noqa: E402
-from livn.stimulus import Stimulus  # noqa: E402
-
-from optimization.fit import fit  # noqa: E402
-from optimization.losses import voltage_mse  # noqa: E402
+from livn.backend.diffrax import Env
+from livn.models.eventloop import SolverConfig
+from livn.models.glif import GLIF
+from livn.stimulus import Stimulus
+from optimization.fit import fit
+from optimization.losses import voltage_mse
 
 DURATION, DT = 20.0, 0.5
 AMPLITUDE = 0.05
@@ -28,7 +27,7 @@ def _env(n):
 
 
 def _stimulus(n):
-    steps = int(round(DURATION / DT)) + 1
+    steps = round(DURATION / DT) + 1
     return Stimulus.from_current(np.full((steps, n), AMPLITUDE), dt=DT)
 
 
@@ -76,7 +75,7 @@ def test_fit_works_on_an_env_whose_cell_registry_is_still_cold():
     stimulus = _stimulus(1)
     assert "_cells" not in env.__dict__
 
-    steps = int(round(DURATION / DT)) + 1
+    steps = round(DURATION / DT) + 1
     target = np.full((1, steps), -70.0)
 
     _, history = fit(
@@ -126,7 +125,7 @@ DISTINCT = {"tau_m": np.asarray([11.0, 14.0])}
 
 
 def _spiking_stimulus(n):
-    steps = int(round(DURATION / DT)) + 1
+    steps = round(DURATION / DT) + 1
     return Stimulus.from_current(np.full((steps, n), SPIKING_AMPLITUDE), dt=DT)
 
 
@@ -147,7 +146,7 @@ def test_batched_cells_with_distinct_parameters_spike_differently():
 
 def test_a_batched_fit_differentiates_through_cells_that_spike_differently():
     env, stimulus = _env(2), _spiking_stimulus(2)
-    steps = int(round(DURATION / DT)) + 1
+    steps = round(DURATION / DT) + 1
     target = np.full((2, steps), -70.0)
 
     _, history = fit(
@@ -211,13 +210,13 @@ def test_a_prior_pulls_the_fit_toward_its_reference(one):
     env, stimulus = one
     target = _simulate(env, stimulus, {"E_L": -73.5})
     reference = -68.0
-    common = dict(
-        duration=DURATION,
-        stimulus=stimulus,
-        dt=DT,
-        steps=15,
-        learning_rate=0.5,
-    )
+    common = {
+        "duration": DURATION,
+        "stimulus": stimulus,
+        "dt": DT,
+        "steps": 15,
+        "learning_rate": 0.5,
+    }
 
     free, _ = fit(env, target, _voltage_loss, {"E_L": -70.0}, **common)
     pulled, _ = fit(

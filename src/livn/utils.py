@@ -4,22 +4,22 @@ import collections
 import importlib
 import json
 import os
+import pickle
 import shutil
 import sys
 import time
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, Optional, Union
-import pickle
-
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import numpy as np
     from mpi4py import MPI
+
     from livn.types import Array
 
 sentinel = object()
 
-ObjSpec = Union[tuple, list, str, None]
+ObjSpec = tuple | list | str | None
 
 
 def import_object_by_path(path):
@@ -31,7 +31,7 @@ def import_object_by_path(path):
     return getattr(module, obj_name)
 
 
-def resolve_instance(spec: "ObjSpec"):
+def resolve_instance(spec: ObjSpec):
     """Resolve an ObjSpec as follows:
 
         None                               -> None
@@ -67,7 +67,7 @@ def resolve_instance(spec: "ObjSpec"):
     return cls, merged
 
 
-def import_instance(spec: "ObjSpec"):
+def import_instance(spec: ObjSpec):
     resolved = resolve_instance(spec)
     if resolved is None:
         return None
@@ -75,7 +75,7 @@ def import_instance(spec: "ObjSpec"):
     return cls(**kwargs)
 
 
-def lnp() -> "np":
+def lnp() -> np:
     from livn.backend import backend
 
     if "ax" in backend():
@@ -162,7 +162,7 @@ def merge(*data):
 
 def reduce_sum(
     *data,
-    comm: Optional["MPI.Intracomm"] = None,
+    comm: MPI.Intracomm | None = None,
     root: int = 0,
     all: bool = False,
 ):
@@ -171,8 +171,9 @@ def reduce_sum(
     except ImportError:
         MPI = False
 
-    import numpy as _np
     import builtins as _builtins
+
+    import numpy as _np
 
     def _mpi_sum(buf):
         if comm.Get_size() == 1:
@@ -183,9 +184,8 @@ def reduce_sum(
         if all:
             comm.Allreduce(flat, recv_flat, op=MPI.SUM)
             return recv_flat.reshape(buf.shape)
-        else:
-            comm.Reduce(flat, recv_flat, op=MPI.SUM, root=root)
-            return recv_flat.reshape(buf.shape) if comm.Get_rank() == root else None
+        comm.Reduce(flat, recv_flat, op=MPI.SUM, root=root)
+        return recv_flat.reshape(buf.shape) if comm.Get_rank() == root else None
 
     results = []
     for d in data:
@@ -213,21 +213,15 @@ def reduce_sum(
                 # TODO: we should fall back on mpi4jax if available
                 sendbuf = _np.asarray(d)
             except Exception:
-                # conversion failed (e.g. jax array is not numpy)
-                if comm.Get_size() > 1:
-                    # "failing" with None
-                    reduced = None if not all else None
-                else:
-                    reduced = d
+                # conversion failed (e.g. jax array is not numpy);
+                # "fail" with None on more than one rank
+                reduced = None if comm.Get_size() > 1 else d
             else:
                 if isinstance(sendbuf, _np.ndarray) and sendbuf.dtype == _np.dtype("O"):
                     try:
                         local = _np.array(d, dtype=_np.float64)
                     except Exception:
-                        if comm.Get_size() > 1:
-                            reduced = None if not all else None
-                        else:
-                            reduced = d
+                        reduced = None if comm.Get_size() > 1 else d
                     else:
                         reduced = _mpi_sum(local)
                 else:
@@ -269,7 +263,7 @@ def decode_file(filepath: str, **kwargs):
 def load_file(
     filepath: str | list[str],
     default: Any = sentinel,
-    comm: Union["MPI.Intracomm", bool, None] = None,
+    comm: MPI.Intracomm | bool | None = None,
     **kwargs,
 ) -> Any:
     if not isinstance(filepath, str):
@@ -300,7 +294,7 @@ def load_file(
 
 class P:
     @staticmethod
-    def rank(comm: Optional["MPI.Intracomm"] = None) -> int:
+    def rank(comm: MPI.Intracomm | None = None) -> int:
         try:
             from mpi4py import MPI
 
@@ -312,7 +306,7 @@ class P:
             return 0
 
     @staticmethod
-    def size(comm: Optional["MPI.Intracomm"] = None) -> int:
+    def size(comm: MPI.Intracomm | None = None) -> int:
         try:
             from mpi4py import MPI
 
@@ -324,7 +318,7 @@ class P:
             return 1
 
     @staticmethod
-    def comm(comm: Optional["MPI.Intracomm"] = None):
+    def comm(comm: MPI.Intracomm | None = None):
         if comm is not None:
             return comm
 
@@ -336,7 +330,7 @@ class P:
         return MPI.COMM_WORLD
 
     @staticmethod
-    def is_root(root: int = 0, comm: Optional["MPI.Intracomm"] = None):
+    def is_root(root: int = 0, comm: MPI.Intracomm | None = None):
         root = int(root)
         if root < 0:
             root = max(P.size(comm=comm) + root, 0)
@@ -353,7 +347,7 @@ class P:
 
     @staticmethod
     def gather(
-        *data, comm: Optional["MPI.Intracomm"] = None, all: bool = False, root: int = 0
+        *data, comm: MPI.Intracomm | None = None, all: bool = False, root: int = 0
     ):
         try:
             from mpi4py import MPI
@@ -415,9 +409,8 @@ class P:
                     for idx, item in enumerate(recv_payload):
                         buffers[idx][src] = item
                 return tuple(buffers)
-            else:
-                comm.send(list(prepared), dest=root, tag=tag)
-                return tuple([None] * len(prepared))
+            comm.send(list(prepared), dest=root, tag=tag)
+            return tuple([None] * len(prepared))
 
         if all:
             collected = _collect_to_root()
@@ -437,7 +430,7 @@ class P:
         return gathered
 
     @staticmethod
-    def broadcast(*data, comm: Optional["MPI.Intracomm"] = None):
+    def broadcast(*data, comm: MPI.Intracomm | None = None):
         try:
             from mpi4py import MPI
         except ImportError:
@@ -467,7 +460,7 @@ class P:
     @staticmethod
     def reduce_sum(
         *data,
-        comm: Optional["MPI.Intracomm"] = None,
+        comm: MPI.Intracomm | None = None,
         root: int = 0,
         all: bool = False,
     ):
@@ -527,8 +520,7 @@ def serialize(obj):
     """JSON serializer for objects not serializable by default json code"""
     if hasattr(obj, "tolist"):
         return obj.tolist()
-    else:
-        raise TypeError(f"Unserializable object {obj} of type {type(obj)}")
+    raise TypeError(f"Unserializable object {obj} of type {type(obj)}")
 
 
 class Jsonable:
@@ -540,7 +532,7 @@ class Jsonable:
 
     @classmethod
     def from_json(
-        cls, serialized, comm: Union["MPI.Intracomm", bool, None] = None, **loads_kwargs
+        cls, serialized, comm: MPI.Intracomm | bool | None = None, **loads_kwargs
     ):
         if isinstance(serialized, str):
             if serialized.endswith(".json"):

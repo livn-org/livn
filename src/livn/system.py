@@ -1,32 +1,29 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import pathlib
 import random
-import numpy
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from functools import cached_property
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
-    Iterator,
-    Mapping,
-    Optional,
-    Sequence,
 )
 
-from pydantic import BaseModel
+import numpy
 import pyfive
+from pydantic import BaseModel
 
 from livn import types
 from livn.backend import backend
 from livn.utils import (
     P,
     download_directory,
-    sentinel,
-    load_file,
     import_object_by_path,
+    load_file,
+    sentinel,
 )
 
 if TYPE_CHECKING:
@@ -111,7 +108,7 @@ def fetch(
     directory: str = ".",
     name: str | None = None,
     force: bool = False,
-    comm: Optional["MPI.Intracomm"] = None,
+    comm: MPI.Intracomm | None = None,
 ):
     target = None
     comm = P.comm(comm)
@@ -162,16 +159,16 @@ def predefined(name: str = "EI", download_directory: str = ".", force: bool = Fa
     )
 
 
-def make(name: str = "EI") -> "System":
+def make(name: str = "EI") -> System:
     system = predefined(name)
 
     return System(system)
 
 
 def resolve(
-    spec: "System | ParallelSystem | str | int",
-    comm: Optional["MPI.Intracomm"] = None,
-) -> "System | ParallelSystem":
+    spec: System | ParallelSystem | str | int,
+    comm: MPI.Intracomm | None = None,
+) -> System | ParallelSystem:
     """Resolve an ``Env(system=...)`` argument into a system object.
 
     ``int`` -> :class:`ParallelSystem` with that many unconnected cells,
@@ -198,11 +195,11 @@ def resolve(
 def resolve_selection(
     system,
     spec,
-    populations: "Sequence[str] | None" = None,
+    populations: Sequence[str] | None = None,
     seed: int | None = 123,
     method: str = "first",
     bounds=None,
-) -> "dict[str, Any] | None":
+) -> dict[str, Any] | None:
     if isinstance(spec, str):
         if bounds is not None or method not in ("first", None):
             raise ValueError(
@@ -239,12 +236,12 @@ def resolve_selection(
 def selection_from_ranges(
     ranges: dict[types.PopulationName, tuple[int, int]],
     spec,
-    populations: "Sequence[str] | None" = None,
+    populations: Sequence[str] | None = None,
     seed: int | None = 123,
     method: str = "first",
-    coordinates: "dict[str, Any] | None" = None,
+    coordinates: dict[str, Any] | None = None,
     bounds=None,
-) -> "dict[str, Any] | None":
+) -> dict[str, Any] | None:
     """Resolve a subselection spec against ``{population: (start, count)}`` ranges."""
     if spec is None and bounds is None:
         return None
@@ -337,7 +334,7 @@ def selection_from_ranges(
             return 0
         if f >= 1:
             return size
-        return max(1, int(round(f * size)))
+        return max(1, round(f * size))
 
     if isinstance(spec, dict):
         for p in pops:
@@ -358,7 +355,7 @@ def selection_from_ranges(
         if total_size == 0:
             return {}
         for p in pops:
-            counts[p] = min(ranges[p][1], int(round(spec * ranges[p][1] / total_size)))
+            counts[p] = min(ranges[p][1], round(spec * ranges[p][1] / total_size))
     else:
         raise TypeError(f"unsupported selection spec: {type(spec).__name__}")
 
@@ -394,7 +391,7 @@ def _h5_read_population_names(f):
 def _h5_population_ranges(f, pop_names):
     pops_data = f["H5Types/Populations"][:]
     ranges = {}
-    for name, row in zip(pop_names, pops_data):
+    for name, row in zip(pop_names, pops_data, strict=False):
         ranges[name] = (int(row[0]), int(row[1]))
     return ranges
 
@@ -409,7 +406,7 @@ def _h5_read_cell_attribute_info(f, population_names):
     for pop_name in population_names:
         pop_group = f[f"Populations/{pop_name}"]
         namespaces = {}
-        for ns_name in pop_group.keys():
+        for ns_name in pop_group:
             ns_group = pop_group[ns_name]
             if hasattr(ns_group, "keys"):
                 namespaces[ns_name] = sorted(ns_group.keys())
@@ -497,7 +494,7 @@ def _h5_read_graph(f, pre_start, post_start, pre, post, namespaces=None):
         if ns_name in proj_group:
             ns_group = proj_group[ns_name]
             ns_data_arrays[ns_name] = {}
-            for ds_name in ns_group.keys():
+            for ds_name in ns_group:
                 ds = ns_group[ds_name]
                 if hasattr(ds, "shape"):
                     ns_data_arrays[ns_name][ds_name] = ds[:]
@@ -545,10 +542,8 @@ def _h5pyd_open(filepath):
 
     hsds_config = None
     if os.environ.get("LIVN_HSDS"):
-        try:
+        with contextlib.suppress(json.JSONDecodeError):
             hsds_config = json.loads(os.environ["LIVN_HSDS"])
-        except json.JSONDecodeError:
-            pass
     if hsds_config is None:
         hsds_config = _HSDS_CONFIG
     if hsds_config is None:
@@ -598,7 +593,8 @@ def _open_h5(filepath):
             import warnings
 
             warnings.warn(
-                f"h5pyd open failed for {filepath}: {e}, falling back to pyfive"
+                f"h5pyd open failed for {filepath}: {e}, falling back to pyfive",
+                stacklevel=2,
             )
     return _pyfive_open(filepath)
 
@@ -606,7 +602,7 @@ def _open_h5(filepath):
 if _H5_BACKEND == "neuroh5":
 
     def read_cells_meta_data(
-        filepath: str, comm: Optional["MPI.Intracomm"] = None
+        filepath: str, comm: MPI.Intracomm | None = None
     ) -> CellsMetaData:
         from mpi4py import MPI
         from neuroh5.io import (
@@ -644,7 +640,7 @@ if _H5_BACKEND == "neuroh5":
     def read_coordinates(
         filepath: str,
         population: types.PopulationName,
-        comm: Optional["MPI.Intracomm"] = None,
+        comm: MPI.Intracomm | None = None,
     ) -> Iterator[tuple[int, tuple[float, float, float]]]:
         from mpi4py import MPI
         from neuroh5.io import scatter_read_cell_attributes
@@ -676,7 +672,7 @@ if _H5_BACKEND == "neuroh5":
     def coordinate_array(
         filepath: str,
         population: types.PopulationName,
-        comm: Optional["MPI.Intracomm"] = None,
+        comm: MPI.Intracomm | None = None,
         all: bool = True,
     ) -> types.Float[types.Array, "n_coords cxyz=4"]:
         from mpi4py import MPI
@@ -686,7 +682,7 @@ if _H5_BACKEND == "neuroh5":
 
         coordinates = []
         for gid, coordinate in read_coordinates(filepath, population, comm=comm):
-            coordinates.append([gid] + list(coordinate))
+            coordinates.append([gid, *list(coordinate)])
 
         if all:
             all_coordinates = comm.allgather(coordinates)
@@ -704,7 +700,7 @@ if _H5_BACKEND == "neuroh5":
     def read_trees(
         filepath: str,
         population: types.PopulationName,
-        comm: Optional["MPI.Intracomm"] = None,
+        comm: MPI.Intracomm | None = None,
     ) -> Iterator[tuple[int, Tree]]:
         from mpi4py import MPI
         from neuroh5.io import scatter_read_trees
@@ -712,13 +708,13 @@ if _H5_BACKEND == "neuroh5":
         if comm is None:
             comm = MPI.COMM_WORLD
 
-        (trees, forestSize) = scatter_read_trees(filepath, population, comm=comm)
+        (trees, _forestSize) = scatter_read_trees(filepath, population, comm=comm)
         yield from trees
 
     def read_synapses(
         filepath: str,
         population: types.PostSynapticPopulationName,
-        comm: Optional["MPI.Intracomm"] = None,
+        comm: MPI.Intracomm | None = None,
         node_allocation: set[int] | None = None,
     ):
         from mpi4py import MPI
@@ -745,14 +741,13 @@ if _H5_BACKEND == "neuroh5":
             return_type="dict",
         )
 
-        for gid, syn_attrs in cell_attributes_dict["Synapse Attributes"]:
-            yield gid, syn_attrs
+        yield from cell_attributes_dict["Synapse Attributes"]
 
     def read_projections(
         filepath: str,
         pre: types.PreSynapticPopulationName,
         post: types.PostSynapticPopulationName,
-        comm: Optional["MPI.Intracomm"] = None,
+        comm: MPI.Intracomm | None = None,
         population_ranges: dict[str, tuple[int, int]] | None = None,
     ) -> Iterator[tuple[int, tuple[list[int], Projection]]]:
         from mpi4py import MPI
@@ -761,7 +756,7 @@ if _H5_BACKEND == "neuroh5":
         if comm is None:
             comm = MPI.COMM_WORLD
 
-        (graph, a) = scatter_read_graph(
+        (graph, _a) = scatter_read_graph(
             filepath,
             comm=comm,
             io_size=1,
@@ -775,7 +770,7 @@ if _H5_BACKEND == "neuroh5":
         filepath: str,
         pre: types.PreSynapticPopulationName,
         post: types.PostSynapticPopulationName,
-        comm: Optional["MPI.Intracomm"] = None,
+        comm: MPI.Intracomm | None = None,
         all: bool = True,
         population_ranges: dict[str, tuple[int, int]] | None = None,
     ) -> list[tuple[int, tuple[list[int], Projection]]]:
@@ -799,7 +794,7 @@ if _H5_BACKEND == "neuroh5":
 else:  # h5pyd or pyfive — both use _open_h5 + generic readers
 
     def read_cells_meta_data(
-        filepath: str, comm: Optional["MPI.Intracomm"] = None
+        filepath: str, comm: MPI.Intracomm | None = None
     ) -> CellsMetaData:
         f = _open_h5(filepath)
         population_names = _h5_read_population_names(f)
@@ -815,7 +810,7 @@ else:  # h5pyd or pyfive — both use _open_h5 + generic readers
     def read_coordinates(
         filepath: str,
         population: types.PopulationName,
-        comm: Optional["MPI.Intracomm"] = None,
+        comm: MPI.Intracomm | None = None,
     ) -> Iterator[tuple[int, tuple[float, float, float]]]:
         f = _open_h5(filepath)
         pop_ranges = _h5_read_population_ranges(f)
@@ -839,12 +834,12 @@ else:  # h5pyd or pyfive — both use _open_h5 + generic readers
     def coordinate_array(
         filepath: str,
         population: types.PopulationName,
-        comm: Optional["MPI.Intracomm"] = None,
+        comm: MPI.Intracomm | None = None,
         all: bool = True,
     ) -> types.Float[types.Array, "n_coords cxyz=4"]:
         coordinates = []
         for gid, coordinate in read_coordinates(filepath, population):
-            coordinates.append([gid] + list(coordinate))
+            coordinates.append([gid, *list(coordinate)])
         coordinates = np.array(coordinates)
         if coordinates.size == 0:
             return np.zeros((0, 4))
@@ -853,7 +848,7 @@ else:  # h5pyd or pyfive — both use _open_h5 + generic readers
     def read_trees(
         filepath: str,
         population: types.PopulationName,
-        comm: Optional["MPI.Intracomm"] = None,
+        comm: MPI.Intracomm | None = None,
     ) -> Iterator[tuple[int, Tree]]:
         raise NotImplementedError(
             "read_trees requires neuroh5; no pyfive fallback available"
@@ -862,7 +857,7 @@ else:  # h5pyd or pyfive — both use _open_h5 + generic readers
     def read_synapses(
         filepath: str,
         population: types.PostSynapticPopulationName,
-        comm: Optional["MPI.Intracomm"] = None,
+        comm: MPI.Intracomm | None = None,
         node_allocation: set[int] | None = None,
     ):
         mask = {
@@ -888,7 +883,7 @@ else:  # h5pyd or pyfive — both use _open_h5 + generic readers
         filepath: str,
         pre: types.PreSynapticPopulationName,
         post: types.PostSynapticPopulationName,
-        comm: Optional["MPI.Intracomm"] = None,
+        comm: MPI.Intracomm | None = None,
         population_ranges: dict[str, tuple[int, int]] | None = None,
     ) -> Iterator[tuple[int, tuple[list[int], Projection]]]:
         f = _open_h5(filepath)
@@ -910,7 +905,7 @@ else:  # h5pyd or pyfive — both use _open_h5 + generic readers
         filepath: str,
         pre: types.PreSynapticPopulationName,
         post: types.PostSynapticPopulationName,
-        comm: Optional["MPI.Intracomm"] = None,
+        comm: MPI.Intracomm | None = None,
         all: bool = True,
         population_ranges: dict[str, tuple[int, int]] | None = None,
     ) -> list[tuple[int, tuple[list[int], Projection]]]:
@@ -962,7 +957,10 @@ class NeuroH5Graph:
             except Exception as e:
                 import warnings
 
-                warnings.warn(f"HSDS elements load failed: {e}, falling back to local")
+                warnings.warn(
+                    f"HSDS elements load failed: {e}, falling back to local",
+                    stacklevel=2,
+                )
         return self._load_elements_local()
 
     def _load_elements_local(self):
@@ -1052,7 +1050,7 @@ class NeuroH5Graph:
 class System:
     """In vitro system"""
 
-    def __init__(self, uri: str, comm: Optional["MPI.Intracomm"] = None):
+    def __init__(self, uri: str, comm: MPI.Intracomm | None = None):
         self.uri = uri
         self.comm = comm
 
@@ -1066,8 +1064,8 @@ class System:
         self._bounding_box = None
         self._coordinate_arrays: dict[types.PopulationName, Any] = {}
 
-    def default_io(self, comm=None) -> "IO":
-        from livn.io import MEA, IO
+    def default_io(self, comm=None) -> IO:
+        from livn.io import IO, MEA
 
         # Try local file first, then HTTP endpoint
         try:
@@ -1086,13 +1084,11 @@ class System:
         except Exception:
             return IO()
 
-    def default_model(self, comm=None) -> "Model":
+    def default_model(self, comm=None) -> Model:
         model = self.load_file("model.json", None, comm=comm)
         if model is None:
-            try:
+            with contextlib.suppress(Exception):
                 model = self._load_json_file("model.json")
-            except Exception:
-                pass
         if model is not None and "cls" in model:
             model = import_object_by_path(model["cls"])(**model["kwargs"])
         else:
@@ -1141,7 +1137,7 @@ class System:
         if isinstance(filepath, str):
             filepath = [filepath]
         return load_file(
-            [self._graph.local_directory()] + list(filepath), default, **kwargs
+            [self._graph.local_directory(), *list(filepath)], default, **kwargs
         )
 
     @property
@@ -1202,8 +1198,10 @@ class System:
                 syn_type = (spec or {}).get("type", "excitatory")
                 mechanisms = ((spec or {}).get("mechanisms") or {}).get("default") or {}
                 for section in (spec or {}).get("sections") or []:
-                    for mechanism in mechanisms:
-                        found.append((post, pre, section, mechanism, syn_type))
+                    found.extend(
+                        (post, pre, section, mechanism, syn_type)
+                        for mechanism in mechanisms
+                    )
         return sorted(set(found))
 
     @property
@@ -1252,11 +1250,11 @@ class System:
     def selection(
         self,
         spec,
-        populations: "Sequence[str] | None" = None,
+        populations: Sequence[str] | None = None,
         seed: int | None = 123,
         method: str = "first",
         bounds=None,
-    ) -> "dict[str, np.ndarray] | None":
+    ) -> dict[str, np.ndarray] | None:
         """Resolve a cell subselection of this system's graph.
 
         The result is deterministic and identical on every MPI rank.
@@ -1399,7 +1397,7 @@ class System:
                 prefix = -1.0 if kind == "inhibitory" else 1.0
                 weight = weights.get(f"{post}_{pre}", 1.0)
 
-                for post_gid, (pre_gids, projection) in self.projection_array(
+                for post_gid, (pre_gids, _projection) in self.projection_array(
                     pre, post
                 ):
                     # distances = projection
@@ -1426,7 +1424,7 @@ class System:
             num_neurons += count
 
         for post, v in self.connections_config["synapses"].items():
-            for pre, _ in v.items():
+            for pre in v:
                 for _, (pre_gids, _) in self.projection_array(pre, post):
                     num_projections += len(pre_gids)
 
@@ -1470,7 +1468,7 @@ class ParallelSystem:
         num_neurons: int | Mapping[types.PopulationName, int] = 1,
         coordinates: float | Callable | Any = 0.0,
         name: str = "ParallelSystem",
-        comm: Optional["MPI.Intracomm"] = None,
+        comm: MPI.Intracomm | None = None,
     ):
         if isinstance(num_neurons, bool):
             raise TypeError("num_neurons must be an int or a mapping, not a bool")
@@ -1569,12 +1567,12 @@ class ParallelSystem:
     def __repr__(self):
         return f"ParallelSystem({self.population_counts!r})"
 
-    def default_io(self, comm=None) -> "IO":
+    def default_io(self, comm=None) -> IO:
         from livn.io import IO
 
         return IO()
 
-    def default_model(self, comm=None) -> "Model":
+    def default_model(self, comm=None) -> Model:
         from livn.models.rcsd import ReducedCalciumSomaDendrite
 
         return ReducedCalciumSomaDendrite()
@@ -1666,11 +1664,11 @@ class ParallelSystem:
     def selection(
         self,
         spec,
-        populations: "Sequence[str] | None" = None,
+        populations: Sequence[str] | None = None,
         seed: int | None = 123,
         method: str = "first",
         bounds=None,
-    ) -> "dict[str, Any] | None":
+    ) -> dict[str, Any] | None:
         return resolve_selection(self, spec, populations, seed, method, bounds)
 
     def selections(self, comm=None) -> list[str]:
@@ -1720,8 +1718,8 @@ class ParallelSystem:
 
 
 if _USES_JAX:
-    import jax
     import equinox as eqx
+    import jax
 
     class PositionParameterization(eqx.Module):
         def __call__(self):
@@ -1885,7 +1883,7 @@ if _USES_JAX:
 
         def __init__(
             self,
-            parameterization: "PositionParameterization",
+            parameterization: PositionParameterization,
             n_neurons: int,
             n_populations: int = 1,
             origins: types.Float[types.Array, "n_populations xyz=3"] | None = None,
@@ -1907,7 +1905,7 @@ if _USES_JAX:
         def params(self):
             return self.parameterization()
 
-        def default_io(self) -> "IO":
+        def default_io(self) -> IO:
             from livn.io import MEA
 
             if hasattr(self, "uri") and self.uri is not None:

@@ -15,7 +15,6 @@ import numpy as np
 
 from livn.env import Env
 
-
 BASELINE_MS = 200  # no learning warmup
 TRAINING_MS = 1000
 EVAL_MS = 200  # frozen weights
@@ -64,7 +63,7 @@ w_final = np.array(list(weights_final.values()))
 
 if env.w_recs:
     max_dev = 0.0
-    for key, vec in env.w_recs.items():
+    for vec in env.w_recs.values():
         trace = np.array(vec.as_numpy())
         dev = np.max(np.abs(trace - 1.0))
         max_dev = max(max_dev, dev)
@@ -79,7 +78,7 @@ fig, axes = plt.subplots(2, 2, figsize=(14, 9))
 # Weight evolution over training
 ax = axes[0, 0]
 n_traces = min(20, len(env.w_recs))
-for i, (key, vec) in enumerate(env.w_recs.items()):
+for i, (_key, vec) in enumerate(env.w_recs.items()):
     if i >= n_traces:
         break
     trace = np.array(vec.as_numpy())

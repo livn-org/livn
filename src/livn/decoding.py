@@ -1,9 +1,11 @@
 import os
-from typing import Callable, Optional, Any
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 from pydantic import Field, PrivateAttr
 from scipy.signal import butter, filtfilt, welch
+
 from livn.run import Run
 from livn.types import Decoding
 from livn.utils import P
@@ -18,7 +20,7 @@ def merged_spikes(signal: Run, env=None) -> tuple[list, list]:
     merged_it: list = []
     merged_tt: list = []
     if all_it and all_tt:
-        for ii, ts in zip(all_it, all_tt):
+        for ii, ts in zip(all_it, all_tt, strict=False):
             merged_it.extend(ii)
             merged_tt.extend(ts)
     return merged_it, merged_tt
@@ -70,9 +72,9 @@ class ChannelRecording(Decoding):
     spikes: bool = True
     voltages: bool = True
     membrane_currents: bool = True
-    voltage_gids: Optional[list[int]] = None
-    voltage_dt: Optional[float] = None
-    voltage_sections: Optional[list[str]] = None
+    voltage_gids: list[int] | None = None
+    voltage_dt: float | None = None
+    voltage_sections: list[str] | None = None
 
     def setup(self, env):
         if self.spikes:
@@ -119,6 +121,7 @@ class ChannelRecording(Decoding):
             if self.voltages:
                 iv, vv = P.merge(iv, vv)
             return cit, ct, iv, vv, env.io.channel_ids, p
+        return None
 
 
 class GatherAndMerge(Decoding):
@@ -126,9 +129,9 @@ class GatherAndMerge(Decoding):
     spikes: bool = True
     voltages: bool = True
     membrane_currents: bool = True
-    voltage_gids: Optional[list[int]] = None
-    voltage_dt: Optional[float] = None
-    voltage_sections: Optional[list[str]] = None
+    voltage_gids: list[int] | None = None
+    voltage_dt: float | None = None
+    voltage_sections: list[str] | None = None
 
     def setup(self, env):
         if self.spikes:
@@ -385,7 +388,7 @@ class ISICV(Decoding):
 
             result = {
                 "isi_cv": float(np.mean(isi_cvs)) if isi_cvs else 0.0,
-                "n_units_used": int(len(isi_cvs)),
+                "n_units_used": len(isi_cvs),
             }
 
         return P.broadcast(result, comm=env.comm)
@@ -609,7 +612,10 @@ class PerUnitFiringRate(Decoding):
             if merged:
                 arr = np.asarray(merged)
                 uids, counts = np.unique(arr, return_counts=True)
-                rates = {int(u): float(c / duration_s) for u, c in zip(uids, counts)}
+                rates = {
+                    int(u): float(c / duration_s)
+                    for u, c in zip(uids, counts, strict=False)
+                }
 
             rate_arr = np.asarray(list(rates.values())) if rates else np.array([])
             result = {
@@ -663,7 +669,7 @@ class PopulationFiringRates(Decoding):
         return {
             "rates_hz": {
                 p: float(s / (c * duration_s + 1e-9))
-                for p, s, c in zip(pops, spikes, cells)
+                for p, s, c in zip(pops, spikes, cells, strict=False)
                 if c > 0
             }
         }
@@ -694,7 +700,7 @@ class PopulationActiveFraction(Decoding):
         starts = np.array([ranges[p][0] for p in pops], dtype=np.int64)
         ends = np.array([ranges[p][0] + ranges[p][1] for p in pops], dtype=np.int64)
 
-        n_bins = max(1, int(round(float(self.duration) / self.bin_size)))
+        n_bins = max(1, round(float(self.duration) / self.bin_size))
         active = np.zeros((len(pops), n_bins), dtype=np.int64)
 
         if it is not None and tt is not None and len(it):
@@ -975,13 +981,13 @@ class Stability(Decoding):
 
 
 class LFP(Decoding):
-    channels: Optional[list[int]] = None
+    channels: list[int] | None = None
     downsample_hz: float = 1000.0
-    lowpass_hz: Optional[float] = None
+    lowpass_hz: float | None = None
     lowpass_order: int = 4
     compute_band_power: bool | dict[str, tuple[float, float]] = False
     nperseg: int = 2048  # Welch window length for band power
-    noverlap: Optional[int] = None  # Welch overlap (None = nperseg//2)
+    noverlap: int | None = None  # Welch overlap (None = nperseg//2)
 
     def __call__(self, signal: Run, env=None):
         mp = signal.current
@@ -1147,13 +1153,13 @@ class AvalancheAnalysis(Decoding):
                 sizes = []
                 durations = []
 
-                for s, e in zip(starts, ends):
+                for s, e in zip(starts, ends, strict=False):
                     avalanche_counts = counts[s:e]
                     sizes.append(np.sum(avalanche_counts))
                     durations.append(e - s)
 
                 ratios = []
-                for s, e in zip(starts, ends):
+                for s, e in zip(starts, ends, strict=False):
                     if e > s + 1:
                         av_counts = counts[s:e]
                         ancestors = av_counts[:-1]
@@ -1162,10 +1168,7 @@ class AvalancheAnalysis(Decoding):
                         if np.any(valid):
                             ratios.extend(descendants[valid] / ancestors[valid])
 
-                if ratios:
-                    sigma = float(np.mean(ratios))
-                else:
-                    sigma = 0.0
+                sigma = float(np.mean(ratios)) if ratios else 0.0
 
                 # power law fit (R^2) for sizes
                 # log(P(s)) ~ -alpha * log(s)
@@ -1236,7 +1239,7 @@ class ArrowDataset(GatherAndMerge):
     def __call__(self, signal: Run, env=None):
         gathered = super().__call__(signal, env)
         if gathered is None:
-            return
+            return None
 
         it, tt, iv, vv, im, mp = gathered
 
@@ -1290,13 +1293,12 @@ class ArrowDataset(GatherAndMerge):
             if f.startswith("data-") and f.endswith(".arrow")
         )
         if not shard_files:
-            return
+            return None
 
-        tables = []
-        for f in shard_files:
-            tables.append(
-                pa.ipc.open_stream(os.path.join(self.directory, f)).read_all()
-            )
+        tables = [
+            pa.ipc.open_stream(os.path.join(self.directory, f)).read_all()
+            for f in shard_files
+        ]
 
         return Dataset(pa.concat_tables(tables))
 
@@ -1508,7 +1510,7 @@ class StimulusResponse(Decoding):
 
 
 class RecruitmentCurve(Decoding):
-    schedule: list[tuple[float, float]] = []
+    schedule: list[tuple[float, float]] = Field(default_factory=list)
     """`(pulse time in ms from the start of this run, amplitude in mV)`."""
 
     pre_ms: float = 1000.0
@@ -1586,7 +1588,7 @@ class PeriStimulusHistogram(Decoding):
     pre_ms: float = 50.0
     post_ms: float = 150.0
     bin_size: float = 5.0
-    populations: Optional[list[str]] = None
+    populations: list[str] | None = None
 
     def setup(self, env):
         env.record_spikes()
@@ -1630,7 +1632,7 @@ class PeriStimulusHistogram(Decoding):
 
 def spike_waveforms(trace, times, spikes, *, pre_ms: float, post_ms: float, dt: float):
     """Spike-aligned cutouts, aligned on the peak rather than the crossing."""
-    n_pre, n_post = int(round(pre_ms / dt)), int(round(post_ms / dt))
+    n_pre, n_post = round(pre_ms / dt), round(post_ms / dt)
     out = []
     for at in spikes:
         centre = int(np.searchsorted(times, at))
@@ -1666,7 +1668,7 @@ def waveform_shape(waves, *, pre_ms: float, dt: float) -> dict:
             float((above[-1] - above[0]) * dt) if len(above) > 1 else float("nan")
         ),
         "ahp_mV": float(after.min()) - threshold,
-        "n_spikes": int(len(waves)),
+        "n_spikes": len(waves),
     }
 
 
@@ -1675,12 +1677,12 @@ class Waveforms(Decoding):
 
     pre_ms: float = 4.0
     post_ms: float = 10.0
-    section: Optional[str] = "soma"
-    populations: Optional[list[str]] = None
+    section: str | None = "soma"
+    populations: list[str] | None = None
     max_spikes: int = 500
 
-    voltage_gids: Optional[list[int]] = None
-    voltage_dt: Optional[float] = 0.025
+    voltage_gids: list[int] | None = None
+    voltage_dt: float | None = 0.025
 
     def setup(self, env):
         env.record_spikes()

@@ -205,14 +205,14 @@ def _timeout_of(item) -> float:
 
 def pytest_runtest_protocol(item, nextitem):
     if os.getenv(MPI_SUBPROCESS_ENV):
-        return
+        return None
 
     mpi_mark = item.get_closest_marker(MPI_MARKER_NAME)
     if not mpi_mark:
-        return
+        return None
 
     if _is_skipped(item):
-        return
+        return None
 
     try:
         import mpi4py  # noqa: F401
@@ -330,10 +330,9 @@ def _as_text(value) -> str:
 
 
 def _signal_group(proc, sig) -> None:
-    try:
+    # pragma: no cover - the group may already be gone
+    with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(os.getpgid(proc.pid), sig)
-    except (ProcessLookupError, PermissionError):  # pragma: no cover
-        pass
 
 
 def _mpi_subprocess(item, mpi_mark):
@@ -470,13 +469,17 @@ def _explain_unresolved(
 ):
     culprit = _culprit(hung, [m.nodeid for m in members], outcomes)
 
-    if timed_out is not None and culprit is None and len(members) > 1:
-        if config.getoption("mpi_localize", "yes") == "yes":
-            for item in members:
-                if item.nodeid in unresolved:
-                    single = _run_batch(config, key, [item])
-                    outcomes.update(single)
-            return
+    if (
+        timed_out is not None
+        and culprit is None
+        and len(members) > 1
+        and config.getoption("mpi_localize", "yes") == "yes"
+    ):
+        for item in members:
+            if item.nodeid in unresolved:
+                single = _run_batch(config, key, [item])
+                outcomes.update(single)
+        return
 
     for nodeid in unresolved:
         if nodeid == culprit:
@@ -526,11 +529,10 @@ def _culprit(hung: dict, nodeids: list[str], outcomes: dict) -> str | None:
         return sorted(named)[0]
 
     for nodeid in nodeids:
-        if outcomes.get(nodeid) is None or outcomes[nodeid].kind == "failed":
-            if outcomes.get(nodeid) and outcomes[nodeid].message.startswith(
-                "no report"
-            ):
-                return nodeid
+        if (outcomes.get(nodeid) is None or outcomes[nodeid].kind == "failed") and (
+            outcomes.get(nodeid) and outcomes[nodeid].message.startswith("no report")
+        ):
+            return nodeid
     return None
 
 

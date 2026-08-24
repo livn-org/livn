@@ -3,16 +3,16 @@ import pytest
 
 pytest.importorskip("diffrax")
 
-import jax  # noqa: E402
-import jax.numpy as jnp  # noqa: E402
+import jax
+import jax.numpy as jnp
 
-from livn.backend.diffrax import Env  # noqa: E402
-from livn.models.eventloop import SolverConfig  # noqa: E402
-from livn.models.glif import GLIF  # noqa: E402
-from livn.stimulus import Stimulus  # noqa: E402
-from optimization.fit import fit  # noqa: E402
-from optimization.losses import voltage_mse  # noqa: E402
-from optimization.transforms import (  # noqa: E402
+from livn.backend.diffrax import Env
+from livn.models.eventloop import SolverConfig
+from livn.models.glif import GLIF
+from livn.stimulus import Stimulus
+from optimization.fit import fit
+from optimization.losses import voltage_mse
+from optimization.transforms import (
     BIJECTORS,
     BOUNDS,
     DEFAULT,
@@ -38,7 +38,7 @@ def _env(n=1):
 
 
 def _stimulus(n=1, amp=0.05):
-    steps = int(round(DURATION / DT)) + 1
+    steps = round(DURATION / DT) + 1
     return Stimulus.from_current(np.full((steps, n), amp), dt=DT)
 
 
@@ -102,7 +102,9 @@ def test_logit_space_stays_inside_the_unit_interval():
 def test_bijectors_are_differentiable_with_finite_gradients():
     for kind, x in (("log", 3.5), ("logit", 0.42), ("identity", -61.0)):
         fwd, inv = BIJECTORS[kind]
-        g = jax.grad(lambda z: jnp.sum(inv(z)))(jnp.asarray(fwd(jnp.asarray(x))))
+        g = jax.grad(lambda z, inv=inv: jnp.sum(inv(z)))(
+            jnp.asarray(fwd(jnp.asarray(x)))
+        )
         assert np.isfinite(g) and abs(float(g)) > 0.0
 
 
@@ -156,11 +158,15 @@ def test_a_transformed_fit_never_leaves_the_domain():
 
 def test_log_space_amplifies_the_step_size():
     stimulus = _stimulus()
-    steps = int(round(DURATION / DT)) + 1
+    steps = round(DURATION / DT) + 1
     target = np.full((1, steps), -70.0)
-    common = dict(
-        duration=DURATION, stimulus=stimulus, dt=DT, steps=12, learning_rate=1.0
-    )
+    common = {
+        "duration": DURATION,
+        "stimulus": stimulus,
+        "dt": DT,
+        "steps": 12,
+        "learning_rate": 1.0,
+    }
 
     raw, _ = fit(_env(), target, _voltage_loss, {"tau_m": 12.0}, **common)
     tr, _ = fit(
@@ -176,7 +182,7 @@ def test_log_space_amplifies_the_step_size():
 
 def test_history_and_result_are_reported_in_the_constrained_space():
     env, stimulus = _env(), _stimulus()
-    steps = int(round(DURATION / DT)) + 1
+    steps = round(DURATION / DT) + 1
     target = np.full((1, steps), -70.0)
     seen = []
     theta, hist = fit(

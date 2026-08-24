@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import contextlib
+import itertools
 import os
 
 import numpy as np
 import pytest
 
-from testing import livn_test_env
 from livn.io import MAX_STIMULUS_GB_ENV
 from livn.stimulus import STIMULUS_CHUNK_MB_ENV, Stimulus
+from testing import livn_test_env
 
 DT = 0.1
 CELLS = 20
@@ -26,10 +28,8 @@ def _close_envs():
     """A NEURON env per test, closed after it; leaked ones wedge later psolves."""
     yield
     while _OPEN_ENVS:
-        try:
+        with contextlib.suppress(Exception):
             _OPEN_ENVS.pop().close()
-        except Exception:
-            pass
 
 
 def _env():
@@ -74,7 +74,7 @@ def test_a_deferred_stimulus_renders_what_holding_it_would_have():
         dt=DT,
         gids=gids,
         sections=sections,
-        source=lambda a, b: held[int(round(a / DT)) : int(round(b / DT))],
+        source=lambda a, b: held[round(a / DT) : round(b / DT)],
         extent=10 * DT,
     )
 
@@ -84,7 +84,7 @@ def test_a_deferred_stimulus_renders_what_holding_it_would_have():
     assert np.array_equal(deferred.window(0.0, 3 * DT), held[:3])
     assert np.array_equal(deferred.window(3 * DT, 10 * DT), held[3:])
     assert np.array_equal(deferred.array, held)
-    assert [c for c in deferred.columns()] == [(0, 0), (0, 1), (1, 0), (1, 1)]
+    assert list(deferred.columns()) == [(0, 0), (0, 1), (1, 0), (1, 1)]
 
 
 def test_a_source_that_changes_its_columns_is_refused():
@@ -170,7 +170,7 @@ def test_a_protocol_too_long_to_hold_is_still_delivered(monkeypatch):
     env = _env()
     sweep = _sweep(env, repeats=4, trial_ms=400.0)
 
-    n_steps = int(round(sweep.duration_ms / DT))
+    n_steps = round(sweep.duration_ms / DT)
     held_bytes = n_steps * _width(env) * 4
     monkeypatch.setenv(MAX_STIMULUS_GB_ENV, str(held_bytes / 2**30 / 2))
     monkeypatch.setenv(STIMULUS_CHUNK_MB_ENV, str(held_bytes / 2**20 / 8))
@@ -196,7 +196,7 @@ def test_a_protocol_too_long_to_hold_is_still_delivered(monkeypatch):
     peak = np.concatenate(peaks)
     assert len(peak) == n_steps, "the windows do not tile the protocol"
     driven = np.flatnonzero(peak > 0)
-    starts = [driven[0]] + [b for a, b in zip(driven, driven[1:]) if b - a > 1]
+    starts = [driven[0]] + [b for a, b in itertools.pairwise(driven) if b - a > 1]
     assert len(starts) == sweep.n_trials
 
 
@@ -210,7 +210,7 @@ def test_windows_do_not_accumulate_over_a_protocol_delivered_in_pieces():
 
     env.run(sweep.duration_ms, stimulus=sweep)
     assert len(env._stim_streams) == 1, "the finished command is still held"
-    assert env._stim_streams[0]["start_step"] == int(round(sweep.duration_ms / DT))
+    assert env._stim_streams[0]["start_step"] == round(sweep.duration_ms / DT)
 
 
 @neuron_only

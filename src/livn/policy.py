@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as _np
 from pydantic import (
@@ -54,7 +54,7 @@ class Policy(BaseModel, Jsonable):
 
     _rendered: Any = PrivateAttr(default=None)
 
-    def __call__(self, observation: Any = None) -> "Array":
+    def __call__(self, observation: Any = None) -> Array:
         raise NotImplementedError
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -63,14 +63,14 @@ class Policy(BaseModel, Jsonable):
             # a changed field describes a different command
             self._rendered = None
 
-    def render(self) -> "Array":
+    def render(self) -> Array:
         if self._rendered is None:
             rendered = _np.asarray(self(None))
             rendered.flags.writeable = False
             self._rendered = rendered
         return self._rendered
 
-    def as_input_units(self, units: str | None) -> "Policy":
+    def as_input_units(self, units: str | None) -> Policy:
         if units is None or self.input_units is None or self.input_units == units:
             return self
         raise ValueError(
@@ -85,10 +85,10 @@ class Policy(BaseModel, Jsonable):
         Used to refuse a run too short to deliver it."""
         return None
 
-    def window(self, start_ms: float, stop_ms: float, dt: float) -> "Array":
+    def window(self, start_ms: float, stop_ms: float, dt: float) -> Array:
         full = self.render()
-        lo = max(0, int(round(start_ms / dt)))
-        hi = max(lo, int(round(stop_ms / dt)))
+        lo = max(0, round(start_ms / dt))
+        hi = max(lo, round(stop_ms / dt))
         if lo >= len(full):
             return _zeros(max(0, hi - lo), full.shape[-1])
         window = full[lo:hi]
@@ -101,7 +101,7 @@ class Policy(BaseModel, Jsonable):
         return self.model_dump()
 
     @classmethod
-    def unserialize(cls, data: dict) -> "Policy":
+    def unserialize(cls, data: dict) -> Policy:
         return cls(**{k: v for k, v in data.items() if k != "class"})
 
 
@@ -183,7 +183,7 @@ class BiphasicPulsePolicy(ElectrodePolicy):
             raise ValueError("a pulse train needs at least one pulse time")
         return v
 
-    def __call__(self, observation: Any = None) -> "Array":
+    def __call__(self, observation: Any = None) -> Array:
         n_channels, channels = self._resolved()
         pulse_times = _np.asarray(self.pulse_times, dtype=float)
         dt = self.dt
@@ -242,7 +242,7 @@ class MonophasicPulsePolicy(ElectrodePolicy):
             )
         return self
 
-    def __call__(self, observation: Any = None) -> "Array":
+    def __call__(self, observation: Any = None) -> Array:
         n_channels, channels = self._resolved()
         pulse_times = _np.asarray(self.pulse_times, dtype=float)
         dt = self.dt
@@ -258,7 +258,7 @@ class MonophasicPulsePolicy(ElectrodePolicy):
         for onset in pulse_times:
             start = int(onset / dt)
             end = min(start + pulse_steps, n_steps)
-            for channel, amplitude in zip(channels, amplitudes):
+            for channel, amplitude in zip(channels, amplitudes, strict=False):
                 if amplitude > 0.0:
                     inputs = _write(
                         inputs, slice(start, end), channel, float(amplitude)
@@ -361,10 +361,10 @@ class PulseSweepPolicy(ElectrodePolicy):
             for trial, index in enumerate(order)
         ]
 
-    def window(self, start_ms: float, stop_ms: float, dt: float) -> "Array":
+    def window(self, start_ms: float, stop_ms: float, dt: float) -> Array:
         return self._render(start_ms, stop_ms, dt, strict=False)
 
-    def __call__(self, observation: Any = None) -> "Array":
+    def __call__(self, observation: Any = None) -> Array:
         total = (
             self.start_ms + self.duration_ms if self.total_ms is None else self.total_ms
         )
@@ -372,13 +372,13 @@ class PulseSweepPolicy(ElectrodePolicy):
 
     def _render(
         self, start_ms: float, stop_ms: float, dt: float, strict: bool
-    ) -> "Array":
+    ) -> Array:
         n_channels, channels = self._resolved()
 
-        n_steps = max(0, int(round((stop_ms - start_ms) / dt)))
+        n_steps = max(0, round((stop_ms - start_ms) / dt))
         inputs = _zeros(n_steps, n_channels)
 
-        width = max(1, int(round(self.pulse_ms / dt)))
+        width = max(1, round(self.pulse_ms / dt))
         for at, amplitude in self.schedule():
             at = at - start_ms
             if at + self.pulse_ms <= 0 or at >= stop_ms - start_ms:
@@ -388,7 +388,7 @@ class PulseSweepPolicy(ElectrodePolicy):
                         f"{stop_ms - start_ms:g} ms run"
                     )
                 continue
-            start = int(round(at / dt))
+            start = round(at / dt)
             end = start + width
             if end > n_steps:
                 if not strict:

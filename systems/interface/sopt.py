@@ -5,7 +5,8 @@ from functools import partial
 import numpy as np
 from dmosopt import config
 from machinable import Project
-from machinable.config import to_dict, Field as ConfigField
+from machinable.config import Field as ConfigField
+from machinable.config import to_dict
 from mpi4py import MPI
 from pydantic import Field
 
@@ -51,13 +52,11 @@ class Evaluation:
         reduced_objectives = np.array(objectives)
         reduced_features = np.asarray(
             [tuple(rf for rf in features)],
-            dtype=np.dtype([(name, np.float32) for name in self.features.keys()]),
+            dtype=np.dtype([(name, np.float32) for name in self.features]),
         )
 
         if len(self.constraints) > 0:
-            constraints = []
-            for name in self.constraints:
-                constraints.append(np.min(self.constraints[name]))
+            constraints = [np.min(self.constraints[name]) for name in self.constraints]
 
             return {
                 0: (

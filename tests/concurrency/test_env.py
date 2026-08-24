@@ -6,7 +6,6 @@ import pytest
 
 from livn.backend import backend
 from livn.utils import P
-
 from testing import livn_test_env, livn_test_mea
 
 TIMEOUT = int(os.environ.get("LIVN_TEST_TIMEOUT", 300))
@@ -193,7 +192,7 @@ def _continued_matches_single(comm, subworld, inputs, split):
     concatenated = first_run.concat(second_run)
     assert concatenated.t0 == first_run.t0
     assert concatenated.duration == total
-    for combined, from_concat in zip(continued_outputs, concatenated):
+    for combined, from_concat in zip(continued_outputs, concatenated, strict=False):
         if combined is None or from_concat is None:
             assert combined is from_concat
         else:
@@ -351,8 +350,8 @@ def test_env_noise(mpiexec_n):
 
     env.set_noise(noise_params)
 
-    pop_name = list(env.cells.keys())[0]
-    gid = list(env.cells[pop_name].keys())[0]
+    pop_name = next(iter(env.cells.keys()))
+    gid = next(iter(env.cells[pop_name].keys()))
     soma_key = f"{gid}-0"
     dend_key = f"{gid}-1"
 
@@ -426,7 +425,7 @@ def test_env_stochastic_variability(mpiexec_n):
     env = _create_env(comm, subworld=False)
     env.apply_model_defaults(noise=True)
     again = _repeat_runs(env, duration, 3, reseed=True)
-    for i, (first, second) in enumerate(zip(voltages, again)):
+    for i, (first, second) in enumerate(zip(voltages, again, strict=False)):
         np.testing.assert_allclose(
             first,
             second,
@@ -456,7 +455,7 @@ def test_env_deterministic_without_noise(mpiexec_n):
     voltages = []
     for _ in range(2):
         stimulus = env.cell_stimulus(inputs)
-        _, _, iv, v, _, _ = env.run(duration, stimulus=stimulus)
+        _, _, _iv, v, _, _ = env.run(duration, stimulus=stimulus)
         voltages.append(v.copy())
         env.clear()
 

@@ -105,7 +105,7 @@ class Scorer:
     def __call__(self, measured: float) -> float:
         return float(self.fn(measured, **self.kwargs))
 
-    def resolve(self, reference: dict) -> "Scorer":
+    def resolve(self, reference: dict) -> Scorer:
         if "factor" not in self.kwargs:
             return self
         build = FACTOR_BANDS.get(self.feature)
@@ -454,17 +454,17 @@ class CA1(TuningTargets):
                 if want is None:
                     counts[p] = len(available[p])
                 elif isinstance(want, float):
-                    counts[p] = max(1, int(round(want * len(available[p]))))
+                    counts[p] = max(1, round(want * len(available[p])))
                 else:
                     counts[p] = max(1, int(want))
         elif isinstance(self.size, float):
             for p in pops:
-                counts[p] = max(1, int(round(self.size * len(available[p]))))
+                counts[p] = max(1, round(self.size * len(available[p])))
         else:
             total = sum(len(available[p]) for p in pops)
             for p in pops:
                 share = int(self.size) * len(available[p]) / max(total, 1)
-                counts[p] = max(1, int(round(share)))
+                counts[p] = max(1, round(share))
 
         return {p: available[p][: min(counts[p], len(available[p]))] for p in pops}
 

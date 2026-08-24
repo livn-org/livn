@@ -177,7 +177,7 @@ class TestPipelineCall:
         pytest.importorskip("mpi4py")
 
     def test_install_and_step(self):
-        from livn.env.distributed import _PipelineResult, _pipeline_call, _state
+        from livn.env.distributed import _pipeline_call, _PipelineResult, _state
 
         call_log = []
 
@@ -230,7 +230,7 @@ class TestPipelineCall:
         class ResetTrackingStage:
             def reset(self, **kwargs):
                 reset_called.append(True)
-                return None
+                return
 
             def __call__(self, signal, env=None):
                 return None

@@ -4,12 +4,14 @@ import pytest
 
 pytest.importorskip("diffrax")
 
-import equinox as eqx  # noqa: E402
-import jax  # noqa: E402
-import jax.numpy as jnp  # noqa: E402
-import numpy as np  # noqa: E402
+import itertools
 
-from livn.models.eventloop import (  # noqa: E402
+import equinox as eqx
+import jax
+import jax.numpy as jnp
+import numpy as np
+
+from livn.models.eventloop import (
     SolverConfig,
     event_solve,
     resample,
@@ -30,12 +32,12 @@ def _ramp(slope=1.0, threshold=1.0, hold=0.0):
     def hold_fn(t_event, y, t_resume, ts, args, mask):
         return jnp.full((ts.shape[0], 1), threshold)
 
-    return dict(
-        drift=drift,
-        cond_fn=cond_fn,
-        transition=transition,
-        hold_fn=hold_fn if hold else None,
-    )
+    return {
+        "drift": drift,
+        "cond_fn": cond_fn,
+        "transition": transition,
+        "hold_fn": hold_fn if hold else None,
+    }
 
 
 def _solve(t1=5.0, dt=0.1, config=None, **kwargs):
@@ -114,7 +116,7 @@ def test_buffers_are_linear_in_duration():
         solution = _solve(t1=duration)
         sizes.append(solution.ts.shape[0])
 
-    growth = [b / a for a, b in zip(sizes, sizes[1:])]
+    growth = [b / a for a, b in itertools.pairwise(sizes)]
     assert all(1.5 < g < 2.5 for g in growth), sizes
 
 

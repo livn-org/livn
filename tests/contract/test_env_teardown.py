@@ -8,7 +8,7 @@ import pytest
 
 pytest.importorskip("livn")
 
-from livn.backend import backend  # noqa: E402
+from livn.backend import backend
 
 pytestmark = pytest.mark.skipif(
     backend() != "neuron", reason="teardown is asserted against NEURON's object model"
@@ -29,7 +29,7 @@ def _stimulated_env():
     env.record_spikes()
 
     dt, duration = 0.5, 10.0
-    channel_inputs = np.zeros((int(round(duration / dt)), len(env.io.channel_ids)))
+    channel_inputs = np.zeros((round(duration / dt), len(env.io.channel_ids)))
     channel_inputs[2, 0] = -50.0
     channel_inputs[3, 0] = 50.0
     stimulus = env.cell_stimulus(channel_inputs)

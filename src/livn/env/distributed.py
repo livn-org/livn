@@ -4,8 +4,9 @@ import pickle
 import signal
 import time
 import traceback
+from collections.abc import Callable
 from enum import IntEnum
-from typing import TYPE_CHECKING, Any, Callable, Optional, Self
+from typing import TYPE_CHECKING, Any, Self
 
 import numpy as np
 from mpi4py import MPI
@@ -64,10 +65,10 @@ class DistributedEnv(EnvProtocol):
     def __init__(
         self,
         system: str,
-        model: Optional[Model] = None,
-        io: Optional[IO] = None,
+        model: Model | None = None,
+        io: IO | None = None,
         seed: int | None = 123,
-        comm: Optional[MPI.Intracomm] = None,
+        comm: MPI.Intracomm | None = None,
         subworld_size: int | None = None,
     ):
         self.controller: MPIController | None = None
@@ -102,7 +103,7 @@ class DistributedEnv(EnvProtocol):
         self.subworld_size = subworld_size
         self._select: tuple | None = None
 
-    def selection(self, select, method: str = "first", bounds=None) -> "DistributedEnv":
+    def selection(self, select, method: str = "first", bounds=None) -> DistributedEnv:
         if self.controller is not None:
             raise RuntimeError("selection() must be called before init()")
         self._select = (select, method, bounds)
@@ -125,7 +126,7 @@ class DistributedEnv(EnvProtocol):
         return d
 
     @property
-    def system(self) -> "_ControllerSystem":
+    def system(self) -> _ControllerSystem:
         if self._local_system is None:
             self._local_system = _ControllerSystem(self._system_uri)
         return self._local_system
@@ -280,24 +281,22 @@ class DistributedEnv(EnvProtocol):
     def run(
         self,
         duration,
-        stimulus: Optional["Stimulus"] = None,
+        stimulus: Stimulus | None = None,
         dt: float = 0.025,
         **kwargs,
-    ) -> "Run":
+    ) -> Run:
         raise NotImplementedError("Please use __call__ instead")
 
     def __call__(self, decoding, inputs=None, encoding=None, **kwargs):
         if self.controller is None:
-            return
+            return None
 
         if inputs is None:
             inputs = [None]
         elif not isinstance(inputs, list):
             inputs = [inputs]
 
-        task_ids = []
-        for i in inputs:
-            task_ids.append(self.submit_call(decoding, i, encoding, **kwargs))
+        task_ids = [self.submit_call(decoding, i, encoding, **kwargs) for i in inputs]
 
         recordings = []
         for tid in task_ids:
@@ -435,7 +434,7 @@ class DistributedEnv(EnvProtocol):
         return self
 
     @property
-    def cells(self) -> "_RemoteCells":
+    def cells(self) -> _RemoteCells:
         return _RemoteCells(self)
 
 
@@ -587,7 +586,7 @@ class MPIController:
 
         self.process()
         ids: list[int] = []
-        for a, kw in zip(args_list, kwargs_list):
+        for a, kw in zip(args_list, kwargs_list, strict=False):
             tid = self._next_id
             self._next_id += 1
             self._assert_unused(tid)
@@ -735,7 +734,7 @@ class MPICollectiveBroker:
             if tag == MessageTag.EXIT:
                 self._scatter_to_group(_Halt, (), {}, 0, 0)
                 break
-            elif tag == MessageTag.TASK:
+            if tag == MessageTag.TASK:
                 fn, args, kwargs, est, task_id = payload
             else:
                 raise RuntimeError(f"Broker {self.worker_id}: unexpected tag {tag}")
@@ -962,7 +961,7 @@ def _envcall(decoding, inputs, encoding, kwargs):
 def _env_config_call(method_name: str, args: tuple, kwargs: dict | None = None):
     env = _state.get("env")
     if env is None:
-        return None
+        return
 
     # a dotted name reaches through the env, e.g. "cells.set_params"
     target = env
@@ -987,7 +986,7 @@ def _env_query(attribute: str):
     return value
 
 
-def _worker_init(worker, distributed_env: "DistributedEnv"):
+def _worker_init(worker, distributed_env: DistributedEnv):
     if distributed_env._system_uri is not None:
         worker_comm = getattr(worker, "merged_comm", worker.comm)
 
@@ -1008,7 +1007,7 @@ def _worker_init(worker, distributed_env: "DistributedEnv"):
     MPI.COMM_WORLD.Barrier()
 
 
-def _controller_init(controller: MPIController, distributed_env: "DistributedEnv"):
+def _controller_init(controller: MPIController, distributed_env: DistributedEnv):
     if distributed_env._system_uri is not None:
         # throw-away env to participate in NEURON's collective h.pc.subworlds
         Env(

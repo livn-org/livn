@@ -3,7 +3,6 @@ import os
 import numpy as np
 import pytest
 
-
 SYSTEM_DIR = os.environ.get("LIVN_TEST_SYSTEM", "./systems/graphs/EI")
 
 
@@ -72,7 +71,7 @@ class TestPyfiveReaders:
         ranges = _h5_read_population_ranges(f)
         names = _h5_read_population_names(f)
         assert set(ranges.keys()) == set(names)
-        for name, (start, count) in ranges.items():
+        for start, count in ranges.values():
             assert isinstance(start, int)
             assert isinstance(count, int)
             assert count > 0
@@ -88,7 +87,7 @@ class TestPyfiveReaders:
         names = _h5_read_population_names(f)
         info = _h5_read_cell_attribute_info(f, names)
         assert set(info.keys()) == set(names)
-        for pop, namespaces in info.items():
+        for namespaces in info.values():
             assert "Generated Coordinates" in namespaces
             assert "X Coordinate" in namespaces["Generated Coordinates"]
 
@@ -113,7 +112,7 @@ class TestPyfiveReaders:
             assert len(items) == pop_count
             assert "X Coordinate" in attr_info
 
-            for gid, vals in items:
+            for gid, _vals in items:
                 assert gid >= pop_start
                 assert gid < pop_start + pop_count
 
@@ -134,7 +133,7 @@ class TestPyfiveReaders:
             f, pop_start, names[0], "Synapse Attributes", mask=mask
         )
         assert len(attrs) > 0
-        for gid, cell_attrs in attrs.items():
+        for cell_attrs in attrs.values():
             assert set(cell_attrs.keys()) == mask
 
     def test_read_graph(self, cells_filepath, connections_filepath):
@@ -212,7 +211,7 @@ class TestSystemWithPyfive:
             for pre in v:
                 projs = system.projection_array(pre, post)
                 assert len(projs) > 0
-                for post_gid, (pre_gids, proj_data) in projs:
+                for post_gid, (pre_gids, _proj_data) in projs:
                     assert isinstance(post_gid, (int, np.integer))
                     assert len(pre_gids) > 0
 
@@ -437,7 +436,7 @@ class TestParallelSystem:
             if abs(x - centre) <= half and abs(y - centre) <= half
         }
 
-        gids = set(int(g) for g in system.selection(s**2, method="patch")["EXC"])
+        gids = {int(g) for g in system.selection(s**2, method="patch")["EXC"]}
         assert gids == expected
 
     def test_selection_patch_preserves_population_ratio(self):

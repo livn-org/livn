@@ -13,7 +13,6 @@ from livn.decoding import (
     Slice,
     Stability,
 )
-
 from testing import livn_test_env, livn_test_mea, livn_test_selection, livn_test_system
 
 STIMULUS_AMPLITUDE = 1.5
@@ -191,8 +190,8 @@ def test_slice_decoding(env_response):
     duration = 50
     recording_dt = 0.1
 
-    ii, tt, iv, v, im, mp = Slice(start=start, stop=start + duration)(env_response)
-    orig_ii, orig_tt, orig_iv, orig_v, orig_im, orig_m = env_response
+    _ii, tt, _iv, v, _im, mp = Slice(start=start, stop=start + duration)(env_response)
+    _orig_ii, orig_tt, _orig_iv, orig_v, _orig_im, orig_m = env_response
 
     assert tt[tt < 0].shape[0] == 0
     assert tt[tt >= duration].shape[0] == 0
@@ -224,7 +223,7 @@ def test_slice_float_valid(env_response):
     start = 10.0
     duration = 5.0
 
-    ii, tt, iv, v, im, mp = Slice(start=start, stop=start + duration)(env_response)
+    _ii, tt, _iv, v, _im, mp = Slice(start=start, stop=start + duration)(env_response)
 
     if len(tt) > 0:
         assert np.all(tt >= 0)
@@ -237,11 +236,11 @@ def test_slice_float_valid(env_response):
     start = 0.025
     duration = 10.0
 
-    with pytest.raises(ValueError, match="does not align with.*recording dt"):
+    with pytest.raises(ValueError, match=r"does not align with.*recording dt"):
         Slice(start=start, stop=start + duration)(env_response)
 
     start = 10.0
     duration = 0.025
 
-    with pytest.raises(ValueError, match="does not align with.*recording dt"):
+    with pytest.raises(ValueError, match=r"does not align with.*recording dt"):
         Slice(start=start, stop=start + duration)(env_response)

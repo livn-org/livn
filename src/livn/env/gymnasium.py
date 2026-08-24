@@ -1,8 +1,9 @@
 from abc import abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import gymnasium as gym
 import numpy as np
+
 from livn.types import Decoding, Encoding
 
 if TYPE_CHECKING:
@@ -12,7 +13,7 @@ if TYPE_CHECKING:
 class GymnasiumEnv(gym.Env):
     """Gymnasium-compliant wrapper that turns a livn.Env into a gym interface"""
 
-    metadata = {"render_modes": []}
+    metadata: ClassVar[dict[str, list]] = {"render_modes": []}
 
     def __init__(
         self,
@@ -67,9 +68,12 @@ class GymnasiumEnv(gym.Env):
 
     def reset(self, **kwargs):
         # reset neural simulation state unless explicitly opted out
-        if not kwargs.pop("without_clear", False):
-            if self.env is not None and hasattr(self.env, "clear"):
-                self.env.clear()
+        if (
+            not kwargs.pop("without_clear", False)
+            and self.env is not None
+            and hasattr(self.env, "clear")
+        ):
+            self.env.clear()
         if not hasattr(self.decoding, "reset"):
             return None
 
@@ -112,8 +116,7 @@ class GymnasiumEnv(gym.Env):
                 self.encoding,
             )
             return {"_async": True, "task_id": task_id}
-        else:
-            return {"_async": False, "action": action}
+        return {"_async": False, "action": action}
 
     def poll_step(self, handle: dict):
         if not handle.get("_async", False):

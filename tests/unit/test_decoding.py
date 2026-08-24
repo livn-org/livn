@@ -1,19 +1,20 @@
 import os
+from typing import ClassVar
 
 import numpy as np
 import pytest
 
 from livn.decoding import (
-    Slice,
-    ChannelRecording,
-    Pipe,
-    MeanFiringRate,
-    ActiveFraction,
-    PopulationActiveFraction,
-    Stability,
     LFP,
-    AvalancheAnalysis,
+    ActiveFraction,
     ArrowDataset,
+    AvalancheAnalysis,
+    ChannelRecording,
+    MeanFiringRate,
+    Pipe,
+    PopulationActiveFraction,
+    Slice,
+    Stability,
 )
 from livn.run import Run
 
@@ -169,7 +170,7 @@ class MockPopulationEnv:
         self.comm = None
 
         class MockSystem:
-            population_ranges = {"A": (0, 10), "B": (10, 4)}
+            population_ranges: ClassVar[dict] = {"A": (0, 10), "B": (10, 4)}
 
         self.system = MockSystem()
         self.cells = {"A": dict.fromkeys([0, 1, 2, 3]), "B": dict.fromkeys([10, 11])}

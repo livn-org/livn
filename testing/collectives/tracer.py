@@ -1,3 +1,4 @@
+import contextlib
 import sys
 import threading
 from contextlib import contextmanager
@@ -180,9 +181,7 @@ def _module_code(module):
             continue
         seen.add(code)
         yield code
-        for constant in code.co_consts:
-            if isinstance(constant, types.CodeType):
-                stack.append(constant)
+        stack.extend(c for c in code.co_consts if isinstance(c, types.CodeType))
 
 
 def uninstall() -> None:
@@ -190,10 +189,8 @@ def uninstall() -> None:
         return
     mon = sys.monitoring
     for code in _state.watched:
-        try:
+        with contextlib.suppress(ValueError, TypeError):  # pragma: no cover
             mon.set_local_events(_state.tool_id, code, 0)
-        except (ValueError, TypeError):  # pragma: no cover
-            pass
     _state.watched.clear()
     mon.register_callback(_state.tool_id, mon.events.CALL, None)
     mon.free_tool_id(_state.tool_id)
@@ -237,28 +234,28 @@ def record_synthetic(op: str, site: str, comm=None) -> None:
 
 def _on_call(code, offset, callable_, arg0):
     if _state.paused:
-        return None
+        return
 
     name = getattr(callable_, "__name__", None)
     if name is None:
-        return None
+        return
 
     if _is_comm(arg0):
         if name in COLLECTIVE_OPS:
             _append(arg0, _record(name, code, offset))
             if name in ("Free", "Disconnect"):
                 _state.comm_keys.pop(_handle(arg0), None)
-            return None
+            return
         if name in P2P_OPS:
             _state.p2p.append(_record(name, code, offset))
-            return None
-        return None
+            return
+        return
 
     module = getattr(callable_, "__module__", "") or ""
     if module.startswith(OPAQUE_MODULES):
         _state.opaque.append(_record(f"{module}.{name}", code, offset))
 
-    return None
+    return
 
 
 def _is_comm(value) -> bool:

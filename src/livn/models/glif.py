@@ -4,7 +4,8 @@ import copy
 import dataclasses
 import functools
 import math
-from typing import Any, Mapping, Optional, Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 import diffrax
 import equinox as eqx
@@ -20,7 +21,6 @@ from livn.models.eventloop import (
     resample,
 )
 from livn.types import Model
-
 
 PARAM_NAMES = (
     "tau_m",  # membrane time constant [ms]
@@ -173,7 +173,7 @@ class StateLayout:
     next_forced: int = -1
 
     @classmethod
-    def of(cls, coupled: bool, escape: bool, forced: bool = False) -> "StateLayout":
+    def of(cls, coupled: bool, escape: bool, forced: bool = False) -> StateLayout:
         size = 5
         i_syn = s = t_ref_end = next_forced = -1
         if coupled:
@@ -249,7 +249,7 @@ def from_vector(vector: Sequence) -> dict:
             f"expected {len(PARAM_NAMES)} parameters, got {len(vector)}; "
             f"the canonical order is {PARAM_NAMES}"
         )
-    return dict(zip(PARAM_NAMES, vector))
+    return dict(zip(PARAM_NAMES, vector, strict=False))
 
 
 _KNOWN_METHODS = {
@@ -439,8 +439,8 @@ def _default_neuron_config(level: int, dt: float = 5e-5) -> dict:
 
 def to_neuron_config(
     params: Mapping[str, Any],
-    template: Optional[Mapping] = None,
-    level: Optional[int] = None,
+    template: Mapping | None = None,
+    level: int | None = None,
 ) -> dict:
     params = {name: float(params[name]) for name in PARAM_NAMES}
     if template is None:
@@ -494,7 +494,7 @@ def to_neuron_config(
         rp["b"] = -params["delta_v"] / 1e3
 
     config["spike_cut_length"] = max(
-        0, int(round(params["t_ref"] / (config["dt"] * 1e3))) - 1
+        0, round(params["t_ref"] / (config["dt"] * 1e3)) - 1
     )
 
     return config
@@ -759,7 +759,7 @@ def _solve_cell(
     if not segments:
         return out
 
-    return out + (solution.ts, ys)
+    return (*out, solution.ts, ys)
 
 
 def _solve_network(
@@ -884,7 +884,7 @@ def _solve_network(
     # (times, cells, columns) -> (cells, times, columns)
     ys = jnp.transpose(resample(solution.ts, ys, ts_out), (1, 0, 2))
 
-    marks = jnp.zeros(solution.event_masks.shape[:1] + (n_cells,), bool)
+    marks = jnp.zeros((*solution.event_masks.shape[:1], n_cells), bool)
     marks = marks.at[:, spike_index].set(solution.event_masks[:, :n_spiking])
     spike_times = jnp.where(marks.T, solution.event_times[None, :], jnp.inf)
 
@@ -935,13 +935,13 @@ class GlifNeurons(eqx.Module):
     def __init__(
         self,
         n_cells: int,
-        params: Optional[Mapping[str, Any]] = None,
+        params: Mapping[str, Any] | None = None,
         level: int = 5,
         mechanism: str = "hard",
-        config: Optional[SolverConfig] = None,
+        config: SolverConfig | None = None,
         current_scale: float = 1e3,
         network=None,
-        read_out_neurons: Optional[Sequence[int]] = None,
+        read_out_neurons: Sequence[int] | None = None,
         diffusion: bool = False,
     ):
         _check_mechanism(mechanism)
@@ -1020,7 +1020,7 @@ class GlifNeurons(eqx.Module):
         return tuple(n for n in range(self.n_cells) if n not in read_out)
 
     @classmethod
-    def from_neuron_configs(cls, configs: Sequence[Mapping], **kwargs) -> "GlifNeurons":
+    def from_neuron_configs(cls, configs: Sequence[Mapping], **kwargs) -> GlifNeurons:
         configs = list(configs)
         if not configs:
             raise ValueError("need at least one neuron_config")
@@ -1072,12 +1072,12 @@ class GlifNeurons(eqx.Module):
         t1: float = 100.0,
         dt: float = 0.1,
         y0=None,
-        stimulus_dt: Optional[float] = None,
-        config: Optional[SolverConfig] = None,
+        stimulus_dt: float | None = None,
+        config: SolverConfig | None = None,
         record=None,
         key=None,
         num_samples: int = 1,
-        diffusion: Optional[bool] = None,
+        diffusion: bool | None = None,
         forced_spikes=None,
     ) -> GlifSolution:
         return self._solve(
@@ -1103,12 +1103,12 @@ class GlifNeurons(eqx.Module):
         t1: float,
         dt: float,
         y0,
-        stimulus_dt: Optional[float],
-        config: Optional[SolverConfig],
+        stimulus_dt: float | None,
+        config: SolverConfig | None,
         record,
         key,
         num_samples: int,
-        diffusion: Optional[bool],
+        diffusion: bool | None,
         forced_spikes,
     ) -> GlifSolution:
         t0, t1, dt = float(t0), float(t1), float(dt)
@@ -1129,7 +1129,7 @@ class GlifNeurons(eqx.Module):
                 )
             forced_spikes = jnp.sort(forced_spikes, axis=-1)  # inf padding sorts last
             layout = StateLayout.of(False, False, forced=True)
-        n_out = int(round((t1 - t0) / dt)) + 1
+        n_out = round((t1 - t0) / dt) + 1
         stimulus_dt = dt if stimulus_dt is None else float(stimulus_dt)
 
         num_samples = int(num_samples)
@@ -1177,18 +1177,18 @@ class GlifNeurons(eqx.Module):
                 f"got {y0.shape[-1]}"
             )
         if y0.ndim == 2:
-            y0 = jnp.broadcast_to(y0, (num_samples,) + y0.shape)
+            y0 = jnp.broadcast_to(y0, (num_samples, *y0.shape))
 
-        shared = dict(
-            t0=t0,
-            t1=t1,
-            dt=dt,
-            layout=layout,
-            config=config,
-            n_out=n_out,
-            columns=columns,
-            diffusion=self.diffusion if diffusion is None else bool(diffusion),
-        )
+        shared = {
+            "t0": t0,
+            "t1": t1,
+            "dt": dt,
+            "layout": layout,
+            "config": config,
+            "n_out": n_out,
+            "columns": columns,
+            "diffusion": self.diffusion if diffusion is None else bool(diffusion),
+        }
 
         if want_segments and self.network is not None:
             raise NotImplementedError(
@@ -1266,7 +1266,7 @@ class GlifNeurons(eqx.Module):
         t1: float = 100.0,
         dt: float = 0.1,
         y0=None,
-        dt_solver: Optional[float] = None,
+        dt_solver: float | None = None,
         key=None,
         record=None,
         num_samples: int = 1,
@@ -1322,7 +1322,7 @@ class GlifNeurons(eqx.Module):
             states,
         )
 
-    def _with_noise(self, noise) -> tuple["GlifNeurons", Optional[bool]]:
+    def _with_noise(self, noise) -> tuple[GlifNeurons, bool | None]:
         if not noise:
             return self, None
         if not isinstance(noise, Mapping) or set(noise) - {"sigma_v"}:
@@ -1343,7 +1343,7 @@ class GlifNeuronJAX(eqx.Module):
         self,
         params=None,
         level: int = 5,
-        config: Optional[SolverConfig] = None,
+        config: SolverConfig | None = None,
         **kwargs,
     ):
         if config is None:
@@ -1355,7 +1355,7 @@ class GlifNeuronJAX(eqx.Module):
         )
 
     @classmethod
-    def from_dict(cls, neuron_config, **kwargs) -> "GlifNeuronJAX":
+    def from_dict(cls, neuron_config, **kwargs) -> GlifNeuronJAX:
         return cls(from_neuron_config(neuron_config), **kwargs)
 
     @property
@@ -1365,7 +1365,7 @@ class GlifNeuronJAX(eqx.Module):
     def __repr__(self):
         return f"GlifNeuronJAX({', '.join(f'{k}={v:g}' for k, v in self.p.items())})"
 
-    def run(self, stimulus_pA, native_hz, dt: Optional[float] = None) -> dict:
+    def run(self, stimulus_pA, native_hz, dt: float | None = None) -> dict:
         stim = jnp.asarray(stimulus_pA, dtype=jnp.result_type(float)).reshape(-1, 1)
         n_samples = stim.shape[0]
         if n_samples < 2:
@@ -1401,10 +1401,10 @@ class GLIF(Model):
         self,
         level: int = 5,
         mechanism: str = "hard",
-        params: Optional[Mapping[str, Any]] = None,
-        config: Optional[SolverConfig] = None,
+        params: Mapping[str, Any] | None = None,
+        config: SolverConfig | None = None,
         current_scale: float = 1e3,
-        read_out_neurons: Optional[Sequence[int]] = None,
+        read_out_neurons: Sequence[int] | None = None,
         diffusion: bool = False,
     ):
         self.level = _check_level(level)
@@ -1420,12 +1420,12 @@ class GLIF(Model):
         self.diffusion = bool(diffusion)
 
     @classmethod
-    def from_neuron_config(cls, neuron_config: Mapping, **kwargs) -> "GLIF":
+    def from_neuron_config(cls, neuron_config: Mapping, **kwargs) -> GLIF:
         kwargs.setdefault("level", level_of_neuron_config(neuron_config))
         return cls(params=from_neuron_config(neuron_config), **kwargs)
 
     @classmethod
-    def leaky_integrate_and_fire(cls, **kwargs) -> "GLIF":
+    def leaky_integrate_and_fire(cls, **kwargs) -> GLIF:
         """The plain leaky integrator, as a point in the GLIF space"""
         kwargs.setdefault("level", LIF_LEVEL)
         kwargs["params"] = {**LIF_PARAMS, **(kwargs.get("params") or {})}
@@ -1449,7 +1449,7 @@ class GLIF(Model):
             )
         return stimulus
 
-    def cell_params(self, level: Optional[int] = None) -> dict:
+    def cell_params(self, level: int | None = None) -> dict:
         return apply_level(
             {**DEFAULT_PARAMS_FULL, **(self.params or {})},
             self.level if level is None else level,

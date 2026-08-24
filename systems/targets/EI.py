@@ -8,11 +8,11 @@ import numpy as np
 from pydantic import Field, model_validator
 
 from livn.decoding import (
+    ISICV,
     ActiveFraction,
     AvalancheAnalysis,
     BurstRate,
     GatherAndMerge,
-    ISICV,
     MeanFiringRate,
     PairwiseChannelCorrelation,
     PeakSynchrony,
@@ -24,11 +24,10 @@ from livn.decoding import (
     Slice,
     Stability,
 )
+from livn.env.logging import with_progress_logging
 from livn.policy import PulseSweepPolicy
 from livn.utils import P
-from livn.env.logging import with_progress_logging
 from systems.targets.protocol import TuningTargets
-
 
 logger = logging.getLogger(__name__)
 
@@ -191,16 +190,16 @@ class Culture(TuningTargets):
     MIN_POP_RATE_PER_UNIT_HZ = 0.05
     STABILITY_MARGIN = 5.0
     IGNITION_SUFFIX = "_ignition"
-    IGNITION_RANGE = [0.0005, 0.1]
+    IGNITION_RANGE: ClassVar[list] = [0.0005, 0.1]
     ADAPTATION_DECADES = 1.0
-    ADAPTATION_PARAMS = {
+    ADAPTATION_PARAMS: ClassVar[dict] = {
         "cells-soma.gmax_KCa": "soma_gmax_KCa",
         "cells-hillock.gmax_KCa": "dend_gmax_KCa",
         "cells-soma.kCa_Ca_conc": "soma_kCa_Caconc",
         "cells-hillock.kCa_Ca_conc": "dend_kCa_Caconc",
     }
     RATIO_SUFFIX = "_ratio"
-    RATIO_RANGES = {
+    RATIO_RANGES: ClassVar[dict] = {
         "excitatory": [0.01, 100.0],
         "inhibitory": [0.01, 100.0],
     }
@@ -659,6 +658,7 @@ class Culture(TuningTargets):
             return GatherAndMerge(
                 duration=total_duration, voltages=False, membrane_currents=False
             )(self.response_data, env)
+        return None
 
     @property
     def stimulus_start(self) -> float:

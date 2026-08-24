@@ -3,18 +3,18 @@ import dataclasses
 import functools
 from typing import TYPE_CHECKING, Optional, Union
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-import equinox as eqx
 import numpy as np
 
 from livn.cells import CellRegistry
 from livn.run import Run
-from livn.utils import lnp
 from livn.stimulus import Stimulus
 from livn.types import Capability, Cell
 from livn.types import Env as EnvProtocol
+from livn.utils import lnp
 
 if TYPE_CHECKING:
     from mpi4py import MPI
@@ -299,7 +299,7 @@ class Env(EnvProtocol):
     @property
     def num_cells(self) -> int:
         """Number of cells the module simulates"""
-        return int(len(self.module_gids))
+        return len(self.module_gids)
 
     @property
     def cells(self) -> CellRegistry:
@@ -416,7 +416,7 @@ class Env(EnvProtocol):
 
         record = self.recording()
 
-        it, tt, iv, v, im, mp, yT, states = self.module.run(
+        it, tt, iv, v, im, mp, _yT, states = self.module.run(
             input_current=input_current,
             noise=self._noise,
             t0=t0,

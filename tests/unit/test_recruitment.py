@@ -70,7 +70,7 @@ def test_the_crossing_is_bracketed_where_it_was_planted():
 
 
 def test_a_network_that_never_answers_is_reported_as_a_bound():
-    out = _read({a: 0.0 for a in (300.0, 400.0, 500.0, 600.0)})
+    out = _read(dict.fromkeys((300.0, 400.0, 500.0, 600.0), 0.0))
 
     assert out["censored"] == "above"
     assert out["above_mv"] is None
@@ -78,7 +78,7 @@ def test_a_network_that_never_answers_is_reported_as_a_bound():
 
 
 def test_a_network_already_recruited_at_the_lowest_is_bounded_the_other_way():
-    out = _read({a: 0.95 for a in (300.0, 400.0, 500.0, 600.0)})
+    out = _read(dict.fromkeys((300.0, 400.0, 500.0, 600.0), 0.95))
 
     assert out["censored"] == "below"
     assert out["below_mv"] is None

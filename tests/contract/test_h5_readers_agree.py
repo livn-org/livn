@@ -77,6 +77,8 @@ class TestPyfiveVsNeuroh5:
         from mpi4py import MPI
         from neuroh5.io import (
             read_cell_attribute_info as neuroh5_read_attr_info,
+        )
+        from neuroh5.io import (
             read_population_names,
         )
 
@@ -129,10 +131,12 @@ class TestPyfiveVsNeuroh5:
             assert neuroh5_attr_info == pyfive_attr_info
 
             assert len(neuroh5_items) == len(pyfive_items)
-            for (n_gid, n_vals), (p_gid, p_vals) in zip(neuroh5_items, pyfive_items):
+            for (n_gid, n_vals), (p_gid, p_vals) in zip(
+                neuroh5_items, pyfive_items, strict=False
+            ):
                 assert n_gid == p_gid
                 assert len(n_vals) == len(p_vals)
-                for n_v, p_v in zip(n_vals, p_vals):
+                for n_v, p_v in zip(n_vals, p_vals, strict=False):
                     np.testing.assert_array_almost_equal(n_v, p_v)
 
     def test_synapse_attributes(self, cells_filepath):
@@ -169,9 +173,7 @@ class TestPyfiveVsNeuroh5:
                 io_size=1,
                 return_type="dict",
             )
-            neuroh5_items = {
-                gid: attrs for gid, attrs in cell_attr_dict["Synapse Attributes"]
-            }
+            neuroh5_items = dict(cell_attr_dict["Synapse Attributes"])
 
             pop_start = pop_ranges[pop][0]
             pyfive_items = _h5_read_cell_attributes(
@@ -208,7 +210,7 @@ class TestPyfiveVsNeuroh5:
         # projection aborts the process rather than raising
         stored = {
             post: list(f_conns[f"Projections/{post}"].keys())
-            for post in f_conns["Projections"].keys()
+            for post in f_conns["Projections"]
         }
         for post in pop_names:
             for pre in pop_names:
@@ -243,7 +245,7 @@ class TestPyfiveVsNeuroh5:
                 pyfive_items.sort(key=lambda x: x[0])
 
                 for (n_gid, (n_pre, n_proj)), (p_gid, (p_pre, p_proj)) in zip(
-                    neuroh5_items, pyfive_items
+                    neuroh5_items, pyfive_items, strict=False
                 ):
                     assert n_gid == p_gid, f"GID mismatch: {n_gid} vs {p_gid}"
                     np.testing.assert_array_equal(
@@ -254,7 +256,9 @@ class TestPyfiveVsNeuroh5:
 
                     assert set(n_proj.keys()) == set(p_proj.keys())
                     for ns_name in n_proj:
-                        for n_arr, p_arr in zip(n_proj[ns_name], p_proj[ns_name]):
+                        for n_arr, p_arr in zip(
+                            n_proj[ns_name], p_proj[ns_name], strict=False
+                        ):
                             np.testing.assert_array_almost_equal(
                                 n_arr,
                                 p_arr,
@@ -351,11 +355,11 @@ class TestSystemPyfiveVsNeuroh5:
                 projs_p.sort(key=lambda x: x[0])
 
                 for (gid_n, (pre_n, proj_n)), (gid_p, (pre_p, proj_p)) in zip(
-                    projs_n, projs_p
+                    projs_n, projs_p, strict=False
                 ):
                     assert gid_n == gid_p
                     np.testing.assert_array_equal(np.sort(pre_n), np.sort(pre_p))
 
                     for ns in proj_n:
-                        for arr_n, arr_p in zip(proj_n[ns], proj_p[ns]):
+                        for arr_n, arr_p in zip(proj_n[ns], proj_p[ns], strict=False):
                             np.testing.assert_array_almost_equal(arr_n, arr_p)

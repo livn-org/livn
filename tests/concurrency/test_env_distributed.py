@@ -5,7 +5,6 @@ import numpy as np
 import pytest
 
 from livn.backend import backend
-
 from testing import (
     livn_test_mea,
     livn_test_selection,

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import contextlib
+import itertools
 import os
 
 import numpy as np
 import pytest
 
-from testing import livn_test_env
 from livn.io import MAX_STIMULUS_GB_ENV, calculate_cell_stimulus
 from livn.stimulus import STIMULUS_CHUNK_MB_ENV, Stimulus
+from testing import livn_test_env
 
 DT = 0.1
 CELLS = 20
@@ -26,10 +28,8 @@ def _close_envs():
     """A NEURON env per test, closed after it; leaked ones wedge later psolves."""
     yield
     while _OPEN_ENVS:
-        try:
+        with contextlib.suppress(Exception):
             _OPEN_ENVS.pop().close()
-        except Exception:
-            pass
 
 
 def _env(reach=1e9):
@@ -227,10 +227,10 @@ def test_a_policy_is_delivered_over_the_run_it_is_handed_to():
     env.run(sweep.duration_ms, stimulus=sweep)
 
     driven = np.flatnonzero(_drive(env, int((quiet + sweep.duration_ms) / DT) + 1))
-    starts = [driven[0]] + [b for a, b in zip(driven, driven[1:]) if b - a > 1]
+    starts = [driven[0]] + [b for a, b in itertools.pairwise(driven) if b - a > 1]
 
     assert len(starts) == sweep.n_trials, "a pulse went missing"
-    for step, (at, _amplitude) in zip(starts, sweep.schedule()):
+    for step, (at, _amplitude) in zip(starts, sweep.schedule(), strict=False):
         assert step * DT == pytest.approx(quiet + at, abs=DT)
 
 

@@ -2,7 +2,6 @@ import numpy as np
 
 from livn.utils import P, merge, merge_array, merge_dict
 
-
 try:
     import mpi4py  # noqa: F401
 

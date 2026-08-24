@@ -5,7 +5,7 @@ import pytest
 
 pytest.importorskip("livn")
 
-from livn.backend import backend  # noqa: E402
+from livn.backend import backend
 
 pytestmark = pytest.mark.skipif(
     backend() != "neuron", reason="the callback is a NEURON cvode registration"
@@ -20,9 +20,9 @@ def env():
 
 
 def _pulse(env, duration, onset, dt=0.5, amplitude=50.0, channel=0):
-    n_steps = int(round(duration / dt))
+    n_steps = round(duration / dt)
     channel_inputs = np.zeros((n_steps, len(env.io.channel_ids)))
-    lo = int(round(onset / dt))
+    lo = round(onset / dt)
     channel_inputs[lo, channel] = -amplitude
     channel_inputs[lo + 1, channel] = amplitude
     stimulus = env.cell_stimulus(channel_inputs)

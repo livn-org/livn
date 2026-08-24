@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import os
 import weakref
 from collections import defaultdict
-from typing import TYPE_CHECKING, Self, Union
+from typing import TYPE_CHECKING, Self
 
 import numpy as np
 
@@ -33,7 +34,7 @@ logger.setLevel(os.getenv("LIVN_NEURON_LOGGING", "WARNING"))
 class _EnvCallback:
     __slots__ = ("_env", "_method")
 
-    def __init__(self, env: "Env", method: str):
+    def __init__(self, env: Env, method: str):
         self._env = weakref.ref(env)
         self._method = method
 
@@ -60,10 +61,8 @@ def _unregister_callback(cvode, callback: _EnvCallback) -> None:
         cvode.extra_scatter_gather_remove(callback)
     except Exception:
         logger.debug("failed to remove a cvode callback", exc_info=True)
-    try:
+    with contextlib.suppress(ValueError):
         _REGISTERED_CALLBACKS.remove(callback)
-    except ValueError:
-        pass
 
 
 def _sweep_dead_callbacks(cvode) -> None:
@@ -86,11 +85,11 @@ class Env(EnvProtocol):
 
     def __init__(
         self,
-        system: Union["System", str, int],
-        model: Union["Model", None] = None,
-        io: Union["IO", None] = None,
+        system: System | str | int,
+        model: Model | None = None,
+        io: IO | None = None,
         seed: int | None = 123,
-        comm: "MPI.Intracomm | None" = None,
+        comm: MPI.Intracomm | None = None,
         subworld_size: int | None = None,
     ):
         from mpi4py import MPI
@@ -261,7 +260,7 @@ class Env(EnvProtocol):
                 continue
             sel = None
             if self._selection is not None:
-                sel = set(int(g) for g in self._selection.get(pop, []))
+                sel = {int(g) for g in self._selection.get(pop, [])}
             cells = builder.build_local(pop, selection=sel)
             self.cells.add(
                 pop,
@@ -513,9 +512,9 @@ class Env(EnvProtocol):
         if first_run:
             self._dt = requested_dt
             self._apply_delay_floor(requested_dt)
-        self._stim_step = int(round(current_time / self._dt))
-        self._opsin_step = int(round(current_time / self._dt))
-        self._iclamp_step = int(round(current_time / self._dt))
+        self._stim_step = round(current_time / self._dt)
+        self._opsin_step = round(current_time / self._dt)
+        self._iclamp_step = round(current_time / self._dt)
 
         self.clear_recordings()
 
@@ -724,7 +723,7 @@ class Env(EnvProtocol):
         declares = getattr(self.model, "stimulus_bounds", None)
         self._stim_bounds = declares(stimulus.input_mode) if declares else None
 
-        start_step = int(round(current_time / stimulus.dt))
+        start_step = round(current_time / stimulus.dt)
         rows, columns = self._stim_rows_for(stimulus)
         if not rows:
             return
@@ -782,7 +781,7 @@ class Env(EnvProtocol):
         block = np.zeros((len(self._stim_segments), width), dtype=dtype)
         if previous is not None:
             block[: previous.shape[0], : previous.shape[1]] = previous
-        for row, column in zip(rows, columns):
+        for row, column in zip(rows, columns, strict=False):
             block[row, start_step:end_step] = values[:, column]
         self._stim_block = block
 
@@ -798,7 +797,7 @@ class Env(EnvProtocol):
                 "rows": np.asarray(rows, dtype=np.int64),
                 "columns": np.asarray(columns, dtype=np.int64),
                 "start_step": start_step,
-                "n_steps": int(round(stimulus.duration / stimulus.dt)),
+                "n_steps": round(stimulus.duration / stimulus.dt),
                 "chunk_steps": chunk_steps,
                 "chunk": None,
                 "chunk_start": 0,
@@ -944,7 +943,7 @@ class Env(EnvProtocol):
         elif not math.isclose(self._opsin_dt, phi_stim.dt, rel_tol=0.0, abs_tol=1e-12):
             raise ValueError("Stimulus dt mismatch; call clear() before rerunning")
 
-        start_step = int(round(current_time / phi_stim.dt))
+        start_step = round(current_time / phi_stim.dt)
 
         pending: list[tuple[object, np.ndarray]] = []
         for gid, section_id, series in phi_stim:
@@ -1023,6 +1022,7 @@ class Env(EnvProtocol):
                 self.conn.pre_pop.tolist(),
                 self.conn.dest_sectype.tolist(),
                 self.conn.mech_id.tolist(),
+                strict=False,
             )
         }
         if self.comm is not None and self.comm.Get_size() > 1:
@@ -1066,6 +1066,7 @@ class Env(EnvProtocol):
                 post_pop.tolist(),
                 self.syn.dest_sectype.tolist(),
                 self.syn.mech_id.tolist(),
+                strict=False,
             ):
                 if pp < 0 or pp not in pop_of:
                     continue
@@ -1206,7 +1207,7 @@ class Env(EnvProtocol):
 
     def get_weights(self) -> dict:
         weights: dict[tuple, float] = {}
-        for gid, syn_id, mech_name, pp, nc in self._iter_stdp_connections():
+        for gid, syn_id, mech_name, _pp, nc in self._iter_stdp_connections():
             slot = self._wplastic_slot.get(mech_name, 2)
             weights[(int(gid), int(syn_id), mech_name)] = float(nc.weight[slot])
         return weights
@@ -1216,7 +1217,7 @@ class Env(EnvProtocol):
 
         rows = []
         weight, w_min, w_max, group = [], [], [], []
-        for gid, syn_id, mech_name, pp, nc in self._iter_stdp_connections():
+        for gid, _syn_id, mech_name, pp, nc in self._iter_stdp_connections():
             slot = self._wplastic_slot.get(mech_name, 2)
             rows.append((nc, slot))
             weight.append(float(nc.weight[slot]))
@@ -1232,7 +1233,7 @@ class Env(EnvProtocol):
             np.asarray(group),
             target=target,
         )
-        for (nc, slot), w in zip(rows, new_w):
+        for (nc, slot), w in zip(rows, new_w, strict=False):
             nc.weight[slot] = float(w)
         return self
 
@@ -1240,7 +1241,7 @@ class Env(EnvProtocol):
         h = self._h
         self._weight_rec_dt = dt
         self._weight_nc_refs = {}
-        for gid, syn_id, mech_name, pp, nc in self._iter_stdp_connections():
+        for gid, syn_id, mech_name, _pp, nc in self._iter_stdp_connections():
             slot = self._wplastic_slot.get(mech_name, 2)
             key = (int(gid), int(syn_id), mech_name)
             self._weight_nc_refs[key] = (nc, slot)
@@ -1297,7 +1298,7 @@ class Env(EnvProtocol):
                 for m in mechs:
                     mech_to_group[m] = group
 
-        for gid, syn_id, mech_name, pp in self._iter_stdp_point_processes():
+        for _gid, _syn_id, mech_name, pp in self._iter_stdp_point_processes():
             if per_population:
                 group = mech_to_group.get(mech_name)
                 group_config = config.get(group, {}) if group else {}
@@ -1312,7 +1313,7 @@ class Env(EnvProtocol):
         return self
 
     def disable_plasticity(self) -> Self:
-        for gid, syn_id, mech_name, pp in self._iter_stdp_point_processes():
+        for _gid, _syn_id, _mech_name, pp in self._iter_stdp_point_processes():
             pp.plasticity_on = 0
         self._plasticity_enabled = False
         return self
@@ -1592,10 +1593,8 @@ class Env(EnvProtocol):
                 self._h.delete_section(sec=sec)
         except Exception:
             logger.debug("section teardown failed", exc_info=True)
-        try:
+        with contextlib.suppress(Exception):
             self.pc.gid_clear()
-        except Exception:
-            pass
         gc.collect()
         _sweep_dead_callbacks(self._h.cvode)
         return self

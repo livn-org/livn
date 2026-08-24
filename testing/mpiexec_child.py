@@ -1,3 +1,4 @@
+import contextlib
 import faulthandler
 import json
 import os
@@ -149,7 +150,8 @@ def _arm(nodeid: str, timeout: float | None):
             os._exit(HUNG_EXIT_CODE)
 
         me = int(MPI.COMM_WORLD.rank)
-        try:
+        # pragma: no cover - nothing better to do if the report cannot be written
+        with contextlib.suppress(OSError):
             (report_dir() / f"hang-{me}.json").write_text(
                 json.dumps(
                     {
@@ -160,8 +162,6 @@ def _arm(nodeid: str, timeout: float | None):
                     }
                 )
             )
-        except OSError:  # pragma: no cover - nothing better to do
-            pass
 
         print(
             f"[rank {me}] watchdog: {nodeid} did not finish in {timeout}s",

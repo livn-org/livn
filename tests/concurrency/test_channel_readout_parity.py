@@ -7,6 +7,7 @@ import sys
 import textwrap
 
 import pytest
+
 from testing import mpiexec as mpiexec_plugin
 from testing.mpiexec import mpi_slot
 from testing.paths import REPO_ROOT

@@ -1,11 +1,12 @@
 import math
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 import diffrax
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array
-from typing import Any, Mapping, Sequence, Optional, Tuple, Union
 
 
 def array_to_dict(params: Sequence) -> Mapping[str, float]:
@@ -115,7 +116,7 @@ class BoothRinzelKiehn(eqx.Module):
     T_kelvin: float
     F_const: float
 
-    solver: Union[diffrax.AbstractSolver, str] = eqx.field(static=True)
+    solver: diffrax.AbstractSolver | str = eqx.field(static=True)
     max_steps: int = eqx.field(static=True)
 
     E_syn_exc: float
@@ -355,7 +356,7 @@ class BoothRinzelKiehn(eqx.Module):
                 )
             self.input_mode = mode
 
-    def __init__(self, params: Optional[Any] = None, key=None):
+    def __init__(self, params: Any | None = None, key=None):
         self.set_default_parameters()
         ic_provided_s = False
         ic_provided_d = False
@@ -398,7 +399,7 @@ class BoothRinzelKiehn(eqx.Module):
             * math.log(co / ci)
         )
 
-    def _init_ic_values(self, V: float) -> Tuple[float, float]:
+    def _init_ic_values(self, V: float) -> tuple[float, float]:
         cai0 = 1e-5
 
         minf = 1.0 / (1.0 + math.exp(-(V + 35.0) / 7.8))
@@ -413,10 +414,7 @@ class BoothRinzelKiehn(eqx.Module):
 
         def _ghk(v, ci, co, factor):
             nu = v / factor
-            if abs(nu) < 1e-4:
-                efun = 1.0 - nu / 2.0
-            else:
-                efun = nu / (math.exp(nu) - 1.0)
+            efun = 1.0 - nu / 2.0 if abs(nu) < 0.0001 else nu / (math.exp(nu) - 1.0)
             return -factor * (1.0 - (ci / co) * math.exp(nu)) * efun
 
         ghk_s = _ghk(V, cai0, self.cao, fN)
@@ -439,7 +437,7 @@ class BoothRinzelKiehn(eqx.Module):
         ic_d = -(IKD + ICaD_N + ICaD_L + IleakD)
         return ic_s, ic_d
 
-    def _geometry(self) -> Tuple[Array, Array, Array, Array]:
+    def _geometry(self) -> tuple[Array, Array, Array, Array]:
         diam_cm = self.global_diam * 1e-4
         L_total_cm = self.Ltotal * 1e-4
         area_total = jnp.pi * diam_cm * L_total_cm
@@ -729,9 +727,9 @@ class BoothRinzelKiehn(eqx.Module):
         t_dur: float,
         *,
         I_stim_array: Array,
-        y0: Optional[Array] = None,
+        y0: Array | None = None,
         dt: float = 0.025,
-        dt_solver: Optional[float] = None,
+        dt_solver: float | None = None,
         **kwargs,
     ):
         """

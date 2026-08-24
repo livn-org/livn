@@ -1,16 +1,18 @@
-from neuron import h
+import contextlib
 from collections import defaultdict
-import numpy as np
-from pathlib import Path
 from dataclasses import dataclass, field, fields
-from typing import Dict, Any, Type, TypeVar
-from typing_extensions import get_type_hints
+from pathlib import Path
+from typing import Any, TypeVar
+
+import numpy as np
 import yaml
+from neuron import h
+from typing_extensions import get_type_hints
 
 T = TypeVar("T")
 
 
-def create_from_dict(cls: Type[T], data: Dict[str, Any], missing="error") -> T:
+def create_from_dict(cls: type[T], data: dict[str, Any], missing="error") -> T:
     """
     Create a dataclass instance from a dictionary, handling nested dataclasses.
 
@@ -38,8 +40,7 @@ def create_from_dict(cls: Type[T], data: Dict[str, Any], missing="error") -> T:
         if field_name not in data and hasattr(cls, field_name):
             if missing == "error":
                 raise RuntimeError(f"field {field_name} not found in dictionary")
-            else:
-                continue
+            continue
 
         value = data.get(field_name)
 
@@ -53,8 +54,8 @@ def create_from_dict(cls: Type[T], data: Dict[str, Any], missing="error") -> T:
                     kwargs[field_name] = field_type(value)
                 except (ValueError, TypeError) as e:
                     raise ValueError(
-                        f"Cannot convert value '{value}' to {field_type} for parameter '{field_name}': {str(e)}"
-                    )
+                        f"Cannot convert value '{value}' to {field_type} for parameter '{field_name}': {e!s}"
+                    ) from e
 
     return cls(**kwargs)
 
@@ -189,7 +190,7 @@ class NeuronParameters:
     basal: BasalParameters = field(default_factory=BasalParameters)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "NeuronParameters":
+    def from_dict(cls, data: dict[str, Any]) -> "NeuronParameters":
         """
         Create a NeuronParameters instance from a dictionary.
 
@@ -207,7 +208,7 @@ class NeuronParameters:
         """
         return create_from_dict(cls, data)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """
         Convert the NeuronParameters instance to a dictionary.
 
@@ -226,7 +227,7 @@ class NeuronParameters:
                 result[f.name] = value
         return result
 
-    def update_from_dict(self, data: Dict[str, Any]) -> None:
+    def update_from_dict(self, data: dict[str, Any]) -> None:
         """
         Update parameters from a dictionary without creating a new instance.
 
@@ -961,24 +962,26 @@ class PyramidalCell:
 
     def export_swc(
         self,
-        sections=[
-            ("soma", 1),
-            ("apical", 4),
-            ("basal", 3),
-            ("axon", 2),
-            ("ais", 7),
-            ("hillock", 8),
-        ],
+        sections=None,
     ):
+        if sections is None:
+            sections = [
+                ("soma", 1),
+                ("apical", 4),
+                ("basal", 3),
+                ("axon", 2),
+                ("ais", 7),
+                ("hillock", 8),
+            ]
         swc_point_idx = 0
         swc_points = []
         swc_point_sec_dict = defaultdict(list)
         # sec_dict = {}
-        seen = set([])
+        seen = set()
         for section, sectype in sections:
             if hasattr(self, f"{section}_list"):
                 seclist = list(getattr(self, f"{section}_list"))
-                for secidx, sec in enumerate(seclist):
+                for _secidx, sec in enumerate(seclist):
                     if hasattr(sec, "sec"):
                         sec = sec.sec
                     if sec in seen:
@@ -1010,7 +1013,7 @@ class PyramidalCell:
                         ll = sec.arc3d(i)
                         rad = d / 2.0
                         loc = ll / L
-                        first = True if i == 0 else False
+                        first = i == 0
                         swc_point = (
                             swc_point_idx,
                             section,
@@ -1048,8 +1051,8 @@ class PyramidalCell:
                             break
             # layer = get_layer(distance_to_soma, sectype)
             print(
-                "%d %i %.04f %.04f %.04f %.04f %d"
-                % (swc_point_idx, sectype, x, y, z, rad, parent_idx)
+                f"{swc_point_idx:d} {sectype:d} {x:.04f} {y:.04f} {z:.04f} "
+                f"{rad:.04f} {parent_idx:d}"
             )
 
     def position(self, x, y, z):
@@ -1073,18 +1076,15 @@ class PyramidalCell:
 
     def ic_constant_0(self):
         result = []
-        for sec in self.soma_list:
-            result.append(sec.ic_constant)
-        for sec in self.ais_list:
-            result.append(sec.ic_constant)
-        for sec in self.hillock_list:
-            result.append(sec.ic_constant)
-        for sec in self.axon_list:
-            result.append(sec.ic_constant)
-        for sec in self.apical_list:
-            result.append(sec.ic_constant)
-        for sec in self.basal_list:
-            result.append(sec.ic_constant)
+        for section_list in (
+            self.soma_list,
+            self.ais_list,
+            self.hillock_list,
+            self.axon_list,
+            self.apical_list,
+            self.basal_list,
+        ):
+            result.extend(sec.ic_constant for sec in section_list)
         return np.asarray(result)
 
 
@@ -1097,10 +1097,12 @@ def ic_constant_f(
     dt=0.01,
     record_dt=0.01,
     celsius=35.0,
-    section_types=["soma"],
+    section_types=None,
     use_cvode=True,
     use_coreneuron=True,
 ):
+    if section_types is None:
+        section_types = ["soma"]
     h.cvode.use_fast_imem(1)
     h.cvode.cache_efficient(1)
     h.secondorder = 2
@@ -1144,15 +1146,13 @@ def ic_constant_f(
 
     h.finitialize(h.v_init)
     h.finitialize(h.v_init)
-    try:
+    with contextlib.suppress(Exception):
         h.run()
-    except Exception:
-        pass
 
     # t = vec_t.as_numpy()
 
     mean_vs = []
-    for sec, vec_v in vec_v_dict.items():
+    for vec_v in vec_v_dict.values():
         v = vec_v.as_numpy()
         mean_v = np.mean(v) if np.max(v) < 0.0 else 0.0
         mean_vs.append(mean_v)

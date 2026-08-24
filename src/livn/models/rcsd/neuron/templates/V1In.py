@@ -1,4 +1,5 @@
 import logging
+
 from neuron import h
 
 logging.basicConfig(level=logging.INFO)

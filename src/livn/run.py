@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Iterator, Literal, Mapping
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy
 
@@ -45,11 +46,11 @@ class PaddedEvents:
             non-finite value. A leading axis appears when the run had multiple samples.
     """
 
-    ids: "Array"
-    times: "Array"
+    ids: Array
+    times: Array
 
     @property
-    def fired(self) -> "Array":
+    def fired(self) -> Array:
         """``True`` where an entry is a real event rather than padding"""
         return lnp().isfinite(self.times)
 
@@ -68,17 +69,17 @@ class Events:
         padded: Rectangular storage to compact from, instead of ``ids``/``times``
     """
 
-    __slots__ = ("_ids", "_times", "_padded", "_compacted", "t0", "duration")
+    __slots__ = ("_compacted", "_ids", "_padded", "_times", "duration", "t0")
 
     kind = "events"
 
     def __init__(
         self,
-        ids: "Array | None" = None,
-        times: "Array | None" = None,
+        ids: Array | None = None,
+        times: Array | None = None,
         t0: float = 0.0,
         duration: float | None = None,
-        padded: "PaddedEvents | None" = None,
+        padded: PaddedEvents | None = None,
     ):
         put = object.__setattr__
         put(self, "_ids", ids)
@@ -113,7 +114,7 @@ class Events:
     # -- storage ---------------------------------------------------------
 
     @property
-    def padded(self) -> "PaddedEvents | None":
+    def padded(self) -> PaddedEvents | None:
         """The rectangular device form, or ``None`` for a channel that never had one"""
         return self._padded
 
@@ -152,7 +153,7 @@ class Events:
         object.__setattr__(self, "_compacted", compacted)
         return compacted
 
-    def compact(self) -> "Events":
+    def compact(self) -> Events:
         """This channel in the compact form, keeping the padded storage alongside"""
         ids, times = self._compact()
         return Events(
@@ -164,17 +165,17 @@ class Events:
         )
 
     @property
-    def ids(self) -> "Array | None":
+    def ids(self) -> Array | None:
         """Cell id per event, compact"""
         return self._compact()[0]
 
     @property
-    def times(self) -> "Array | None":
+    def times(self) -> Array | None:
         """Event time per event, compact and ordered by time"""
         return self._compact()[1]
 
     @property
-    def values(self) -> "Array | None":
+    def values(self) -> Array | None:
         """The event times"""
         return self.times
 
@@ -185,7 +186,7 @@ class Events:
                 raise ValueError(
                     "raster needs `steps` when the channel has no duration"
                 )
-            steps = int(round(self.duration / dt)) + 1
+            steps = round(self.duration / dt) + 1
 
         if self._padded is not None:
             times = self._padded.times  # (..., cells, k)
@@ -220,11 +221,11 @@ class Events:
             grid = numpy.asarray(grid)
             grid[numpy.asarray(target)[inside]] = True
 
-        return grid.reshape(lead + (cells, steps))
+        return grid.reshape((*lead, cells, steps))
 
     # -- composition -----------------------------------------------------
 
-    def concat(self, other: "Events", shift: float) -> "Events":
+    def concat(self, other: Events, shift: float) -> Events:
         """Append ``other``, whose time origin moves by ``shift``"""
         offset = other.t0 + shift - self.t0
         duration = None
@@ -240,7 +241,7 @@ class Events:
             duration=duration,
         )
 
-    def merge(self, other: "Events") -> "Events":
+    def merge(self, other: Events) -> Events:
         """Union with the events of other cells over the same window"""
         return Events(
             ids=_join(self.ids, other.ids),
@@ -249,7 +250,7 @@ class Events:
             duration=self.duration,
         )
 
-    def window(self, start: float, stop: float, name: str = "events") -> "Events":
+    def window(self, start: float, stop: float, name: str = "events") -> Events:
         """Keep the events in ``[start, stop)``, given in absolute time"""
         lo, hi = start - self.t0, stop - self.t0
 
@@ -260,7 +261,7 @@ class Events:
 
         return Events(ids=ids, times=times, t0=start, duration=stop - start)
 
-    def select(self, keep) -> "Events":
+    def select(self, keep) -> Events:
         """Keep only the events of the cells in ``keep``"""
         ids, times = self._compact()
         if ids is None:
@@ -298,16 +299,16 @@ class Series:
         sections: Compartment name per row, where the backend records per compartment.
     """
 
-    ids: "Array | None" = None
-    values: "Array | None" = None
+    ids: Array | None = None
+    values: Array | None = None
     dt: float = 0.1
     t0: float = 0.0
-    sections: "Array | None" = None
+    sections: Array | None = None
 
     kind = "series"
 
     @property
-    def times(self) -> "Array | None":
+    def times(self) -> Array | None:
         """Sample times relative to ``t0``"""
         if self.values is None:
             return None
@@ -319,7 +320,7 @@ class Series:
             return None
         return float(self.values.shape[1] * self.dt)
 
-    def concat(self, other: "Series", shift: float) -> "Series":
+    def concat(self, other: Series, shift: float) -> Series:
         """Append ``other``'s samples along the time axis"""
         if abs(self.dt - other.dt) > _TOL:
             raise ValueError(
@@ -339,7 +340,7 @@ class Series:
             self, values=lnp().concatenate([self.values, other.values], axis=1)
         )
 
-    def merge(self, other: "Series") -> "Series":
+    def merge(self, other: Series) -> Series:
         """Union with the traces of other cells over the same window"""
         if abs(self.dt - other.dt) > _TOL:
             raise ValueError(f"Cannot merge series with dt={self.dt} and dt={other.dt}")
@@ -360,7 +361,7 @@ class Series:
             values=lnp().concatenate([self.values, other.values], axis=0),
         )
 
-    def window(self, start: float, stop: float, name: str = "series") -> "Series":
+    def window(self, start: float, stop: float, name: str = "series") -> Series:
         """Keep the samples in ``[start, stop)``, given in absolute time"""
         if self.values is None:
             return replace(self, t0=start)
@@ -373,7 +374,7 @@ class Series:
                     f"{bound}={offset} ms does not align with {name} recording "
                     f"dt={self.dt} ms yielding a fractional index {i}"
                 )
-            return int(round(i))
+            return round(i)
 
         return replace(
             self,
@@ -381,7 +382,7 @@ class Series:
             t0=start,
         )
 
-    def select(self, keep) -> "Series":
+    def select(self, keep) -> Series:
         """Keep only the rows of the cells in ``keep``"""
         if self.ids is None:
             return self
@@ -423,8 +424,8 @@ class Run:
     def add(
         self,
         name: str,
-        ids: "Array | None",
-        values: "Array | None" = None,
+        ids: Array | None,
+        values: Array | None = None,
         *,
         dt: float | None = None,
         kind: Literal["events", "series"] | None = None,
@@ -432,7 +433,7 @@ class Run:
         duration: float | None = None,
         padded: bool = False,
         sections=None,
-    ) -> "Run":
+    ) -> Run:
         if kind is None:
             if padded:
                 kind = "events"
@@ -480,39 +481,39 @@ class Run:
 
         return replace(self, channels=channels)
 
-    def add_spikes(self, ids, times, *, padded: bool = False) -> "Run":
+    def add_spikes(self, ids, times, *, padded: bool = False) -> Run:
         """Add the ``spikes`` channel, or nothing when it was not recorded"""
         if ids is None and times is None:
             return self
         return self.add("spikes", ids, times, kind="events", padded=padded)
 
-    def add_voltage(self, ids, values, dt: float = 0.1, sections=None) -> "Run":
+    def add_voltage(self, ids, values, dt: float = 0.1, sections=None) -> Run:
         """Add the ``voltage`` channel, or nothing when it was not recorded"""
         if ids is None and values is None:
             return self
         return self.add("voltage", ids, values, dt=dt, kind="series", sections=sections)
 
-    def add_current(self, ids, values, dt: float = 0.1) -> "Run":
+    def add_current(self, ids, values, dt: float = 0.1) -> Run:
         """Add the ``current`` channel, or nothing when it was not recorded"""
         if ids is None and values is None:
             return self
         return self.add("current", ids, values, dt=dt, kind="series")
 
-    def drop(self, name: str) -> "Run":
+    def drop(self, name: str) -> Run:
         """Return a copy of this run without ``name``"""
         channels = dict(self.channels)
         channels.pop(name, None)
         return replace(self, channels=channels)
 
-    def drop_spikes(self) -> "Run":
+    def drop_spikes(self) -> Run:
         """Return a copy of this run without the ``spikes`` channel"""
         return self.drop("spikes")
 
-    def drop_voltage(self) -> "Run":
+    def drop_voltage(self) -> Run:
         """Return a copy of this run without the ``voltage`` channel"""
         return self.drop("voltage")
 
-    def drop_current(self) -> "Run":
+    def drop_current(self) -> Run:
         """Return a copy of this run without the ``current`` channel"""
         return self.drop("current")
 
@@ -609,7 +610,7 @@ class Run:
         channels = ", ".join(f"{k}={v!r}" for k, v in self.channels.items())
         return f"Run(t0={self.t0}, duration={self.duration}, {channels})"
 
-    def concat(self, other: "Run") -> "Run":
+    def concat(self, other: Run) -> Run:
         """Append a subsequent run, re-applying its time offset."""
         if not isinstance(other, Run):
             raise TypeError(f"Can only concat a Run, not {type(other).__name__}")
@@ -637,7 +638,7 @@ class Run:
 
         return Run(channels=channels, t0=self.t0, duration=duration)
 
-    def merge(self, other: "Run") -> "Run":
+    def merge(self, other: Run) -> Run:
         """Union with a run covering the same window over disjoint cells."""
         if not isinstance(other, Run):
             raise TypeError(f"Can only merge a Run, not {type(other).__name__}")
@@ -656,7 +657,7 @@ class Run:
 
         return Run(channels=channels, t0=self.t0, duration=duration)
 
-    def gather(self, comm=None, root: int = 0) -> "Run | None":
+    def gather(self, comm=None, root: int = 0) -> Run | None:
         """Collect the per-rank runs onto ``root`` and ``merge`` them into one.
 
         Returns ``None`` off the root rank.
@@ -671,7 +672,7 @@ class Run:
 
         return merged
 
-    def slice(self, start: float = 0.0, stop: float | None = None) -> "Run":
+    def slice(self, start: float = 0.0, stop: float | None = None) -> Run:
         """Window into ``[start, stop)``, both relative to this run's start."""
         if stop is None:
             if self.duration is None:
@@ -692,7 +693,7 @@ class Run:
         gids=None,
         population: str | list | tuple | None = None,
         population_ranges: Mapping[str, tuple] | None = None,
-    ) -> "Run":
+    ) -> Run:
         """Restrict every channel to a subset of cells.
 
         Args:
@@ -731,7 +732,7 @@ class Run:
 
         return replace(self, channels=channels)
 
-    def _names(self, other: "Run") -> list[str]:
+    def _names(self, other: Run) -> list[str]:
         """Channel names of both runs, this one's order first"""
         return list(self.channels) + [
             name for name in other.channels if name not in self.channels
@@ -781,7 +782,9 @@ def _run_flatten(run: Run):
 
 def _run_unflatten(aux, children) -> Run:
     names, t0, duration = aux
-    return Run(channels=dict(zip(names, children)), t0=t0, duration=duration)
+    return Run(
+        channels=dict(zip(names, children, strict=False)), t0=t0, duration=duration
+    )
 
 
 def _register() -> bool:

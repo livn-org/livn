@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from typing import Any, Callable, Optional, Sequence, Union
+from collections.abc import Callable, Sequence
+from typing import Any
 
 import diffrax
 import equinox as eqx
@@ -28,12 +29,12 @@ from diffrax._misc import linear_rescale
 from jaxtyping import Array, PyTree
 
 __all__ = [
-    "SolverConfig",
-    "LoopBudget",
-    "loop_budget",
-    "EventSolution",
     "BrownianPath",
+    "EventSolution",
+    "LoopBudget",
+    "SolverConfig",
     "event_solve",
+    "loop_budget",
     "resample",
 ]
 
@@ -45,11 +46,9 @@ class BrownianPath(VirtualBrownianTree):
         t0: RealScalarLike,
         t1: RealScalarLike,
         tol: RealScalarLike,
-        shape: Union[tuple[int, ...], PyTree[jax.ShapeDtypeStruct]],
+        shape: tuple[int, ...] | PyTree[jax.ShapeDtypeStruct],
         key,
-        levy_area: type[
-            Union[BrownianIncrement, SpaceTimeLevyArea]
-        ] = BrownianIncrement,
+        levy_area: type[BrownianIncrement | SpaceTimeLevyArea] = BrownianIncrement,
         _spline: str = "sqrt",
     ):
         super().__init__(t0, t1, tol, shape, key, levy_area, _spline)
@@ -58,10 +57,10 @@ class BrownianPath(VirtualBrownianTree):
     def evaluate(
         self,
         t0: RealScalarLike,
-        t1: Optional[RealScalarLike] = None,
+        t1: RealScalarLike | None = None,
         left: bool = True,
         use_levy: bool = False,
-    ) -> Union[PyTree[Array], BrownianIncrement, SpaceTimeLevyArea]:
+    ) -> PyTree[Array] | BrownianIncrement | SpaceTimeLevyArea:
         t0 = jax.lax.stop_gradient(t0)
         # map the interval [self.t0, self.t1] onto [0,1]
         t0 = linear_rescale(self.t0, t0, self.t1)
@@ -86,9 +85,9 @@ class BrownianPath(VirtualBrownianTree):
 class SolverConfig:
     dt_solver: float = 0.01
     points_per_segment: int = 64
-    max_segment_span: Optional[float] = None
+    max_segment_span: float | None = None
     max_rate: float = 0.2
-    max_steps: Optional[int] = None
+    max_steps: int | None = None
     solver: Any = dataclasses.field(default_factory=diffrax.Euler)
     stepsize_controller: Any = dataclasses.field(
         default_factory=diffrax.ConstantStepSize
@@ -97,6 +96,11 @@ class SolverConfig:
         default_factory=lambda: optx.Newton(1e-2, 1e-2, optx.rms_norm)
     )
     throw: bool = True
+
+
+# SolverConfig is frozen, so one shared instance is safe as a default argument
+# (and avoids rebuilding the solver/root-finder on every call).
+DEFAULT_SOLVER_CONFIG = SolverConfig()
 
 
 class EventSolution(eqx.Module):
@@ -149,7 +153,11 @@ class LoopBudget:
 
 
 def loop_budget(
-    t0: float, t1: float, dt: float, config: SolverConfig = SolverConfig(), holds=False
+    t0: float,
+    t1: float,
+    dt: float,
+    config: SolverConfig = DEFAULT_SOLVER_CONFIG,
+    holds=False,
 ) -> LoopBudget:
     """Size a solve without running it."""
     t0, t1, dt = float(t0), float(t1), float(dt)
@@ -169,13 +177,13 @@ def loop_budget(
         raise ValueError(f"max_segment_span must be positive, got {span}")
     unbounded = math.isinf(span)
 
-    events = int(math.ceil(duration * float(config.max_rate))) + 1
-    segments = 1 if unbounded else int(math.ceil(duration / span)) + 1
+    events = math.ceil(duration * float(config.max_rate)) + 1
+    segments = 1 if unbounded else math.ceil(duration / span) + 1
 
     max_steps = config.max_steps
     if max_steps is None:
         reach = duration if unbounded else span
-        max_steps = int(math.ceil(reach / config.dt_solver)) + 16
+        max_steps = math.ceil(reach / config.dt_solver) + 16
 
     return LoopBudget(
         blocks=events + segments,
@@ -232,10 +240,10 @@ def event_solve(
     t1: float,
     dt: float,
     args: Any = None,
-    hold_fn: Optional[Callable] = None,
-    extra_terms: Optional[Sequence[Any]] = None,
+    hold_fn: Callable | None = None,
+    extra_terms: Sequence[Any] | None = None,
     key: Any = None,
-    config: SolverConfig = SolverConfig(),
+    config: SolverConfig = DEFAULT_SOLVER_CONFIG,
 ) -> EventSolution:
     """Integrate ``drift`` from ``t0`` to ``t1``, restarting at every event.
 
@@ -355,12 +363,12 @@ def event_solve(
         # resampling.
         hold_ts = _grid(t_event, t_next, n_hold, endpoint=False)
         if hold_fn is None:
-            hold_ys = jnp.broadcast_to(y_event, (n_hold,) + y_shape)
+            hold_ys = jnp.broadcast_to(y_event, (n_hold, *y_shape))
         else:
             hold_ys = jnp.where(
                 fired,
                 hold_fn(t_event, y_event, t_next, hold_ts, args, mask),
-                jnp.broadcast_to(y_event, (n_hold,) + y_shape),
+                jnp.broadcast_to(y_event, (n_hold, *y_shape)),
             )
 
         return _LoopState(
@@ -392,9 +400,9 @@ def event_solve(
 
     init = _LoopState(
         seg_ts=jnp.full((n_blocks, n_points), jnp.inf, dtype),
-        seg_ys=jnp.zeros((n_blocks, n_points) + y_shape, dtype),
+        seg_ys=jnp.zeros((n_blocks, n_points, *y_shape), dtype),
         hold_ts=jnp.full((n_blocks, n_hold), jnp.inf, dtype),
-        hold_ys=jnp.zeros((n_blocks, n_hold) + y_shape, dtype),
+        hold_ys=jnp.zeros((n_blocks, n_hold, *y_shape), dtype),
         event_times=jnp.full((n_blocks,), jnp.inf, dtype),
         event_masks=jnp.zeros((n_blocks, n_cond), bool),
         solver_ok=jnp.ones((n_blocks,), bool),
@@ -431,7 +439,7 @@ def event_solve(
             jnp.where(keep_y, final.hold_ys, final.y),
         ],
         axis=1,
-    ).reshape((n_blocks * (n_points + n_hold),) + y_shape)
+    ).reshape((n_blocks * (n_points + n_hold), *y_shape))
 
     event_times = jnp.where(written, final.event_times, jnp.inf)
     saturated = final.t < t1

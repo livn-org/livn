@@ -9,19 +9,18 @@ from livn.backend import backend
 
 pytest.importorskip("diffrax")
 
-import equinox as eqx  # noqa: E402
-import jax  # noqa: E402
-import jax.numpy as jnp  # noqa: E402
-import jax.random as jr  # noqa: E402
+import equinox as eqx
+import jax
+import jax.numpy as jnp
+import jax.random as jr
 
-from livn.models.eventloop import SolverConfig  # noqa: E402
-from testing.paths import REPO_ROOT  # noqa: E402
-from livn.models.glif import (  # noqa: E402
+from livn.models.eventloop import SolverConfig
+from livn.models.glif import (
     ALL_PARAM_NAMES,
     DEFAULT_PARAMS,
     GLIF,
-    LEVELS,
     LEVEL_ZEROED,
+    LEVELS,
     LIF_LEVEL,
     LIF_PARAMS,
     MECHANISM_PARAM_NAMES,
@@ -36,6 +35,7 @@ from livn.models.glif import (  # noqa: E402
     to_vector,
     trainable_param_names,
 )
+from testing.paths import REPO_ROOT
 
 _LABELS = str(REPO_ROOT / "neurons" / "data" / "glif_labels.json")
 
@@ -45,7 +45,8 @@ def _cohort(limit=None):
         pytest.skip(
             "the Allen GLIF cohort (neurons/data/glif_labels.json) is not present"
         )
-    labels = json.loads(open(_LABELS).read())
+    with open(_LABELS) as fh:
+        labels = json.load(fh)
     out = []
     for cell, record in labels.items():
         for level, model in sorted(record["models"].items()):
@@ -55,7 +56,7 @@ def _cohort(limit=None):
 
 
 def _driven(neurons, amplitude=2.0, duration=60.0, dt=0.1):
-    steps = int(round(duration / dt)) + 1
+    steps = round(duration / dt) + 1
     distance = np.asarray(neurons.V_threshold_base - neurons.E_L)
     current = amplitude * distance * np.asarray(neurons.g_L) / 1e3
     return jnp.asarray(np.tile(current, (steps, 1)))
@@ -269,7 +270,7 @@ def test_an_unconnected_system_stays_off_the_shared_loop():
 def test_a_spike_propagates_along_the_chain(mechanism):
     module = _chain_module(mechanism)
     duration, dt = 60.0, 0.1
-    stimulus = jnp.zeros((int(round(duration / dt)) + 1, 3)).at[:, 0].set(0.3)
+    stimulus = jnp.zeros((round(duration / dt) + 1, 3)).at[:, 0].set(0.3)
 
     solution = module.solve(stimulus, 0.0, duration, dt, key=jr.PRNGKey(0))
 
@@ -283,7 +284,7 @@ def test_a_spike_propagates_along_the_chain(mechanism):
 def test_the_shared_loop_reproduces_the_independent_one():
     duration, dt = 60.0, 0.1
     module = _chain_module()
-    stimulus = jnp.zeros((int(round(duration / dt)) + 1, 3)).at[:, 0].set(0.3)
+    stimulus = jnp.zeros((round(duration / dt) + 1, 3)).at[:, 0].set(0.3)
 
     coupled = np.asarray(module.solve(stimulus, 0.0, duration, dt).spike_times[0])
 
@@ -300,7 +301,7 @@ def test_the_shared_loop_reproduces_the_independent_one():
 
 def test_the_sign_of_a_weight_is_the_sign_of_its_effect():
     duration, dt = 60.0, 0.1
-    stimulus = jnp.full((int(round(duration / dt)) + 1, 2), 0.3).at[:, 1].set(0.18)
+    stimulus = jnp.full((round(duration / dt) + 1, 2), 0.3).at[:, 1].set(0.18)
 
     def spikes_of_cell_1(weight):
         connectivity = np.zeros((2, 2), dtype=np.float32)
@@ -322,7 +323,7 @@ def test_the_sign_of_a_weight_is_the_sign_of_its_effect():
 def test_read_out_neurons_receive_but_do_not_fire():
     module = _chain_module(read_out_neurons=[2])
     duration, dt = 60.0, 0.1
-    stimulus = jnp.zeros((int(round(duration / dt)) + 1, 3)).at[:, 0].set(0.3)
+    stimulus = jnp.zeros((round(duration / dt) + 1, 3)).at[:, 0].set(0.3)
 
     solution = module.solve(stimulus, 0.0, duration, dt)
 
@@ -337,7 +338,7 @@ def test_read_out_neurons_receive_but_do_not_fire():
 def test_a_network_run_is_differentiable_through_its_weights():
     duration, dt = 40.0, 0.1
     module = _chain_module()
-    stimulus = jnp.zeros((int(round(duration / dt)) + 1, 3)).at[:, 0].set(0.3)
+    stimulus = jnp.zeros((round(duration / dt) + 1, 3)).at[:, 0].set(0.3)
 
     def loss(network):
         coupled = eqx.tree_at(lambda m: m.network, module, network)
@@ -358,13 +359,13 @@ def test_samples_are_independent_realisations_of_the_same_run():
         stimulus, 0.0, duration, dt, key=jr.PRNGKey(0), num_samples=4
     )
 
-    assert batched.v.shape == (4, 2, int(round(duration / dt)) + 1)
+    assert batched.v.shape == (4, 2, round(duration / dt) + 1)
     assert batched.yT.shape == (4, 2, module.layout.size)
     first = np.asarray(batched.spike_times[:, 0, 0])
     assert len(set(first.tolist())) > 1, "samples share a spike train"
 
     single = module.solve(stimulus, 0.0, duration, dt, key=jr.PRNGKey(0))
-    assert single.v.shape == (2, int(round(duration / dt)) + 1)
+    assert single.v.shape == (2, round(duration / dt) + 1)
 
 
 def test_a_batched_run_keeps_its_sample_axis():
@@ -372,7 +373,7 @@ def test_a_batched_run_keeps_its_sample_axis():
     module = GlifNeurons(2, {"sigma": 2.0}, mechanism="escape")
     stimulus = _driven(module, duration=duration, dt=dt)
 
-    rows, times, ids, voltage, _, _, yT, _ = module.run(
+    rows, times, ids, voltage, _, _, _yT, _ = module.run(
         stimulus,
         t0=0.0,
         t1=duration,
@@ -381,7 +382,7 @@ def test_a_batched_run_keeps_its_sample_axis():
         num_samples=3,
     )
 
-    steps = int(round(duration / dt)) + 1
+    steps = round(duration / dt) + 1
     assert voltage.shape == (3, 2, steps)
     np.testing.assert_array_equal(np.asarray(ids), [0, 1])
     np.testing.assert_array_equal(np.asarray(rows), [0, 1])
@@ -513,7 +514,9 @@ def test_a_population_is_built_from_configs():
     expected = [from_neuron_config(config)["tau_m"] for config in configs]
     np.testing.assert_allclose(np.asarray(neurons.tau_m), expected, rtol=1e-6)
 
-    for written, original in zip(neurons.to_neuron_configs(configs), configs):
+    for written, original in zip(
+        neurons.to_neuron_configs(configs), configs, strict=False
+    ):
         for name, value in from_neuron_config(original).items():
             np.testing.assert_allclose(
                 from_neuron_config(written)[name], value, rtol=1e-6, err_msg=name
@@ -529,7 +532,7 @@ def test_the_output_lands_on_a_uniform_grid_at_the_requested_dt():
     )
 
     ts = np.asarray(solution.ts)
-    assert ts.shape == (int(round(duration / dt)) + 1,)
+    assert ts.shape == (round(duration / dt) + 1,)
     np.testing.assert_allclose(np.diff(ts), dt, rtol=1e-5)
     assert solution.v.shape == (2, ts.shape[0])
     assert np.all(np.isfinite(np.asarray(solution.v)))
@@ -772,7 +775,7 @@ def test_a_run_reports_spikes_and_voltage():
 
     run = env.run(duration, Stimulus.from_current(current, dt=dt), dt=dt)
 
-    assert run.voltage.shape == (2, int(round(duration / dt)) + 1)
+    assert run.voltage.shape == (2, round(duration / dt) + 1)
     assert len(run.spike_times) > 0
     assert np.all(np.asarray(run.spike_times) <= duration)
     assert np.all(np.isin(np.asarray(run.spike_ids), [0, 1]))
@@ -879,7 +882,7 @@ def test_a_signal_that_was_not_recorded_allocates_no_buffer():
     voltage_only = env.module.solve(t0=0.0, t1=10.0, dt=0.1, record={"voltage"})
     assert voltage_only.ys.shape[-1] == 1
     with pytest.raises(AttributeError, match="was not sampled"):
-        voltage_only.theta_s
+        voltage_only.theta_s  # noqa: B018
 
 
 @_env
@@ -951,7 +954,7 @@ def _predefined(name="S1"):
 
     try:
         return resolve(predefined(name))
-    except Exception as error:  # noqa: BLE001 - the system is an optional fixture
+    except Exception as error:
         pytest.skip(f"the predefined system {name} is not available ({error})")
 
 
@@ -978,10 +981,10 @@ def test_a_run_through_env_on_a_connected_system(mechanism):
     assert env.module.network is not None, "the system under test is not connected"
 
     n = env.num_cells
-    current = np.full((int(round(duration / dt)) + 1, n), 0.35)
+    current = np.full((round(duration / dt) + 1, n), 0.35)
     run = env.run(duration, Stimulus.from_current(current, dt=dt), dt=dt)
 
-    assert run.voltage.shape == (n, int(round(duration / dt)) + 1)
+    assert run.voltage.shape == (n, round(duration / dt) + 1)
     assert len(run.spike_times) > 0
     assert np.all(np.asarray(run.spike_times) <= duration)
     assert set(np.asarray(run.spike_ids).tolist()) <= set(range(n))

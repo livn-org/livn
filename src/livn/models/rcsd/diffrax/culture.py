@@ -1,6 +1,7 @@
 import equinox as eqx
-from livn.models.rcsd.diffrax.motoneuron import BoothRinzelKiehn
 import jax
+
+from livn.models.rcsd.diffrax.motoneuron import BoothRinzelKiehn
 
 
 class MotoneuronCulture(eqx.Module):
@@ -82,7 +83,7 @@ class MotoneuronCulture(eqx.Module):
         )
         per_neuron_stimulus = jax.numpy.swapaxes(per_neuron_stimulus, 0, 1)
 
-        t_arr_batched, v_soma_dend, i_mem_soma_dend, yT = solve_many(
+        _t_arr_batched, v_soma_dend, i_mem_soma_dend, yT = solve_many(
             per_neuron_stimulus, y0_arg
         )
 

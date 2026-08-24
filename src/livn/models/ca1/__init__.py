@@ -1,4 +1,3 @@
-import functools
 import os
 
 import numpy as np
@@ -7,8 +6,15 @@ from livn.types import Model
 
 
 class PinskyRinzel(Model):
-    @functools.cache
     def section_y_offsets(self, population=None):
+        # A per-instance dict rather than @functools.cache, which keys on `self`
+        # and so keeps every model instance alive for the life of the process.
+        cache = self.__dict__.setdefault("_section_y_offsets_cache", {})
+        if population not in cache:
+            cache[population] = self._compute_section_y_offsets(population)
+        return cache[population]
+
+    def _compute_section_y_offsets(self, population=None):
         if population is None:
             return np.array([])
 

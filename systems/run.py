@@ -82,3 +82,4 @@ class Run(Interface):
     def on_commit(self):
         if P.rank() != 0:
             return False
+        return None

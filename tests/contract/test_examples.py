@@ -2,6 +2,7 @@ import os
 import sys
 
 import pytest
+
 from testing.paths import REPO_ROOT
 
 sys.path.append(str(REPO_ROOT))

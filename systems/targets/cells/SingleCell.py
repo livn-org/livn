@@ -14,6 +14,8 @@ from livn.utils import import_object_by_path
 
 from . import ephys
 
+DEFAULT_CONFIG_FILE = os.path.join(os.path.dirname(__file__), "motoneuron.yaml")
+
 
 class StepTarget(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
@@ -78,7 +80,7 @@ class SingleCellOptConfig(BaseModel):
     Space: dict[str, list[float]] = {}
 
     @classmethod
-    def from_yaml(cls, path: str) -> "SingleCellOptConfig":
+    def from_yaml(cls, path: str) -> SingleCellOptConfig:
         with open(path) as f:
             return cls(**yaml.safe_load(f))
 
@@ -133,9 +135,7 @@ class SingleCell:
 
     def __init__(
         self,
-        config: SingleCellOptConfig | dict | str = os.path.join(
-            os.path.dirname(__file__), "motoneuron.yaml"
-        ),
+        config: SingleCellOptConfig | dict | str = DEFAULT_CONFIG_FILE,
         population: str | None = None,
         sim_dt: float = 0.0125,
         record_dt: float = 0.05,
@@ -480,7 +480,7 @@ class SingleCell:
         return env
 
     def _cell(self, env):
-        for _pop, cells in env.cells.items():
+        for cells in env.cells.values():
             for gid, cell in cells.items():
                 return int(gid), cell
         raise RuntimeError("SingleCell: no cell built (selection failed?)")
@@ -517,10 +517,10 @@ class SingleCell:
         if v_target is None:
             v_target = self.v_hold
         soma = cell._template.soma
-        n = int(round(settle_ms / self.record_dt))
+        n = round(settle_ms / self.record_dt)
         zeros = np.zeros((n, 1), dtype=np.float32)
         gid_arr = np.array([gid], dtype=np.int32)
-        tail = max(1, int(round(300.0 / self.record_dt)))
+        tail = max(1, round(300.0 / self.record_dt))
 
         def probe(ic_val):
             cell.init_ic = lambda v=None, _x=ic_val: setattr(soma, "ic_constant", _x)
@@ -558,9 +558,9 @@ class SingleCell:
 
     def _run_step(self, env, gid, amp, t0, t1, tstop):
         env.clear(reseed=False)
-        n = int(round(tstop / self.record_dt))
+        n = round(tstop / self.record_dt)
         cur = np.zeros((n, 1), dtype=np.float32)
-        cur[int(round(t0 / self.record_dt)) : int(round(t1 / self.record_dt)), 0] = amp
+        cur[round(t0 / self.record_dt) : round(t1 / self.record_dt), 0] = amp
         stim = Stimulus.from_current(
             cur, dt=self.record_dt, gids=np.array([gid], dtype=np.int32)
         )
@@ -661,7 +661,7 @@ class SingleCell:
             )
             iclamp_results.append({"t": ti, "v": vi})
 
-        pre_spk_cnt, spk_cnt, spk_infos, thresholds, spk_amps = (
+        pre_spk_cnt, spk_cnt, spk_infos, _thresholds, spk_amps = (
             ephys.measure_spike_features(
                 iclamp_results, self.fI_t[0], self.fI_t[1] + 2.0
             )
@@ -707,7 +707,7 @@ class SingleCell:
             np.mean(
                 [
                     range_distance(r, lb, ub) ** 2
-                    for r, lb, ub in zip(rates, self.fI_lb, self.fI_ub)
+                    for r, lb, ub in zip(rates, self.fI_lb, self.fI_ub, strict=False)
                 ]
             )
         )
@@ -833,7 +833,7 @@ class SingleCell:
             self.fI_lb,
             self.fI_ub,
             "firing rate (Hz)",
-            "f–I",
+            "f\u2013I",
             mean=self.fI_mean,
         )
         # --- spike amplitude ----------------------------------------------
@@ -881,7 +881,7 @@ class SingleCell:
             ax.text(
                 1.15,
                 yy,
-                f"{val:.1f} {unit}\ntarget {lb:.0f}–{ub:.0f}",
+                f"{val:.1f} {unit}\ntarget {lb:.0f}\u2013{ub:.0f}",
                 ha="left",
                 va="center",
                 fontsize=8,
@@ -905,7 +905,7 @@ class SingleCell:
         """Simulate additional current steps (pA) beyond the f-I target sweeps,
         held the same way (fI_hold). Returns (traces, rates). Reuses the env state
         left by _measure (params applied, cell pinned at fI_hold)."""
-        gid, cell = self._cell(env)
+        gid, _cell = self._cell(env)
         results = []
         for pa in amps_pa:
             ti, vi = self._run_step(

@@ -4,26 +4,27 @@ import os
 import shutil
 import uuid
 
-from huggingface_hub import HfApi
-from machinable import Interface
-from machinable.utils import load_file, save_file, random_str
-from pydantic import BaseModel, ConfigDict
-from livn.utils import ObjSpec, import_instance, P
-from livn.env.distributed import DistributedEnv
-from livn.decoding import GatherAndMerge, Slice
-from livn.run import Run
-from livn.types import Encoding
-from livn.env import Env
+import numpy as np
 from datasets import Dataset
 from datasets.arrow_writer import ArrowWriter
-import numpy as np
+from huggingface_hub import HfApi
+from machinable import Interface
+from machinable.utils import load_file, random_str, save_file
+from pydantic import BaseModel, ConfigDict
+
+from livn.decoding import GatherAndMerge, Slice
+from livn.env import Env
+from livn.env.distributed import DistributedEnv
+from livn.run import Run
+from livn.types import Encoding
+from livn.utils import ObjSpec, P, import_instance
 
 
 class Raw(GatherAndMerge):
     def __call__(self, signal, env=None):
         data = super().__call__(signal, env)
         if data is None:
-            return
+            return None
 
         env.clear()
 
@@ -208,11 +209,11 @@ class Sample(Interface):
 
             del data, result, it, tt, iv, vv, im, mp, cit, ctt, p
 
-        for split, writer in writers.items():
+        for writer in writers.values():
             writer.finalize()
             writer.close()
 
-        for split in writers.keys():
+        for split in writers:
             split_dir = train_dir if split == "train" else test_dir
             arrow_file = os.path.join(split_dir, "data-00000-of-00001.arrow")
 
@@ -234,9 +235,7 @@ class Sample(Interface):
                 if os.path.exists(tmp_split_dir):
                     shutil.rmtree(tmp_split_dir, ignore_errors=True)
 
-        dataset_dict_json = {
-            "splits": {split: {"name": split} for split in writers.keys()}
-        }
+        dataset_dict_json = {"splits": {split: {"name": split} for split in writers}}
 
         with open(os.path.join(dest, "dataset_dict.json"), "w") as f:
             json.dump(dataset_dict_json, f)

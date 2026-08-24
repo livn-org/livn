@@ -1,29 +1,28 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING
 
 from livn.cells import CellRegistry
 from livn.run import Run
 from livn.types import Env as EnvProtocol
 
-
 if TYPE_CHECKING:
     from mpi4py import MPI
 
     from livn.io import IO
-    from livn.system import System
     from livn.stimulus import Stimulus
+    from livn.system import System
     from livn.types import Model
 
 
 class Env(EnvProtocol):
     def __init__(
         self,
-        system: Union["System", str, int],
-        model: Union["Model", None] = None,
-        io: Union["IO"] = None,
+        system: System | str | int,
+        model: Model | None = None,
+        io: IO = None,
         seed: int | None = 123,
-        comm: Optional["MPI.Intracomm"] = None,
+        comm: MPI.Intracomm | None = None,
         subworld_size: int | None = None,
     ):
         from livn.system import resolve
@@ -48,7 +47,7 @@ class Env(EnvProtocol):
     def run(
         self,
         duration,
-        stimulus: Optional["Stimulus"] = None,
+        stimulus: Stimulus | None = None,
         dt: float = 0.025,
         **kwargs,
     ) -> Run:

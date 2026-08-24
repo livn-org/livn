@@ -4,8 +4,8 @@ import pytest
 
 pytest.importorskip("livn")
 
-from livn.io import ComposedIO, MEA  # noqa: E402
-from livn.types import Env  # noqa: E402
+from livn.io import MEA, ComposedIO
+from livn.types import Env
 
 
 def _mea():

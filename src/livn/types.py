@@ -1,19 +1,16 @@
 from __future__ import annotations
 
+import hashlib
+import pickle
+from enum import StrEnum
 from typing import (
     TYPE_CHECKING,
     Any,
     ClassVar,
-    Optional,
     Protocol,
     Self,
-    Tuple,
-    Union,
     runtime_checkable,
 )
-import hashlib
-import pickle
-from enum import StrEnum
 
 from pydantic import BaseModel, field_validator
 
@@ -32,7 +29,7 @@ if TYPE_CHECKING:
     from livn.system import Projection
     from livn.types import Model
 
-    Array = Union[TorchTensor, ndarray, JaxArray, TfTensor]
+    Array = TorchTensor | ndarray | JaxArray | TfTensor
 
     from jaxtyping import Float, Int
 
@@ -45,19 +42,17 @@ StimulusLike = Any
 
 
 class SynapticParam(BaseModel):
-    population: Optional[str] = None
-    source: Optional[str] = None
-    sec_type: Optional[str] = None
-    syn_name: Optional[str] = None
-    param_path: Optional[Union[str, Tuple[str, ...]]] = None
-    param_range: Optional[str] = None
-    phenotype: Optional[str] = None
+    population: str | None = None
+    source: str | None = None
+    sec_type: str | None = None
+    syn_name: str | None = None
+    param_path: str | tuple[str, ...] | None = None
+    param_range: str | None = None
+    phenotype: str | None = None
 
     @field_validator("param_path")
     @classmethod
-    def parse_path(
-        cls, v: Optional[Union[str, Tuple[str, ...]]]
-    ) -> Optional[Tuple[str, ...]]:
+    def parse_path(cls, v: str | tuple[str, ...] | None) -> tuple[str, ...] | None:
         if v is None:
             return None
         if isinstance(v, tuple):
@@ -70,7 +65,7 @@ class SynapticParam(BaseModel):
         raise ValueError(f"Invalid param_path type: {type(v)}")
 
     @classmethod
-    def from_string(cls, string: str) -> "SynapticParam":
+    def from_string(cls, string: str) -> SynapticParam:
         """`population_source-sec_type-syn_name-param_path-param_range-phenotype`
 
         The source may be omitted for parameters that are not per-connection.
@@ -104,7 +99,7 @@ class SynapticParam(BaseModel):
             return cls(**data)
 
         except Exception as e:
-            raise ValueError(f"Failed to parse string '{string}': {str(e)}")
+            raise ValueError(f"Failed to parse string '{string}': {e!s}") from e
 
 
 @runtime_checkable
@@ -123,7 +118,7 @@ class System(Protocol):
     gids: Int[Array, "n_neurons"]
     """Global cell ids across all populations"""
 
-    population_ranges: dict[PopulationName, Tuple[int, int]]
+    population_ranges: dict[PopulationName, tuple[int, int]]
     """``{population: (start_gid, count)}`` for every population"""
 
     connections_config: dict
@@ -140,11 +135,11 @@ class System(Protocol):
         """``(post, pre, section, mechanism, type)`` per synapse the graph declares"""
         ...
 
-    def default_io(self, comm: Optional["MPI.Intracomm"] = None) -> "IO":
+    def default_io(self, comm: MPI.Intracomm | None = None) -> IO:
         """IO device to use when the environment is constructed without one"""
         ...
 
-    def default_model(self, comm: Optional["MPI.Intracomm"] = None) -> "Model":
+    def default_model(self, comm: MPI.Intracomm | None = None) -> Model:
         """Model to use when the environment is constructed without one"""
         ...
 
@@ -170,7 +165,7 @@ class System(Protocol):
         pre: PreSynapticPopulationName,
         post: PostSynapticPopulationName,
         all: bool = True,
-    ) -> list[tuple[int, tuple[list[int], "Projection"]]]:
+    ) -> list[tuple[int, tuple[list[int], Projection]]]:
         """Edges onto ``post`` from ``pre`` as ``(post_gid, (pre_gids, projection))``"""
         ...
 
@@ -200,13 +195,13 @@ class System(Protocol):
 class Cell(Protocol):
     """Protocol defining the interface for a single simulated cell and its physical parameters."""
 
-    def __init__(self, env: "Env", population: PopulationName, gid: int):
+    def __init__(self, env: Env, population: PopulationName, gid: int):
         self._env = env
         self._population = str(population)
         self._gid = int(gid)
 
     @property
-    def env(self) -> "Env":
+    def env(self) -> Env:
         return self._env
 
     @property
@@ -223,7 +218,7 @@ class Cell(Protocol):
         """Physical parameters of this cell."""
         ...
 
-    def set_params(self, params: dict[str, float]) -> "Env":
+    def set_params(self, params: dict[str, float]) -> Env:
         """Set physical parameters of this cell."""
         ...
 
@@ -276,16 +271,16 @@ class Env(Protocol):
     capabilities: ClassVar[frozenset[Capability]] = frozenset()
     """What this backend supports, see :class:`Capability`."""
 
-    cells: "CellRegistry"
+    cells: CellRegistry
     """The simulated cells, addressable by population name or gid"""
 
     def __init__(
         self,
-        system: Union["System", str, int],
-        model: "Model",
-        io: "IO",
+        system: System | str | int,
+        model: Model,
+        io: IO,
         seed: int | None = 123,
-        comm: Optional["MPI.Intracomm"] = None,
+        comm: MPI.Intracomm | None = None,
         subworld_size: int | None = None,
     ): ...
 
@@ -354,7 +349,7 @@ class Env(Protocol):
         self,
         channel_inputs: Float[Array, "batch timestep n_channels"],
         dt: float = 1.0,
-    ) -> "Stimulus":
+    ) -> Stimulus:
         """Transforms channel inputs into neural inputs."""
         from livn.policy import Policy
 
@@ -436,7 +431,7 @@ class Env(Protocol):
         ...
         return self
 
-    def set_params(self, params: dict) -> "Env":
+    def set_params(self, params: dict) -> Env:
         weights = {}
         noise = {}
         cells = {}
@@ -616,8 +611,8 @@ class Env(Protocol):
         self,
         population: str | list | tuple | None = None,
         dt: float = 0.1,
-        gids: "list | tuple | set | None" = None,
-        sections: "str | list | tuple | None" = None,
+        gids: list | tuple | set | None = None,
+        sections: str | list | tuple | None = None,
     ) -> Self:
         if isinstance(sections, str):
             sections = [sections]
@@ -638,10 +633,10 @@ class Env(Protocol):
     def run(
         self,
         duration,
-        stimulus: Optional["Stimulus"] = None,
+        stimulus: Stimulus | None = None,
         dt: float = 0.025,
         **kwargs,
-    ) -> "Run":
+    ) -> Run:
         """Run the simulation
 
         Returns:
@@ -661,9 +656,9 @@ class Env(Protocol):
 
     def __call__(
         self,
-        decoding: Union["Decoding", int],
+        decoding: Decoding | int,
         inputs: StimulusLike = None,
-        encoding: Optional["Encoding"] = None,
+        encoding: Encoding | None = None,
         **kwargs,
     ) -> Any:
         self.encoding = encoding
@@ -704,7 +699,7 @@ class Env(Protocol):
         """Keep the coordinate rows belonging to ``gids``, in coordinate order."""
         import numpy as _np
 
-        wanted = set(int(g) for g in _np.asarray(gids).ravel())
+        wanted = {int(g) for g in _np.asarray(gids).ravel()}
         coordinates = _np.asarray(coordinates)
         keep = _np.asarray([int(g) in wanted for g in coordinates[:, 0]], dtype=bool)
         return coordinates[keep]
@@ -827,7 +822,7 @@ class Model(Protocol):
         """
         return currents
 
-    def prepare_stimulus(self, stimulus: "Stimulus") -> "Stimulus":
+    def prepare_stimulus(self, stimulus: Stimulus) -> Stimulus:
         return stimulus
 
     def stimulus_bounds(self, input_mode: str) -> tuple[float, float] | None:
@@ -836,7 +831,7 @@ class Model(Protocol):
     def recordable_states(self) -> tuple[str, ...]:
         return ()
 
-    def diffrax_module(self, env: "Env", key=None):
+    def diffrax_module(self, env: Env, key=None):
         raise NotImplementedError(
             f"{type(self).__name__} does not implement the diffrax backend"
         )
@@ -884,10 +879,10 @@ class Model(Protocol):
 
 
 class Encoding(BaseModel):
-    def __call__(self, env: "Env", t_end: int, inputs: Any) -> StimulusLike: ...
+    def __call__(self, env: Env, t_end: int, inputs: Any) -> StimulusLike: ...
 
     @property
-    def input_space(self) -> "gymnasium.Space":
+    def input_space(self) -> gymnasium.Space:
         raise NotImplementedError
 
     def __hash__(self):
@@ -917,12 +912,12 @@ class Decoding(BaseModel):
             return NotImplemented
         return pickle.dumps(self) == pickle.dumps(other)
 
-    def setup(self, env: "Env"):
+    def setup(self, env: Env):
         """Optional setup"""
 
-    def __call__(self, signal: "Run", env: Optional["Env"] = None) -> Any:
+    def __call__(self, signal: Run, env: Env | None = None) -> Any:
         return signal
 
     @property
-    def output_space(self) -> "gymnasium.Space":
+    def output_space(self) -> gymnasium.Space:
         raise NotImplementedError

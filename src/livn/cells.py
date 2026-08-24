@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, Iterator, Optional
+from collections.abc import Iterator, Mapping
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -12,22 +12,20 @@ if TYPE_CHECKING:
 
 
 class CellRegistry(Mapping):
-    def __init__(self, env: "Env", comm: Optional["MPI.Intracomm"] = None):
+    def __init__(self, env: Env, comm: MPI.Intracomm | None = None):
         self._env = env
         self._comm = comm
-        self._cells: dict[str, dict[int, "Cell"]] = {}
+        self._cells: dict[str, dict[int, Cell]] = {}
         self._gid_to_population: dict[int, str] | None = None
         self._gids: np.ndarray | None = None
 
-    def add(
-        self, population: "PopulationName", cells: dict[int, "Cell"]
-    ) -> "CellRegistry":
+    def add(self, population: PopulationName, cells: dict[int, Cell]) -> CellRegistry:
         self._cells[str(population)] = {int(gid): cell for gid, cell in cells.items()}
         self._gid_to_population = None
         self._gids = None
         return self
 
-    def clear(self) -> "CellRegistry":
+    def clear(self) -> CellRegistry:
         self._cells.clear()
         self._gid_to_population = None
         self._gids = None
@@ -48,7 +46,7 @@ class CellRegistry(Mapping):
         counts = ", ".join(f"{p}: {len(c)}" for p, c in self._cells.items())
         return f"{type(self).__name__}({counts})"
 
-    def _cell(self, gid: int) -> "Cell":
+    def _cell(self, gid: int) -> Cell:
         if self._gid_to_population is None:
             self._gid_to_population = {
                 int(cell_gid): population
@@ -103,7 +101,7 @@ class CellRegistry(Mapping):
             for name in names
         }
 
-    def set_params(self, params: dict[str, Any]) -> "Env":
+    def set_params(self, params: dict[str, Any]) -> Env:
         """Set per-cell parameters
 
         Each value is either a scalar, applied to every cell, or a sequence
@@ -112,7 +110,7 @@ class CellRegistry(Mapping):
         every rank.
         """
         order = [int(g) for g in self.gids]
-        local = set(int(g) for g in self.local_gids)
+        local = {int(g) for g in self.local_gids}
         values = {
             name: _as_values(name, value, len(order)) for name, value in params.items()
         }

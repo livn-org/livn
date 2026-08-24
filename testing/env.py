@@ -19,7 +19,6 @@ def livn_test_selection() -> str | None:
 
 def livn_test_env(*args, **kwargs):
     from livn.env import Env
-
     from testing.capabilities import supports
 
     env = Env(livn_test_system(), *args, **kwargs)

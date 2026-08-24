@@ -5,8 +5,8 @@
 #   "datasets",
 # ]
 # ///
-from datasets import load_dataset
 import numpy as np
+from datasets import load_dataset
 
 from livn.io import MEA
 from livn.system import make

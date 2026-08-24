@@ -15,7 +15,6 @@ from livn.env import Env
 from livn.models.glif import GLIF
 from livn.stimulus import Stimulus
 from livn.system import predefined
-
 from optimization.fit import fit
 from optimization.losses import voltage_mse
 
@@ -27,7 +26,7 @@ env = Env(
 env.record_voltage(dt=DT)
 
 n = env.num_cells
-steps = int(round(DURATION / DT)) + 1
+steps = round(DURATION / DT) + 1
 stimulus = Stimulus.from_current(np.full((steps, n), 0.05), dt=DT)  # nA, subthreshold
 
 truth = np.linspace(-75.0, -68.0, n)

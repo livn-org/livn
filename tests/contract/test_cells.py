@@ -48,7 +48,7 @@ def test_registry_indexes_by_population_and_gid():
 
     assert registry.get("MISSING", {}) == {}
     assert len(registry.get("EXC", {})) == 2
-    assert {p for p in registry.keys()} == {"EXC", "INH"}
+    assert set(registry.keys()) == {"EXC", "INH"}
     assert sum(len(cells) for cells in registry.values()) == 3
     assert [p for p, _ in registry.items()] == ["EXC", "INH"]
 

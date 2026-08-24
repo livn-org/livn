@@ -9,9 +9,8 @@ from numpy.random import RandomState
 from livn.cells import CellRegistry
 from livn.run import Run
 from livn.stimulus import Stimulus
-from livn.types import Capability, Cell
+from livn.types import Capability, Cell, SynapticParam
 from livn.types import Env as EnvProtocol
-from livn.types import SynapticParam
 from livn.utils import NOISE_STREAM_STRIDE, P
 
 if TYPE_CHECKING:
@@ -250,7 +249,7 @@ class Env(EnvProtocol):
                 gids = gids[keep]
                 if coordinates is not None and len(coordinates) == n:
                     coordinates = coordinates[keep]
-                n = int(len(gids))
+                n = len(gids)
                 if n == 0:
                     continue
 
@@ -379,7 +378,7 @@ class Env(EnvProtocol):
                 sections = synapse.get("sections") or ["soma"]
                 proportions = synapse.get("proportions") or [1.0] * len(sections)
 
-                for section, proportion in zip(sections, proportions):
+                for section, proportion in zip(sections, proportions, strict=False):
                     compartment, sec_name = self._synapse_site(post, section)
 
                     suffix = "_d" if compartment == "dend" else ""
@@ -603,11 +602,10 @@ class Env(EnvProtocol):
         dt: float = 0.025,
         **kwargs,
     ):
-        if kwargs.get("root_only", True):
-            if not P.is_root():
-                raise RuntimeError(
-                    "The brian2 backend does not support MPI parallelization on multiple ranks."
-                )
+        if kwargs.get("root_only", True) and not P.is_root():
+            raise RuntimeError(
+                "The brian2 backend does not support MPI parallelization on multiple ranks."
+            )
 
         b2.defaultclock.dt = dt * b2.ms
 
@@ -660,7 +658,7 @@ class Env(EnvProtocol):
         # Left-pad stimulus to align with brian2's absolute time reference.
         # Brian2's TimedArray indexes from t=0 (simulation start), so for
         # continued runs (self.t > 0) the stimulus must be padded.
-        pad_rows = max(0, int(round(self.t / stimulus.dt)))
+        pad_rows = max(0, round(self.t / stimulus.dt))
         if pad_rows > 0:
             padding = np.zeros((pad_rows, stimulus.array.shape[1]))
             stimulus = Stimulus(
@@ -697,7 +695,7 @@ class Env(EnvProtocol):
 
         ii = []
         tt = []
-        for population, monitor in self._spike_monitors.items():
+        for monitor in self._spike_monitors.values():
             ts = monitor.t / b2.ms
             ii.append(np.asarray(monitor.source.gids)[monitor.i[ts >= t_start]])
             tt.append(ts[ts >= t_start] - t_start)
@@ -762,7 +760,7 @@ class Env(EnvProtocol):
         if T == 0:
             return run
 
-        n_neurons = int(len(all_gids))
+        n_neurons = len(all_gids)
         currents = np.zeros((n_neurons * sections_per_neuron, T), dtype=np.float32)
 
         for population, data in per_pop_data.items():
@@ -896,7 +894,7 @@ class Env(EnvProtocol):
             np.asarray(group),
             target=target,
         )
-        for (S, idx), w in zip(refs, new_w):
+        for (S, idx), w in zip(refs, new_w, strict=False):
             S.w_plastic[idx] = float(w)
 
         return self

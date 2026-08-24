@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import os
 
 import numpy as np
@@ -25,10 +26,8 @@ def _close_envs():
     """A NEURON env per test, closed after it; leaked ones wedge later psolves."""
     yield
     while _OPEN_ENVS:
-        try:
+        with contextlib.suppress(Exception):
             _OPEN_ENVS.pop().close()
-        except Exception:
-            pass
 
 
 def _env():
@@ -53,7 +52,7 @@ def test_the_whole_simulation_is_known_without_a_collective():
 
     assert len(everywhere) == CELLS
     assert set(mine.tolist()) <= set(everywhere.tolist())
-    assert set(everywhere.tolist()) < set(int(g) for g in env.active_gids()), (
+    assert set(everywhere.tolist()) < {int(g) for g in env.active_gids()}, (
         "the selection left nothing out, so this graph cannot show the "
         "difference between what the graph describes and what was built"
     )
@@ -100,7 +99,7 @@ def test_a_gid_with_no_cell_is_refused_rather_than_silently_dropped():
 def test_a_gid_the_selection_left_out_says_that_is_why():
     env = _env()
     left_out = sorted(
-        set(int(g) for g in env.system.gids)
+        {int(g) for g in env.system.gids}
         - set(env.simulated_gids(everywhere=True).tolist())
     )
     if not left_out:

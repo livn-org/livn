@@ -18,7 +18,7 @@ EV_DT = 5e-5  # 20 kHz frame for building the spike trains
 
 def _gauss_kernel(sigma_s, dt):
     sig = sigma_s / dt
-    L = int(round(sig * 10))
+    L = round(sig * 10)
     x = jnp.arange(L) - (L - 1) / 2.0
     k = jnp.exp(-0.5 * (x / sig) ** 2)
     return k / jnp.sum(k)
@@ -67,7 +67,7 @@ def explained_variance_ratio(
 ):
     if len(data_spike_list) < 2:
         return None
-    steps = int(round(duration_s / dt))
+    steps = round(duration_s / dt)
     midx = spikes_to_idx(model_spikes, steps, dt)
     didx = [spikes_to_idx(s, steps, dt) for s in data_spike_list]
     r = ev_ratio(midx, didx, steps, dt, sigma_s=sigma)

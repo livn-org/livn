@@ -3,7 +3,6 @@ import numpy as np
 from livn import io
 from livn.utils import lnp
 
-
 try:
     import mpi4py  # noqa: F401
 

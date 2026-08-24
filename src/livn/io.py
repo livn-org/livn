@@ -11,8 +11,8 @@ p = payload value (distance, induction strength etc.)
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING
 from collections import defaultdict
+from typing import TYPE_CHECKING
 
 import gymnasium
 
@@ -25,9 +25,9 @@ if TYPE_CHECKING:
 _USES_JAX = False
 
 if "ax" in backend():
+    import equinox as eqx
     import jax
     import jax.numpy as np
-    import equinox as eqx
 
     _USES_JAX = True
 else:
@@ -151,7 +151,7 @@ if _USES_JAX:
         def potential_recording(self, gain, membrane_currents):
             return np.matmul(gain, membrane_currents)
 
-        def set_params(self, params: dict) -> "PointSourceModel":
+        def set_params(self, params: dict) -> PointSourceModel:
             unknown = sorted(k for k in params if not hasattr(self, k))
             if unknown:
                 raise KeyError(f"{unknown} are not parameters of {type(self).__name__}")
@@ -198,7 +198,7 @@ else:
         def potential_recording(self, gain, membrane_currents):
             return np.matmul(gain, membrane_currents)
 
-        def set_params(self, params: dict) -> "PointSourceModel":
+        def set_params(self, params: dict) -> PointSourceModel:
             unknown = sorted(k for k in params if not hasattr(self, k))
             if unknown:
                 raise KeyError(f"{unknown} are not parameters of {type(self).__name__}")
@@ -237,7 +237,7 @@ class IO(Jsonable):
     def parameter_children(self) -> dict:
         return {}
 
-    def set_params(self, params: dict) -> "IO":
+    def set_params(self, params: dict) -> IO:
         children = self.parameter_children()
         own: dict = {}
         nested: dict = {}
@@ -297,14 +297,14 @@ class IO(Jsonable):
     def input_space(self) -> gymnasium.Space:
         if not hasattr(self, "_input_space"):
             self._input_space = self._get_input_space()
-        return getattr(self, "_input_space")
+        return self._input_space
 
     def cell_stimulus(
         self,
         neuron_coordinates: Float[Array, "n_coords ixyz=4"],
         channel_inputs: Float[Array, "batch timestep n_channels"],
         dt: float = 1.0,
-    ) -> "Stimulus":
+    ) -> Stimulus:
         """Transforms channel inputs into neural inputs."""
         raise NotImplementedError("Please specify an IO")
 
@@ -417,7 +417,7 @@ class MEA(IO):
         neuron_coordinates: Float[Array, "n_coords ixyz=4"],
         channel_inputs: Float[Array, "batch timestep n_channels"],
         dt: float = 1.0,
-    ) -> "Stimulus":
+    ) -> Stimulus:
         """Map per-channel inputs (uA) to extracellular voltages (mV)."""
         from livn.stimulus import Stimulus
 
@@ -747,8 +747,8 @@ class LightArray(IO):
         return T
 
     def reach(
-        self, neuron_coordinates: "Float[Array, 'n_coords ixyz=4']"
-    ) -> "Float[Array, 'n_channels n_coords']":
+        self, neuron_coordinates: Float[Array, "n_coords ixyz=4"]
+    ) -> Float[Array, "n_channels n_coords"]:
         """Irradiance per unit source power at each coordinate row, per fiber."""
         return np.asarray(self.cell_induction(neuron_coordinates))
 
@@ -770,44 +770,44 @@ class ComposedIO(IO):
         return self.inputs.input_units
 
     @property
-    def channel_ids(self) -> "Int[Array, 'n_channel_ids']":
+    def channel_ids(self) -> Int[Array, "n_channel_ids"]:
         return self.outputs.channel_ids
 
     def cell_stimulus(
         self,
-        neuron_coordinates: "Float[Array, 'n_coords ixyz=4']",
-        channel_inputs: "Float[Array, 'batch timestep n_channels']",
+        neuron_coordinates: Float[Array, "n_coords ixyz=4"],
+        channel_inputs: Float[Array, "batch timestep n_channels"],
         **kwargs,
     ):
         return self.inputs.cell_stimulus(neuron_coordinates, channel_inputs, **kwargs)
 
-    def reach(self, neuron_coordinates: "Float[Array, 'n_coords ixyz=4']"):
+    def reach(self, neuron_coordinates: Float[Array, "n_coords ixyz=4"]):
         return self.inputs.reach(neuron_coordinates)
 
     def channel_recording(
         self,
-        neuron_coordinates: "Float[Array, 'n_coords ixyz=4']" | None,
-        ii: "Float[Array, 'i']",
-        *recordings: "Float[Array, '_']",
-    ) -> "tuple[dict[int, Array], ...]":
+        neuron_coordinates: Float[Array, "n_coords ixyz=4"] | None,
+        ii: Float[Array, "i"],
+        *recordings: Float[Array, "_"],
+    ) -> tuple[dict[int, Array], ...]:
         return self.outputs.channel_recording(neuron_coordinates, ii, *recordings)
 
     def source_gain(
         self,
-        distances: "Float[Array, 'n_distances cip=3']",
-    ) -> "Float[Array, 'n_channels n_recording_coords']":
+        distances: Float[Array, "n_distances cip=3"],
+    ) -> Float[Array, "n_channels n_recording_coords"]:
         return self.outputs.source_gain(distances)
 
     def potential_recording(
         self,
-        distances: "Float[Array, 'n_distances cip=3']",
-        membrane_currents: "Float[Array, 'timestep n_neurons']",
-    ) -> "Float[Array, 'timestep n_channels']":
+        distances: Float[Array, "n_distances cip=3"],
+        membrane_currents: Float[Array, "timestep n_neurons"],
+    ) -> Float[Array, "timestep n_channels"]:
         return self.outputs.potential_recording(distances, membrane_currents)
 
     def distances(
-        self, neuron_coordinates: "Float[Array, 'n_coords ixyz=4']"
-    ) -> "Float[Array, 'n_sources*n_coords cip=3']":
+        self, neuron_coordinates: Float[Array, "n_coords ixyz=4"]
+    ) -> Float[Array, "n_sources*n_coords cip=3"]:
         return self.outputs.distances(neuron_coordinates)
 
 
@@ -869,11 +869,7 @@ def electrode_array_coordinates(
         ]
     )
 
-    coordinates = np.hstack(
-        (np.arange(coordinates.shape[0]).reshape(-1, 1), coordinates)
-    )
-
-    return coordinates
+    return np.hstack((np.arange(coordinates.shape[0]).reshape(-1, 1), coordinates))
 
 
 def electrode_array_coordinates_for_area(
@@ -929,14 +925,13 @@ if _USES_JAX:
         distances = np.array(distances)
         if filter_out_of_bounds:
             distances = distances[distances[:, -1] <= boundary]
-        distances = distances.at[:, -1].set(distances[:, -1] / boundary)
-        return distances
+        return distances.at[:, -1].set(distances[:, -1] / boundary)
 
     def calculate_cell_stimulus(
         electrode_stimulus: Float[Array, "batch timestep n_channels"],
         c_induction: Float[Array, "n_inductions cip=3"],
         n_gids: int | None = None,
-        keep: "Int[Array, 'n_keep'] | None" = None,
+        keep: Int[Array, "n_keep"] | None = None,
     ) -> Float[Array, "batch timestep n_gids"]:
         """
         Calculate the stimulus strength for each cell gid and each timestep
@@ -945,7 +940,7 @@ if _USES_JAX:
         stimulus = np.asarray(electrode_stimulus)
         c_induction = np.asarray(c_induction)
 
-        batch_size, n_timesteps, n_channels = electrode_stimulus.shape
+        _batch_size, n_timesteps, n_channels = electrode_stimulus.shape
         per_coordinate = n_gids is not None
         if n_gids is None:
             # no-jit
@@ -975,9 +970,8 @@ if _USES_JAX:
 
         # reduce over gids
         # Result shape: [batch, timestep, n_gids]
-        cell_stimulus = np.einsum("btn,ng->btg", stimulus, induction)
+        return np.einsum("btn,ng->btg", stimulus, induction)
 
-        return cell_stimulus
 
 else:
 
@@ -1006,7 +1000,7 @@ else:
         cell_induction: Float[Array, "n_inductions cip=3"],
         n_gids: int | None = None,
         *args,
-        keep: "Int[Array, 'n_keep'] | None" = None,
+        keep: Int[Array, "n_keep"] | None = None,
         **kwargs,
     ) -> Float[Array, "batch timestep n_gids"]:
         """
@@ -1016,7 +1010,7 @@ else:
         electrode_stimulus = np.asarray(electrode_stimulus)
         cell_induction = np.asarray(cell_induction)
 
-        batch_size, n_timesteps, n_channels = electrode_stimulus.shape
+        _batch_size, n_timesteps, n_channels = electrode_stimulus.shape
 
         # sparse matrix for cell induction
         channel_ids = cell_induction[:, 0].astype(int)
@@ -1051,6 +1045,4 @@ else:
 
         # reduce over gids
         # Result shape: [batch, timestep, n_gids]
-        cell_stimulus = np.matmul(electrode_stimulus, induction_matrix)
-
-        return cell_stimulus
+        return np.matmul(electrode_stimulus, induction_matrix)

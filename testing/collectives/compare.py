@@ -19,12 +19,12 @@ def verify(nodeid: str, trace: dict, *, arrival_timeout: float = 15.0, report_di
 
     with tracer.paused():
         if not _everyone_arrived(nodeid, trace, arrival_timeout, report_dir):
-            return None
+            return
 
         digests = {key: _digest(records) for key, records in trace.items()}
         gathered = MPI.COMM_WORLD.allgather(digests)
         if _agree(gathered):
-            return None
+            return
 
         everything = MPI.COMM_WORLD.gather(trace, root=0)
         message = _diff(everything) if MPI.COMM_WORLD.rank == 0 else None
@@ -33,7 +33,7 @@ def verify(nodeid: str, trace: dict, *, arrival_timeout: float = 15.0, report_di
     if message:
         _dump(report_dir, nodeid, trace, reason="divergence")
         raise CollectiveAsymmetry(f"{nodeid}\n{message}")
-    return None
+    return
 
 
 def _everyone_arrived(nodeid, trace, timeout, report_dir) -> bool:

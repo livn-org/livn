@@ -1,5 +1,5 @@
-from neuron import h
 import numpy as np
+from neuron import h
 
 
 class PRN:

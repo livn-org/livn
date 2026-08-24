@@ -10,11 +10,11 @@ mpirun -n {subworld_size * num_workers + 1} python examples/distributed_workers.
 
 import numpy as np
 
+from livn.decoding import ChannelRecording
 from livn.env.distributed import DistributedEnv
 from livn.io import MEA, electrode_array_coordinates_for_area
 from livn.system import System
 from livn.types import Encoding
-from livn.decoding import ChannelRecording
 
 SYSTEM = "./systems/graphs/EI"
 

@@ -51,7 +51,7 @@ class Izhikevich(Model):
         return population
 
     def brian2_connection_synapse(self, pre_group, post_group):
-        synapse = b2.Synapses(
+        return b2.Synapses(
             pre_group,
             post_group,
             """
@@ -62,8 +62,6 @@ class Izhikevich(Model):
             """,
             on_pre="I += prefix * w * multiplier * pA",
         )
-
-        return synapse
 
     def brian2_noise_op(self, population_group, prng):
         return population_group.run_regularly(
