@@ -1138,7 +1138,6 @@ class GlifNeurons(eqx.Module):
 
         if record is None:
             columns, want_threshold = ALL_COLUMNS, True
-            want_segments = False
         else:
             record = frozenset(record)
             columns, want_threshold = _columns_for(record), "threshold" in record
@@ -1189,7 +1188,6 @@ class GlifNeurons(eqx.Module):
             n_out=n_out,
             columns=columns,
             diffusion=self.diffusion if diffusion is None else bool(diffusion),
-            segments=want_segments,
         )
 
         if want_segments and self.network is not None:
@@ -1203,7 +1201,7 @@ class GlifNeurons(eqx.Module):
             def solve_sample(y0_sample, sample_key):
                 return jax.vmap(
                     lambda p, s, y, k, f: _solve_cell(
-                        p, stim_ts, s, y, k, forced=f, **shared
+                        p, stim_ts, s, y, k, forced=f, segments=want_segments, **shared
                     ),
                     in_axes=(0, 0, 0, 0, None if forced_spikes is None else 0),
                 )(
