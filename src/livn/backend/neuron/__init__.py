@@ -481,6 +481,7 @@ class Env(EnvProtocol):
         self.duration = duration
         current_time = self.t
         self._prune_stim_streams(current_time)
+        self._stim_idle = False
 
         if stimulus is not None:
             stimulus = Stimulus.from_arg(stimulus, env=self, duration=duration)
@@ -804,7 +805,6 @@ class Env(EnvProtocol):
                     seg.e_extracellular = 0.0
                 self._stim_idle = True
             return
-        self._stim_idle = False
 
         current_time = self._stim_step * (self._dt or 0.025)
         idx = int(current_time / self._stim_dt) if self._stim_dt else 0
@@ -819,9 +819,19 @@ class Env(EnvProtocol):
             for stream in streams:
                 self._accumulate_stim_stream(stream, idx, col)
 
+        self._stim_step += 1
+
+        # skip the segment write loop when column is all zero
+        if not col.any():
+            if not self._stim_idle:
+                for seg in self._stim_segments:
+                    seg.e_extracellular = 0.0
+                self._stim_idle = True
+            return
+
+        self._stim_idle = False
         for i, seg in enumerate(self._stim_segments):
             seg.e_extracellular = float(col[i])
-        self._stim_step += 1
 
     def _accumulate_stim_stream(self, stream, idx: int, col) -> None:
         offset = idx - stream["start_step"]
