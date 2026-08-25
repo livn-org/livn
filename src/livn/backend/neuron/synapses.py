@@ -204,6 +204,9 @@ class SynapseBuilder:
         self._mech_code: dict[str, int] = {}
         self._sectype_code: dict[str, int] = {}
 
+        # (pre, post) -> the projection's destination gids, read once each
+        self._dst_index: dict[tuple[str, str], np.ndarray | None] = {}
+
     def _is_cell(self, gid: int) -> bool:
         """Whether ``gid`` is built as a cell rather than replayed from file."""
         return self._selected_gids is None or gid in self._selected_gids
@@ -531,23 +534,54 @@ class SynapseBuilder:
             }
         return out
 
+    def _destination_index(self, pre: str, post: str):
+        """The sorted destination gids a projection carries edges for."""
+        key = (pre, post)
+        if key in self._dst_index:
+            return self._dst_index[key]
+
+        import h5py
+
+        with h5py.File(self.system.files["connections"], "r") as fh:
+            group = fh.get(f"/Projections/{post}/{pre}/Edges")
+            if group is None:
+                self._dst_index[key] = None
+                return None
+            starts = group["Destination Block Index"][:].astype(np.int64)
+            block_ptr = group["Destination Block Pointer"][:].astype(np.int64)
+            n_dst = int(group["Destination Pointer"].shape[0]) - 1
+
+        counts = np.diff(block_ptr)
+
+        within = np.arange(int(counts.sum())) - np.repeat(block_ptr[:-1], counts)
+        gids = (np.repeat(starts, counts) + within)[:n_dst]
+        gids += int(self.system.population_ranges[post][0])
+
+        self._dst_index[key] = np.sort(gids)
+        return self._dst_index[key]
+
+    def _carried_by(self, pre: str, post: str, gids) -> list[int]:
+        """The subset of ``gids`` that this projection has a destination for."""
+        destinations = self._destination_index(pre, post)
+        if destinations is None or not gids:
+            return []
+        wanted = np.fromiter(gids, dtype=np.int64, count=len(gids))
+        return np.sort(wanted[np.isin(wanted, destinations)]).tolist()
+
     def _read_projection(self, pre: str, post: str, local_gids: set[int]):
-        """Yield (post_gid, (pre_gids, projection)) scoped to ``local_gids``.
+        """Yield (post_gid, (pre_gids, projection)) scoped to ``local_gids``."""
+        from neuroh5.io import scatter_read_graph_selection
 
-        Uses ``scatter_read_graph`` with ``node_allocation`` so only edges onto
-        local post cells are read and, unlike ``read_graph_selection``, does
-        not abort for gids absent from a projection.
-        """
-        from neuroh5.io import scatter_read_graph
-
-        filepath = self.system.files["connections"]
-        graph, _ = scatter_read_graph(
-            filepath,
+        graph, _ = scatter_read_graph_selection(
+            self.system.files["connections"],
             comm=self.comm,
             io_size=self._io_size,
+            # collective, so it is called for the same projections on every
+            # rank; only the (rank-local) selection differs, and an empty one
+            # is fine for a rank that owns no cells here
+            selection=self._carried_by(pre, post, local_gids),
             projections=[(pre, post)],
             namespaces=["Synapses", "Connections"],
-            node_allocation=set(local_gids),
         )
         if post in graph and pre in graph[post]:
             yield from graph[post][pre]
