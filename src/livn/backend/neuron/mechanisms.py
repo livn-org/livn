@@ -28,11 +28,23 @@ def nrnivmodl() -> str | None:
     return None
 
 
+def coreneuron_requested() -> bool:
+    """Whether ``LIVN_CORENEURON`` asks for the CoreNEURON solver."""
+    return os.environ.get("LIVN_CORENEURON", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def _is_complete(compiled: str) -> bool:
     return os.path.isfile(os.path.join(compiled, ".livn_nrnivmodl_ok"))
 
 
-def _atomic_compile(compiled: str, contents: dict[str, str]) -> None:
+def _atomic_compile(
+    compiled: str, contents: dict[str, str], coreneuron: bool = False
+) -> None:
     """Compile ``contents`` into ``compiled`` via a private temp dir + atomic rename.
 
     nrnivmodl runs in a per-process temp directory and a completion marker
@@ -42,6 +54,14 @@ def _atomic_compile(compiled: str, contents: dict[str, str]) -> None:
     nrnivmodl_exe = nrnivmodl()
     if nrnivmodl_exe is None:
         raise ModuleNotFoundError("nrnivmodl not found on PATH")
+    command = [nrnivmodl_exe] + (["-coreneuron"] if coreneuron else [])
+    environment = dict(os.environ)
+    if coreneuron:
+        # build with gcc: the CoreNEURON makefile links GNU's -lgomp, and a
+        # clang driver reaches for LLVM's -lomp instead, which is a separate
+        # package and usually absent
+        environment.setdefault("CXX", "g++")
+        environment.setdefault("CC", "gcc")
     parent = os.path.dirname(compiled)
     os.makedirs(parent, exist_ok=True)
     tmp = tempfile.mkdtemp(prefix=os.path.basename(compiled) + ".tmp.", dir=parent)
@@ -49,7 +69,7 @@ def _atomic_compile(compiled: str, contents: dict[str, str]) -> None:
         for m, data in contents.items():
             with open(os.path.join(tmp, os.path.basename(m)), "w") as f:
                 f.write(data)
-        subprocess.run([nrnivmodl_exe], cwd=tmp, check=True)
+        subprocess.run(command, cwd=tmp, check=True, env=environment)
         open(os.path.join(tmp, ".livn_nrnivmodl_ok"), "w").close()
         try:
             os.rename(tmp, compiled)  # atomic publish
@@ -61,7 +81,9 @@ def _atomic_compile(compiled: str, contents: dict[str, str]) -> None:
             shutil.rmtree(tmp, ignore_errors=True)
 
 
-def compile_mechanisms(directory: str, force: bool = False) -> str:
+def compile_mechanisms(
+    directory: str, force: bool = False, coreneuron: bool | None = None
+) -> str:
     """Compile the ``.mod`` files under ``directory`` (cached by content hash).
 
     Returns the directory that ``neuron.load_mechanisms`` should be pointed at.
@@ -104,6 +126,11 @@ def compile_mechanisms(directory: str, force: bool = False) -> str:
             collisions,
         )
 
+    if coreneuron is None:
+        coreneuron = coreneuron_requested()
+
+    digest.update(b"coreneuron" if coreneuron else b"neuron")
+
     compiled = os.path.join(src, "compiled", digest.hexdigest())
 
     if force and os.path.isdir(compiled):
@@ -119,14 +146,28 @@ def compile_mechanisms(directory: str, force: bool = False) -> str:
             shutil.rmtree(aside, ignore_errors=True)
 
     if not (os.path.isdir(compiled) and _is_complete(compiled)):
-        _atomic_compile(compiled, contents)
+        _atomic_compile(compiled, contents, coreneuron=coreneuron)
 
     return compiled
 
 
 def load_mechanisms(directory: str) -> str:
     """Compile (if needed) and load a mechanism directory into NEURON once."""
-    compiled = compile_mechanisms(directory)
+    coreneuron = coreneuron_requested()
+    compiled = compile_mechanisms(directory, coreneuron=coreneuron)
+    if coreneuron:
+        # NEURON looks for the CoreNEURON mechanism library on CORENEURONLIB
+        # and otherwise falls back to the one bundled with the install, which
+        # holds only the standard mechanisms
+        library = os.path.join(compiled, "x86_64", "libcorenrnmech.so")
+        if os.path.isfile(library):
+            os.environ["CORENEURONLIB"] = library
+        else:
+            logger.warning(
+                "no libcorenrnmech.so under %s; CoreNEURON will fall back to "
+                "the bundled library and will not find this model's mechanisms",
+                compiled,
+            )
     if compiled in _loaded:
         return compiled
 
@@ -148,6 +189,11 @@ def configure(mechanisms_directory: str | None = None):
 
     if mechanisms_directory is not None:
         load_mechanisms(mechanisms_directory)
+
+    if coreneuron_requested():
+        from neuron import coreneuron
+
+        coreneuron.enable = True
 
     if _hoc_configured:
         return h
