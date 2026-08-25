@@ -1640,15 +1640,7 @@ class Env(EnvProtocol):
         n_trials: int = 1,
         equilibration_duration: float = 250.0,
     ) -> Self:
-        """Play spike trains read from an H5 file into external input sources.
-
-        Reads ``attribute`` from ``namespace`` for each input population and
-        plays the trains (shifted by ``equilibration_duration + onset``) into the
-        matching VecStim sources. Only sources wired into the local network
-        (``input_gids``) are populated, so this composes with ``selection()``.
-        """
-        from neuroh5.io import scatter_read_cell_attribute_selection
-
+        """Play spike trains read from an H5 file into external input sources."""
         local = set(self._input_vecstims.keys())
 
         by_pop: dict[str, list[int]] = defaultdict(list)
@@ -1660,38 +1652,81 @@ class Env(EnvProtocol):
                     break
 
         shift = float(equilibration_duration) + float(onset)
-        # Every rank must call the (collective) scatter read for the same set of
-        # populations in the same order, even if it owns no gids there.
         syn_cfg = self.system.connections_config["synapses"]
         input_pops = sorted({pre for post in syn_cfg for pre in syn_cfg[post]})
         for pop in input_pops:
             gids = by_pop.get(pop, [])
+            if not gids:
+                continue
             try:
-                it, info = scatter_read_cell_attribute_selection(
-                    filepath,
-                    pop,
-                    sorted(gids),
-                    namespace=namespace,
-                    mask={attribute},
-                    comm=self.comm,
-                    io_size=io_size,
-                    return_type="tuple",
+                trains = self._read_spike_trains(
+                    filepath, namespace, attribute, pop, gids, int(ranges[pop][0])
                 )
             except Exception:
                 logger.debug(
                     "no spike input for %s in %s", pop, filepath, exc_info=True
                 )
                 continue
-            attr_idx = info.get(attribute)
-            if attr_idx is None:
-                continue
-            spikes = {}
-            for gid, data in it:
-                train = np.asarray(data[attr_idx], dtype=np.float64)
-                if train.size:
-                    spikes[int(gid)] = train + shift
-            self.play_input_spikes(spikes)
+            self.play_input_spikes(
+                {gid: train + shift for gid, train in trains.items()}
+            )
         return self
+
+    def _read_spike_trains(
+        self,
+        filepath: str,
+        namespace: str,
+        attribute: str,
+        population: str,
+        gids,
+        first_gid: int,
+    ) -> dict[int, np.ndarray]:
+        """``gid -> spike times`` for ``gids`` of one population."""
+        import h5py
+
+        with h5py.File(filepath, "r") as fh:
+            group = fh["Populations"][population][namespace][attribute]
+            pointer = group["Attribute Pointer"][:].astype(np.int64)
+            # written interleaved by writing rank, so not in ascending order
+            index = group["Cell Index"][:].astype(np.int64)
+            values = group["Attribute Value"]
+            chunk = (values.chunks or (1,))[0]
+
+            order = np.argsort(index)
+            ordered = index[order]
+            wanted = np.asarray(sorted(gids), dtype=np.int64) - first_gid
+            at = np.searchsorted(ordered, wanted)
+            found = (at < ordered.size) & (
+                ordered[np.minimum(at, ordered.size - 1)] == wanted
+            )
+            rows = order[at[found]]
+            start, stop = pointer[rows], pointer[rows + 1]
+            gid_of = wanted[found] + first_gid
+
+            keep = stop > start  # cells that never fire own no values
+            start, stop, gid_of = start[keep], stop[keep], gid_of[keep]
+            if not start.size:
+                return {}
+
+            # walk the wanted spans in file order, cutting a new read wherever
+            # the gap from everything seen so far exceeds one chunk
+            by_offset = np.argsort(start)
+            start, stop, gid_of = start[by_offset], stop[by_offset], gid_of[by_offset]
+            reach = np.maximum.accumulate(stop)
+            cut = np.flatnonzero(start[1:] - reach[:-1] > chunk) + 1
+            run_first = np.concatenate(([0], cut))
+            run_last = np.concatenate((cut, [start.size]))
+
+            trains: dict[int, np.ndarray] = {}
+            for lo, hi in zip(run_first, run_last, strict=True):
+                base = int(start[lo])
+                block = values[base : int(reach[hi - 1])]
+                for i in range(lo, hi):
+                    # astype, not asarray: a view would hold the whole run alive
+                    trains[int(gid_of[i])] = block[
+                        int(start[i]) - base : int(stop[i]) - base
+                    ].astype(np.float64)
+            return trains
 
     def _unregister_stim_callback(self) -> None:
         if self._stim_registered:
