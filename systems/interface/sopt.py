@@ -14,6 +14,9 @@ from pydantic import Field
 from livn.env import Env
 from livn.utils import import_instance
 
+# NEURON compatible rank order
+os.environ.setdefault("DISTWQ_CONTROLLER_RANK", "-1")
+
 _, Dmosopt = (
     Project(os.path.dirname(os.path.dirname(__file__)))
     .provider()

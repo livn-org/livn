@@ -1,9 +1,11 @@
 import json
+import math
 import os
 from typing import Literal
 
 import pandas as pd
 from machinable import Interface, get
+from machinable.config import Field as ConfigField
 from machinable.config import to_dict
 from pydantic import BaseModel, ConfigDict
 
@@ -85,6 +87,224 @@ def retained_in_degree(system, selection) -> float | None:
     return float(ratio[kept].mean())
 
 
+def _env_float(name: str) -> float | None:
+    value = os.environ.get(name)
+    return float(value) if value not in (None, "") else None
+
+
+def node_memory_gib() -> float:
+    """Memory a node is assumed to have, in GiB.
+
+    ``LIVN_WORKER_MEMORY_MAX`` states it for a cluster whose nodes are not this
+    machine; otherwise this machine's own RAM, which is right for a local run
+    and the only figure available without asking the scheduler.
+    """
+    stated = _env_float("LIVN_WORKER_MEMORY_MAX")
+    if stated is not None:
+        return stated
+    return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 1024**3
+
+
+def node_cores() -> int:
+    """Ranks a node can run, from the scheduler's view of it if there is one."""
+    for name in ("LIVN_CORES_PER_NODE", "SLURM_CPUS_ON_NODE"):
+        if os.environ.get(name):
+            return int(os.environ[name])
+    return os.cpu_count() or 1
+
+
+def _divisors(n: int):
+    """Divisors of ``n``, ascending."""
+    small, large = [], []
+    i = 1
+    while i * i <= n:
+        if n % i == 0:
+            small.append(i)
+            if i != n // i:
+                large.append(n // i)
+        i += 1
+    return small + large[::-1]
+
+
+def _outward(wanted: int):
+    """0, -1, +1, -2, +2 ... far enough to reach any worker count from 1 up."""
+    yield 0
+    for step in range(1, wanted + 1):
+        yield -step
+        yield step
+
+
+WORKER_SLACK = 64
+
+
+def _layout(ranks_per_worker, ranks_per_node_max, workers_wanted, max_nodes):
+    """``(nodes, ranks_per_node, workers, total)`` for one ranks-per-worker."""
+
+    def search(reach):
+        best = None
+        for offset in _outward(reach):
+            workers = workers_wanted + offset
+            if workers < 1:
+                continue
+            total = workers * ranks_per_worker + 1
+            for nodes in _divisors(total):
+                if max_nodes is not None and nodes > max_nodes:
+                    break  # divisors ascend, so every later one is over too
+                if total // nodes <= ranks_per_node_max:
+                    key = (nodes, abs(offset))
+                    if best is None or key < best[0]:
+                        best = (key, (nodes, total // nodes, workers, total))
+                    break  # smallest node count for this worker count
+        return best[1] if best else None
+
+    found = search(max(1, workers_wanted // 10)) or search(
+        min(workers_wanted, WORKER_SLACK)
+    )
+    if found is not None:
+        return found
+
+    if max_nodes is None:
+        return None
+
+    best = None
+    for nodes in range(1, max_nodes + 1):
+        if ranks_per_worker == 1:
+            ranks_per_node = ranks_per_node_max
+        else:
+            if math.gcd(nodes, ranks_per_worker) != 1:
+                continue  # no ranks_per_node can satisfy the congruence
+            residue = pow(nodes, -1, ranks_per_worker)
+            ranks_per_node = (
+                residue
+                + ((ranks_per_node_max - residue) // ranks_per_worker)
+                * ranks_per_worker
+            )
+            if not 1 <= ranks_per_node <= ranks_per_node_max:
+                continue
+        total = nodes * ranks_per_node
+        workers = (total - 1) // ranks_per_worker
+        if workers >= 1 and (best is None or workers > best[2]):
+            best = (nodes, ranks_per_node, workers, total)
+    return best
+
+
+# Ranks one worker may span
+MAX_RANKS_PER_WORKER = 4096
+
+
+def plan_execution(
+    worker_memory,
+    workers_wanted: int,
+    node_gib: float | None = None,
+    cores_per_node: int | None = None,
+    max_nodes: int | None = None,
+    headroom: float = 0.9,
+    min_ranks_per_worker: int = 1,
+) -> dict:
+    """Ranks per worker, ranks per node and nodes for a run.
+
+    ``worker_memory(ranks)`` is what one worker of that many ranks costs, in
+    bytes. Two constraints shape the answer and neither is negotiable:
+
+    - **A rank's share must fit its slice of the node.** Ranks per worker is the
+      fewest that bring it under `node / cores`, since the network divides
+      between a worker's ranks while the per-process floor does not, but never
+      fewer than `min_ranks_per_worker`: memory is the right rule only for a
+      target that scales sublinearly with ranks, and one that does better says
+      so rather than being cut to a single rank it does not want.
+    - **distwq wants `(total ranks - 1) % ranks_per_worker == 0`**, the odd rank
+      being the controller, and it refuses to launch otherwise. Slurm lays out
+      `nodes x ranks_per_node` uniformly, so the two have to be searched
+      together rather than derived.
+
+    Workers past `workers_wanted` (an epoch's samples) would idle, so the search
+    aims at that count and prefers fewer nodes, then denser ones, on a tie.
+    `max_nodes=1` is what a local mpi run wants, which has only this one.
+
+    `headroom` is what a node is planned to, not filled to: the memory model
+    behind `worker_memory` is fitted, and a node planned to the last byte swaps.
+    """
+    node_bytes = (node_gib if node_gib is not None else node_memory_gib()) * 1024**3
+    usable = node_bytes * headroom
+    cores = cores_per_node if cores_per_node is not None else node_cores()
+    per_rank_budget = usable / cores
+
+    def share(ranks: int) -> float:
+        return worker_memory(ranks) / ranks
+
+    high = 1
+    while share(high) > per_rank_budget:
+        nxt = high * 2
+        if share(nxt) > share(high) * 0.999:  # converged, and still over
+            raise ValueError(
+                f"a rank costs {share(nxt) / 1024**3:.2f} GiB however many share "
+                f"the network, over the {per_rank_budget / 1024**3:.2f} GiB a "
+                f"core gets on a {node_bytes / 1024**3:.0f} GiB / {cores} core "
+                "node; state a bigger LIVN_WORKER_MEMORY_MAX, fewer "
+                "LIVN_CORES_PER_NODE, or a smaller selection"
+            )
+        high = nxt
+    low = high // 2  # known not to fit (or 0 when one rank was enough)
+    while low + 1 < high:
+        mid = (low + high) // 2
+        if share(mid) > per_rank_budget:
+            low = mid
+        else:
+            high = mid
+    ranks_per_worker = max(high, min_ranks_per_worker)
+
+    cap = min(MAX_RANKS_PER_WORKER, (max_nodes or MAX_RANKS_PER_WORKER) * cores)
+    if ranks_per_worker > cap:
+        raise ValueError(
+            f"one worker would need {ranks_per_worker} ranks to bring a rank's "
+            f"share under the {per_rank_budget / 1024**3:.2f} GiB a core gets "
+            f"on a {node_bytes / 1024**3:.0f} GiB / {cores} core node, past the "
+            f"{cap} this sizes for; the selection is too big for this cluster"
+        )
+
+    # Ranks per worker is a free variable too, not just the minimum that fits: a
+    # capped cluster often cannot tile the minimum into whole nodes but can tile
+    # one or two more, at the cost of an extra floor each. Try upward from the
+    # cheapest.
+    best = None
+    for candidate in range(ranks_per_worker, cap + 1):
+        ranks_per_node_max = min(cores, int(usable // share(candidate)))
+        if ranks_per_node_max < 1:
+            continue
+        best = _layout(candidate, ranks_per_node_max, workers_wanted, max_nodes)
+        if best is not None:
+            ranks_per_worker = candidate
+            break
+        if max_nodes is None:
+            break  # unbounded always tiles at `nodes = total, ranks_per_node = 1`
+
+    if best is None:
+        raise ValueError(
+            f"no layout of {'any number of' if max_nodes is None else max_nodes} "
+            f"node(s) x at most {cores} ranks gives a whole number of workers "
+            f"plus a controller; a worker needs "
+            f"{worker_memory(ranks_per_worker) / 1024**3:.1f} GiB over "
+            f"{ranks_per_worker} rank(s)"
+        )
+
+    per_rank = share(ranks_per_worker)
+    ranks_per_node_max = min(cores, max(1, int(usable // per_rank)))
+    nodes, ranks_per_node, workers, total = best
+    return {
+        "ranks_per_worker": ranks_per_worker,
+        "ranks_per_node": ranks_per_node,
+        "nodes": nodes,
+        "workers": workers,
+        "workers_wanted": workers_wanted,
+        "total_ranks": total,
+        "node_gib": node_bytes / 1024**3,
+        "cores_per_node": cores,
+        "worker_gib": worker_memory(ranks_per_worker) / 1024**3,
+        "node_used_gib": ranks_per_node * per_rank / 1024**3,
+        "headroom": headroom,
+    }
+
+
 class Tune(Interface):
     class Config(BaseModel):
         model_config = ConfigDict(extra="forbid")
@@ -95,6 +315,10 @@ class Tune(Interface):
         target: ObjSpec = "systems.targets.EI.Culture"
         trials: int = 1
         nprocs_per_worker: int = 1
+        worker_memory_max: float | None = ConfigField(None, identifying=False)
+        cores_per_node: int | None = ConfigField(None, identifying=False)
+        max_nodes: int | None = ConfigField(None, identifying=False)
+        autosize: bool = ConfigField(False, identifying=False)
         n_initial: int = 100
         population_size: int = 100
         num_generations: int = 10
@@ -354,14 +578,18 @@ class Tune(Interface):
             **self.version_rcsd(short_term_depression=bool(short_term_depression)),
             "system": "./systems/graphs/E",
             "n_initial": 90,
+            "autosize": True,
         }
 
     def version_EI(self):
         return {
             **self.version_rcsd(short_term_depression=True),
             "system": "./systems/graphs/EI",
+            # kept as the fallback for autosize=False; `Culture` states the same
+            # 2 as its floor, so sizing cannot go under it either
             "nprocs_per_worker": 2,
             "n_initial": 90,
+            "autosize": True,
         }
 
     def version_motoneuron(self):
@@ -381,15 +609,23 @@ class Tune(Interface):
         file: str = "./systems/graphs/CA1/tuning.json",
         problem: str = "miv",
         selection: str | None = None,
+        worker_memory_max: float | None = None,
+        cores_per_node: int | None = None,
+        max_nodes: int | None = None,
     ):
         options = {"config": file, "problem": problem}
         if selection is not None:
             options["selection"] = selection
+
         return {
             "system": "./systems/graphs/CA1",
             "model": "livn.models.ca1.PinskyRinzel",
             "n_initial": 2,
             "n_epochs": 5,
+            "autosize": True,
+            "worker_memory_max": worker_memory_max,
+            "cores_per_node": cores_per_node,
+            "max_nodes": max_nodes,
             "target": ["systems.targets.CA1.CA1", options],
         }
 
@@ -409,34 +645,153 @@ class Tune(Interface):
         )
         return target, model
 
-    def launch(self):
-        target, model = self._target_and_model()
+    def _plan(self, target=None, model=None) -> dict | None:
+        if not self.config.autosize:
+            return None
 
+        if target is None or model is None:
+            target, model = self._target_and_model()
+        worker_memory = getattr(target, "worker_memory", None)
+        if worker_memory is None:
+            return None
+
+        sopt = get("interface.sopt", self._sopt_config(target, model))
+
+        selection = getattr(target, "selection_name", None) or self.config.selection
+        plan = plan_execution(
+            lambda ranks: worker_memory(self.config.system, ranks, selection),
+            sopt.num_evals_per_epoch,
+            node_gib=self.config.worker_memory_max,
+            cores_per_node=self.config.cores_per_node,
+            max_nodes=self.config.max_nodes,
+            min_ranks_per_worker=getattr(target, "MIN_RANKS_PER_WORKER", 1),
+        )
+        plan["selection"] = selection
+        plan["space"] = sopt.num_parameters
+        plan["initial_evals"] = sopt.num_initial_samples
+        plan["total_evals"] = sopt.num_evals_total
+        plan["floor"] = getattr(target, "MIN_RANKS_PER_WORKER", 1)
+        return plan
+
+    def sizing(self):
+        """Preview the execution layout without launching anything.
+
+            livn systems tune '~ca1(selection="e3")' --sizing
+
+        `LIVN_WORKER_MEMORY_MAX` (GiB per node) and `LIVN_CORES_PER_NODE`
+        describe the cluster you mean; without them this machine is assumed.
+        """
+        target, model = self._target_and_model()
+        plan = self._plan(target, model)
+        if plan is None:
+            why = (
+                "the target cannot price its own network"
+                if self.config.autosize
+                else "autosize=False"
+            )
+            print(
+                f"\n  autosize      off ({why}) -- nprocs_per_worker="
+                f"{self.config.nprocs_per_worker}, and the rank count is "
+                "whatever the caller passes\n"
+            )
+            return
+
+        print(f"\n  system        {self.config.system}")
+        print(f"  selection     {plan['selection'] or 'none'}")
+        print(
+            f"  node          {plan['node_gib']:.1f} GiB x "
+            f"{plan['cores_per_node']} cores, planned to "
+            f"{plan['headroom']:.0%}"
+            + (
+                ""
+                if self.config.worker_memory_max
+                or os.environ.get("LIVN_WORKER_MEMORY_MAX")
+                else "  (this machine -- state LIVN_WORKER_MEMORY_MAX for a cluster)"
+            )
+        )
+        print(
+            f"  worker        {plan['worker_gib']:.1f} GiB over "
+            f"{plan['ranks_per_worker']} rank(s)"
+            + (
+                f"  (target asks for at least {plan['floor']})"
+                if plan["floor"] > 1
+                else ""
+            )
+        )
+        print(
+            f"  layout        {plan['nodes']} node(s) x {plan['ranks_per_node']} "
+            f"rank(s) = {plan['total_ranks']} ranks "
+            f"({plan['node_used_gib']:.1f} GiB used per node)"
+        )
+        print(
+            f"  workers       {plan['workers']} for "
+            f"{plan['workers_wanted']} samples per epoch"
+            + (
+                ""
+                if plan["workers"] >= plan["workers_wanted"]
+                else "  -- epochs will queue"
+            )
+        )
+        print(
+            f"  evaluations   {plan['initial_evals']} in the first epoch "
+            f"({plan['space']} dims x n_initial={self.config.n_initial}), then "
+            f"{plan['workers_wanted']} per epoch x {self.config.n_epochs - 1} "
+            f"= {plan['total_evals']} in all"
+        )
+        if plan["nodes"] == 1:
+            print(
+                "\n  launch with\n"
+                f'    livn systems mpi tune ... **resources=\'{{"-n": '
+                f"{plan['total_ranks']}}}' --launch\n"
+            )
+        else:
+            print(
+                "\n  launch with\n"
+                "    livn systems slurm tune ... --launch\n"
+                "  which takes --nodes and --ntasks-per-node from this plan. A "
+                "local mpi run\n  has one node; pass max_nodes=1 to size for it.\n"
+            )
+
+        return
+
+    def _sopt_config(self, target, model, layout: dict | None = None) -> dict:
         surrogate_config = {}
         for k, v in self.config.surrogate.items():
             surrogate_config["surrogate_" + k] = v
 
-        get(
-            "interface.sopt",
-            {
-                "system": self.config.system,
-                "dopt_params": {
-                    "space": target.search_space(model),
-                    "obj_fun_init_args": {
-                        "model": self.config.model,
-                        "target": self.config.target,
-                        "trials": self.config.trials,
-                        "selection": self.config.selection,
-                    },
-                    "n_epochs": self.config.n_epochs,
-                    "n_initial": self.config.n_initial,
-                    "population_size": self.config.population_size,
-                    "num_generations": self.config.num_generations,
-                    **surrogate_config,
+        return {
+            "system": self.config.system,
+            "dopt_params": {
+                "space": target.search_space(model),
+                "obj_fun_init_args": {
+                    "model": self.config.model,
+                    "target": self.config.target,
+                    "trials": self.config.trials,
+                    "selection": self.config.selection,
                 },
-                "nprocs_per_worker": self.config.nprocs_per_worker,
+                "n_epochs": self.config.n_epochs,
+                "n_initial": self.config.n_initial,
+                "population_size": self.config.population_size,
+                "num_generations": self.config.num_generations,
+                **surrogate_config,
             },
-        ).launch()
+            **(layout or {}),
+        }
+
+    def launch(self):
+        target, model = self._target_and_model()
+        plan = self._plan(target, model)
+        layout = (
+            {
+                "nprocs_per_worker": plan["ranks_per_worker"],
+                "nodes": str(plan["nodes"]),
+                "ranks": plan["ranks_per_node"],
+            }
+            if plan
+            else {"nprocs_per_worker": self.config.nprocs_per_worker}
+        )
+
+        get("interface.sopt", self._sopt_config(target, model, layout)).launch()
 
         return self
 

@@ -173,6 +173,8 @@ def threshold_miss(measured: dict, simulated: dict) -> float:
 
 
 class Culture(TuningTargets):
+    MIN_RANKS_PER_WORKER = 2
+
     MAX_NEURON_RATE_HZ = 50.0
     MIN_MEAN_RATE_HZ = 0.2
     MAX_MEAN_RATE_HZ = 15.0

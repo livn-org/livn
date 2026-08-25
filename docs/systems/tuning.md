@@ -459,6 +459,51 @@ livn systems slurm tune \
 
 The execution module handles MPI launch commands, job submission, and resource allocation automatically. See the [machinable execution docs](https://machinable.org/guide/execution) for details.
 
+### Sizing the run automatically
+
+Picking `nprocs_per_worker`, `--nodes` and `--ntasks-per-node` by hand means knowing how much memory a worker needs, which depends on how many synapses the selection wires. `autosize` works it out for `~ca1`, `~EI` and `~E_only` automatically and you can set `autosize=True` to use it elsewhere.
+
+To preview it before committing to a job:
+
+```sh
+livn systems tune '~ca1(selection="e3")' --sizing
+```
+
+```
+  system        ./systems/graphs/CA1
+  selection     e3
+  node          128.0 GiB x 56 cores, planned to 90%
+  worker        26.1 GiB over 13 rank(s)
+  layout        22 node(s) x 55 rank(s) = 1210 ranks (110.6 GiB used per node)
+  workers       93 for 100 samples per epoch  -- epochs will queue
+  evaluations   284 in the first epoch (142 dims x n_initial=2), then 100 per epoch x 4 = 684 in all
+```
+
+To override the defaults, use:
+
+```sh
+LIVN_WORKER_MEMORY_MAX=128 LIVN_CORES_PER_NODE=56 livn systems slurm tune ~ca1 --launch
+```
+
+or `worker_memory_max` and `cores_per_node`, and `max_nodes` in code, as well as:
+
+```python
+class MyCulture(Culture):
+    MIN_RANKS_PER_WORKER = 2  # sizing may add ranks, not go below this
+```
+
+- Ranks per worker — the fewest that bring a rank's share of the network under the node's per-core memory.
+- Nodes — enough that the worker count reaches the samples an epoch draws. Workers past that would idle.
+- Ranks per node — as dense as the node's memory and cores allow, subject to `(total ranks − 1)` dividing by ranks per worker, which is what the controller-plus-workers layout requires.
+
+::: warning
+`ranks` means total ranks to the `mpi` module (`-n`) and ranks per node to `slurm` (`--ntasks-per-node`). The two agree on a single node, so for a local `mpi` run pass `max_nodes=1` and the printed `-n` is correct:
+
+```sh
+livn systems tune '~ca1(selection="e1", max_nodes=1)' --sizing
+```
+:::
+
 ### Via Python
 
 ```python
@@ -482,7 +527,11 @@ tuner.launch()
 | `model` | `None` | Model class (None = system default) |
 | `target` | `systems.targets.EI.Culture` | Dotted path to a `TuningTargets` subclass, or `[path, options]` |
 | `trials` | `1` | Simulation trials per evaluation |
-| `nprocs_per_worker` | `1` | MPI ranks per simulation worker |
+| `nprocs_per_worker` | `1` | MPI ranks per simulation worker (ignored when `autosize` is on) |
+| `autosize` | `False` | Size ranks and nodes from the selection; see [above](#sizing-the-run-automatically) |
+| `worker_memory_max` | `None` | GiB per node, else `LIVN_WORKER_MEMORY_MAX`, else this machine |
+| `cores_per_node` | `None` | Ranks a node can run, else `LIVN_CORES_PER_NODE` / `SLURM_CPUS_ON_NODE` / this machine |
+| `max_nodes` | `None` | Cap on the node count; `1` for a local `mpi` run |
 | `n_initial` | `100` | Initial samples **per search dimension** |
 | `population_size` | `100` | Evolutionary population |
 | `num_generations` | `10` | Generations per epoch |

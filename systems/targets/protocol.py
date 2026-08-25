@@ -1,8 +1,87 @@
 import math
 from typing import Any
 
+# Memory a wired NetCon costs
+NETCON_BYTES = 1686
+RANK_FLOOR_BYTES = 257 * 1024**2
+
+_NETCON_CACHE: dict[tuple[str, str | None], float] = {}
+
+
+def _active_mechanisms(projection: dict) -> int:
+    blocks = projection.get("mechanisms") or {}
+    return max(
+        (
+            sum(1 for m in mechanisms.values() if m.get("tau_decay") is not None)
+            for mechanisms in blocks.values()
+            if isinstance(mechanisms, dict)
+        ),
+        default=0,
+    )
+
+
+def wiring_profile(system) -> dict[str, tuple[float, int]]:
+    import h5py
+
+    from livn.system import resolve
+
+    resolved = resolve(system)
+    connections = resolved.connections_config["synapses"]
+
+    profile: dict[str, tuple[float, int]] = {}
+    with h5py.File(resolved.files["connections"], "r") as fh:
+        projections = fh.get("Projections")
+        if projections is None:
+            return profile
+        for post, sources in connections.items():
+            if post not in projections:
+                continue
+            netcons, cells = 0, 0
+            for pre in sources:
+                if pre not in projections[post]:
+                    continue
+                edges = projections[post][pre]["Edges"]
+                netcons += edges["Source Index"].shape[0] * _active_mechanisms(
+                    connections[post][pre]
+                )
+                cells = max(cells, edges["Destination Pointer"].shape[0] - 1)
+            if cells:
+                profile[post] = (netcons / cells, cells)
+    return profile
+
+
+def estimated_netcons(system, selection: str | None = None) -> float:
+    from livn.system import resolve
+
+    key = (repr(system), selection)
+    if key in _NETCON_CACHE:  # sizing asks repeatedly while it searches a layout
+        return _NETCON_CACHE[key]
+
+    profile = wiring_profile(system)
+    if selection is None:
+        counts = {pop: cells for pop, (_, cells) in profile.items()}
+    else:
+        document = resolve(system).selection_document(selection)
+        counts = {pop: len(gids) for pop, gids in document["gids"].items()}
+
+    _NETCON_CACHE[key] = sum(
+        counts.get(pop, 0) * per_cell for pop, (per_cell, _) in profile.items()
+    )
+    return _NETCON_CACHE[key]
+
 
 class TuningTargets:
+    MIN_RANKS_PER_WORKER = 1
+
+    def worker_memory(
+        self, system, ranks: int = 1, selection: str | None = None
+    ) -> float:
+        if selection is None:
+            selection = getattr(self, "selection_name", None)
+        return ranks * RANK_FLOOR_BYTES + NETCON_BYTES * estimated_netcons(
+            system, selection
+        )
+
     def _space_metadata(self, model=None) -> tuple:
         raw_space = {
             **self._weight_space(model),
