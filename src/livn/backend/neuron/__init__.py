@@ -199,6 +199,9 @@ class Env(EnvProtocol):
         self._stim_j_clamp_a = np.empty(0, dtype=np.int64)
         self._stim_j_clamp_b = np.empty(0, dtype=np.int64)
         self._stim_j_inv_r = np.empty(0, dtype=np.float64)
+        self._stim_mode: str | None = None
+        self._stim_plays: list = []
+        self._stim_play_times = None
         self._stim_block: np.ndarray | None = None
         self._stim_bounds: tuple[float, float] | None = None
         self._stim_streams: list[dict] = []
@@ -443,9 +446,20 @@ class Env(EnvProtocol):
             self._spike_gids.add(gid)
         return self
 
+    def _refuse_under_coreneuron(self, what: str) -> None:
+        if mechanisms.coreneuron_requested():
+            raise RuntimeError(
+                f"{what} cannot be recorded under CoreNEURON: it runs the solve "
+                "in its own memory and does not carry per-timestep range "
+                "recordings back, so the trace would come back as a single "
+                "sample of the initial state with nothing to say it had. Spike "
+                "recording does come back. Unset LIVN_CORENEURON to record it."
+            )
+
     def _record_voltage(
         self, population: str, dt: float, gids=None, sections=None
     ) -> Self:
+        self._refuse_under_coreneuron("voltage")
         previous = self.v_dt.get(population)
         if previous is not None and abs(previous - dt) > 1e-12 and self.v_recs:
             raise ValueError(
@@ -471,6 +485,7 @@ class Env(EnvProtocol):
         return self
 
     def _record_membrane_current(self, population: str, dt: float) -> Self:
+        self._refuse_under_coreneuron("membrane current")
         cells = self.cells.get(population, {})
         if not cells:
             return self  # enabling fast_imem with no sections asserts in psolve
@@ -750,10 +765,42 @@ class Env(EnvProtocol):
         if not rows:
             return
 
+        if self._stim_mode is None:
+            if not mechanisms.coreneuron_requested():
+                self._stim_mode = "callback"
+            elif stimulus.deferred or self.t > 0:
+                raise ValueError(
+                    "CoreNEURON runs the solve without Python, so a stimulus "
+                    "has to be handed over in full before the first run: a "
+                    "play armed later never fires, and a streamed command is "
+                    "not rendered yet. This one is "
+                    + (
+                        "streamed. "
+                        if stimulus.deferred
+                        else "arriving after "
+                        f"the simulation started (t={self.t:g} ms). "
+                    )
+                    + "Install the whole command on the first run, or drop "
+                    "LIVN_CORENEURON to deliver it from the callback."
+                )
+            else:
+                self._stim_mode = "play"
+        elif self._stim_mode == "play" and stimulus.deferred:
+            raise ValueError(
+                "this simulation is already delivering a held stimulus with "
+                "Vector.play, which owns the clamp amplitudes, so a streamed "
+                "one cannot be added on top of it. Call clear() first, or hand "
+                "the streamed command over before the first run"
+            )
+
         if stimulus.deferred:
             self._install_stim_stream(stimulus, rows, columns, start_step)
         else:
             self._install_stim_block(stimulus, rows, columns, start_step)
+
+        if self._stim_mode == "play":
+            self._refresh_stim_plays()
+            return
 
         if not self._stim_registered:
             _register_callback(self._h.cvode, self._stim_cb)
@@ -824,6 +871,51 @@ class Env(EnvProtocol):
             self._stim_j_clamp_a = j[:, 2].astype(np.int64)
             self._stim_j_clamp_b = j[:, 3].astype(np.int64)
             self._stim_j_inv_r = j[:, 4]
+
+    def _stim_currents(self, block) -> np.ndarray:
+        currents = np.zeros((len(self._stim_clamps), block.shape[1]), dtype=np.float64)
+        if len(self._stim_j_inv_r):
+            delta = (
+                block[self._stim_j_row_b] - block[self._stim_j_row_a]
+            ) * self._stim_j_inv_r[:, None]
+            np.add.at(currents, self._stim_j_clamp_a, delta)
+            np.add.at(currents, self._stim_j_clamp_b, -delta)
+        return currents
+
+    def _refresh_stim_plays(self) -> None:
+        block = self._stim_block
+        if block is None or not self._stim_clamps:
+            return
+        h = self._h
+        times, currents = self._stim_play_arrays(block)
+
+        if not self._stim_plays:
+            self._stim_play_times = h.Vector(times)
+            for row, clamp in zip(currents, self._stim_clamps, strict=True):
+                vector = h.Vector(row)
+                vector.play(clamp._ref_amp, self._stim_play_times, True)
+                self._stim_plays.append(vector)
+            return
+
+        self._stim_play_times.from_python(times)
+        for row, vector in zip(currents, self._stim_plays, strict=True):
+            vector.from_python(row)
+
+    def _stim_play_arrays(self, block):
+        steps = int(block.shape[1])
+        stim_dt = float(self._stim_dt or 1.0)
+        currents = self._stim_currents(block)
+        sample_times = np.arange(steps, dtype=np.float64) * stim_dt
+
+        dt = float(self._dt or 0.025)
+        if stim_dt <= dt or steps < 2:
+            return sample_times, currents
+
+        times = np.empty(2 * steps, dtype=np.float64)
+        times[0::2] = sample_times + dt
+        times[1::2] = sample_times + stim_dt
+        held = np.repeat(currents, 2, axis=1)
+        return times, held
 
     def _apply_stim_column(self, col) -> None:
         """Drive the clamps from a field column, in mV.
@@ -1614,6 +1706,9 @@ class Env(EnvProtocol):
         self._stim_j_clamp_a = np.empty(0, dtype=np.int64)
         self._stim_j_clamp_b = np.empty(0, dtype=np.int64)
         self._stim_j_inv_r = np.empty(0, dtype=np.float64)
+        self._stim_mode = None
+        self._stim_plays = []
+        self._stim_play_times = None
         self._stim_block = None
         self._stim_streams = []
         self._stim_idle = False
@@ -1648,6 +1743,9 @@ class Env(EnvProtocol):
         self._stim_j_clamp_a = np.empty(0, dtype=np.int64)
         self._stim_j_clamp_b = np.empty(0, dtype=np.int64)
         self._stim_j_inv_r = np.empty(0, dtype=np.float64)
+        self._stim_mode = None
+        self._stim_plays = []
+        self._stim_play_times = None
         self._stim_block = None
         self._stim_streams = []
         self._opsin_pps = []
