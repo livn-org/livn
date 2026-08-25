@@ -1557,6 +1557,126 @@ class RecruitmentCurve(Decoding):
         return float(responded.sum()) / units
 
 
+class ExtracellularRecruitment(Decoding):
+    """Response function of a cell under an extracellular sweep."""
+
+    schedule: list[tuple[float, float]] = Field(default_factory=list)
+    """`(pulse time in ms from the start of this run, amplitude)`."""
+
+    pre_ms: float = 50.0
+    post_ms: float = 20.0
+    recruited: float = 0.5
+    """Fraction of units that have to answer for an amplitude to count."""
+
+    min_spikes: int = 1
+    """Spikes in the response window that count as one unit answering."""
+
+    ceiling_mv: float | None = None
+    """Peak potential above which the response is not a spike.
+      `None` skips the measurement and its voltage recording.
+    """
+
+    units: int | None = None
+    """How many cells over. `None` reads the graph."""
+
+    section: str | None = "soma"
+    voltage_dt: float | None = 0.025
+
+    def setup(self, env):
+        env.record_spikes()
+        if self.ceiling_mv is not None:
+            options = {"sections": None if self.section is None else [self.section]}
+            if self.voltage_dt is not None:
+                options["dt"] = self.voltage_dt
+            env.record_voltage(**options)
+
+    def __call__(self, signal: Run, env=None):
+        comm = getattr(env, "comm", None)
+        merged = signal.gather(comm=comm) if self.ceiling_mv is not None else signal
+
+        result = None
+        if P.is_root(comm=comm):
+            result = self._read(merged, env)
+        return P.broadcast(result, comm=comm)
+
+    def _read(self, signal: Run, env) -> dict:
+        it, tt = sorted_spikes(signal, env)
+        units = int(self.units) if self.units else unit_count(env)
+        extent = float(self.duration)
+        width = _bincount_width(it, units)
+
+        answered: dict[float, list[float]] = {}
+        peaks: dict[float, list[float]] = {}
+        for at, amplitude in self.schedule:
+            at, amplitude = float(at), float(amplitude)
+            answered.setdefault(amplitude, []).append(
+                self._answered(it, tt, at, extent, units, width)
+            )
+            peak = self._peak(signal, env, at)
+            if peak is not None:
+                peaks.setdefault(amplitude, []).append(peak)
+
+        curve = {a: float(np.median(v)) for a, v in answered.items() if v}
+        peak_mv = {a: float(np.max(v)) for a, v in peaks.items() if v}
+        return {"curve": curve, "peak_mv": peak_mv, **self._edges(curve, peak_mv)}
+
+    def _edges(self, curve: dict, peak_mv: dict) -> dict:
+        rungs = sorted(curve)
+        recruits = [a for a in rungs if curve[a] >= self.recruited]
+        threshold = recruits[0] if recruits else None
+
+        block = None
+        if threshold is not None:
+            above = [a for a in rungs if a > threshold and curve[a] < self.recruited]
+            block = above[0] if above else None
+
+        ceiling = None
+        if self.ceiling_mv is not None:
+            over = [a for a in sorted(peak_mv) if peak_mv[a] > float(self.ceiling_mv)]
+            ceiling = over[0] if over else None
+
+        upper = [x for x in (block, ceiling) if x is not None]
+        band = (
+            float(min(upper) / threshold)
+            if upper and threshold
+            else (float("inf") if threshold else float("nan"))
+        )
+        return {
+            "threshold_ua": threshold,
+            "block_ua": block,
+            "ceiling_ua": ceiling,
+            "band": band,
+        }
+
+    def _answered(self, it, tt, at: float, extent: float, units: int, width: int):
+        """Fraction of the units that answered this one pulse."""
+        if tt.size == 0 or at - self.pre_ms < 0 or at + self.post_ms > extent:
+            return 0.0
+        pre = (tt >= at - self.pre_ms) & (tt < at)
+        post = (tt >= at) & (tt < at + self.post_ms)
+        expected = self.post_ms / self.pre_ms
+        pre_counts = np.bincount(it[pre], minlength=width).astype(np.float64)
+        post_counts = np.bincount(it[post], minlength=width).astype(np.float64)
+        responded = (post_counts >= self.min_spikes) & (
+            post_counts > pre_counts * expected
+        )
+        return float(responded.sum()) / units
+
+    def _peak(self, signal: Run, env, at: float) -> float | None:
+        """Highest potential any recorded section reached over one pulse."""
+        if self.ceiling_mv is None:
+            return None
+        vv = np.asarray(signal.voltage if signal.voltage is not None else [])
+        if not len(vv):
+            return None
+        dt = float(getattr(env, "voltage_recording_dt", None) or self.voltage_dt or 0.1)
+        lo = int(at / dt)
+        hi = int((at + self.post_ms) / dt)
+        if hi <= lo or lo >= vv.shape[1]:
+            return None
+        return float(np.max(vv[:, lo : min(hi, vv.shape[1])]))
+
+
 def population_gids(env) -> dict[int, str]:
     ranges = getattr(getattr(env, "system", None), "population_ranges", None) or {}
     return {
