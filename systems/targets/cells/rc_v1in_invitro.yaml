@@ -4,23 +4,20 @@ Template: livn.models.rcsd.neuron.templates.V1In.V1In
 Population: INH
 Retired: True
 Numerics:
-  adaptive: False
-  use_coreneuron: True
-  t0: 0
   tstop: 2000
   dt: 0.0125
   record_dt: 0.01
-  v_init: -60.0
-Record:
-  soma: ['V']
 Drive:
     enabled: True
-    # Bracket the peak. Measured with the shipped parameters, rate against
-    # g_e0 peaks at 0.03-0.3 and falls away past it as the background clamps
-    # the cell toward depolarisation block (median soma V runs -62 mV at 0.01
-    # to -18 mV at 3.0). The old [0.3 .. 6.0] window sampled the falling limb
-    # only, so nothing in the fit could see where the cell works best.
-    levels: [0.01, 0.03, 0.1, 0.3]
+    # Bracket the peak. These levels were carried over from the motoneuron
+    # config and are too high for this cell: across a whole 1900-evaluation
+    # front, all 130 solutions failed `drive_no_inversion` -- the rate at the
+    # top level had already fallen past the peak, by 12 to 66 spikes. The same
+    # levels are fine for the Perry cell, which comes out around 15 um; these
+    # solutions run to ~24 um, and the larger area takes more background
+    # conductance at the same g_e0, so saturation arrives sooner. Shifted down
+    # one decade to put the peak inside the window rather than at its edge.
+    levels: [0.003, 0.01, 0.03, 0.1]
     duration: 2000.0
     seed: 20260811
     min_spikes: 5.0
@@ -54,21 +51,20 @@ Targets:
   threshold: -50.0    # Motoneuron-Modeling estimate
   V_hold:
     val: -60.0
-    I: 0
   V_rest:
     val: -60.0
-    I: 0
   f_I:
     # Motoneuron-Modeling estimate (no ES-derived V1 f-I data); held at v_hold (-60),
     # i.e. no separate f_I.V_hold -> defaults to V_hold.
-    # +/-30% tolerance bands (low-confidence estimate). Without lower/upper the
-    # band width is 0, making the f-I objective essentially unsatisfiable.
+    # +/-30% tolerance bands
     I: [15, 20, 30, 40, 50, 60, 70]
     I_factor: 1.0e-3
     mean:  [4.0, 10.0, 20.0, 30.0, 38.0, 44.0, 48.0]
     lower: [3.0,  7.0, 14.0, 21.0, 27.0, 31.0, 34.0]
     upper: [5.0, 13.0, 26.0, 39.0, 49.0, 57.0, 62.0]
     t: [500, 1500]
+    # steady-state, as the motoneuron and Perry targets are.
+    steady_ms: 500
   spike_amp:
     upper: [75.0, 75.0, 75.0, 75.0, 75.0, 75.0, 75.0]
     lower: [55.0, 55.0, 55.0, 55.0, 55.0, 55.0, 55.0]

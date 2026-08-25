@@ -6,15 +6,9 @@ Celltype: RenshawCell
 Template: livn.models.rcsd.neuron.templates.V1In.V1In
 Population: INH
 Numerics:
-  adaptive: False
-  use_coreneuron: True
-  t0: 0
   tstop: 2000
   dt: 0.0125
   record_dt: 0.01
-  v_init: -60.0
-Record:
-  soma: ['V']
 Drive:
     enabled: True
     # Bracket the peak. Measured with the shipped parameters, rate against
@@ -51,23 +45,33 @@ Targets:
     upper: [22.0]
     lower: [10.0]
     t: [250, 1250]
-  threshold: -30.8   # Perry 2015 AP threshold -30.8 +/- 0.9 mV
+  # The spike detector, not a target -- the measured value is spike_threshold.
+  threshold: -30.8
+  spike_threshold:
+    # Perry 2015: AP threshold -30.8 +/- 0.9 mV (n=58). The 0.9 is the standard
+    # error, as the +/-0.4 quoted on a resting potential over n=71 must also be,
+    # so the spread across cells is 0.9*sqrt(58) = 6.9 mV. That, not the
+    # SEM, is the tolerance a single model cell should is judged against
+    mean: [-30.8]
+    lower: [-37.7]
+    upper: [-23.9]
   V_hold:
     val: -60.0        # Perry clamped for Rin at -60 mV
-    I: 0
   V_rest:
     val: -50.5        # Perry RMP -50.5 +/- 0.4 mV
-    I: 0
   f_I:
     # Perry 2015 Fig 6C control (steady-state) f-I; Perry stepped current from rest,
     # so the sweeps are held at RMP (V_hold below). 150 pA -> 26.4 Hz is explicit;
-    # the other points are read from Fig 6C. Bands ~+/-30% (f-I lower-confidence).
+    # the other points are read from Fig 6C. The bands below are +/-8 Hz
+    # absolute, which is +/-40% at the 20 Hz point and +/-22% at the 36 Hz one
     I: [50, 100, 150, 200, 250]
     I_factor: 1.0e-3
     mean:  [20.0, 26.0, 26.0, 31.0, 36.0]
     lower: [12.0, 18.0, 18.0, 22.0, 27.0]
     upper: [28.0, 34.0, 34.0, 40.0, 45.0]
     t: [500, 1500]
+    # Perry 2015 measured over "the last 500 ms of traces from ... 1000-ms-duration pulses".
+    steady_ms: 500
     V_hold: -50.5      # RMP -- Perry stepped f-I from rest
   spike_amp:
     # Perry 2015 AP amplitude 69.7 +/- 2.0 mV (n=58)

@@ -1,3 +1,4 @@
+import hashlib
 import os
 from collections.abc import Mapping
 from functools import partial
@@ -222,6 +223,9 @@ class Sopt(Dmosopt):
         ranks: int = -1
 
     def on_compute_predicate(self):
+        return {**self._system_predicate(), **self._problem_predicate()}
+
+    def _system_predicate(self):
         system = self.config.system
         if system is None:
             return {}
@@ -236,6 +240,37 @@ class Sopt(Dmosopt):
                 )
             }
         return super().on_compute_predicate()
+
+    def _problem_predicate(self):
+        try:
+            spec = self.config.dopt_params.obj_fun_init_args.target
+            # "???" until dispatch injects the real one
+            target = import_instance(spec) if spec and spec != "???" else None
+        except Exception:
+            target = None
+        if target is None:
+            return {}
+
+        def names(attr):
+            fn = getattr(target, attr, None)
+            try:
+                return list(fn()) if callable(fn) else []
+            except Exception:
+                return []
+
+        objectives, constraints = names("objective_names"), names("constraint_names")
+        try:
+            space = sorted(target.search_space().items())
+        except Exception:
+            space = []
+        if not objectives and not constraints and not space:
+            return {}
+
+        canonical = repr((objectives, constraints, space)).encode()
+        return {
+            "objectives": ", ".join(objectives),
+            "problem": hashlib.sha256(canonical).hexdigest()[:8],
+        }
 
     def evaluate_objective_at(self, x, verbose=False, **reduce_kwargs):
         import logging

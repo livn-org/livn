@@ -3,16 +3,9 @@
 Celltype: Motoneuron
 Template: livn.models.rcsd.neuron.templates.BRK.BRK
 Numerics:
-    adaptive: False
-    use_coreneuron: True
-    t0: 0
     tstop: 2000
     dt: 0.0125
     record_dt: 0.01
-    v_init: -60.0
-Record:
-    soma: ['V']
-    dend: ['V']
 # Behaviour under the network's OU conductance drive, not the current clamp.
 # Without this fits tend to produce cells that fit the clamp targets and
 # then lock (one spike, any drive) or invert (rate falling as drive rises)
@@ -55,17 +48,44 @@ Targets:
         t: [250, 1250]
     threshold: -37.0
     V_hold:
+        # Not sourced: Miles 2004 say RN and Cm "were calculated using pClamp 8 or 9 software"
         val: -60
-        I : 0 
     V_rest:
-        val: -57.4
-        I : 0 
+        # Miles 2004 Table 3, days 3-7 (n=71) with Vm -53 +/- 1 mV
+        # -> Rin target is from the same row 570 +/- 28 MOhm
+        val: -53.0
     f_I:
-        I: [20, 30, 40, 50, 60, 70, 80]
+        # The 20 pA / 3.88 Hz point is dropped. Miles 2004 gives the minimum
+        # current for repetitive firing as 25 +/- 5 pA and the minimum firing
+        # frequency observed as 5.1 +/- 0.4 Hz, so a point at 20 pA and 3.88 Hz
+        # sits below both 
+        # Kept here rather than deleted, since these are means over cells and 
+        # a mean f-I curve can carry rate below the mean rheobase:
+        #   I:    [20,   30,   40,    50,    60,    70,    80]
+        #   mean: [3.88, 9.09, 11.75, 14.29, 15.96, 16.58, 18.25]
+        I: [25, 30, 40, 50, 60, 70, 80]
         I_factor: 1.0e-3
-        mean: [3.88, 9.09, 11.75, 14.29, 15.96, 16.58, 18.25]
+        mean: [5.1, 9.09, 11.75, 14.29, 15.96, 16.58, 18.25]
         t: [500, 1500]
+        # Miles 2004 "steady-state firing frequency (averaged over the last 500 msec of pulses)".
+        steady_ms: 500
+        # Stated rather than left to the default. These points are read off
+        # Miles' figure, not tabulated, so the tolerance is reading error plus
+        # cell-to-cell spread rather than the SEMs the paper quotes on the
+        # extremes (+/-0.4 Hz on 5.1, +/-0.3 Hz on 18.4). +/-30% matches what
+        # the two Renshaw configs use for f-I of the same provenance.
+        band: 0.3
+    rheobase:
+        # Miles 2004: "minimum current required to elicit repetitive firing was
+        # 25 +/- 5 pA". Given explicitly, so it is used rather than inferred --
+        # extrapolating the two lowest f-I points back to zero rate implies
+        # 12.6 pA, which is outside the reported spread.
+        mean: [25.0]
+        lower: [20.0]
+        upper: [30.0]
     spike_amp:
+        # one entry per f_I sweep -- seven: the 20 pA point was dropped and
+        # the paper's own 25 pA point added
         upper: [80.0, 80.0, 80.0, 80.0, 80.0, 80.0, 80.0]
         lower: [60.0, 60.0, 60.0, 60.0, 60.0, 60.0, 60.0]
     spike_adaptation:

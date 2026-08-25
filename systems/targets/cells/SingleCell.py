@@ -27,26 +27,40 @@ class StepTarget(BaseModel):
     lower: list[float | None] | None = None
     upper: list[float | None] | None = None
     V_hold: float | None = None
+    steady_ms: float | None = None
+    band: float = Field(0.2, ge=0.0)
 
 
 class HoldTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     val: float
 
 
 class SingleCellTargets(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     Rin: StepTarget
     tau0: StepTarget
     threshold: float = -30.0
+    rheobase_min_spikes: int = 2
+    spike_threshold: StepTarget | None = None
     V_hold: HoldTarget
     V_rest: HoldTarget
     f_I: StepTarget
     spike_amp: StepTarget
     spike_adaptation: StepTarget
+    rheobase: StepTarget | None = None
+    shunted_rheobase: StepTarget | None = None
 
 
 class SingleCellNumerics(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     tstop: float
     celsius: float = 36.0
+    dt: float = Field(0.0125, gt=0)
+    record_dt: float = Field(0.01, gt=0)
 
 
 class DriveTarget(BaseModel):
@@ -68,10 +82,11 @@ class DriveTarget(BaseModel):
 
 
 class SingleCellOptConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     Template: str
+    Celltype: str | None = None
     Population: str = "EXC"
-    # kept loadable, but skipped by `Tune.axis_cells` so a sweep does not
-    # spend a run refitting a cell nothing should be using
     Retired: bool = False
     Numerics: SingleCellNumerics
     Targets: SingleCellTargets
@@ -119,6 +134,19 @@ class SingleCellModel(ReducedCalciumSomaDendrite):
         return {self._population: make}
 
 
+def _bands(lower, upper, mean, fraction):
+    """`(lower, upper)` arrays, widening a mean-only target by `fraction`."""
+    if lower is not None and upper is not None:
+        return (
+            np.asarray(lower, dtype=float),
+            np.asarray(upper, dtype=float),
+        )
+    m = np.asarray(mean or [], dtype=float)
+    if not m.size or fraction <= 0.0:
+        return m, m
+    return m * (1.0 - fraction), m * (1.0 + fraction)
+
+
 def range_distance(x, lb, ub):
     """0 inside [lb, ub], else distance to the nearer edge (NaN-safe -> inf)."""
     if x is None or np.isnan(x):
@@ -137,13 +165,16 @@ class SingleCell:
         self,
         config: SingleCellOptConfig | dict | str = DEFAULT_CONFIG_FILE,
         population: str | None = None,
-        sim_dt: float = 0.0125,
-        record_dt: float = 0.05,
+        sim_dt: float | None = None,
+        record_dt: float | None = None,
     ):
         self.cfg = self._resolve_config(config)
         self.population = population or self.cfg.Population
-        self.sim_dt = float(sim_dt)
-        self.record_dt = float(record_dt)
+        # the config decides unless the caller says otherwise
+        self.sim_dt = float(self.cfg.Numerics.dt if sim_dt is None else sim_dt)
+        self.record_dt = float(
+            self.cfg.Numerics.record_dt if record_dt is None else record_dt
+        )
         self._decoded: dict | None = None
         self._parse()
 
@@ -173,6 +204,14 @@ class SingleCell:
         self.v_hold = float(tc.V_hold.val)
         self.v_rest = float(tc.V_rest.val)
         self.target_threshold = float(tc.threshold)
+        self.rheobase_min_spikes = int(tc.rheobase_min_spikes)
+
+        st = tc.spike_threshold
+        self.spike_threshold_lb, self.spike_threshold_ub = (
+            _bands(st.lower, st.upper, st.mean, st.band)
+            if st is not None and (st.mean or st.lower)
+            else (np.asarray([]), np.asarray([]))
+        )
 
         rin = tc.Rin
         self.rin_amp = float(rin.current[0]) * float(rin.current_factor)
@@ -189,13 +228,9 @@ class SingleCell:
         # optional holding potential for the f-I sweeps (default: v_hold). Set to
         # the RMP when the f-I data was recorded from rest rather than a clamp.
         self.fI_hold = float(fI.V_hold if fI.V_hold is not None else self.v_hold)
+        self.fI_steady_ms = fI.steady_ms
         self.fI_mean = np.asarray(fI.mean or [], dtype=float)
-        self.fI_lb = np.asarray(
-            fI.lower if fI.lower is not None else (fI.mean or []), dtype=float
-        )
-        self.fI_ub = np.asarray(
-            fI.upper if fI.upper is not None else (fI.mean or []), dtype=float
-        )
+        self.fI_lb, self.fI_ub = _bands(fI.lower, fI.upper, fI.mean, fI.band)
 
         sa = tc.spike_amp
         self.spk_amp_lb = np.asarray(sa.lower or [], dtype=float)
@@ -204,6 +239,21 @@ class SingleCell:
         sad = tc.spike_adaptation
         self.spk_adapt_lb = np.asarray(sad.lower or [], dtype=float)
         self.spk_adapt_ub = np.asarray(sad.upper or [], dtype=float)
+
+        rb = tc.rheobase
+        if rb is not None and (rb.mean or rb.lower):
+            self.rheobase_lb, self.rheobase_ub = _bands(
+                rb.lower, rb.upper, rb.mean, rb.band
+            )
+        else:
+            self.rheobase_lb = self.rheobase_ub = np.asarray([])
+
+        sr = tc.shunted_rheobase
+        self.shunted_lb, self.shunted_ub = (
+            _bands(sr.lower, sr.upper, sr.mean, sr.band)
+            if sr is not None and (sr.mean or sr.lower)
+            else (np.asarray([]), np.asarray([]))
+        )
 
         # No explicit first-ISI floor in the MN config -> 0 (any repetitive
         # firing passes; silent sweeps fail, as in the reference optimization).
@@ -237,13 +287,18 @@ class SingleCell:
         }
 
     def objective_names(self) -> list[str]:
-        return [
-            "rn_error",
-            "tau_error",
-            "fI_error",
-            "spike_amplitude_error",
-            "ISI_adaptation_error",
-        ] + (["drive_error"] if self._drive_bands() is not None else [])
+        return (
+            [
+                "rn_error",
+                "tau_error",
+                "fI_error",
+                "spike_amplitude_error",
+                "ISI_adaptation_error",
+            ]
+            + (["spike_threshold_error"] if self.spike_threshold_lb.size else [])
+            + (["rheobase_error"] if self.rheobase_lb.size else [])
+            + (["drive_error"] if self._drive_bands() is not None else [])
+        )
 
     def feature_bands(self) -> dict:
         bands = {
@@ -267,6 +322,18 @@ class SingleCell:
         elif self.fI_mean.size:
             m = float(np.mean(self.fI_mean))
             bands["fI_error"] = (0.8 * m, 1.2 * m)
+
+        if self.spike_threshold_lb.size:
+            bands["spike_threshold_error"] = (
+                float(self.spike_threshold_lb[0]),
+                float(self.spike_threshold_ub[0]),
+            )
+
+        if self.rheobase_lb.size:
+            bands["rheobase_error"] = (
+                float(self.rheobase_lb[0]),
+                float(self.rheobase_ub[0]),
+            )
 
         drive = self._drive_bands()
         if drive is not None:
@@ -297,6 +364,17 @@ class SingleCell:
             "spike_amplitude_error": max(spk_w, 1.0),
             "ISI_adaptation_error": max(isi_w, 1.0),
         }
+        if self.spike_threshold_lb.size:
+            widths["spike_threshold_error"] = max(
+                float(self.spike_threshold_ub[0] - self.spike_threshold_lb[0]),
+                1.0,
+            )
+
+        if self.rheobase_lb.size:
+            widths["rheobase_error"] = max(
+                float(self.rheobase_ub[0] - self.rheobase_lb[0]), 1.0
+            )
+
         bands = self._drive_bands()
         if bands is not None:
             widths["drive_error"] = max(float(np.nanmean(bands[1] - bands[0])), 1.0)
@@ -375,6 +453,9 @@ class SingleCell:
             "first_ISI_constr",
             "ISI_adaptation_constr",
             "pre_spk_count",
+            "regenerative_constr",
+            "rheobase_bound_constr",
+            "shunted_rheobase_constr",
             "initial_v_constr",
         ]
 
@@ -574,6 +655,118 @@ class SingleCell:
         t = np.arange(trace.size, dtype=float) * self.record_dt
         return t, trace
 
+    def _rate_window(self) -> tuple[float, float]:
+        if self.fI_steady_ms:
+            return (
+                max(self.fI_t[0], self.fI_t[1] - float(self.fI_steady_ms)),
+                self.fI_t[1],
+            )
+        return self.fI_t[0], self.fI_t[1]
+
+    def _rates(self, spk_cnt, spk_infos):
+        start, stop = self._rate_window()
+        if start <= self.fI_t[0]:
+            counts = np.asarray(spk_cnt[:, 0])
+        else:
+            counts = np.asarray(
+                [
+                    0
+                    if info is None
+                    else int(
+                        (
+                            (np.asarray(info["Tpeak"], dtype=float) >= start)
+                            & (np.asarray(info["Tpeak"], dtype=float) <= stop)
+                        ).sum()
+                    )
+                    for info in spk_infos
+                ],
+                dtype=int,
+            )
+        return ephys.measure_fI(counts, start, stop, self.fI_amps)
+
+    def _spike_count(self, env, gid, amp, step_ms=500.0) -> int:
+        onset = 100.0
+        t, v = self._run_step(
+            env, gid, amp, onset, onset + step_ms, onset + step_ms + 100.0
+        )
+        _pre, count, _info, _th, _amp = ephys.measure_spike_features(
+            [{"t": t, "v": v}], onset, onset + step_ms + 2.0
+        )
+        return int(count[0, 0])
+
+    def _threshold_current(self, env, gid, lo=1e-3, hi=5.0, tol=0.02, **kwargs):
+        need = max(1, int(self.rheobase_min_spikes))
+        below, above = None, None
+        amp = float(lo)
+        while amp <= hi:
+            if self._spike_count(env, gid, amp, **kwargs) >= need:
+                above = amp
+                break
+            below = amp
+            amp *= 2.0
+        if above is None:
+            return None
+        if below is None:
+            return float(above)
+        while (above - below) / above > tol:
+            mid = (below * above) ** 0.5
+            if self._spike_count(env, gid, mid, **kwargs) >= need:
+                above = mid
+            else:
+                below = mid
+        return float(above)
+
+    def _rheobase(self, env, gid, cell) -> float:
+        self._hold_at(env, gid, cell, self.fI_hold)
+        found = self._threshold_current(env, gid)
+        return np.nan if found is None else found * 1e3
+
+    def _shunted_rheobase(self, env, gid, cell) -> float:
+        resting = self._resting_noise(env)
+        driving = self._drive_noise(env)
+        if not driving:
+            return np.nan
+
+        held = cell.__dict__.pop("init_ic", None)
+        if held is None:
+            held = getattr(cell, "_cell", cell).__dict__.pop("init_ic", None)
+
+        negligible = 1e-6
+        driving = {
+            **driving,
+            "noise-std_e": negligible,
+            "noise-std_i": negligible,
+        }
+        try:
+            env.clear(reseed=False)
+            env.set_params(driving)
+            found = self._threshold_current(env, gid, 1e-3, 20.0)
+        finally:
+            if held is not None:
+                cell.init_ic = held
+            env.clear(reseed=False)
+            env.set_params(resting)
+        return np.nan if found is None else found
+
+    def _is_regenerative(self, env, gid, cell, amp) -> bool:
+        sections = [
+            sec
+            for sec in getattr(cell._template, "sections", [])
+            if hasattr(sec, "gmax_Nas")
+        ]
+        if not sections:
+            return True
+        saved = [(sec, float(sec.gmax_Nas)) for sec in sections]
+        try:
+            for sec, _ in saved:
+                sec.gmax_Nas = 0.0
+            return self._spike_count(env, gid, amp) < max(
+                1, int(self.rheobase_min_spikes)
+            )
+        finally:
+            for sec, value in saved:
+                sec.gmax_Nas = value
+
     NOISE_KEYS = ("g_e0", "g_i0", "std_e", "std_i")
 
     @classmethod
@@ -661,13 +854,25 @@ class SingleCell:
             )
             iclamp_results.append({"t": ti, "v": vi})
 
-        pre_spk_cnt, spk_cnt, spk_infos, _thresholds, spk_amps = (
+        pre_spk_cnt, spk_cnt, spk_infos, thresholds, spk_amps = (
             ephys.measure_spike_features(
                 iclamp_results, self.fI_t[0], self.fI_t[1] + 2.0
             )
         )
+        # zero means "no spike on that sweep", not "threshold at 0 mV"
+        measured = np.asarray(thresholds, dtype=float)
+        measured = measured[np.isfinite(measured) & (measured != 0.0)]
         ISI = ephys.measure_ISI(self.fI_amps, spk_infos)
-        fI = ephys.measure_fI(spk_cnt[:, 0], self.fI_t[0], self.fI_t[1], self.fI_amps)
+
+        fI = self._rates(spk_cnt, spk_infos)
+
+        rheobase = self._rheobase(env, gid, cell)
+        regenerative = (
+            self._is_regenerative(env, gid, cell, 1.5 * rheobase * 1e-3)
+            if np.isfinite(rheobase)
+            else False
+        )
+        shunted = self._shunted_rheobase(env, gid, cell)
 
         drive_counts = (
             self._drive_counts(env, gid)
@@ -677,6 +882,10 @@ class SingleCell:
 
         return {
             "drive_counts": drive_counts,
+            "spike_threshold": float(np.mean(measured)) if measured.size else np.nan,
+            "rheobase": rheobase,
+            "shunted_rheobase": shunted,
+            "regenerative": regenerative,
             "rn": rn,
             "tau": tau,
             "v_baseline": v_baseline,
@@ -734,6 +943,28 @@ class SingleCell:
 
         drive_obj = self._drive_objective(m["drive_counts"])
 
+        spike_threshold = m["spike_threshold"]
+        spike_threshold_obj = (
+            range_distance(
+                spike_threshold,
+                float(self.spike_threshold_lb[0]),
+                float(self.spike_threshold_ub[0]),
+            )
+            ** 2
+            if self.spike_threshold_lb.size
+            else None
+        )
+
+        rheobase = m["rheobase"]
+        rheobase_obj = (
+            range_distance(
+                rheobase, float(self.rheobase_lb[0]), float(self.rheobase_ub[0])
+            )
+            ** 2
+            if self.rheobase_lb.size
+            else None
+        )
+
         objectives = {
             "rn_error": (_finite(rn_obj), rn),
             "tau_error": (_finite(tau_obj), tau),
@@ -747,6 +978,13 @@ class SingleCell:
                 float(np.nanmean(ISI["ratio"])) if len(ISI) else 0.0,
             ),
         }
+        if spike_threshold_obj is not None:
+            objectives["spike_threshold_error"] = (
+                _finite(spike_threshold_obj),
+                _finite(spike_threshold),
+            )
+        if rheobase_obj is not None:
+            objectives["rheobase_error"] = (_finite(rheobase_obj), _finite(rheobase))
         if drive_obj is not None:
             objectives["drive_error"] = drive_obj
 
@@ -760,6 +998,23 @@ class SingleCell:
         first_ISI_constr = 1.0 if np.all(first_ISI > self.first_ISI_lower) else -1.0
         ISI_adapt_constr = -1.0 if np.isnan(ISI_adaptation_obj) else 1.0
         pre_spk_constr = -1.0 if np.sum(pre_spk_cnt) > 0 else 1.0
+
+        regenerative_constr = 1.0 if m["regenerative"] else -1.0
+
+        lowest_pa = float(self.fI_amps[0]) * 1e3 if self.fI_amps.size else None
+        fires_at_lowest = bool(self.fI_mean.size and self.fI_mean[0] > 0.0)
+        if lowest_pa is None or not fires_at_lowest or np.isnan(rheobase):
+            rheobase_bound_constr = 1.0
+        else:
+            rheobase_bound_constr = 1.0 if rheobase <= lowest_pa else -1.0
+        shunted = m["shunted_rheobase"]
+        if self.shunted_lb.size and np.isfinite(shunted):
+            shunted_constr = (
+                1.0 if self.shunted_lb[0] <= shunted <= self.shunted_ub[0] else -1.0
+            )
+        else:
+            # unscored: only refuse a cell that cannot be driven at all
+            shunted_constr = -1.0 if np.isnan(shunted) else 1.0
         initial_v_constr = 1.0 if abs(initial_v_error) < 1.0 else -1.0
 
         constraints = {
@@ -771,10 +1026,32 @@ class SingleCell:
             "first_ISI_constr": (first_ISI_constr, 0.0),
             "ISI_adaptation_constr": (ISI_adapt_constr, 0.0),
             "pre_spk_count": (pre_spk_constr, float(np.sum(pre_spk_cnt))),
+            "regenerative_constr": (regenerative_constr, 0.0),
+            "rheobase_bound_constr": (rheobase_bound_constr, _finite(rheobase)),
+            "shunted_rheobase_constr": (shunted_constr, _finite(shunted)),
             "initial_v_constr": (initial_v_constr, float(initial_v_error)),
         }
 
+        self._check_schema(objectives, constraints)
         return objectives, constraints
+
+    def _check_schema(self, objectives: dict, constraints: dict) -> None:
+        for kind, produced, declared in (
+            ("objective", list(objectives), self.objective_names()),
+            ("constraint", list(constraints), self.constraint_names()),
+        ):
+            if produced == declared:
+                continue
+            missing = [n for n in declared if n not in produced]
+            extra = [n for n in produced if n not in declared]
+            detail = (f"declared but not produced: {missing}; " if missing else "") + (
+                f"produced but not declared: {extra}" if extra else ""
+            )
+            raise RuntimeError(
+                f"{kind} schema mismatch: {len(declared)} declared, "
+                f"{len(produced)} produced. "
+                + (detail or f"same names, different order: {declared} vs {produced}")
+            )
 
     def plot_measurement(self, env, save_path: str, title: str = "") -> str:
         """Re-simulate the currently-stashed params and render modeled vs target:
@@ -917,14 +1194,31 @@ class SingleCell:
                 self.fI_t[1] + 100.0,
             )
             results.append({"t": ti, "v": vi})
-        _pre, spk_cnt, _si, _th, _sa = ephys.measure_spike_features(
+        _pre, spk_cnt, spk_infos, _th, _sa = ephys.measure_spike_features(
             results, self.fI_t[0], self.fI_t[1] + 2.0
         )
+
+        start, stop = self._rate_window()
+        counts = (
+            np.asarray(spk_cnt[:, 0])
+            if start <= self.fI_t[0]
+            else np.asarray(
+                [
+                    0
+                    if info is None
+                    else int(
+                        (
+                            (np.asarray(info["Tpeak"], dtype=float) >= start)
+                            & (np.asarray(info["Tpeak"], dtype=float) <= stop)
+                        ).sum()
+                    )
+                    for info in spk_infos
+                ],
+                dtype=int,
+            )
+        )
         fI = ephys.measure_fI(
-            spk_cnt[:, 0],
-            self.fI_t[0],
-            self.fI_t[1],
-            np.asarray(amps_pa, dtype=float) / 1e3,
+            counts, start, stop, np.asarray(amps_pa, dtype=float) / 1e3
         )
         return results, list(np.asarray(fI["frequency"], dtype=float))
 
