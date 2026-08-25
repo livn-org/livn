@@ -626,23 +626,30 @@ class Culture(TuningTargets):
                     electrode = int(found[0]) if found.size else 0
 
             dt = 0.1
-            pulses = self.stimulus.for_array(
-                len(env.io.channel_ids),
-                [electrode],
-                start_ms=0.0,
-                total_ms=self.stimulus.duration_ms,
-                dt=dt,
-            )
-            evoked = env.run(
-                evoked_duration,
-                stimulus=pulses,
-                root_only=False,
-            )
-            self.response_data = (
-                evoked
-                if self.response_data is None
-                else self.response_data.concat(evoked)
-            )
+            trial_ms = float(self.stimulus.trial_ms)
+            for _at, amplitude in self.stimulus.schedule(start_ms=0.0):
+                trial = self.stimulus.for_array(
+                    len(env.io.channel_ids),
+                    [electrode],
+                    start_ms=0.0,
+                    total_ms=trial_ms,
+                    amplitudes=(float(amplitude),),
+                    repeats=1,
+                    order=(),
+                    dt=dt,
+                )
+                piece = env.run(trial_ms, stimulus=trial, root_only=False)
+                self.response_data = (
+                    piece
+                    if self.response_data is None
+                    else self.response_data.concat(piece)
+                )
+
+            remainder = evoked_duration - self.stimulus.duration_ms
+            if remainder > 1e-9:
+                self.response_data = self.response_data.concat(
+                    env.run(remainder, root_only=False)
+                )
 
         local = 0
         if self.response_data is not None and self.response_data.spike_ids is not None:

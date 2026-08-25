@@ -119,6 +119,23 @@ from livn import make
 env = make("EI")
 ```
 
+### CoreNEURON
+
+To use CoreNEURON set:
+
+```sh
+export LIVN_CORENEURON=1
+```
+
+CoreNEURON can speed up the integration but it comes with the following limitations:
+
+- Voltage and membrane current cannot be recorded. `Vector.record` on a range variable is not carried back across the transfer, so a trace would return as a single sample of the initial state. `record_voltage()` and `record_membrane_current()` therefore raise an error.
+
+- A stimulus is handed over before the solve, not computed during it. One run holds the entire input so delivering it whole may raise a `MemoryError`.
+
+- CoreNEURON is a different implementation of the same equations. Expect around 99% of spikes to be identical and the rest to move by a fraction of a millisecond. Nothing recorded under one solver will reproduce bit-for-bit under the other, so do not mix them within a study, and re-fit rather than carry parameters across.
+
+
 ## Comparison
 
 | Feature | brian2 | Diffrax | NEURON |

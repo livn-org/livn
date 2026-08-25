@@ -70,6 +70,16 @@ def _sweep_dead_callbacks(cvode) -> None:
         _unregister_callback(cvode, callback)
 
 
+def _overrides_init_ic(cell) -> bool:
+    fn = getattr(cell, "init_ic", None)
+    if fn is None:
+        return False
+    owner = getattr(fn, "__self__", None)
+    if owner is None:
+        return True  # a plain function set as an attribute
+    return getattr(type(owner), "init_ic", None) is not getattr(fn, "__func__", None)
+
+
 class Env(EnvProtocol):
     capabilities = frozenset(
         {
@@ -202,6 +212,7 @@ class Env(EnvProtocol):
         self._stim_mode: str | None = None
         self._stim_plays: list = []
         self._stim_play_times = None
+        self._stim_sources: list[dict] = []
         self._stim_block: np.ndarray | None = None
         self._stim_bounds: tuple[float, float] | None = None
         self._stim_streams: list[dict] = []
@@ -521,6 +532,12 @@ class Env(EnvProtocol):
         self._stim_idle = False
         self._stim_last_key = None
 
+        if mechanisms.coreneuron_requested():
+            if self._stim_mode is None:
+                self._stim_mode = "play"
+            if not self._stim_clamps:
+                self._prearm_stim_drives()
+
         if stimulus is not None:
             stimulus = Stimulus.from_arg(stimulus, env=self, duration=duration)
             stimulus = self.model.prepare_stimulus(stimulus)
@@ -535,6 +552,9 @@ class Env(EnvProtocol):
                     f"the neuron backend has no mechanism for a "
                     f"{stimulus.input_mode!r} stimulus"
                 )
+
+        if self._stim_mode == "play":
+            self._play_window(current_time, duration)
 
         first_run = self.t == 0
         requested_dt = (
@@ -707,6 +727,9 @@ class Env(EnvProtocol):
             if v_rest is None or not callable(getattr(cell, "measure_ic", None)):
                 separable = False
                 break
+            if _overrides_init_ic(cell):
+                separable = False
+                break
             by_potential.setdefault(float(v_rest), []).append(cell)
 
         parallel = int(self.pc.nhost()) > 1 and self.comm is not None
@@ -766,41 +789,26 @@ class Env(EnvProtocol):
             return
 
         if self._stim_mode is None:
-            if not mechanisms.coreneuron_requested():
-                self._stim_mode = "callback"
-            elif stimulus.deferred or self.t > 0:
-                raise ValueError(
-                    "CoreNEURON runs the solve without Python, so a stimulus "
-                    "has to be handed over in full before the first run: a "
-                    "play armed later never fires, and a streamed command is "
-                    "not rendered yet. This one is "
-                    + (
-                        "streamed. "
-                        if stimulus.deferred
-                        else "arriving after "
-                        f"the simulation started (t={self.t:g} ms). "
-                    )
-                    + "Install the whole command on the first run, or drop "
-                    "LIVN_CORENEURON to deliver it from the callback."
-                )
-            else:
-                self._stim_mode = "play"
-        elif self._stim_mode == "play" and stimulus.deferred:
-            raise ValueError(
-                "this simulation is already delivering a held stimulus with "
-                "Vector.play, which owns the clamp amplitudes, so a streamed "
-                "one cannot be added on top of it. Call clear() first, or hand "
-                "the streamed command over before the first run"
+            self._stim_mode = (
+                "play" if mechanisms.coreneuron_requested() else "callback"
             )
+
+        if self._stim_mode == "play":
+            self._stim_sources.append(
+                {
+                    "stimulus": stimulus,
+                    "rows": np.asarray(rows, dtype=np.int64),
+                    "columns": np.asarray(columns, dtype=np.int64),
+                    "start_step": int(start_step),
+                    "n_steps": round(stimulus.duration / stimulus.dt),
+                }
+            )
+            return
 
         if stimulus.deferred:
             self._install_stim_stream(stimulus, rows, columns, start_step)
         else:
             self._install_stim_block(stimulus, rows, columns, start_step)
-
-        if self._stim_mode == "play":
-            self._refresh_stim_plays()
-            return
 
         if not self._stim_registered:
             _register_callback(self._h.cvode, self._stim_cb)
@@ -882,12 +890,63 @@ class Env(EnvProtocol):
             np.add.at(currents, self._stim_j_clamp_b, -delta)
         return currents
 
-    def _refresh_stim_plays(self) -> None:
-        block = self._stim_block
-        if block is None or not self._stim_clamps:
+    def _prearm_stim_drives(self) -> None:
+        """Give every local junction a clamp before the first `finitialize`."""
+        gids = {int(g) for cells in self.cells.values() for g in cells}
+        if gids:
+            self._build_stim_drives(gids)
+
+    def _render_stim_window(self, start_step: int, steps: int) -> np.ndarray:
+        """The field over `[start_step, start_step + steps)`, in mV."""
+        from livn.stimulus import check_bounds
+
+        field = np.zeros((len(self._stim_rows), steps), dtype=np.float64)
+        for source in self._stim_sources:
+            stimulus = source["stimulus"]
+            first = max(start_step, source["start_step"])
+            last = min(start_step + steps, source["start_step"] + source["n_steps"])
+            if last <= first:
+                continue
+            lo = first - source["start_step"]
+            hi = last - source["start_step"]
+            if stimulus.deferred:
+                values = np.asarray(stimulus.window(lo * stimulus.dt, hi * stimulus.dt))
+            else:
+                values = np.asarray(stimulus.array)[lo:hi]
+            if values.shape[0] == 0:
+                continue
+            check_bounds(values, self._stim_bounds, stimulus.input_mode, stimulus.units)
+            n = min(values.shape[0], last - first)
+            at = first - start_step
+            field[source["rows"], at : at + n] += values[:n][:, source["columns"]].T
+        return field
+
+    def _play_window(self, current_time: float, duration: float) -> None:
+        """Point the plays at the window this run covers."""
+        if not self._stim_clamps:
             return
         h = self._h
-        times, currents = self._stim_play_arrays(block)
+        stim_dt = float(self._stim_dt or 1.0)
+        start_step = round(current_time / stim_dt)
+        steps = max(2, math.ceil(duration / stim_dt) + 2)
+
+        from livn.io import MAX_STIMULUS_GB_ENV, _max_stimulus_bytes
+
+        held = 2.0 * steps * len(self._stim_clamps) * 8.0
+        limit = _max_stimulus_bytes()
+        if held > limit:
+            raise MemoryError(
+                f"delivering {duration:g} ms in one run needs a "
+                f"[{2 * steps:,} x {len(self._stim_clamps):,}] play of 8-byte "
+                f"values, {held / 2**30:.1f} GiB, over the "
+                f"{limit / 2**30:.1f} GiB ceiling.\n"
+                "Under CoreNEURON the command is handed over before the solve "
+                "rather than computed during it. Run the protocol in pieces "
+                f"or raise {MAX_STIMULUS_GB_ENV} (in GiB)."
+            )
+
+        field = self._render_stim_window(start_step, steps)
+        times, currents = self._stim_play_arrays(field, start_step, stim_dt)
 
         if not self._stim_plays:
             self._stim_play_times = h.Vector(times)
@@ -901,21 +960,19 @@ class Env(EnvProtocol):
         for row, vector in zip(currents, self._stim_plays, strict=True):
             vector.from_python(row)
 
-    def _stim_play_arrays(self, block):
-        steps = int(block.shape[1])
-        stim_dt = float(self._stim_dt or 1.0)
-        currents = self._stim_currents(block)
-        sample_times = np.arange(steps, dtype=np.float64) * stim_dt
+    def _stim_play_arrays(self, field, start_step: int, stim_dt: float):
+        steps = int(field.shape[1])
+        currents = self._stim_currents(field)
+        sample_times = (np.arange(steps, dtype=np.float64) + start_step) * stim_dt
 
         dt = float(self._dt or 0.025)
         if stim_dt <= dt or steps < 2:
-            return sample_times, currents
+            return sample_times + dt, currents
 
         times = np.empty(2 * steps, dtype=np.float64)
         times[0::2] = sample_times + dt
         times[1::2] = sample_times + stim_dt
-        held = np.repeat(currents, 2, axis=1)
-        return times, held
+        return times, np.repeat(currents, 2, axis=1)
 
     def _apply_stim_column(self, col) -> None:
         """Drive the clamps from a field column, in mV.
@@ -1709,6 +1766,7 @@ class Env(EnvProtocol):
         self._stim_mode = None
         self._stim_plays = []
         self._stim_play_times = None
+        self._stim_sources = []
         self._stim_block = None
         self._stim_streams = []
         self._stim_idle = False
@@ -1746,6 +1804,7 @@ class Env(EnvProtocol):
         self._stim_mode = None
         self._stim_plays = []
         self._stim_play_times = None
+        self._stim_sources = []
         self._stim_block = None
         self._stim_streams = []
         self._opsin_pps = []
