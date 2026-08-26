@@ -1139,7 +1139,9 @@ class AvalancheAnalysis(Decoding):
                 if t_end > t_start:
                     n_bins = int((t_end - t_start) / self.bin_width) + 1
                     counts, _ = np.histogram(
-                        merged_spikes, bins=n_bins, range=(t_start, t_end)
+                        merged_spikes,
+                        bins=n_bins,
+                        range=(t_start, t_start + n_bins * self.bin_width),
                     )
                 else:
                     counts = np.array([len(merged_spikes)])
