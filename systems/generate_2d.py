@@ -30,6 +30,20 @@ from livn.io import LightArray, electrode_array_coordinates_for_area
 from livn.utils import import_object_by_path
 
 _SYN_TYPE_LOOKUP = {"excitatory": 0, "inhibitory": 1}
+_INHIBITORY = ("gabaergic", "glycinergic")
+
+
+def _released(transmitter: str | None, synapse_type: str) -> str:
+    if transmitter:
+        return transmitter
+    return "glutamatergic" if synapse_type == "excitatory" else "gabaergic"
+
+
+def _single_compartment(soma_only: bool | None, synapse_type: str) -> bool:
+    if soma_only is not None:
+        return bool(soma_only)
+    return synapse_type == "inhibitory"
+
 
 CONNECTIVITY_CHUNK = 2048
 
@@ -232,15 +246,11 @@ class PopulationConfig(BaseModel):
 
     @property
     def released(self) -> str:
-        if self.transmitter:
-            return self.transmitter
-        return "glutamatergic" if self.synapse_type == "excitatory" else "gabaergic"
+        return _released(self.transmitter, self.synapse_type)
 
     @property
     def single_compartment(self) -> bool:
-        if self.soma_only is not None:
-            return self.soma_only
-        return self.synapse_type == "inhibitory"
+        return _single_compartment(self.soma_only, self.synapse_type)
 
     @model_validator(mode="after")
     def _validate(self) -> "PopulationConfig":
@@ -251,6 +261,14 @@ class PopulationConfig(BaseModel):
         if self.synapse_type not in _SYN_TYPE_LOOKUP:
             raise ValueError(
                 f"synapse_type must be one of {list(_SYN_TYPE_LOOKUP)}, got '{self.synapse_type}'"
+            )
+        expected = "inhibitory" if self.released in _INHIBITORY else "excitatory"
+        if expected != self.synapse_type:
+            raise ValueError(
+                f"a population releasing {self.released!r} is {expected}, but "
+                f"synapse_type is {self.synapse_type!r}; the transmitter sets "
+                "the mechanism and synapse_type is what `syn_types` records, "
+                "so the two must agree"
             )
         return self
 
@@ -356,6 +374,26 @@ class Generate2DSystem(Interface):
             zmin, zmax = self.z_range
             if zmin > zmax:
                 raise ValueError("z_range must satisfy zmin <= zmax")
+
+            connectivity = self.connectivity
+            degrees = (
+                connectivity.get("mean_degree")
+                if isinstance(connectivity, dict)
+                else connectivity.mean_degree
+            )
+            if isinstance(degrees, dict):
+                valid = {
+                    f"{pre}->{post}"
+                    for pre in self.populations
+                    for post in self.populations
+                }
+                unknown = sorted(set(degrees) - valid - {"default"})
+                if unknown:
+                    raise ValueError(
+                        f"mean_degree names {unknown}, which are not projections "
+                        f"of this system. Expected 'default' or one of "
+                        f"{sorted(valid)}"
+                    )
             return self
 
     @property
@@ -484,14 +522,9 @@ class Generate2DSystem(Interface):
         pre_cfg = self.config.populations[pre]
         post_cfg = self.config.populations[post]
 
-        released = pre_cfg.transmitter or (
-            "glutamatergic" if pre_cfg.synapse_type == "excitatory" else "gabaergic"
-        )
-        soma_only = post_cfg.soma_only
-        if soma_only is None:
-            soma_only = post_cfg.synapse_type == "inhibitory"
-        inhibitory_input = released in ("gabaergic", "glycinergic")
-        receives_on = "soma" if (soma_only or inhibitory_input) else "dend"
+        released = _released(pre_cfg.transmitter, pre_cfg.synapse_type)
+        soma_only = _single_compartment(post_cfg.soma_only, post_cfg.synapse_type)
+        receives_on = "soma" if (soma_only or released in _INHIBITORY) else "dend"
         if released not in self.TRANSMITTERS:
             raise ValueError(
                 f"population {pre!r} releases {released!r}; known transmitters: "
@@ -508,6 +541,9 @@ class Generate2DSystem(Interface):
     def __call__(self):
         if self.config.output_directory:
             os.makedirs(self.config.output_directory, exist_ok=True)
+        for path in (self.cells_filepath, self.connections_filepath):
+            if os.path.isfile(path):
+                os.remove(path)
         counts: dict[str, int] = {}
         ratios: dict[str, float] = {}
         syn_types = {}
@@ -572,7 +608,8 @@ class Generate2DSystem(Interface):
                 else:
                     degree = float(mean_degree_cfg)
 
-                synapse_flags[post][pre] = degree > 0.0
+                if degree > 0.0:
+                    synapse_flags[post][pre] = True
                 target_degrees[(pre, post)] = degree
 
         create_neural_h5(
@@ -697,13 +734,29 @@ class Generate2DSystem(Interface):
                 n_post = len(post_gids)
                 chunk = max(1, min(n_post, CONNECTIVITY_CHUNK))
                 weight_sum = 0.0
+                weight_max = 0.0
                 for lo in range(0, n_post, chunk):
-                    weight_sum += float(_kernel(lo, min(lo + chunk, n_post))[1].sum())
+                    block = _kernel(lo, min(lo + chunk, n_post))[1]
+                    weight_sum += float(block.sum())
+                    weight_max = max(weight_max, float(block.max(initial=0.0)))
 
                 if weight_sum > 0:
                     amp = (target_degree * len(post_gids)) / weight_sum
                 else:
                     amp = 0.0
+
+                if amp * weight_max > 1.0:
+                    reachable = weight_sum / (len(post_gids) * weight_max)
+                    raise ValueError(
+                        f"{pre}->{post} asks for a mean in-degree of "
+                        f"{target_degree:g}, which needs a connection "
+                        f"probability of {amp * weight_max:.3g} at the closest "
+                        f"pair. With {len(pre_gids)} presynaptic cells at "
+                        f"sigma={self.config.connectivity.sigma:g} over this area "
+                        f"the most this kernel can deliver is {reachable:.1f}. "
+                        "Raise sigma, add presynaptic cells, shrink the area, or "
+                        "lower the degree"
+                    )
 
                 kernel = {
                     "amplitude": float(amp),
