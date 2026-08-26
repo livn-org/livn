@@ -5,6 +5,7 @@ import json
 import os
 import pathlib
 import random
+import warnings
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from functools import cached_property
 from typing import (
@@ -478,6 +479,16 @@ def _h5_read_cell_attributes_tuple(f, pop_start, population, namespace):
     return items, attr_info
 
 
+def projection_attribute(namespace, name: str, index: int = 0, default=None):
+    if namespace is None:
+        return default
+    if isinstance(namespace, dict):
+        return namespace.get(name, default)
+    if isinstance(namespace, list | tuple):
+        return namespace[index] if len(namespace) > index else default
+    return namespace
+
+
 def _h5_read_graph(f, pre_start, post_start, pre, post, namespaces=None):
     if namespaces is None:
         namespaces = []
@@ -523,10 +534,10 @@ def _h5_read_graph(f, pre_start, post_start, pre, post, namespaces=None):
             ns_data = {}
             for ns_name in namespaces:
                 if ns_name in ns_data_arrays:
-                    ns_data[ns_name] = [
-                        arr[edge_start:edge_end]
-                        for arr in ns_data_arrays[ns_name].values()
-                    ]
+                    ns_data[ns_name] = {
+                        ds_name: arr[edge_start:edge_end]
+                        for ds_name, arr in ns_data_arrays[ns_name].items()
+                    }
 
             results.append((abs_dest_gid, (pre_gids, ns_data)))
 
@@ -1008,7 +1019,7 @@ class NeuroH5Graph:
                 return {k: _load_element(v) for k, v in model.items()}
             return Element(**model)
 
-        for k in graph:
+        for k in [k for k, v in graph.items() if isinstance(v, dict)]:
             graph[k] = _load_element(graph[k])
         return graph
 
@@ -1025,12 +1036,12 @@ class NeuroH5Graph:
         return self.elements["synapse_forest"]
 
     @property
-    def synapses(self):
-        return self.elements["synapses"]
-
-    @property
     def connections(self):
         return self.elements["connections"]
+
+    @property
+    def version(self) -> int:
+        return int(self.elements.get("version", 0))
 
     def files(self) -> dict[str, str]:
         return {
@@ -1050,19 +1061,34 @@ class NeuroH5Graph:
 class System:
     """In vitro system"""
 
+    GRAPH_FORMAT_VERSION = 1
+
     def __init__(self, uri: str, comm: MPI.Intracomm | None = None):
         self.uri = uri
         self.comm = comm
 
         self._graph = NeuroH5Graph(uri)
+        self._check_format_version()
         self._cells_meta_data = None
         self.connections_config = next(iter(self._graph.connections.values())).config
-        self.synapses_config = next(iter(self._graph.synapses.values())).config
         self.files = self._graph.files()
         self._neuron_coordinates = None
         self._num_neurons = None
         self._bounding_box = None
         self._coordinate_arrays: dict[types.PopulationName, Any] = {}
+
+    def _check_format_version(self) -> None:
+        found = self._graph.version
+        if found > self.GRAPH_FORMAT_VERSION:
+            raise ValueError(
+                f"{self.uri!r} is a v{found} graph, but this version understands "
+                f"v{self.GRAPH_FORMAT_VERSION}. Upgrade livn to read it"
+            )
+        if found < self.GRAPH_FORMAT_VERSION:
+            warnings.warn(
+                f"{self.uri!r} predates the v{self.GRAPH_FORMAT_VERSION} graph; re-download to get the latest version.",
+                stacklevel=3,
+            )
 
     def default_io(self, comm=None) -> IO:
         from livn.io import IO, MEA
@@ -1510,16 +1536,6 @@ class ParallelSystem:
 
         self.files: dict[str, str] = {}
         self.connections_config = {"synapses": {p: {} for p in populations}}
-        self.synapses_config = {
-            "cell_types": {
-                p: {
-                    "mechanism": None,
-                    "synapses": {},
-                    "synapse_type": "excitatory",
-                }
-                for p in populations
-            }
-        }
 
         ranges: dict[types.PopulationName, tuple[int, int]] = {}
         start = 0

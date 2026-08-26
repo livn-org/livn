@@ -46,6 +46,8 @@ def _single_compartment(soma_only: bool | None, synapse_type: str) -> bool:
 
 
 CONNECTIVITY_CHUNK = 2048
+GRAPH_FORMAT_VERSION = 1
+WEIGHTS_NAMESPACE = "Weights"
 
 
 class SWCTypesDef(IntEnum):
@@ -932,6 +934,7 @@ class Generate2DSystem(Interface):
         save_file(
             self.graph_filepath,
             {
+                "version": GRAPH_FORMAT_VERSION,
                 "architecture": {
                     "uuid": str(uuid.uuid4()),
                     "config": {
@@ -963,23 +966,6 @@ class Generate2DSystem(Interface):
                     }
                 },
                 "synapse_forest": {},
-                "synapses": {
-                    "culture2d": {
-                        "uuid": str(uuid.uuid4()),
-                        "config": {
-                            "cell_types": {
-                                pop: {
-                                    "mechanism": None,
-                                    "synapses": {},
-                                    "synapse_type": self.config.populations[
-                                        pop
-                                    ].synapse_type,
-                                }
-                                for pop in populations
-                            },
-                        },
-                    }
-                },
                 "connections": {
                     "culture2d": {
                         "uuid": str(uuid.uuid4()),
@@ -1007,8 +993,13 @@ class Generate2DSystem(Interface):
         if not self.config.output_directory:
             return
 
+        from livn import __version__ as livn_version
+
         document = {
             "generator": f"{type(self).__module__}.{type(self).__name__}",
+            "version": GRAPH_FORMAT_VERSION,
+            "livn": livn_version,
+            "connectivity_chunk": CONNECTIVITY_CHUNK,
             "config": to_dict(self.config),
             "assumptions": {
                 "EXC->EXC": (

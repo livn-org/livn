@@ -331,7 +331,11 @@ class Env(EnvProtocol):
 
                     distances = projection
                     if isinstance(projection, dict):
-                        distances = projection["Connections"][0]
+                        from livn.system import projection_attribute
+
+                        distances = projection_attribute(
+                            projection.get("Connections"), "distance"
+                        )
 
                     pre_gids = np.asarray(pre_gids)
                     distances = np.asarray(distances)
