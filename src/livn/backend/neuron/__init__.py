@@ -1417,6 +1417,10 @@ class Env(EnvProtocol):
                 )
                 if mech_name in self._mech_code:
                     mask &= self.conn.mech_id == self._mech_code[mech_name]
+                else:
+                    # syn_name names a mechanism that this network has no
+                    # synapses of -> select nothing
+                    mask &= False
             if p.sec_type is not None:
                 if p.sec_type in self._sectype_code:
                     mask &= self.conn.dest_sectype == self._sectype_code[p.sec_type]
