@@ -2,6 +2,7 @@ import json
 import math
 import os
 import uuid
+import zlib
 from collections import defaultdict
 from enum import IntEnum
 from pathlib import Path
@@ -48,6 +49,13 @@ def _single_compartment(soma_only: bool | None, synapse_type: str) -> bool:
 CONNECTIVITY_CHUNK = 2048
 GRAPH_FORMAT_VERSION = 1
 WEIGHTS_NAMESPACE = "Weights"
+REGION_NAMESPACE = "Region"
+
+
+def _stream(seed: int, *tags: str) -> np.random.SeedSequence:
+    return np.random.SeedSequence(
+        [int(seed), *(zlib.crc32(tag.encode()) for tag in tags)]
+    )
 
 
 class SWCTypesDef(IntEnum):
@@ -192,27 +200,46 @@ def rectangle(
     count: int,
     rng: np.random.Generator,
     *,
+    margin: float = 0.0,
     x_range: tuple[float, float] = (0.0, 4000.0),
     y_range: tuple[float, float] = (0.0, 4000.0),
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     xmin, xmax = float(x_range[0]), float(x_range[1])
     ymin, ymax = float(y_range[0]), float(y_range[1])
+    if xmin + margin > xmax - margin or ymin + margin > ymax - margin:
+        raise ValueError(
+            f"a margin of {margin:g} um leaves no interior in a "
+            f"{xmax - xmin:g} x {ymax - ymin:g} um rectangle"
+        )
 
     xs = rng.uniform(xmin, xmax, size=count).astype(np.float32)
     ys = rng.uniform(ymin, ymax, size=count).astype(np.float32)
-    return xs, ys
+    interior = (
+        (xs >= xmin + margin)
+        & (xs <= xmax - margin)
+        & (ys >= ymin + margin)
+        & (ys <= ymax - margin)
+    )
+    return xs, ys, interior
 
 
 def disk(
     count: int,
     rng: np.random.Generator,
     *,
+    margin: float = 0.0,
     center: tuple[float, float] = (0.0, 0.0),
     radius: float = 500.0,
     inner_radius: float = 0.0,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     cx, cy = float(center[0]), float(center[1])
     r_in, r_out = float(inner_radius), float(radius)
+    outer, inner = r_out - margin, (r_in + margin if r_in > 0.0 else 0.0)
+    if outer < inner:
+        raise ValueError(
+            f"a margin of {margin:g} um leaves no interior in a disk of radius "
+            f"{r_out:g} um"
+        )
 
     u = rng.random(size=count)
     r = np.sqrt(u * (r_out**2 - r_in**2) + r_in**2)
@@ -220,6 +247,7 @@ def disk(
     return (
         (cx + r * np.cos(theta)).astype(np.float32),
         (cy + r * np.sin(theta)).astype(np.float32),
+        (r <= outer) & (r >= inner),
     )
 
 
@@ -339,6 +367,11 @@ class Generate2DSystem(Interface):
     class Config(BaseModel):
         area: str = Field(default="systems.generate_2d.rectangle")
         area_kwargs: dict = Field(default_factory=dict)
+        margin: float = Field(
+            default=0.0,
+            ge=0.0,
+            description=("Outer margin to avoid boundary effects"),
+        )
         z_range: tuple[float, float] = Field(default=(0.0, 10.0))
         total_cells: int | None = Field(default=None, ge=1)
         populations: dict[str, PopulationConfig] = Field(
@@ -351,11 +384,7 @@ class Generate2DSystem(Interface):
             default={
                 "kernel": "exponential",
                 "sigma": 600.0,
-                "mean_degree": {
-                    "EXC->INH": 4.0,
-                    "INH->EXC": 40.0,
-                    "default": 0.0,
-                },
+                "mean_degree": {"default": 0.0},
                 "cutoff": None,
                 "allow_self_connections": False,
             }
@@ -376,6 +405,14 @@ class Generate2DSystem(Interface):
             zmin, zmax = self.z_range
             if zmin > zmax:
                 raise ValueError("z_range must satisfy zmin <= zmax")
+
+            if self.margin > 0.0:
+                import_object_by_path(self.area)(
+                    0,
+                    np.random.default_rng(0),
+                    margin=self.margin,
+                    **(self.area_kwargs or {}),
+                )
 
             connectivity = self.connectivity
             degrees = (
@@ -628,7 +665,7 @@ class Generate2DSystem(Interface):
         )
 
         population_ranges = read_population_ranges(str(self.cells_filepath))[0]
-        rng = np.random.default_rng(self.config.random_seed)
+        seed = self.config.random_seed
 
         # generate coordinates
         area_fn = import_object_by_path(self.config.area)
@@ -641,7 +678,10 @@ class Generate2DSystem(Interface):
         for pop in populations:
             start, count = population_ranges[pop]
             gids = np.arange(start, start + count, dtype=np.uint32)
-            xs, ys = area_fn(count, rng, **self.config.area_kwargs)
+            rng = np.random.default_rng(_stream(seed, "coordinates", pop))
+            xs, ys, interior = area_fn(
+                count, rng, margin=self.config.margin, **self.config.area_kwargs
+            )
             all_xs.append(xs)
             all_ys.append(ys)
             if zmax > zmin:
@@ -668,6 +708,20 @@ class Generate2DSystem(Interface):
                 namespace="Generated Coordinates",
                 comm=MPI.COMM_WORLD,
             )
+
+            if self.config.margin > 0.0:
+                write_cell_attributes(
+                    self.cells_filepath,
+                    pop,
+                    {
+                        int(gid): {
+                            "interior": np.asarray([interior[i]], dtype=np.uint8)
+                        }
+                        for i, gid in enumerate(gids)
+                    },
+                    namespace=REGION_NAMESPACE,
+                    comm=MPI.COMM_WORLD,
+                )
 
             coords[pop] = {
                 "gids": gids,
@@ -800,6 +854,8 @@ class Generate2DSystem(Interface):
                 total_edges = 0
                 best = (0.0, -1, -1)  # (probability, pre index, post index)
 
+                columns = _stream(seed, "connectivity", pre, post).spawn(n_post)
+
                 for lo in range(0, n_post, chunk):
                     hi = min(lo + chunk, n_post)
                     distances, raw_weights = _kernel(lo, hi)
@@ -809,7 +865,12 @@ class Generate2DSystem(Interface):
                         probs = np.where(
                             probs >= self.config.connectivity.cutoff, probs, 0.0
                         )
-                    mask = rng.random(size=probs.shape, dtype=np.float32) < probs
+                    draws = np.empty(probs.shape, dtype=np.float32)
+                    for offset, child in enumerate(columns[lo:hi]):
+                        draws[:, offset] = np.random.default_rng(child).random(
+                            probs.shape[0], dtype=np.float32
+                        )
+                    mask = draws < probs
 
                     if raw_probs.size:
                         flat = int(np.argmax(raw_probs))
@@ -940,6 +1001,9 @@ class Generate2DSystem(Interface):
                     "config": {
                         "coordinate_namespace": "Generated Coordinates",
                         "area": list(area_bounds),
+                        "area_shape": str(self.config.area),
+                        "area_kwargs": dict(self.config.area_kwargs),
+                        "margin": float(self.config.margin),
                         "z_range": self.config.z_range,
                         "cell_distributions": {
                             pop: dict(distribution)

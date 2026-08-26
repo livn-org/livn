@@ -629,18 +629,16 @@ class SynapseBuilder:
 
 def _edge_syn_ids_distances(projection, pre_gids):
     """Extract per-edge (syn_id, distance) arrays from a projection payload."""
+    from livn.system import projection_attribute
+
     n = len(pre_gids)
     syn_ids = np.zeros(n, dtype=np.int64)
     distances = np.zeros(n, dtype=np.float64)
     if isinstance(projection, dict):
-        if "Synapses" in projection:
-            s = projection["Synapses"]
-            syn_ids = np.asarray(s[0] if isinstance(s, (list, tuple)) else s).astype(
-                np.int64
-            )
-        if "Connections" in projection:
-            c = projection["Connections"]
-            distances = np.asarray(c[0] if isinstance(c, (list, tuple)) else c).astype(
-                np.float64
-            )
+        found = projection_attribute(projection.get("Synapses"), "syn_id")
+        if found is not None:
+            syn_ids = np.asarray(found).astype(np.int64)
+        found = projection_attribute(projection.get("Connections"), "distance")
+        if found is not None:
+            distances = np.asarray(found).astype(np.float64)
     return syn_ids, distances
