@@ -48,15 +48,17 @@ def retained_in_degree(system, selection) -> float | None:
 
     import numpy as npn
 
-    sigmas = [
-        float(spec["kernel"]["sigma"])
+    kernels = [
+        (spec or {})["kernel"]
         for sources in (system.connections_config.get("synapses") or {}).values()
         for spec in (sources or {}).values()
         if (spec or {}).get("kernel", {}).get("sigma")
     ]
-    if not sigmas:
+    if not kernels:
         return None
-    sigma = max(sigmas)
+    widest = max(kernels, key=lambda k: float(k["sigma"]))
+    sigma = float(widest["sigma"])
+    shape = str(widest.get("kernel") or "exponential")
 
     rows = [
         system.coordinate_array(p)
@@ -77,11 +79,14 @@ def retained_in_degree(system, selection) -> float | None:
         return None
 
     d2 = ((xy[:, None, :] - xy[None, :, :]) ** 2).sum(-1)
-    kernel = npn.exp(-d2 / (2.0 * sigma**2))
-    npn.fill_diagonal(kernel, 0.0)
+    if shape == "gaussian":
+        weights = npn.exp(-d2 / (2.0 * sigma**2))
+    else:  # exponential, matching the generator's own fallback
+        weights = npn.exp(-npn.sqrt(d2) / sigma)
+    npn.fill_diagonal(weights, 0.0)
 
-    total = kernel.sum(axis=1)
-    inside = kernel[:, kept].sum(axis=1)
+    total = weights.sum(axis=1)
+    inside = weights[:, kept].sum(axis=1)
     with npn.errstate(divide="ignore", invalid="ignore"):
         ratio = npn.where(total > 0, inside / total, 0.0)
     return float(ratio[kept].mean())

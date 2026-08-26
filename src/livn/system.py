@@ -1189,6 +1189,14 @@ class System:
                 f"{self.name!r} has no stored selection {name!r}"
                 + (f"; available: {', '.join(found)}" if found else "; it has none")
             )
+
+        recorded = (document.get("meta") or {}).get("graph")
+        built = getattr(self._graph.architecture, "uuid", None)
+        if recorded is not None and built is not None and recorded != built:
+            raise ValueError(
+                f"selection {name!r} of {self.name!r} was cut from graph "
+                f"{recorded}, but this graph is {built}."
+            )
         return document
 
     def synapse_projections(self) -> list[tuple[str, str, str, str, str]]:
