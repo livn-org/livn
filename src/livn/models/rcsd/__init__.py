@@ -26,7 +26,7 @@ class ReducedCalciumSomaDendrite(Model):
         input_mode: str | None = None,
         refractory_period: float = 2.0,
         short_term_depression: bool = False,
-        dendrite_offset: float = 108.0,
+        dendrite_offset: float = 60.0,
         dendrite_orientation: str = "random",
         dendrite_orientation_seed: int = 20260824,
     ):
@@ -56,8 +56,7 @@ class ReducedCalciumSomaDendrite(Model):
         self.dendrite_orientation_seed = int(dendrite_orientation_seed)
 
     def _inh_params_name(self) -> str:
-        # or "V1In-Renshaw-InVitro"
-        return "V1In-Renshaw-Perry"
+        return "V1In-Renshaw-InVitro"
 
     def prepare_stimulus(self, stimulus):
         from livn.stimulus import check_bounds
@@ -137,16 +136,47 @@ class ReducedCalciumSomaDendrite(Model):
             dend_coords[:, 1] += dx
             dend_coords[:, 2] += dy
 
-        # interleave soma0, dend0, soma1, dend1, ...
-        stacked = np.stack([neuron_coordinates, dend_coords], axis=1)  # [n, 2, 4]
-        return stacked.reshape(2 * n_neurons, 4)
+        rows = [neuron_coordinates]
+        if self._has_dendrite(population):
+            rows.append(dend_coords)
+        unit = np.stack([dx, dy], axis=1) / self.dendrite_offset
+        for offset in self._axon_offsets(population):
+            link = neuron_coordinates.copy()
+            step = unit * offset
+            if _USES_JAX:
+                link = link.at[:, 1].add(-step[:, 0]).at[:, 2].add(-step[:, 1])
+            else:
+                link[:, 1] -= step[:, 0]
+                link[:, 2] -= step[:, 1]
+            rows.append(link)
+
+        width = len(rows)
+        stacked = np.stack(rows, axis=1)  # [n, width, 4]
+        return stacked.reshape(width * n_neurons, 4)
+
+    def _has_dendrite(self, population: str | None) -> bool:
+        return population != "INH"
+
+    def _axon_offsets(self, population: str | None) -> list[float]:
+        from livn.models.rcsd.neuron.templates import axon as _axon
+
+        name = self._inh_params_name() if population == "INH" else "BoothRinzelKiehn-MN"
+        return _axon.sampling_offsets(self.params(name))
 
     def recording_coordinates(
         self,
         neuron_coordinates: types.Float[types.Array, "n_coords ixyz=4"],
         population: str | None = None,
     ) -> types.Float[types.Array, "n_stim_coords ixyz=4"]:
-        return self.stimulus_coordinates(neuron_coordinates, population=population)
+        coordinates = np.asarray(neuron_coordinates)
+        n = coordinates.shape[0]
+        rows = self.stimulus_coordinates(coordinates, population=population)
+        width = len(rows) // max(n, 1)
+        keep = min(2, width)
+        rows = np.asarray(rows).reshape(n, width, 4)[:, :keep]
+        if keep < 2:
+            rows = np.concatenate([rows, rows[:, -1:]], axis=1)
+        return rows.reshape(n * 2, 4)
 
     def expand_stimulus_currents(
         self,
@@ -167,26 +197,34 @@ class ReducedCalciumSomaDendrite(Model):
                 "e_pas": -62.0,
                 "pp": 0.1,
                 "Ra": 190.0,
-                "gc": 4.4117768218255495,
-                "cm_ratio": 7.536981416164337,
-                "global_cm": 0.9207035303115845,
-                "global_diam": 4.345423698425293,
-                "soma_g_pas": 1.1488028753936616e-05,
-                "soma_gmax_Na": 0.1394842565059662,
-                "soma_gmax_K": 0.10998242828601613,
-                "soma_gmax_KCa": 0.0062538449268322825,
-                "soma_gmax_CaN": 1.1097755617046225e-05,
-                "soma_f_Caconc": 0.0030148697264778374,
-                "soma_alpha_Caconc": 5.0000001782354415,
-                "soma_kCa_Caconc": 1.2125927144344322,
-                "dend_g_pas": 1.5652643987557022e-05,
-                "dend_gmax_CaL": 9.316833235200113e-05,
-                "dend_gmax_CaN": 0.000767890342735435,
-                "dend_gmax_KCa": 0.004930547806017893,
-                "dend_f_Caconc": 0.003239384669206284,
-                "dend_alpha_Caconc": 1.0683368078730968,
-                "dend_kCa_Caconc": 29.00676262216262,
-                "V_rest": -57.4,
+                "gc": 3.2030198483439225,
+                "cm_ratio": 10.42697462417264,
+                "global_cm": 1.4606554508209229,
+                "global_diam": 3.154846429824829,
+                "soma_g_pas": 0.00028111391362965234,
+                "soma_gmax_Na": 0.20788173377513885,
+                "soma_gmax_K": 0.030751658804799097,
+                "soma_gmax_KCa": 0.0004115926595597837,
+                "soma_gmax_CaN": 0.012888551184737694,
+                "soma_f_Caconc": 0.005886749104752978,
+                "soma_alpha_Caconc": 0.4519734480498721,
+                "soma_kCa_Caconc": 29.999998564600407,
+                "dend_g_pas": 0.00010565794943072406,
+                "dend_gmax_CaL": 5.168149132849551e-05,
+                "dend_gmax_CaN": 0.00029144489705924185,
+                "dend_gmax_KCa": 0.002108300002565649,
+                "dend_f_Caconc": 0.017972283750537856,
+                "dend_alpha_Caconc": 4.851351918484877,
+                "dend_kCa_Caconc": 23.9614198255122,
+                "axon_segments": 5,
+                "axon_segment_um": 30.0,
+                "axon_diam": 2.0,
+                "axon_cm": 0.2,
+                "axon_Ra": 70.0,
+                "axon_gmax_Na_ratio": 0.4,
+                "axon_gmax_K": 0.3,
+                "axon_g_pas": 1e-05,
+                "V_rest": -53.0,
                 "V_threshold": -37.0,
             },
             "BoothRinzelKiehn-MN-v1": {
@@ -252,18 +290,26 @@ class ReducedCalciumSomaDendrite(Model):
                 "V_threshold": -30.8,
             },
             "V1In-Renshaw-InVitro": {
-                "global_diam": 19.411474227905273,
-                "global_cm": 0.9462705254554749,
-                "e_pas": -67.66380310058594,
-                "soma_g_pas": 4.035637903143652e-05,
-                "soma_gmax_Na": 0.08557455986738205,
-                "soma_gmax_K": 0.09600003063678741,
-                "soma_gmax_Ka": 0.0059051355347037315,
-                "soma_gmax_KCa": 0.002114551141858101,
-                "soma_gmax_CaN": 0.0016945463139563799,
-                "soma_f_Caconc": 0.01990448124706745,
-                "soma_alpha_Caconc": 4.453778266906738,
-                "soma_kCa_Caconc": 8.111538887023926,
+                "global_diam": 30.842397689819336,
+                "global_cm": 1.0975247621536255,
+                "e_pas": -66.14060974121094,
+                "soma_g_pas": 3.341551564517431e-05,
+                "soma_gmax_Na": 0.05000000074505806,
+                "soma_gmax_K": 0.06278707832098007,
+                "soma_gmax_Ka": 0.0023947935551404953,
+                "soma_gmax_KCa": 0.0003360457601539569,
+                "soma_gmax_CaN": 0.012608847580850124,
+                "soma_f_Caconc": 0.0015679606155623047,
+                "soma_alpha_Caconc": 0.38905235651014525,
+                "soma_kCa_Caconc": 22.80191438151012,
+                "axon_segments": 5,
+                "axon_segment_um": 30.0,
+                "axon_diam": 2.0,
+                "axon_cm": 0.2,
+                "axon_Ra": 70.0,
+                "axon_gmax_Na_ratio": 0.4,
+                "axon_gmax_K": 0.3,
+                "axon_g_pas": 1e-05,
                 "V_rest": -60.0,
                 "V_threshold": -50.0,
             },

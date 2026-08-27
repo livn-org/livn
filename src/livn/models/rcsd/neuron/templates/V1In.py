@@ -2,6 +2,8 @@ import logging
 
 from neuron import h
 
+from . import axon as _axon
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -31,7 +33,12 @@ class V1In:
         self.biophys()
 
         self.all.append(self.soma)
-        self.sections = [self.soma]
+        self.axon = _axon.attach(
+            self, self.soma, self.axon_params, self.global_e_pas, self.soma_gmax_Na
+        )
+        for sec in self.axon:
+            self.all.append(sec)
+        self.sections = [self.soma, *self.axon]
 
     def set_default_parameters(self):
         # RC (Renshaw cell) defaults: geometry gives Cm ~15 pF, Rin ~1000 MOhm
@@ -40,6 +47,8 @@ class V1In:
         self.global_e_pas = -65.0  # mV
         self.soma_g_pas = 6.0e-5  # S/cm2  -> Rin ~1000 MOhm
         self.soma_gmax_Na = 0.15  # S/cm2
+        self.soma_vhalf_Na = -35.0
+        self.soma_slope_Na = 7.8
         self.soma_gmax_K = 0.06  # S/cm2
         self.soma_gmax_KCa = 5.0e-5  # S/cm2  minimal for RC fast-spiking
         self.soma_gmax_CaN = 0.0  # S/cm2  0 for RC; optimized for IaIn
@@ -47,13 +56,17 @@ class V1In:
         self.soma_f_Caconc = 0.004
         self.soma_alpha_Caconc = 1
         self.soma_kCa_Caconc = 8
+        self.axon_params = _axon.axon_parameters(None)
 
     def set_parameters(self, params):
+        self.axon_params = _axon.axon_parameters(params)
         self.global_diam = params.get("global_diam", self.global_diam)
         self.global_cm = params.get("global_cm", self.global_cm)
         self.global_e_pas = params.get("e_pas", self.global_e_pas)
         self.soma_g_pas = params.get("soma_g_pas", self.soma_g_pas)
         self.soma_gmax_Na = params.get("soma_gmax_Na", self.soma_gmax_Na)
+        self.soma_vhalf_Na = params.get("soma_vhalf_Na", self.soma_vhalf_Na)
+        self.soma_slope_Na = params.get("soma_slope_Na", self.soma_slope_Na)
         self.soma_gmax_K = params.get("soma_gmax_K", self.soma_gmax_K)
         self.soma_gmax_KCa = params.get("soma_gmax_KCa", self.soma_gmax_KCa)
         self.soma_gmax_CaN = params.get("soma_gmax_CaN", self.soma_gmax_CaN)
@@ -93,6 +106,8 @@ class V1In:
             sec.insert(mech)
 
         sec.gmax_Nas = self.soma_gmax_Na
+        sec.vhalf_Nas = self.soma_vhalf_Na
+        sec.slope_Nas = self.soma_slope_Na
         sec.gmax_Kdr = self.soma_gmax_K
         sec.gmax_KCa = self.soma_gmax_KCa
         sec.gmax_CaN = self.soma_gmax_CaN
@@ -105,6 +120,14 @@ class V1In:
 
         sec.g_pas = self.soma_g_pas
         sec.e_pas = self.global_e_pas
+
+        self.configure_axon()
+
+    def configure_axon(self):
+        if getattr(self, "axon", None):
+            _axon.configure(
+                self.axon, self.axon_params, self.global_e_pas, self.soma_gmax_Na
+            )
 
     def position(self, x, y, z):
         x0 = getattr(self, "x", 0.0)

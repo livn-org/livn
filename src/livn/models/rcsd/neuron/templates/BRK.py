@@ -1,11 +1,19 @@
 import numpy as np
 from neuron import h
 
+from . import axon as _axon
+
+NAS_VHALF = -35.0
+NAS_SLOPE = 7.8
+"""Nas activation, at the values the mechanism hard-coded before exposing them."""
+
 
 class BRK:
     def __init__(self, params=None):
         if params is not None:
-            params = params["BoothRinzelKiehn"]
+            params = params.get("BoothRinzelKiehn", params)
+
+        self.set_default_parameters()
 
         # Create sections
         self.soma = h.Section(name="soma", cell=self)
@@ -23,8 +31,6 @@ class BRK:
 
         if params is not None:
             self.set_parameters(params)
-        else:
-            self.set_default_parameters()
 
         self.init_topology()
         self.geometry()
@@ -32,6 +38,12 @@ class BRK:
 
         # Add sections to lists
         for sec in [self.soma, self.dend]:
+            self.all.append(sec)
+
+        self.axon = _axon.attach(
+            self, self.soma, self.axon_params, self.global_e_pas, self.soma_gmax_Na
+        )
+        for sec in self.axon:
             self.all.append(sec)
         self.sections = list(self.all)
 
@@ -43,6 +55,8 @@ class BRK:
         self.global_e_pas = -60
         self.soma_g_pas = 0.0001
         self.soma_gmax_Na = 0.00030
+        self.soma_vhalf_Na = NAS_VHALF
+        self.soma_slope_Na = NAS_SLOPE
         self.soma_gmax_K = 0.00010
         self.soma_gmax_KCa = 0.0005
         self.soma_gmax_CaN = 0.00010
@@ -63,35 +77,39 @@ class BRK:
         self.global_cm = 3
         self.global_diam = 10  # Default value
         self.cm_ratio = 1
+        self.axon_params = _axon.axon_parameters(None)
 
     def set_parameters(self, params):
-        self.pp = params.get("pp")
-        self.Ltotal = params.get("Ltotal")
-        self.gc = params.get("gc")
+        self.axon_params = _axon.axon_parameters(params)
+        self.pp = params.get("pp", self.pp)
+        self.Ltotal = params.get("Ltotal", self.Ltotal)
+        self.gc = params.get("gc", self.gc)
 
-        self.global_diam = params.get("global_diam")
-        self.global_cm = params.get("global_cm")
-        self.cm_ratio = params.get("cm_ratio", 1.0)
+        self.global_diam = params.get("global_diam", self.global_diam)
+        self.global_cm = params.get("global_cm", self.global_cm)
+        self.cm_ratio = params.get("cm_ratio", self.cm_ratio)
 
         self.global_e_pas = params.get("e_pas", -60)
-        self.soma_g_pas = params.get("soma_g_pas")
-        self.soma_gmax_Na = params.get("soma_gmax_Na")
-        self.soma_gmax_K = params.get("soma_gmax_K")
-        self.soma_gmax_KCa = params.get("soma_gmax_KCa")
-        self.soma_gmax_CaN = params.get("soma_gmax_CaN")
+        self.soma_g_pas = params.get("soma_g_pas", self.soma_g_pas)
+        self.soma_gmax_Na = params.get("soma_gmax_Na", self.soma_gmax_Na)
+        self.soma_vhalf_Na = params.get("soma_vhalf_Na", NAS_VHALF)
+        self.soma_slope_Na = params.get("soma_slope_Na", NAS_SLOPE)
+        self.soma_gmax_K = params.get("soma_gmax_K", self.soma_gmax_K)
+        self.soma_gmax_KCa = params.get("soma_gmax_KCa", self.soma_gmax_KCa)
+        self.soma_gmax_CaN = params.get("soma_gmax_CaN", self.soma_gmax_CaN)
 
-        self.soma_f_Caconc = params.get("soma_f_Caconc")
-        self.soma_alpha_Caconc = params.get("soma_alpha_Caconc")
-        self.soma_kCa_Caconc = params.get("soma_kCa_Caconc")
+        self.soma_f_Caconc = params.get("soma_f_Caconc", self.soma_f_Caconc)
+        self.soma_alpha_Caconc = params.get("soma_alpha_Caconc", self.soma_alpha_Caconc)
+        self.soma_kCa_Caconc = params.get("soma_kCa_Caconc", self.soma_kCa_Caconc)
 
-        self.dend_g_pas = params.get("dend_g_pas")
-        self.dend_gmax_CaN = params.get("dend_gmax_CaN")
-        self.dend_gmax_CaL = params.get("dend_gmax_CaL")
-        self.dend_gmax_KCa = params.get("dend_gmax_KCa")
+        self.dend_g_pas = params.get("dend_g_pas", self.dend_g_pas)
+        self.dend_gmax_CaN = params.get("dend_gmax_CaN", self.dend_gmax_CaN)
+        self.dend_gmax_CaL = params.get("dend_gmax_CaL", self.dend_gmax_CaL)
+        self.dend_gmax_KCa = params.get("dend_gmax_KCa", self.dend_gmax_KCa)
 
-        self.dend_f_Caconc = params.get("dend_f_Caconc")
-        self.dend_alpha_Caconc = params.get("dend_alpha_Caconc")
-        self.dend_kCa_Caconc = params.get("dend_kCa_Caconc")
+        self.dend_f_Caconc = params.get("dend_f_Caconc", self.dend_f_Caconc)
+        self.dend_alpha_Caconc = params.get("dend_alpha_Caconc", self.dend_alpha_Caconc)
+        self.dend_kCa_Caconc = params.get("dend_kCa_Caconc", self.dend_kCa_Caconc)
 
     def lambda_f(self, section, freq):
         if section.n3d() < 2:
@@ -166,6 +184,8 @@ class BRK:
         self.soma.insert("KCa")
 
         self.soma.gmax_Nas = self.soma_gmax_Na
+        self.soma.vhalf_Nas = self.soma_vhalf_Na
+        self.soma.slope_Nas = self.soma_slope_Na
         self.soma.gmax_Kdr = self.soma_gmax_K
         self.soma.gmax_CaN = self.soma_gmax_CaN
         self.soma.gmax_KCa = self.soma_gmax_KCa
@@ -195,6 +215,14 @@ class BRK:
         self.dend.gmax_CaN = self.dend_gmax_CaN
         self.dend.gmax_CaL = self.dend_gmax_CaL
         self.dend.gmax_KCa = self.dend_gmax_KCa
+
+        self.configure_axon()
+
+    def configure_axon(self):
+        if getattr(self, "axon", None):
+            _axon.configure(
+                self.axon, self.axon_params, self.global_e_pas, self.soma_gmax_Na
+            )
 
     def position(self, x, y, z):
         for sec in [self.soma, self.dend]:
