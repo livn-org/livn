@@ -16,6 +16,12 @@ def _pj(p):
     return json.dumps(p, indent=4, sort_keys=True)
 
 
+def _terminal_width(default: int = 200) -> int:
+    import shutil
+
+    return shutil.get_terminal_size((default, 24)).columns
+
+
 def _numeric(name) -> bool:
     try:
         float(str(name).strip())
@@ -846,7 +852,9 @@ class Tune(Interface):
             )
             rows.append(row)
         table = pd.DataFrame(rows)
-        with pd.option_context("display.max_columns", None, "display.width", 200):
+        with pd.option_context(
+            "display.max_columns", None, "display.width", _terminal_width()
+        ):
             print(table.to_string(index=False))
         return table
 
@@ -901,7 +909,9 @@ class Tune(Interface):
             table = table.sort_values("_n", ascending=False)
         table = table.drop(columns=[c for c in ("_n",) if c in table])
 
-        with pd.option_context("display.max_columns", None, "display.width", 200):
+        with pd.option_context(
+            "display.max_columns", None, "display.width", _terminal_width()
+        ):
             print(table.to_string(index=False))
         if bands:
             print("\n* = inside the measured band:")
@@ -1236,7 +1246,7 @@ class Tune(Interface):
 
         return chosen
 
-    def inspect(self, loc=None, params=None):
+    def inspect(self, loc=None, params=None, verbose=0):
         if loc is None:
             loc = int(os.environ.get("LOC", 0))
         optimization = self._optimization()
@@ -1244,51 +1254,21 @@ class Tune(Interface):
         if not optimization.is_materialized():
             print("No data yet (nothing launched for this config)")
             return
-        print(optimization.output_filepath)
+
         if not os.path.isfile(optimization.output_filepath):
             print("No data yet")
             return
 
         h5 = optimization.load_h5()
         n_rows, n_evals, _n_epochs = self._evaluation_counts(h5)
-        print(
-            "Epochs",
-            h5["epochs"][-1],
-            " Evals ",
-            n_evals,
-            " n_i: ",
-            optimization.num_initial_samples,
-        )
+
         if n_evals != n_rows:
             print(f"  WARNING: the table has {n_rows} rows but only {n_evals} ")
-        print("Cached:", optimization.cached())
 
         target, model = self._target_and_model()
 
         best = self._ranked_best(optimization, target)
         n_front = 0 if best.get("y") is None else len(best["y"])
-        print(f"Front: {n_front} solutions over {n_evals} evaluations")
-
-        with pd.option_context("display.max_columns", None):
-            print("\nObjectives (y):")
-            print(best["y"])
-            print("\nFeatures (f):")
-            print(best["f"])
-            if best.get("c") is not None:
-                print("\nConstraints (c):")
-                if (best["c"] > 0).all(axis=None):
-                    print("All constraints satisfied")
-                else:
-                    print(best["c"])
-                    import numpy as np
-
-                    c = np.asarray(best["c"])
-                    infeasible = int((c <= 0).any(axis=1).sum())
-                    if infeasible:
-                        print(
-                            f"{infeasible} of {len(c)} solutions on this front violate at "
-                            "least one constraint, so this is an infeasible front."
-                        )
 
         bands = self._feature_bands(target)
         if bands:
@@ -1325,10 +1305,48 @@ class Tune(Interface):
             if hasattr(target, "describe_params")
             else {"params": decoded}
         )
-        for name, group in groups.items():
-            if group:
-                print(f"\n{name}:")
-                print(_pj(group))
+        if verbose > 0:
+            for name, group in groups.items():
+                if group:
+                    print(f"\n{name}:")
+                    print(_pj(group))
 
         wfn = optimization.save_file("params.json", decoded)
         print("\nSaved to", wfn)
+
+        print(f"Front: {n_front} solutions over {n_evals} evaluations")
+
+        with pd.option_context(
+            "display.max_columns", None, "display.width", _terminal_width()
+        ):
+            print("\nFeatures (f):")
+            print(best["f"])
+            print("\nObjectives (y):")
+            print(best["y"])
+            if best.get("c") is not None:
+                print("\nConstraints (c):")
+                if (best["c"] > 0).all(axis=None):
+                    print("All constraints satisfied")
+                else:
+                    print(best["c"])
+                    import numpy as np
+
+                    c = np.asarray(best["c"])
+                    infeasible = int((c <= 0).any(axis=1).sum())
+                    if infeasible:
+                        print(
+                            f"{infeasible} of {len(c)} solutions on this front violate at "
+                            "least one constraint, so this is an infeasible front."
+                        )
+
+        print(
+            "Epochs",
+            h5["epochs"][-1],
+            " Evals ",
+            n_evals,
+            " n_i: ",
+            optimization.num_initial_samples,
+        )
+        print("Cached:", optimization.cached())
+
+        print(optimization.output_filepath)
