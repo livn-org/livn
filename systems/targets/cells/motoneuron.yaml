@@ -12,12 +12,7 @@ Numerics:
 # in the network. Levels span the range noise-g_e0 is searched over.
 Drive:
     enabled: True
-    # Bracket the peak. Measured with the shipped parameters, rate against
-    # g_e0 peaks at 0.03-0.3 and falls away past it as the background clamps
-    # the cell toward depolarisation block (median soma V runs -62 mV at 0.01
-    # to -18 mV at 3.0). The old [0.3 .. 6.0] window sampled the falling limb
-    # only, so nothing in the fit could see where the cell works best.
-    levels: [0.01, 0.03, 0.1, 0.3]
+    levels: [0.002, 0.003, 0.004, 0.005]
     duration: 2000.0
     seed: 20260811
     min_spikes: 5.0
@@ -83,21 +78,27 @@ Targets:
         mean: [25.0]
         lower: [20.0]
         upper: [30.0]
-    spike_amp:
-        # one entry per f_I sweep -- seven: the 20 pA point was dropped and
-        # the paper's own 25 pA point added
-        upper: [80.0, 80.0, 80.0, 80.0, 80.0, 80.0, 80.0]
-        lower: [60.0, 60.0, 60.0, 60.0, 60.0, 60.0, 60.0]
+    # dropped as unsatisfiable
     spike_adaptation:
         upper: [1.6, 1.6, 1.6, 1.6, 1.6, 1.6, 1.6]
         lower: [1.2, 1.2, 1.2, 1.2, 1.2, 1.2, 1.2]
         t: [500, 1500]
+Recruitment:
+  enabled: True
 Parameters:
+  axon_segments: 5
+  axon_segment_um: 30.0
+  axon_Ra: 70.0
+  axon_gmax_K: 0.3
   e_pas: -62
   pp: 0.1
   Ltotal: 120.0
   Ra: 190.0
 Space:
+  axon_cm:              [0.02, 1.0]
+  axon_g_pas:           [1.0e-6, 1.0e-4]
+  axon_gmax_Na_ratio:   [0.05, 1.0]
+  axon_diam:            [0.5, 8.0]
   global_diam:   [2.0, 15.0]
   global_cm:     [0.9, 2.5]
   soma_f_Caconc:     [1.0e-3, 2.0e-2]

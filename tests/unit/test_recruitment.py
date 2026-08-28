@@ -5,7 +5,11 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from livn.decoding import RecruitmentCurve, recruitment_threshold
+from livn.decoding import (
+    ExtracellularRecruitment,
+    RecruitmentCurve,
+    recruitment_threshold,
+)
 from livn.policy import PulseSweepPolicy
 from livn.run import Run
 
@@ -152,3 +156,95 @@ def test_pulses_sharing_an_amplitude_are_pooled_by_their_median(repeats):
 
     assert len(out["curve"]) == 2
     assert out["curve"][600.0] > out["curve"][300.0]
+
+
+def _one_cell_env():
+    return SimpleNamespace(
+        comm=None,
+        system=SimpleNamespace(gids=[0]),
+        io=None,
+        voltage_recording_dt=0.025,
+    )
+
+
+def _driven(answered: dict[float, bool], peaks: dict[float, float] | None = None):
+    """A run in which one cell answered exactly the amplitudes named."""
+    policy = PulseSweepPolicy(
+        n_channels=1,
+        channels=[0],
+        amplitudes=tuple(sorted(answered)),
+        repeats=1,
+        trial_ms=TRIAL_MS,
+        onset_ms=ONSET_MS,
+    )
+    it, tt = [], []
+    for at, amplitude in policy.schedule():
+        if answered[amplitude]:
+            it += [0] * 3
+            tt += [at + 2.0, at + 4.0, at + 6.0]
+
+    run = Run(duration=policy.duration_ms).add_spikes(
+        np.asarray(it, dtype=np.int64), np.asarray(tt, dtype=float)
+    )
+    if peaks is not None:
+        dt = 0.025
+        trace = np.full(int(policy.duration_ms / dt), -65.0)
+        for at, amplitude in policy.schedule():
+            trace[int(at / dt) : int((at + 10.0) / dt)] = peaks[amplitude]
+        run = run.add_voltage(
+            np.asarray([0], dtype=np.int64), trace[None, :], sections=["soma"]
+        )
+    return run, policy
+
+
+def _range(answered, peaks=None, **kwargs):
+    run, policy = _driven(answered, peaks)
+    return ExtracellularRecruitment(
+        duration=int(policy.duration_ms),
+        schedule=policy.schedule(),
+        units=1,
+        **kwargs,
+    )(run, _one_cell_env())
+
+
+def test_both_ends_of_the_recruitable_range_are_reported():
+    out = _range({10.0: False, 20.0: True, 40.0: True, 80.0: False})
+
+    assert out["threshold_ua"] == 20.0
+    assert out["block_ua"] == 80.0, "the amplitude it stopped answering at"
+    assert out["band"] == pytest.approx(4.0)
+
+
+def test_a_cell_that_never_stops_answering_has_no_upper_edge():
+    out = _range({10.0: False, 20.0: True, 40.0: True, 80.0: True})
+
+    assert out["threshold_ua"] == 20.0
+    assert out["block_ua"] is None
+    assert out["band"] == float("inf")
+
+
+def test_a_monotonic_reading_would_have_missed_the_block():
+    blocked = _range({10.0: False, 20.0: True, 40.0: True, 80.0: False})
+    open_ended = _range({10.0: False, 20.0: True, 40.0: True, 80.0: True})
+
+    assert blocked["threshold_ua"] == open_ended["threshold_ua"]
+    assert blocked["band"] != open_ended["band"]
+
+
+def test_a_peak_no_sodium_current_could_reach_closes_the_range():
+    answered = {10.0: False, 20.0: True, 40.0: True, 80.0: True}
+    peaks = {10.0: -40.0, 20.0: 30.0, 40.0: 45.0, 80.0: 180.0}
+
+    out = _range(answered, peaks, ceiling_mv=60.6)
+
+    assert out["threshold_ua"] == 20.0
+    assert out["block_ua"] is None, "it answered every amplitude"
+    assert out["ceiling_ua"] == 80.0, "but not as a spike"
+    assert out["band"] == pytest.approx(4.0)
+
+
+def test_a_cell_that_never_answers_has_no_threshold():
+    out = _range(dict.fromkeys((10.0, 20.0, 40.0, 80.0), False))
+
+    assert out["threshold_ua"] is None
+    assert np.isnan(out["band"])

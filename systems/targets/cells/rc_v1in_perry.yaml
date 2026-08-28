@@ -85,9 +85,19 @@ Targets:
 
 # All biophysical parameters are searched (nothing fixed). cm and e_pas are kept
 # to physiologically narrow ranges; the rest span their plausible ranges.
-Parameters: {}
+Recruitment:
+  enabled: True
+Parameters:
+  axon_segments: 5
+  axon_segment_um: 30.0
+  axon_Ra: 70.0
+  axon_gmax_K: 0.3
 
 Space:
+  axon_cm:              [0.02, 1.0]
+  axon_g_pas:           [1.0e-6, 1.0e-4]
+  axon_gmax_Na_ratio:   [0.05, 1.0]
+  axon_diam:            [0.5, 8.0]
   # geometry / passive
   global_diam:   [15.0, 45.0]
   global_cm:     [0.9, 1.1]
@@ -95,6 +105,7 @@ Space:
   soma_g_pas:    [3.0e-5, 2.0e-4]
   # active conductances
   soma_gmax_Na:  [0.05, 0.30]
+  soma_vhalf_Na: [-42.0, -22.0]
   soma_gmax_K:   [0.02, 0.15]
   soma_gmax_Ka:  [0.0, 0.1]
   soma_gmax_KCa: [1.0e-5, 3.0e-3]

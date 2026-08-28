@@ -2,22 +2,14 @@
 Celltype: RenshawCell
 Template: livn.models.rcsd.neuron.templates.V1In.V1In
 Population: INH
-Retired: True
+Retired: False
 Numerics:
   tstop: 2000
   dt: 0.0125
   record_dt: 0.01
 Drive:
     enabled: True
-    # Bracket the peak. These levels were carried over from the motoneuron
-    # config and are too high for this cell: across a whole 1900-evaluation
-    # front, all 130 solutions failed `drive_no_inversion` -- the rate at the
-    # top level had already fallen past the peak, by 12 to 66 spikes. The same
-    # levels are fine for the Perry cell, which comes out around 15 um; these
-    # solutions run to ~24 um, and the larger area takes more background
-    # conductance at the same g_e0, so saturation arrives sooner. Shifted down
-    # one decade to put the peak inside the window rather than at its edge.
-    levels: [0.003, 0.01, 0.03, 0.1]
+    levels: [0.005, 0.01, 0.015, 0.025]
     duration: 2000.0
     seed: 20260811
     min_spikes: 5.0
@@ -65,9 +57,6 @@ Targets:
     t: [500, 1500]
     # steady-state, as the motoneuron and Perry targets are.
     steady_ms: 500
-  spike_amp:
-    upper: [75.0, 75.0, 75.0, 75.0, 75.0, 75.0, 75.0]
-    lower: [55.0, 55.0, 55.0, 55.0, 55.0, 55.0, 55.0]
   spike_adaptation:
     upper: [1.25, 1.25, 1.25, 1.25, 1.25, 1.25, 1.25]
     lower: [0.85, 0.85, 0.85, 0.85, 0.85, 0.85, 0.85]
@@ -75,9 +64,19 @@ Targets:
 
 # All biophysical parameters are searched (nothing fixed). cm and e_pas are kept
 # to physiologically narrow ranges; the rest span their plausible ranges.
-Parameters: {}
+Recruitment:
+  enabled: True
+Parameters:
+  axon_segments: 5
+  axon_segment_um: 30.0
+  axon_Ra: 70.0
+  axon_gmax_K: 0.3
 
 Space:
+  axon_cm:              [0.02, 1.0]
+  axon_g_pas:           [1.0e-6, 1.0e-4]
+  axon_gmax_Na_ratio:   [0.05, 1.0]
+  axon_diam:            [0.5, 8.0]
   # geometry / passive
   global_diam:   [15.0, 45.0]
   global_cm:     [0.9, 1.1]

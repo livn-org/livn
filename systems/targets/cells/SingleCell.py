@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import warnings
 
@@ -14,6 +15,7 @@ from livn.utils import import_object_by_path
 
 from . import ephys
 
+ENA_MV = 60.6
 DEFAULT_CONFIG_FILE = os.path.join(os.path.dirname(__file__), "motoneuron.yaml")
 
 
@@ -48,10 +50,31 @@ class SingleCellTargets(BaseModel):
     V_hold: HoldTarget
     V_rest: HoldTarget
     f_I: StepTarget
-    spike_amp: StepTarget
+    spike_amp: StepTarget | None = None
     spike_adaptation: StepTarget
     rheobase: StepTarget | None = None
     shunted_rheobase: StepTarget | None = None
+
+
+class RecruitmentTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    """Score how well an extracellular field recruits this cell."""
+
+    radius_um: float = 50.0
+    angle_deg: float = 180.0
+    """Where the contact sits relative to the way the cell points."""
+
+    electrode_z: float = 5.0
+    phase_ms: float = 0.1
+    """Half of the 200 us biphasic pulse the array delivers."""
+
+    threshold_ua: list[float] = [1.0, 100.0]
+    """What an array can actually deliver. A guard, not a target."""
+
+    target_ua: list[float] = [1.0, 50.0]
+    """Where the recruitment threshold should sit."""
 
 
 class SingleCellNumerics(BaseModel):
@@ -91,6 +114,7 @@ class SingleCellOptConfig(BaseModel):
     Numerics: SingleCellNumerics
     Targets: SingleCellTargets
     Drive: DriveTarget = DriveTarget()
+    Recruitment: RecruitmentTarget = RecruitmentTarget()
     Parameters: dict[str, float] = {}
     Space: dict[str, list[float]] = {}
 
@@ -109,8 +133,10 @@ class SingleCellModel(ReducedCalciumSomaDendrite):
         dend_type: str = "hillock",
         celsius: float = 36.0,
         population: str = "EXC",
+        construction: dict | None = None,
     ):
-        super().__init__()
+        super().__init__(dendrite_orientation="aligned")
+        self._construction = dict(construction or {})
         self._template_path = template
         self._cell_threshold = float(threshold)
         self._cell_v_rest = float(v_rest)
@@ -121,14 +147,26 @@ class SingleCellModel(ReducedCalciumSomaDendrite):
     def neuron_celsius(self) -> float:
         return self._celsius
 
+    def _axon_offsets(self, population: str | None = None) -> list[float]:
+        """Where the axon samples the field."""
+        from livn.models.rcsd.neuron.templates import axon as _axon
+
+        return _axon.sampling_offsets(self._construction)
+
+    def _has_dendrite(self, population: str | None) -> bool:
+        """This target builds one population at a time, named at construction."""
+        return self._population != "INH"
+
     def neuron_cells(self):
         from livn.backend.neuron.cells import ReducedCell
 
         template_class = import_object_by_path(self._template_path)
         thr, vr, dt = self._cell_threshold, self._cell_v_rest, self._cell_dend_type
 
+        construction = self._construction
+
         def make(morphology=None):
-            cell = template_class()  # defaults; target reconfigures per eval
+            cell = template_class(construction) if construction else template_class()
             return ReducedCell(cell, threshold=thr, v_rest=vr, dend_type=dt)
 
         return {self._population: make}
@@ -233,8 +271,8 @@ class SingleCell:
         self.fI_lb, self.fI_ub = _bands(fI.lower, fI.upper, fI.mean, fI.band)
 
         sa = tc.spike_amp
-        self.spk_amp_lb = np.asarray(sa.lower or [], dtype=float)
-        self.spk_amp_ub = np.asarray(sa.upper or [], dtype=float)
+        self.spk_amp_lb = np.asarray((sa.lower if sa else None) or [], dtype=float)
+        self.spk_amp_ub = np.asarray((sa.upper if sa else None) or [], dtype=float)
 
         sad = tc.spike_adaptation
         self.spk_adapt_lb = np.asarray(sad.lower or [], dtype=float)
@@ -260,6 +298,7 @@ class SingleCell:
         self.first_ISI_lower = np.zeros_like(self.fI_amps)
 
         self.drive = cfg.Drive
+        self.recruitment = cfg.Recruitment
 
         self.fixed = dict(cfg.Parameters)
         self.space = {k: [float(v[0]), float(v[1])] for k, v in cfg.Space.items()}
@@ -267,7 +306,15 @@ class SingleCell:
     def _log_scaled(self) -> set:
         return {k for k, (lo, hi) in self.space.items() if lo > 0 and hi / lo >= 10.0}
 
+    STRUCTURAL = ("axon_segments",)
+
     def search_space(self, model=None) -> dict:
+        searched_structure = [k for k in self.STRUCTURAL if k in self.space]
+        if searched_structure:
+            raise ValueError(
+                f"{searched_structure} decide how many sections the cell has, "
+                "so they cannot be searched. Move them to Parameters."
+            )
         log_scaled = self._log_scaled()
         return {
             k: (
@@ -292,9 +339,12 @@ class SingleCell:
                 "rn_error",
                 "tau_error",
                 "fI_error",
-                "spike_amplitude_error",
+            ]
+            + (["spike_amplitude_error"] if self.spk_amp_lb.size else [])
+            + [
                 "ISI_adaptation_error",
             ]
+            + (["recruitment_error"] if self.recruitment.enabled else [])
             + (["spike_threshold_error"] if self.spike_threshold_lb.size else [])
             + (["rheobase_error"] if self.rheobase_lb.size else [])
             + (["drive_error"] if self._drive_bands() is not None else [])
@@ -322,6 +372,11 @@ class SingleCell:
         elif self.fI_mean.size:
             m = float(np.mean(self.fI_mean))
             bands["fI_error"] = (0.8 * m, 1.2 * m)
+
+        if self.recruitment.enabled:
+            bands["recruitment_error"] = tuple(
+                float(v) for v in self.recruitment.target_ua
+            )
 
         if self.spike_threshold_lb.size:
             bands["spike_threshold_error"] = (
@@ -364,6 +419,10 @@ class SingleCell:
             "spike_amplitude_error": max(spk_w, 1.0),
             "ISI_adaptation_error": max(isi_w, 1.0),
         }
+        if self.recruitment.enabled:
+            lo, hi = (float(v) for v in self.recruitment.target_ua)
+            widths["recruitment_error"] = max(hi - lo, 1.0)
+
         if self.spike_threshold_lb.size:
             widths["spike_threshold_error"] = max(
                 float(self.spike_threshold_ub[0] - self.spike_threshold_lb[0]),
@@ -439,25 +498,31 @@ class SingleCell:
 
     def constraint_names(self) -> list[str]:
         return (
-            []
-            if not self.drive.enabled
-            else [
-                "drive_sustained",
-                "drive_no_inversion",
+            (
+                []
+                if not self.drive.enabled
+                else [
+                    "drive_sustained",
+                    "drive_no_inversion",
+                ]
+            )
+            + [
+                "monotonic_fI",
+                "rn_constr",
+                "tau_constr",
             ]
-        ) + [
-            "monotonic_fI",
-            "rn_constr",
-            "tau_constr",
-            "spike_amplitude_constr",
-            "first_ISI_constr",
-            "ISI_adaptation_constr",
-            "pre_spk_count",
-            "regenerative_constr",
-            "rheobase_bound_constr",
-            "shunted_rheobase_constr",
-            "initial_v_constr",
-        ]
+            + (["spike_amplitude_constr"] if self.spk_amp_lb.size else [])
+            + [
+                "first_ISI_constr",
+                "ISI_adaptation_constr",
+                "pre_spk_count",
+                "regenerative_constr",
+                "recruitment_constr",
+                "rheobase_bound_constr",
+                "shunted_rheobase_constr",
+                "initial_v_constr",
+            ]
+        )
 
     def transform_params(self, x) -> dict:
         # x: {param: value} from the optimizer. Merge with fixed parameters and
@@ -545,6 +610,7 @@ class SingleCell:
             v_rest=self.v_rest,
             celsius=self.celsius,
             population=self.population,
+            construction=self._construction_params(),
         )
         if isinstance(system, int):
             system = {self.population: system}
@@ -559,6 +625,9 @@ class SingleCell:
     def init(self, env):
         env.record_voltage(dt=self.record_dt)
         return env
+
+    def _construction_params(self) -> dict:
+        return {k: v for k, v in self.fixed.items() if k not in self.space}
 
     def _cell(self, env):
         for cells in env.cells.values():
@@ -767,6 +836,162 @@ class SingleCell:
             for sec, value in saved:
                 sec.gmax_Nas = value
 
+    def _field_gains(self, env, cell):
+        """mV of extracellular field per uA, per section, in section order."""
+        import numpy as _np
+
+        from livn.io import MEA
+
+        r = self.recruitment
+        angle = math.radians(float(r.angle_deg))
+        xyz = _np.asarray(env.active_neuron_coordinates())
+        row = xyz[_np.flatnonzero(xyz[:, 0].astype(int) == 0)[0]] if len(xyz) else None
+        origin = row[1:4] if row is not None else _np.zeros(3)
+
+        mea = MEA(
+            [
+                [
+                    0,
+                    float(origin[0]) + r.radius_um * math.cos(angle),
+                    float(origin[1]) + r.radius_um * math.sin(angle),
+                    float(origin[2]) + r.electrode_z,
+                ]
+            ],
+            input_radius=1e9,
+            output_radius=1e9,
+        )
+        env.io = mea
+        coordinates = _np.asarray(env.stimulus_coordinates())
+        distances = _np.asarray(mea.distances(coordinates))
+        gains = _np.asarray(mea.volume_conductor.induction_gain(distances[:, -1]))
+        if len(gains) != len(cell.sections):
+            raise ValueError(
+                f"{len(gains)} field sampling points for {len(cell.sections)} "
+                "sections; they have to line up index for index"
+            )
+        return gains
+
+    def _pulse(self, env, gid, gains, microamps, pre_ms=50.0, post_ms=25.0):
+        """One charge-balanced pulse of `microamps`; spikes it produced."""
+        from livn.stimulus import Stimulus
+
+        r = self.recruitment
+        dt = self.record_dt
+        total = pre_ms + 2.0 * r.phase_ms + post_ms
+        n = round(total / dt)
+        field = np.zeros((n, len(gains)), dtype=np.float32)
+        start = round(pre_ms / dt)
+        mid = start + max(1, round(r.phase_ms / dt))
+        end = mid + max(1, round(r.phase_ms / dt))
+        field[start:mid] = -microamps * gains
+        field[mid:end] = microamps * gains
+
+        env.clear(reseed=False)
+        gids = np.repeat(np.array([gid], dtype=np.int32), len(gains))
+        sections = np.arange(len(gains), dtype=np.int32)
+        stimulus = Stimulus.from_extracellular(
+            field, dt=dt, gids=gids, sections=sections
+        )
+        run = env.run(total, stimulus, dt=self.sim_dt)
+        return self._overshoots(run, gid)
+
+    def _recruitment_threshold(self, env, gid, gains, lo=0.5, hi=4000.0, tol=0.03):
+        """Lowest amplitude (uA) that recruits, walking up rather than down."""
+        below, above = None, float(lo)
+        while above <= hi:
+            if self._pulse(env, gid, gains, above) > 0:
+                break
+            below, above = above, above * 2.0
+        else:
+            return None
+        if below is None:
+            return float(above)
+        while (above - below) / above > tol:
+            mid = (below * above) ** 0.5
+            if self._pulse(env, gid, gains, mid) > 0:
+                above = mid
+            else:
+                below = mid
+        return float(above)
+
+    def _recruitment_ceiling(self, env, gid, gains, lo=0.5, hi=8000.0, tol=0.05):
+        """Lowest amplitude (uA) whose peak leaves the range a spike can reach."""
+        from livn.stimulus import Stimulus  # noqa: F401  (import cost only)
+
+        def over(microamps):
+            return self._pulse_peak(env, gid, gains, microamps) > ENA_MV
+
+        if not over(hi):
+            return None
+        while (hi - lo) / hi > tol:
+            mid = (lo * hi) ** 0.5
+            if over(mid):
+                hi = mid
+            else:
+                lo = mid
+        return float(hi)
+
+    def _pulse_peak(self, env, gid, gains, microamps, pre_ms=50.0, post_ms=25.0):
+        """Highest soma potential one pulse produces, from its onset."""
+        r = self.recruitment
+        dt = self.record_dt
+        total = pre_ms + 2.0 * r.phase_ms + post_ms
+        n = round(total / dt)
+        field = np.zeros((n, len(gains)), dtype=np.float32)
+        start = round(pre_ms / dt)
+        mid = start + max(1, round(r.phase_ms / dt))
+        end = mid + max(1, round(r.phase_ms / dt))
+        field[start:mid] = -microamps * gains
+        field[mid:end] = microamps * gains
+
+        from livn.stimulus import Stimulus
+
+        env.clear(reseed=False)
+        gids = np.repeat(np.array([gid], dtype=np.int32), len(gains))
+        sections = np.arange(len(gains), dtype=np.int32)
+        run = env.run(
+            total,
+            Stimulus.from_extracellular(field, dt=dt, gids=gids, sections=sections),
+            dt=self.sim_dt,
+        )
+        ids = getattr(run, "voltage_ids", None)
+        traces = getattr(run, "voltage", None)
+        if ids is None or traces is None:
+            return float("nan")
+        ids, traces = np.asarray(ids), np.asarray(traces)
+        if not len(ids) or not len(traces):
+            return float("nan")
+        where = np.flatnonzero(ids == gid)
+        if not len(where):
+            return float("nan")
+        return float(traces[int(where[0])][round(pre_ms / dt) :].max())
+
+    def model_stimulus_bounds(self):
+        """What extracellular potentials the model is defined over, if it says."""
+        from livn.models.rcsd import ReducedCalciumSomaDendrite
+
+        try:
+            return ReducedCalciumSomaDendrite().stimulus_bounds("extracellular")
+        except Exception:  # pragma: no cover - a model without bounds
+            return None
+
+    def _recruitment(self, env, gid, cell) -> dict:
+        """Threshold, ceiling and the band between them, in uA."""
+        if not self.recruitment.enabled:
+            return {}
+        gains = self._field_gains(env, cell)
+        bounds = self.model_stimulus_bounds()
+        reach = float(np.max(np.abs(gains))) if len(gains) else 0.0
+        cap = (bounds[1] / reach) if (bounds and reach > 0) else 4000.0
+
+        threshold = self._recruitment_threshold(env, gid, gains, hi=cap)
+        peak = self._pulse_peak(env, gid, gains, cap)
+        return {
+            "threshold_ua": threshold,
+            "cap_ua": cap,
+            "peak_at_cap_mv": peak,
+        }
+
     NOISE_KEYS = ("g_e0", "g_i0", "std_e", "std_i")
 
     @classmethod
@@ -790,10 +1015,28 @@ class SingleCell:
             f"noise-{k}": float(state[k]) if k in state else 0.0 for k in cls.NOISE_KEYS
         }
 
+    @staticmethod
+    def _overshoots(run, gid) -> int:
+        """Spikes in a run's soma trace, counted as overshoots past 0 mV."""
+        ids = getattr(run, "voltage_ids", None)
+        traces = getattr(run, "voltage", None)
+        if ids is None or traces is None:
+            return 0
+        ids, traces = np.asarray(ids), np.asarray(traces)
+        if not len(ids) or not len(traces):
+            return 0
+        where = np.flatnonzero(ids == gid)
+        if not len(where):
+            return 0
+        # the first row for a gid is its soma, as `_run_step` also assumes
+        trace = traces[int(where[0])]
+        return int((np.diff((trace > 0.0).astype(int)) == 1).sum())
+
     def _drive_counts(self, env, gid) -> np.ndarray:
         resting = self._resting_noise(env)
         driving = self._drive_noise(env)
         env.record_spikes()
+        env.record_voltage(dt=self.record_dt)
         counts = []
         try:
             for i, level in enumerate(self.drive.levels):
@@ -812,10 +1055,7 @@ class SingleCell:
                     # repeat 0 keeps the seed a single-realisation run used
                     env.reseed_noise(self.drive.seed + i + 1000 * repeat)
                     run = env.run(self.drive.duration, dt=self.sim_dt)
-                    ids = getattr(run, "spike_ids", None)
-                    realisations.append(
-                        0 if ids is None else int(np.sum(np.asarray(ids) == gid))
-                    )
+                    realisations.append(self._overshoots(run, gid))
                 counts.append(float(np.mean(realisations)))
         finally:
             env.clear(reseed=False)
@@ -874,6 +1114,8 @@ class SingleCell:
         )
         shunted = self._shunted_rheobase(env, gid, cell)
 
+        recruitment = self._recruitment(env, gid, cell)
+
         drive_counts = (
             self._drive_counts(env, gid)
             if self.drive.enabled
@@ -884,6 +1126,7 @@ class SingleCell:
             "drive_counts": drive_counts,
             "spike_threshold": float(np.mean(measured)) if measured.size else np.nan,
             "rheobase": rheobase,
+            "recruitment": recruitment,
             "shunted_rheobase": shunted,
             "regenerative": regenerative,
             "rn": rn,
@@ -955,6 +1198,18 @@ class SingleCell:
             else None
         )
 
+        recruitment = m["recruitment"]
+        found = recruitment.get("threshold_ua")
+        recruitment_obj = None
+        if self.recruitment.enabled:
+            lo, hi = (float(v) for v in self.recruitment.target_ua)
+            # not recruitable at all is the worst case, not a free pass
+            miss = hi if found is None else range_distance(found, lo, hi)
+            recruitment_obj = (
+                _finite(miss**2),
+                _finite(found if found is not None else float("nan")),
+            )
+
         rheobase = m["rheobase"]
         rheobase_obj = (
             range_distance(
@@ -969,15 +1224,23 @@ class SingleCell:
             "rn_error": (_finite(rn_obj), rn),
             "tau_error": (_finite(tau_obj), tau),
             "fI_error": (_finite(fI_obj), float(np.mean(rates)) if len(rates) else 0.0),
-            "spike_amplitude_error": (
-                _finite(spike_amplitude_obj),
-                float(np.nanmean(spk_amps)) if spk_amps.size else 0.0,
+            **(
+                {
+                    "spike_amplitude_error": (
+                        _finite(spike_amplitude_obj),
+                        float(np.nanmean(spk_amps)) if spk_amps.size else 0.0,
+                    )
+                }
+                if self.spk_amp_lb.size
+                else {}
             ),
             "ISI_adaptation_error": (
                 _finite(ISI_adaptation_obj),
                 float(np.nanmean(ISI["ratio"])) if len(ISI) else 0.0,
             ),
         }
+        if recruitment_obj is not None:
+            objectives["recruitment_error"] = recruitment_obj
         if spike_threshold_obj is not None:
             objectives["spike_threshold_error"] = (
                 _finite(spike_threshold_obj),
@@ -1001,6 +1264,15 @@ class SingleCell:
 
         regenerative_constr = 1.0 if m["regenerative"] else -1.0
 
+        recruit_constr = 1.0
+        if self.recruitment.enabled:
+            lo, hi = (float(v) for v in self.recruitment.threshold_ua)
+            peak = recruitment.get("peak_at_cap_mv", float("nan"))
+            reachable = found is not None and lo <= found <= hi
+            # and it must still be a spike at the hardest the array can drive it
+            physiological = not np.isnan(peak) and peak <= ENA_MV
+            recruit_constr = 1.0 if (reachable and physiological) else -1.0
+
         lowest_pa = float(self.fI_amps[0]) * 1e3 if self.fI_amps.size else None
         fires_at_lowest = bool(self.fI_mean.size and self.fI_mean[0] > 0.0)
         if lowest_pa is None or not fires_at_lowest or np.isnan(rheobase):
@@ -1022,11 +1294,19 @@ class SingleCell:
             "monotonic_fI": (monotonic, float(np.mean(rates)) if len(rates) else 0.0),
             "rn_constr": (rn_constr, rn),
             "tau_constr": (tau_constr, tau),
-            "spike_amplitude_constr": (spike_amp_constr, 0.0),
+            **(
+                {"spike_amplitude_constr": (spike_amp_constr, 0.0)}
+                if self.spk_amp_lb.size
+                else {}
+            ),
             "first_ISI_constr": (first_ISI_constr, 0.0),
             "ISI_adaptation_constr": (ISI_adapt_constr, 0.0),
             "pre_spk_count": (pre_spk_constr, float(np.sum(pre_spk_cnt))),
             "regenerative_constr": (regenerative_constr, 0.0),
+            "recruitment_constr": (
+                recruit_constr,
+                _finite(recruitment.get("threshold_ua") or float("nan")),
+            ),
             "rheobase_bound_constr": (rheobase_bound_constr, _finite(rheobase)),
             "shunted_rheobase_constr": (shunted_constr, _finite(shunted)),
             "initial_v_constr": (initial_v_constr, float(initial_v_error)),
