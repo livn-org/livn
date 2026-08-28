@@ -219,6 +219,14 @@ class TuningTargets:
         # Pass through set_params to consume protocol-specific parameters
         return self.set_params(self.decode_params(params, model=model))
 
+    def observed_feature_names(self) -> list[str]:
+        """Names of features recorded beside the objectives. Empty by default."""
+        return []
+
+    def observed_features(self) -> dict[str, float]:
+        """Values for `observed_feature_names`, after an evaluation."""
+        return {}
+
     def set_params(self, params: dict[str, Any]) -> dict[str, Any]:
         """Set protocol parameters from a dictionary.
 

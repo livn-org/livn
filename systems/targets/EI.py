@@ -170,7 +170,13 @@ def threshold_miss(measured: dict, simulated: dict) -> float:
             return float(bracket["above_mv"]) / step
         return math.sqrt(float(bracket["below_mv"]) * float(bracket["above_mv"]))
 
-    return abs(math.log10(point(measured)) - math.log10(point(simulated)))
+    difference = math.log10(point(simulated)) - math.log10(point(measured))
+    censored = measured.get("censored")
+    if censored == "above":  # the culture is at least this hard to drive
+        return max(0.0, -difference)
+    if censored == "below":  # and at most this easy
+        return max(0.0, difference)
+    return abs(difference)
 
 
 class Culture(TuningTargets):
@@ -216,6 +222,22 @@ class Culture(TuningTargets):
     SIZE_CV_SUFFIX = "-size_cv"
     SIZE_CV_RANGE: ClassVar[list] = [0.0, 0.8]
     """Cell-to-cell spread in linear size, per population."""
+    MEASURED_FEATURES: ClassVar[tuple] = (
+        "mfr",
+        "isi_cv",
+        "active_fraction",
+        "mean_channel_correlation",
+        "max_synchronous_peak",
+        "max_neuron_firing_rate",
+        "pop_rate_hz",
+        "pop_rate_per_unit_hz",
+        "pop_autocorr_tau",
+        "burst_rate",
+        "branching_ratio",
+        "avalanche_r2",
+        "fano_factor",
+        "coefficient_of_variation",
+    )
     RELEASE_PARAM = "U"
     STIMULUS_GAIN_DECADES = 1.0
 
@@ -317,6 +339,21 @@ class Culture(TuningTargets):
 
     def objective_names(self) -> list[str]:
         return [n for n in self._targets if n not in self.skip_objectives]
+
+    def observed_feature_names(self) -> list[str]:
+        objectives = set(self.objective_names())
+        return [
+            name
+            for name in self.MEASURED_FEATURES
+            if name not in objectives and name in self.feature_bands
+        ]
+
+    def observed_features(self) -> dict[str, float]:
+        values = {}
+        for name in self.observed_feature_names():
+            value = self.metrics.get(name, float("nan"))
+            values[name] = float(value) if value is not None else float("nan")
+        return values
 
     def constraint_names(self) -> list[str]:
         return [
@@ -984,6 +1021,7 @@ class Culture(TuningTargets):
             self.curve = simulated.pop("curve", {})
             self.metrics["recruitment_curve"] = dict(self.curve)
             self.metrics["threshold"] = simulated
+            self.metrics["threshold_censored"] = self.stimulus_threshold.get("censored")
             miss = threshold_miss(self.stimulus_threshold, simulated)
 
             result["stimulus_threshold"] = (

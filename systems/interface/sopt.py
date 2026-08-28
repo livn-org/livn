@@ -45,13 +45,13 @@ class Evaluation:
         self.constraints.setdefault(name, [])
         self.constraints[name].append(value)
 
-    def result(self):
-        objectives = []
-        features = []
+    def push_feature(self, name, feature):
+        self.features.setdefault(name, [])
+        self.features[name].append(feature)
 
-        for name in self.objectives:
-            objectives.append(np.mean(self.objectives[name]))
-            features.append(np.mean(self.features[name]))
+    def result(self):
+        objectives = [np.mean(self.objectives[name]) for name in self.objectives]
+        features = [np.mean(self.features[name]) for name in self.features]
 
         reduced_objectives = np.array(objectives)
         reduced_features = np.asarray(
@@ -87,7 +87,10 @@ def constraint_names(c):
 
 
 def feature_dtypes(c):
-    return [(f, np.float32) for f in objective_names(c)]
+    target = import_instance(c.config.dopt_params.obj_fun_init_args.target)
+    names = list(target.objective_names())
+    names += [n for n in target.observed_feature_names() if n not in names]
+    return [(f, np.float32) for f in names]
 
 
 def _build_env(target, system, model, comm, subworld_size, selection=None):
@@ -145,6 +148,7 @@ def controller_init(system, model, target, subworld_size):
 def obj_fun(x, env, trials, target):
     results = {}
     constraints = {}
+    observed = {}
 
     for _ in range(trials):
         env.clear()
@@ -160,13 +164,19 @@ def obj_fun(x, env, trials, target):
             constraints.setdefault(name, [])
             constraints[name].append(val)
 
-    return results, constraints
+        for name, val in target.observed_features().items():
+            observed.setdefault(name, [])
+            observed[name].append(val)
+
+    return results, constraints, observed
 
 
 def obj_reduce(payload):
     evaluation = Evaluation()
 
-    objectives_dict, constraints_dict = payload[-1][0]
+    result = payload[-1][0]
+    objectives_dict, constraints_dict = result[0], result[1]
+    observed_dict = result[2] if len(result) > 2 else {}
 
     for name, trials in objectives_dict.items():
         for objective, feature in trials:
@@ -175,6 +185,10 @@ def obj_reduce(payload):
     for name, trials in constraints_dict.items():
         for constraint_value, feature in trials:
             evaluation.push_constraint(name, constraint_value, feature)
+
+    for name, values in observed_dict.items():
+        for value in values:
+            evaluation.push_feature(name, value)
 
     return evaluation.result()
 

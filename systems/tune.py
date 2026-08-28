@@ -490,29 +490,21 @@ class Tune(Interface):
             else:
                 gates[key] = float(max(0.0, lo - slack))
 
-        overrides = {
-            name: value
-            for name, value in gates.items()
-            if name != "MIN_ACTIVE_FRACTION"
-        }
+        overrides = dict(gates)
+        overrides["targets"] = dict(measured["targets"])
 
-        overrides["targets"] = {
-            name: value
-            for name, value in measured["targets"].items()
-            if name != "active_fraction"
-        }
+        skip_constraints = ["avalanche_r2"]
 
-        skip_constraints = ["avalanche_r2", "active_fraction_floor"]
         synchrony_detection_floor = 0.01
         sync_lo, sync_hi = measured.get("SYNCHRONY_BAND", (0.0, 1.0))
         if sync_lo <= 0.0 or sync_hi < synchrony_detection_floor:
-            skip_constraints.append("synchrony")
+            overrides["SYNCHRONY_BAND"] = [0.0, float(synchrony_detection_floor)]
         else:
             overrides["targets"]["mean_channel_correlation"] = float(
                 (sync_lo + sync_hi) / 2.0
             )
 
-        for feature, constraint in (("pop_autocorr_tau", "pop_autocorr_tau_band"),):
+        for feature, key in (("pop_autocorr_tau", "POP_TAU_BAND_MS"),):
             spec = features.get(feature)
             if (
                 spec
@@ -520,7 +512,11 @@ class Tune(Interface):
                 and spec.min is not None
                 and abs(spec.q_lo - spec.min) <= 1e-9
             ):
-                skip_constraints.append(constraint)
+                # the lower edge is the decoder's own bin size, not the
+                # culture: keep the upper bound and drop the floor
+                band = overrides.get(key) or measured.get(key)
+                if band is not None:
+                    overrides[key] = [0.0, float(band[1])]
 
         options = {
             "overrides": overrides,
@@ -531,7 +527,7 @@ class Tune(Interface):
             },
             "readout": readout,
             "mea": mea,
-            "skip_objectives": ["active_fraction"],
+            "skip_objectives": [],
             "skip_constraints": skip_constraints,
             "adaptation": bool(adaptation),
             "ignition": bool(ignition),
