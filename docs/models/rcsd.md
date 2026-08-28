@@ -1,6 +1,6 @@
 # Reduced Calcium Soma-Dendrite (RCSD)
 
-The default model for the brian2, NEURON, and Diffrax backends. RCSD pairs a two-compartment motoneuron with a spinal inhibitory interneuron, both carrying calcium dynamics and a calcium-dependent potassium current.
+The default model for the brian2, NEURON, and Diffrax backends. RCSD pairs a motoneuron with a spinal inhibitory interneuron, both carrying calcium dynamics and a calcium-dependent potassium current, and both carrying a short unmyelinated axon so that an extracellular field can couple to them.
 
 ```python
 from livn.models.rcsd import ReducedCalciumSomaDendrite
@@ -18,24 +18,26 @@ model = ReducedCalciumSomaDendrite()
 
 ### Excitatory: Booth-Rinzel-Kiehn motoneuron
 
-A two-compartment motoneuron model with the following ion channels:
+A soma, a dendrite and an axon, with the following ion channels:
 
-- **Na⁺**: Fast sodium (soma only)
-- **K⁺**: Delayed rectifier (soma)
-- **Ca²⁺**: L-type (dendrite) and N-type (both compartments)
-- **KCa**: Calcium-dependent potassium (both compartments)
+- **Na⁺**: Fast sodium (soma and axon)
+- **K⁺**: Delayed rectifier (soma and axon)
+- **Ca²⁺**: L-type (dendrite) and N-type (soma and dendrite)
+- **KCa**: Calcium-dependent potassium (soma and dendrite)
 
-Calcium dynamics include influx via Ca²⁺ channels and extrusion via first-order kinetics, driving the KCa current. Soma and dendrite are coupled via gap-junction conductance.
+Calcium dynamics include influx via Ca²⁺ channels and extrusion via first-order kinetics, driving the KCa current. Soma and dendrite are coupled via gap-junction conductance; the axon is coupled by ordinary axial resistance.
 
 ```python
 params = model.params("BoothRinzelKiehn-MN")
 ```
 
+The shipped fit targets input resistance, rheobase and spike-frequency adaptation targets from [Miles et al. 2004](https://www.jneurosci.org/content/24/36/7848).
+
 ### Inhibitory: V1 Renshaw cell
 
 `INH` is a spinal V1 Renshaw cell, the recurrent-inhibition subtype motoneurons wire onto preferentially ([Hoang et al. 2018](https://pmc.ncbi.nlm.nih.gov/articles/PMC6590086/)).
 
-The cell is single-compartment and uses the same Booth-Rinzel-Kiehn channel formalism as the motoneuron:
+The cell has no dendrite but uses the same Booth-Rinzel-Kiehn channel formalism as the motoneuron:
 
 - **Na⁺**: fast sodium (`Nas`)
 - **K⁺**: delayed rectifier (`Kdr`) plus an A-type current (`Ka_v1in`), which the motoneuron does not have
@@ -43,10 +45,10 @@ The cell is single-compartment and uses the same Booth-Rinzel-Kiehn channel form
 - **KCa**: calcium-dependent potassium, the afterhyperpolarization that paces repetitive firing
 - plus `pas`, a `constant` resting-current pin
 
-The parameters are fitted to neonatal mouse Renshaw cells (Perry et al. 2015).
+The default parameters are fitted to ES-cell-derived Renshaw cells ([Hoang et al. 2018](https://pmc.ncbi.nlm.nih.gov/articles/PMC6590086/)).
 
 ```python
-params = model.params("V1In-Renshaw-Perry")
+params = model.params("V1In-Renshaw-InVitro")   # the default
 ```
 
 ### Recurrent inhibition
@@ -55,14 +57,21 @@ The two cell types form a spinal recurrent-inhibition loop where motoneurons exc
 
 ## Compartments and stimulation
 
-`stimulus_coordinates` returns two coordinates per neuron, interleaved, for every population:
+An extracellular field drives a cell through the difference it imposes across the cell's own axial resistances.
+
+`stimulus_coordinates` names one field sampling point per section, so its width depends on the population:
 
 ```python
-coords = model.stimulus_coordinates(system.neuron_coordinates)
-# Shape: [2 * n_neurons, 4] - soma0, dend0, soma1, dend1, ...
+coords = model.stimulus_coordinates(system.neuron_coordinates, population="EXC")
+# [7 * n_neurons, 4] - soma, dendrite, 5 axon links, per neuron
+
+coords = model.stimulus_coordinates(system.neuron_coordinates, population="INH")
+# [6 * n_neurons, 4] - soma, 5 axon links (no dendrite)
 ```
 
-The second coordinate sits `dx = 0.9 × L` from the soma along x, with L = 120 µm, the motoneuron's total length. `recording_coordinates` returns the same layout.
+The dendrite sits 60 µm from the soma while the axon extends the opposite way in five 30 µm sections, sampled at their midpoints (15, 45, 75, 105, 135 µm). With `dendrite_orientation="random"` (the default) that axis is drawn per gid from a stable hash while `"aligned"` puts it along x for every cell.
+
+`recording_coordinates` is decoupled from this and returns the soma and the next field point regardless of population  (the dendrite for `EXC`, the first axon link for `INH`).
 
 ## Synaptic dynamics
 
@@ -84,7 +93,7 @@ weights = {
 env.set_weights(weights)
 ```
 
-`hillock` is the motoneuron's dendritic compartment. A synapse placed off-soma on a Renshaw cell resolves to its soma, since that is the only section it has, but keeps the `hillock` key so the same dict addresses both cell types. `env.weight_names` lists the keys a given network accepts, and returns the same list on NEURON and brian2.
+`hillock` is the motoneuron's dendritic compartment. A synapse placed off-soma on a Renshaw cell resolves to its soma, since it has no dendrite, but keeps the `hillock` key so the same dict addresses both cell types. `env.weight_names` lists the keys a given network accepts, and returns the same list on NEURON and brian2.
 
 ### Synaptic plasticity (STDP)
 
@@ -116,7 +125,7 @@ class NoOpsin(ReducedCalciumSomaDendrite):
 
 ## Background noise
 
-RCSD uses an Ornstein-Uhlenbeck process (Gfluct3) to model fluctuating synaptic conductances. On the two-compartment motoneuron the noise is spatially split: the soma receives inhibitory noise only, the dendrite excitatory noise only.
+RCSD uses an Ornstein-Uhlenbeck process (Gfluct3) to model fluctuating synaptic conductances. The noise is spatially split by section where the soma receives inhibitory noise only, and every non-soma section receives excitatory noise only.
 
 ```python
 noise_params = {
@@ -129,8 +138,6 @@ noise_params = {
 }
 env.set_noise(noise_params)
 ```
-
-The Renshaw cell is exempt from the split: its soma is its only site, so it carries both the excitatory and the inhibitory component. Applying the somatic half alone would pin it near `E_i` (−75 mV) and it would never fire.
 
 The conductance in use is clipped at zero, so a `std` above its `g0` raises the mean drive rather than lowering it. Both backends do this, and both hold the fluctuation's stationary standard deviation at `std` independently of the integration step, so a fitted `std_e`/`tau_e` means the same thing on either.
 
