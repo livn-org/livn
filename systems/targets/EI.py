@@ -206,6 +206,16 @@ class Culture(TuningTargets):
         "excitatory": [0.01, 100.0],
         "inhibitory": [0.01, 100.0],
     }
+    NOISE_TOTAL_RANGE: ClassVar[list] = [0.005, 0.2]
+    NOISE_RATIO_RANGE: ClassVar[list] = [1.0, 30.0]
+    NOISE_STD_FRACTION_RANGE: ClassVar[list] = [0.05, 1.0]
+    NOISE_BALANCE_SUFFIX = "_ratio"
+    NOISE_BALANCE_PARAMS: ClassVar[tuple] = ("g_e0", "g_i0")
+    NOISE_BALANCE_RANGE: ClassVar[list] = [0.1, 10.0]
+    NOISE_BALANCE_POPULATION = "INH"
+    SIZE_CV_SUFFIX = "-size_cv"
+    SIZE_CV_RANGE: ClassVar[list] = [0.0, 0.8]
+    """Cell-to-cell spread in linear size, per population."""
     RELEASE_PARAM = "U"
     STIMULUS_GAIN_DECADES = 1.0
 
@@ -223,6 +233,9 @@ class Culture(TuningTargets):
         feature_bands: dict | None = None,
         mea: dict | None = None,
         adaptation: bool = False,
+        heterogeneity: bool = False,
+        noise_balance: bool = False,
+        noise_parameterisation: str = "balance",
         ignition: bool = False,
         stimulus: dict | None = None,
         stimulus_threshold: dict | None = None,
@@ -243,6 +256,15 @@ class Culture(TuningTargets):
         }
         self.mea = mea
         self.adaptation = bool(adaptation)
+        self.heterogeneity = bool(heterogeneity)
+        if noise_parameterisation not in {"balance", "conductances"}:
+            raise ValueError(
+                f"unknown noise_parameterisation {noise_parameterisation!r}; "
+                "expected 'balance' (total conductance and I:E ratio) or "
+                "'conductances' (g_e0 and g_i0 directly)"
+            )
+        self.noise_parameterisation = noise_parameterisation
+        self.noise_balance = bool(noise_balance)
         self.ignition = bool(ignition)
         self.stimulus = Protocol(**stimulus) if stimulus else None
         self.stimulus_threshold = dict(stimulus_threshold or {})
@@ -476,6 +498,9 @@ class Culture(TuningTargets):
     def decode_params(self, params: dict, model=None) -> dict:
         decoded = super().decode_params(params, model=model)
         decoded = self._resolve_ignition(decoded, model)
+        decoded = self._resolve_size(decoded)
+        decoded = self._resolve_noise_drive(decoded)
+        decoded = self._resolve_noise_balance(decoded)
 
         suffix = self.RATIO_SUFFIX
         ratios = [name for name in decoded if name.endswith(suffix)]
@@ -510,6 +535,8 @@ class Culture(TuningTargets):
                 self.transform_log10,
             ]
 
+        space.update(self._size_space())
+
         if not self.adaptation:
             return space
 
@@ -540,6 +567,60 @@ class Culture(TuningTargets):
             value = float(value)
             space[key] = [value / span, value * span, self.transform_log10]
         return space
+
+    def _size_space(self) -> dict[str, list]:
+        if not self.heterogeneity:
+            return {}
+        populations = ["EXC", "INH"]
+        env = getattr(self, "_env", None)
+        if env is not None:
+            populations = list(env.active_populations())
+        lo, hi = self.SIZE_CV_RANGE
+        return {f"{p}{self.SIZE_CV_SUFFIX}": [lo, hi] for p in populations}
+
+    def _resolve_size(self, decoded: dict) -> dict:
+        suffix = self.SIZE_CV_SUFFIX
+        cvs = {
+            name[: -len(suffix)]: float(value)
+            for name, value in decoded.items()
+            if name.endswith(suffix)
+        }
+        if not cvs:
+            return decoded
+
+        resolved = {k: v for k, v in decoded.items() if not k.endswith(suffix)}
+        env = getattr(self, "_env", None)
+        if env is None:  # describe_params, with nothing built to apply them to
+            return resolved
+
+        model = env.model
+        ranges = env.system.population_ranges
+        scaled = {}
+        for population, cv in cvs.items():
+            start, count = ranges.get(population, (0, 0))
+            if not count:
+                continue
+            gids = list(range(int(start), int(start) + int(count)))
+            factors = model.size_scales(population, gids, cv=cv)
+            params = model.params(
+                model._inh_params_name()
+                if population == "INH"
+                else "BoothRinzelKiehn-MN"
+            )
+            for key in ("global_diam", "axon_diam"):
+                base = params.get(key)
+                if base is None:
+                    continue
+                scaled.setdefault(key, {}).update(
+                    dict(zip(gids, float(base) * factors, strict=True))
+                )
+
+        order = [int(g) for g in env.cells.gids]
+        for key, by_gid in scaled.items():
+            if len(by_gid) < len(order):  # a population left un-searched
+                continue
+            resolved[f"cells-{key}"] = [float(by_gid[g]) for g in order]
+        return resolved
 
     def _resolve_ignition(self, decoded: dict, model) -> dict:
         self._weight_space(model)  # populates `_weight_reference`
@@ -585,14 +666,86 @@ class Culture(TuningTargets):
         return decoded
 
     def _noise_space(self, model):
-        return {
-            "noise-g_e0": [0.0002, 0.02, self.transform_log10],
-            "noise-g_i0": [0.002, 0.06, self.transform_log10],
-            "noise-std_e": [0.0001, 0.05, self.transform_log10],
-            "noise-std_i": [0.0005, 0.05, self.transform_log10],
+        if self.noise_parameterisation == "balance":
+            drive = {
+                "noise-g_total": [*self.NOISE_TOTAL_RANGE, self.transform_log10],
+                "noise-g_ratio": [*self.NOISE_RATIO_RANGE, self.transform_log10],
+                "noise-std_fraction": [
+                    *self.NOISE_STD_FRACTION_RANGE,
+                    self.transform_log10,
+                ],
+            }
+        else:
+            drive = {
+                "noise-g_e0": [0.0002, 0.02, self.transform_log10],
+                "noise-g_i0": [0.002, 0.06, self.transform_log10],
+                "noise-std_e": [0.0001, 0.05, self.transform_log10],
+                "noise-std_i": [0.0005, 0.05, self.transform_log10],
+            }
+        space = {
+            **drive,
             "noise-tau_e": [1.0, 40.0, self.transform_log10],
-            "noise-tau_i": [4.0, 20.0],
+            "noise-tau_i": [4.0, 40.0],
         }
+        if self.noise_balance:
+            lo, hi = self.NOISE_BALANCE_RANGE
+            population = self.NOISE_BALANCE_POPULATION
+            for name in self.NOISE_BALANCE_PARAMS:
+                key = f"noise-{population}-{name}{self.NOISE_BALANCE_SUFFIX}"
+                space[key] = [lo, hi, self.transform_log10]
+        return space
+
+    def _resolve_noise_drive(self, decoded: dict) -> dict:
+        """`(total, ratio)` back into the two conductances the env takes.
+
+            g_e0 = total / (1 + ratio)      g_i0 = total * ratio / (1 + ratio)
+
+        so `total` is `g_e0 + g_i0` and `ratio` is `g_i0 / g_e0` exactly.
+        """
+        total = decoded.get("noise-g_total")
+        ratio = decoded.get("noise-g_ratio")
+        if total is None and ratio is None:
+            return decoded
+        if total is None or ratio is None:
+            missing = "noise-g_total" if total is None else "noise-g_ratio"
+            raise ValueError(
+                f"{missing!r} is missing; the background is parameterised as a "
+                "pair and neither half resolves to a conductance alone"
+            )
+        total, ratio = float(total), float(ratio)
+        consumed = ("noise-g_total", "noise-g_ratio", "noise-std_fraction")
+        resolved = {k: v for k, v in decoded.items() if k not in consumed}
+        resolved["noise-g_e0"] = total / (1.0 + ratio)
+        resolved["noise-g_i0"] = total * ratio / (1.0 + ratio)
+        fraction = decoded.get("noise-std_fraction")
+        if fraction is not None:
+            resolved["noise-std_e"] = float(fraction) * resolved["noise-g_e0"]
+            resolved["noise-std_i"] = float(fraction) * resolved["noise-g_i0"]
+        return resolved
+
+    def _resolve_noise_balance(self, decoded: dict) -> dict:
+        suffix = self.NOISE_BALANCE_SUFFIX
+        ratios = {
+            name: value
+            for name, value in decoded.items()
+            if name.startswith("noise-") and name.endswith(suffix)
+        }
+        if not ratios:
+            return decoded
+
+        resolved = {k: v for k, v in decoded.items() if k not in ratios}
+        for name, value in ratios.items():
+            _, population, parameter = name[: -len(suffix)].split("-", 2)
+            shared = decoded.get(f"noise-{parameter}")
+            if shared is None:
+                raise ValueError(
+                    f"{name!r} is a multiple of 'noise-{parameter}', which is "
+                    "not in this vector, so it cannot be resolved to a "
+                    "conductance. The target is probably built differently "
+                    "from the run that produced it."
+                )
+            resolved[f"noise-{population}-{parameter}"] = float(shared) * float(value)
+        return resolved
 
     def __call__(self, env):
         self.record(env)
