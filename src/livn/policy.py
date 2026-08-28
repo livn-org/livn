@@ -259,7 +259,7 @@ class MonophasicPulsePolicy(ElectrodePolicy):
             start = int(onset / dt)
             end = min(start + pulse_steps, n_steps)
             for channel, amplitude in zip(channels, amplitudes, strict=False):
-                if amplitude > 0.0:
+                if amplitude != 0.0:
                     inputs = _write(
                         inputs, slice(start, end), channel, float(amplitude)
                     )

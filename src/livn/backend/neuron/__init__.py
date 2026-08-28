@@ -204,6 +204,8 @@ class Env(EnvProtocol):
         self._stim_clamp_rows: dict[tuple[int, int], int] = {}
         self._stim_driven: set[int] = set()
         self._stim_junctions: list[tuple[int, int, int, int, float]] = []
+        self._stim_backed_rows: set[int] = set()
+        self._stim_unbacked_warned = False
         self._stim_j_row_a = np.empty(0, dtype=np.int64)
         self._stim_j_row_b = np.empty(0, dtype=np.int64)
         self._stim_j_clamp_a = np.empty(0, dtype=np.int64)
@@ -834,8 +836,11 @@ class Env(EnvProtocol):
             rows.append(self._stim_row(gid, section_id))
             columns.append(column)
             touched.add(int(gid))
+        self._stim_backed_rows.update(rows)
         if touched:
             self._build_stim_drives(touched)
+        else:
+            self._compile_stim_junctions()
         return rows, columns
 
     def _build_stim_drives(self, gids) -> None:
@@ -872,13 +877,42 @@ class Env(EnvProtocol):
                     )
                 )
 
-        if self._stim_junctions:
-            j = np.asarray(self._stim_junctions, dtype=np.float64)
+        self._compile_stim_junctions()
+
+    def _compile_stim_junctions(self) -> None:
+        backed = self._stim_backed_rows
+        kept = [
+            junction
+            for junction in self._stim_junctions
+            if junction[0] in backed and junction[1] in backed
+        ]
+        dropped = len(self._stim_junctions) - len(kept)
+        if dropped and not self._stim_unbacked_warned:
+            self._stim_unbacked_warned = True
+            logger.warning(
+                "%d of %d axial junctions are not driven: the stimulus does not "
+                "reach both of their sections, and driving them would inject a "
+                "field difference against an unsampled 0 mV. Have %s."
+                "stimulus_coordinates() name every section that appears in "
+                "axial_couplings() to drive them all",
+                dropped,
+                len(self._stim_junctions),
+                type(self.model).__name__ if self.model is not None else "the model",
+            )
+
+        if kept:
+            j = np.asarray(kept, dtype=np.float64)
             self._stim_j_row_a = j[:, 0].astype(np.int64)
             self._stim_j_row_b = j[:, 1].astype(np.int64)
             self._stim_j_clamp_a = j[:, 2].astype(np.int64)
             self._stim_j_clamp_b = j[:, 3].astype(np.int64)
             self._stim_j_inv_r = j[:, 4]
+        else:
+            self._stim_j_row_a = np.empty(0, dtype=np.int64)
+            self._stim_j_row_b = np.empty(0, dtype=np.int64)
+            self._stim_j_clamp_a = np.empty(0, dtype=np.int64)
+            self._stim_j_clamp_b = np.empty(0, dtype=np.int64)
+            self._stim_j_inv_r = np.empty(0, dtype=np.float64)
 
     def _stim_currents(self, block) -> np.ndarray:
         currents = np.zeros((len(self._stim_clamps), block.shape[1]), dtype=np.float64)
