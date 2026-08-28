@@ -461,6 +461,7 @@ class BurstRate(Decoding):
         burst_rate_hz
         n_bursts
         threshold
+        onsets (when each burst started, in ms from the window start)
     """
 
     bin_size: float = 50.0
@@ -477,6 +478,7 @@ class BurstRate(Decoding):
             burst_rate = 0.0
             n_bursts = 0
             threshold = 0.0
+            onsets = []
             if merged_tt:
                 n_units = max(1, len(set(merged_it)))
                 n_bins = max(1, int(duration / self.bin_size))
@@ -487,15 +489,18 @@ class BurstRate(Decoding):
                 floor = max(self.min_floor, self.min_floor_fraction * n_units)
                 threshold = max(robust_t, floor)
                 burst_bins = counts >= threshold
-                n_bursts = int(
-                    np.sum(np.diff(np.concatenate([[False], burst_bins, [False]])) == 1)
+                rises = np.flatnonzero(
+                    np.diff(np.concatenate([[0], burst_bins.astype(int)])) == 1
                 )
+                onsets = [float(i) * self.bin_size for i in rises]
+                n_bursts = len(rises)
                 burst_rate = n_bursts / (duration / 1000.0)
 
             result = {
                 "burst_rate_hz": float(burst_rate),
                 "n_bursts": int(n_bursts),
                 "threshold": float(threshold),
+                "onsets": list(onsets),
             }
 
         return P.broadcast(result, comm=env.comm)
