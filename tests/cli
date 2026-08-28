@@ -16,7 +16,8 @@ Options for 'fast':
 Options for 'verify' / 'test':
   --backend <diffrax|neuron|brian2|none|all>  Backend to test (default: all)
   --system  <path>        Path to test system (default: ./systems/graphs/EI)
-  --selection <name>      Subselection within it (default: e1, ~30 cells)
+  --selection <name>      Subselection within it (default: e1, ~30 cells, when
+                          --system is left at its default; empty otherwise)
   --tier <name>           Only one tier (unit|contract|concurrency|gradients)
   --slow                  Include the long reference comparisons
   --fail-fast             Stop at the first failure
@@ -106,8 +107,9 @@ case "$cmd" in
 
   verify|test)
     backend="all"
-    system="./systems/graphs/EI"
-    selection="e1"
+    system=""
+    selection=""
+    selection_given=false
     tier=""
     pytest_args=""
     oversubscribe=false
@@ -118,7 +120,7 @@ case "$cmd" in
       case "$1" in
         --backend) backend="$2"; shift 2 ;;
         --system)  system="$2";  shift 2 ;;
-        --selection) selection="$2"; shift 2 ;;
+        --selection) selection="$2"; selection_given=true; shift 2 ;;
         --tier) tier="$2"; shift 2 ;;
         --slow) slow=true; shift ;;
         --fail-fast) fail_fast=true; shift ;;
@@ -127,6 +129,11 @@ case "$cmd" in
         *) echo "Unknown option: $1"; echo "$USAGE"; exit 1 ;;
       esac
     done
+
+    if [[ -z "$system" ]]; then
+      system="./systems/graphs/EI"
+      $selection_given || selection="e1"
+    fi
 
     export LIVN_TEST_SYSTEM="$system"
     export LIVN_TEST_SELECTION="$selection"

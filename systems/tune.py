@@ -1350,3 +1350,5 @@ class Tune(Interface):
         print("Cached:", optimization.cached())
 
         print(optimization.output_filepath)
+
+        print(optimization.execution.output_filepath())
