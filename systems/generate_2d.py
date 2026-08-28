@@ -1,8 +1,8 @@
+import hashlib
 import json
 import math
 import os
 import uuid
-import zlib
 from collections import defaultdict
 from enum import IntEnum
 from pathlib import Path
@@ -52,10 +52,33 @@ WEIGHTS_NAMESPACE = "Weights"
 REGION_NAMESPACE = "Region"
 
 
-def _stream(seed: int, *tags: str) -> np.random.SeedSequence:
-    return np.random.SeedSequence(
-        [int(seed), *(zlib.crc32(tag.encode()) for tag in tags)]
-    )
+class StableRandom:
+    __slots__ = ("_key", "_pos")
+
+    def __init__(self, seed: int, *tags: str):
+        digest = hashlib.blake2b(digest_size=16)
+        digest.update(str(int(seed)).encode())
+        for tag in tags:
+            digest.update(b"\x00" + tag.encode())
+        self._key = np.frombuffer(digest.digest(), dtype="<u8").copy()
+        self._pos = 0
+
+    def _raw(self, n: int, at: int | None) -> np.ndarray:
+        counter = self._pos if at is None else int(at)
+        raw = np.random.Philox(key=self._key, counter=counter).random_raw(n)
+        if at is None:
+            self._pos += n
+        return raw
+
+    def random(self, n: int, at: int | None = None) -> np.ndarray:
+        return (self._raw(n, at) >> np.uint64(40)).astype(np.float32) * np.float32(
+            2.0**-24
+        )
+
+    def uniform(self, low: float, high: float, size: int) -> np.ndarray:
+        return (
+            np.float32(low) + (np.float32(high) - np.float32(low)) * self.random(size)
+        ).astype(np.float32)
 
 
 class SWCTypesDef(IntEnum):
@@ -678,7 +701,7 @@ class Generate2DSystem(Interface):
         for pop in populations:
             start, count = population_ranges[pop]
             gids = np.arange(start, start + count, dtype=np.uint32)
-            rng = np.random.default_rng(_stream(seed, "coordinates", pop))
+            rng = StableRandom(seed, "coordinates", pop)
             xs, ys, interior = area_fn(
                 count, rng, margin=self.config.margin, **self.config.area_kwargs
             )
@@ -854,7 +877,7 @@ class Generate2DSystem(Interface):
                 total_edges = 0
                 best = (0.0, -1, -1)  # (probability, pre index, post index)
 
-                columns = _stream(seed, "connectivity", pre, post).spawn(n_post)
+                draws = StableRandom(seed, "connectivity", pre, post)
 
                 for lo in range(0, n_post, chunk):
                     hi = min(lo + chunk, n_post)
@@ -865,12 +888,13 @@ class Generate2DSystem(Interface):
                         probs = np.where(
                             probs >= self.config.connectivity.cutoff, probs, 0.0
                         )
-                    draws = np.empty(probs.shape, dtype=np.float32)
-                    for offset, child in enumerate(columns[lo:hi]):
-                        draws[:, offset] = np.random.default_rng(child).random(
-                            probs.shape[0], dtype=np.float32
+                    block = np.empty(probs.shape, dtype=np.float32)
+                    n_pre_rows = probs.shape[0]
+                    for offset in range(hi - lo):
+                        block[:, offset] = draws.random(
+                            n_pre_rows, at=(lo + offset) * n_pre_rows
                         )
-                    mask = draws < probs
+                    mask = block < probs
 
                     if raw_probs.size:
                         flat = int(np.argmax(raw_probs))
@@ -1063,6 +1087,7 @@ class Generate2DSystem(Interface):
             "generator": f"{type(self).__module__}.{type(self).__name__}",
             "version": GRAPH_FORMAT_VERSION,
             "livn": livn_version,
+            "numpy": np.__version__,
             "connectivity_chunk": CONNECTIVITY_CHUNK,
             "config": to_dict(self.config),
             "assumptions": {

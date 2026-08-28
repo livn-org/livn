@@ -6,15 +6,14 @@ A **system** in livn defines the physical architecture of an in vitro neural net
 
 livn ships a series of 2D cultures, plus a hippocampal slice model, hosted on [Hugging Face](https://huggingface.co/datasets/livn-org/livn) and loaded by name:
 
-| Name | Neurons | EXC / INH | Description |
-|------|---------|-----------|-------------|
-| `E` | 2,600 | 2600 / 0 | Excitatory only |
-| `E5I` | 2,600 | 2167 / 433 | 17% inhibitory |
-| `E3I` | 2,600 | 1950 / 650 | 25% inhibitory |
-| `EI` | 2,600 | 1300 / 1300 | Balanced |
-| `CA1` | ~10,000 | 15 cell types | Hippocampal CA1 model |
+| Name | Neurons | EXC / INH | E→E | I→E | E→I | Description |
+|------|---------|-----------|-----|-----|-----|-------------|
+| `E` | 2,563 | 2563 / 0 | 20.1 | — | — | Excitatory only |
+| `E5I` | 2,575 | 2105 / 470 | 16.7 | 13.4 | 6.8 | 17% inhibitory |
+| `E3I` | 2,592 | 1911 / 681 | 14.9 | 20.1 | 6.2 | 25% inhibitory |
+| `EI` | 2,608 | 1306 / 1302 | 9.8 | 39.9 | 4.0 | Balanced |
+| `CA1` | ~10,000 | 15 cell types | | | | Hippocampal CA1 model |
 
-The cultures differ only in composition using the same area, same cell types, same per-projection in-degrees.
 
 ### Reading a name
 
@@ -40,17 +39,11 @@ ratios("E3I")           # {'EXC': 0.75, 'INH': 0.25}
 
 ### Replicates
 
-Each culture has a second draw under a `_b` suffix (e.g. `EI_b`) built from the same configuration with a different RNG seed.
+Each culture has a second draw under a `_b` suffix (e.g. `EI_b`) built from the same configuration with a different RNG seed. Two systems of one composition are statistically identical replicates, so a target may be fitted on either and the spread between them is the network's sensitivity to the draw.
 
 ### Scale
 
-To allow running cheaply, every culture carries three nested spatial subselections, `e1`/`e2`/`e3`, cut from 250 / 500 / 1000 um boxes at its centre:
-
-| Rung | Box | Cells (`EI`) |
-|------|-----|--------------|
-| `e1` | 250 um | ~30 |
-| `e2` | 500 um | ~120 |
-| `e3` | 1000 um | ~490 |
+Every culture carries one stored spatial subselection, `e1`, cut from a 250 um box at its centre (about 30 cells) for tests and smoke runs.
 
 ### Loading a system
 
@@ -199,6 +192,7 @@ Systems are stored on disk as a directory containing:
 | `cells.h5` (or `graph.h5`) | Neuron coordinates and synapse attributes in NeuroH5 format |
 | `connections.h5` (or `graph.h5`) | Synaptic projections between populations |
 | `graph.json` | System metadata (architecture, connectivity config, element provenance) |
+| `provenance.json` | How the graph was built: seed, kernel, in-degrees, degree rule, and the superset it was thinned from |
 | `mea.json` | Default IO device configuration (optional) |
 | `model.json` | Default model configuration (optional) |
 | `selection/<name>.json` | Stored subselections, as resolved cell ids (optional) |
@@ -220,11 +214,11 @@ These are used automatically by `livn.make()`.
 
 ## Subselections
 
-`env.selection(name)` builds only part of a system, which is how the `e1`/`e2`/`e3` rungs are used:
+`env.selection(name)` builds only part of a system:
 
 ```python
 env = Env("./systems/graphs/EI")
-env.selection("e2")   # ~120 cells instead of 2600
+env.selection("e1")   # ~30 cells instead of 2600
 env.init()
 ```
 
@@ -251,9 +245,9 @@ env.apply_default_params()                  # the whole system
 
 ```python
 env = Env("./systems/graphs/E")
-env.selection("e3")                          # a stored subselection
+env.selection("e1")                          # a stored subselection
 env.init()
-env.apply_default_params()                   # -> params/e3.json
+env.apply_default_params()                   # -> params/e1.json
 ```
 
 Each file holds one block per model and one named group per promoted solution:
