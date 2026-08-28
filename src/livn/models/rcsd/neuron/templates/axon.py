@@ -68,7 +68,7 @@ def attach(template, soma, params: dict, e_pas: float, soma_gmax_na: float) -> l
         sec = h.Section(name=f"ais{index}", cell=template)
         sec.connect(parent(end), 0)
         sec.nseg = 1
-        for mech in ("pas", "Na_conc", "K_conc", "Nas", "Kdr"):
+        for mech in ("pas", "Na_conc", "K_conc", "Nas", "Kdr", "constant"):
             sec.insert(mech)
         sections.append(sec)
         parent, end = sec, 1.0

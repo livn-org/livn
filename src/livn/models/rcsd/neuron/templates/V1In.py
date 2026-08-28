@@ -3,6 +3,7 @@ import logging
 from neuron import h
 
 from . import axon as _axon
+from . import resting as _resting
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -86,8 +87,7 @@ class V1In:
         self.measure_ic()
 
     def measure_ic(self):
-        seg = self.soma(0.5)
-        self.soma.ic_constant = -(seg.ina + seg.ik + seg.ica + seg.i_pas)
+        _resting.pin(list(self.sections) or [self.soma])
 
     def biophys(self):
         sec = self.soma
@@ -122,6 +122,7 @@ class V1In:
         sec.e_pas = self.global_e_pas
 
         self.configure_axon()
+        _resting.insert_constant([self.soma, *(getattr(self, "axon", None) or [])])
 
     def configure_axon(self):
         if getattr(self, "axon", None):

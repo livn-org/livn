@@ -103,11 +103,8 @@ class BoothRinzelKiehn(eqx.Module):
     ic_constant: float
     ic_constant_d: float
 
-    # Resting potential used to seed init_ic mirroring NEURON's
-    # BRK template behaviour: cell.init_ic(V_rest) evaluates the
-    # ionic currents at V_rest and pins ic_constant so the
-    # quiescent membrane is balanced at that voltage
     V_rest: float
+    V_hold: float
 
     celsius: float
     cao: float
@@ -209,6 +206,7 @@ class BoothRinzelKiehn(eqx.Module):
         self.ic_constant = 0.0
         self.ic_constant_d = 0.0
         self.V_rest = -60.0
+        self.V_hold = -60.0
 
         # Temperature-related constants for GHK formulation
         self.celsius = 6.3
@@ -345,6 +343,9 @@ class BoothRinzelKiehn(eqx.Module):
             self.ic_constant_d = float(get("ic_constant_d"))
         if get("V_rest") is not None:
             self.V_rest = float(get("V_rest"))
+            self.V_hold = self.V_rest  # until V_hold says otherwise, below
+        if get("V_hold") is not None:
+            self.V_hold = float(get("V_hold"))
 
         # Input mode
         if get("input_mode") is not None:
@@ -384,11 +385,11 @@ class BoothRinzelKiehn(eqx.Module):
         self.ENa = self._nernst(self.nai, self.nao, 1.0)
         self.EK = self._nernst(self.ki, self.ko, 1.0)
 
-        ic_s, _ic_d = self._init_ic_values(self.V_rest)
+        ic_s, ic_d = self._init_ic_values(self.V_hold)
         if not ic_provided_s:
             self.ic_constant = float(ic_s)
         if not ic_provided_d:
-            self.ic_constant_d = 0.0
+            self.ic_constant_d = float(ic_d)
 
     def _nernst(self, ci: float, co: float, valence: float) -> float:
         T_kelvin = self.celsius + 273.15

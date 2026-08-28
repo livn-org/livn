@@ -2,6 +2,7 @@ import numpy as np
 from neuron import h
 
 from . import axon as _axon
+from . import resting as _resting
 
 NAS_VHALF = -35.0
 NAS_SLOPE = 7.8
@@ -158,8 +159,7 @@ class BRK:
         self.measure_ic()
 
     def measure_ic(self):
-        seg = self.soma(0.5)
-        self.soma.ic_constant = -(seg.ina + seg.ik + seg.ica + seg.i_pas)
+        _resting.pin(list(self.sections) or [self.soma, self.dend])
 
     def biophys(self):
         # Set global parameters
@@ -217,6 +217,9 @@ class BRK:
         self.dend.gmax_KCa = self.dend_gmax_KCa
 
         self.configure_axon()
+        _resting.insert_constant(
+            [self.soma, self.dend, *(getattr(self, "axon", None) or [])]
+        )
 
     def configure_axon(self):
         if getattr(self, "axon", None):

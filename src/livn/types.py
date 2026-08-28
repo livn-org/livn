@@ -456,6 +456,9 @@ class Env(Protocol):
             env.set_noise(noise)
         if cells:
             env = env.cells.set_params(cells)
+            repin = getattr(env, "apply_init_ic", None)
+            if callable(repin):
+                repin()
         if io:
             if getattr(self, "io", None) is None:
                 raise ValueError(

@@ -587,7 +587,7 @@ class Env(EnvProtocol):
             h.secondorder = 2
             h.dt = requested_dt
             self.pc.timeout(600.0)
-            self._apply_init_ic()
+            self.apply_init_ic()
             h.finitialize(h.v_init)
             h.finitialize(h.v_init)
         else:
@@ -710,7 +710,7 @@ class Env(EnvProtocol):
             "subworld_size=<ranks per Env>."
         )
 
-    def _apply_init_ic(self) -> None:
+    def apply_init_ic(self) -> None:
         """Pin each cell's resting current, initializing once per potential."""
         ic_cells = [
             cell
@@ -1585,7 +1585,7 @@ class Env(EnvProtocol):
         if not hasattr(self.model, "neuron_noise_mechanism"):
             return self
         self._noise_state.update(noise)
-        merged = dict(self._noise_state)
+        merged = self._noise_by_population(dict(self._noise_state))
         for population, cells in self.cells.items():
             for gid, cell in cells.items():
                 for idx, sec in enumerate(cell.sections):
@@ -1598,10 +1598,26 @@ class Env(EnvProtocol):
                         )
                         self._flucts[key] = (fluct, state)
                     self.model.neuron_noise_configure(
-                        population, fluct, state, **merged
+                        population, fluct, state, **merged[population]
                     )
                     self._h.pop_section()
         return self
+
+    def _noise_by_population(self, state: dict) -> dict[str, dict]:
+        populations = set(self.cells)
+        shared, per_population = {}, {p: {} for p in populations}
+        for key, value in state.items():
+            prefix, _, rest = key.partition("-")
+            if not rest:
+                shared[key] = value
+                continue
+            if prefix not in populations:
+                raise KeyError(
+                    f"{key!r} names population {prefix!r}, which this env does "
+                    f"not build (has: {', '.join(sorted(populations))})"
+                )
+            per_population[prefix][rest] = value
+        return {p: {**shared, **per_population[p]} for p in populations}
 
     @property
     def v_init(self) -> float:

@@ -379,12 +379,19 @@ class CellHandle(Cell):
 
     def set_params(self, params: dict[str, float]):
         groups = self.sections_by_type()
+        rebuild = {}
         for key, value in params.items():
             sec_type, _, name = key.partition(".")
             if not name:
+                if hasattr(self._template, key) or key in getattr(
+                    self._template, "axon_params", {}
+                ):
+                    rebuild[key] = float(value)
+                    continue
                 raise KeyError(
                     f"{key!r} is not a cell parameter; expected "
-                    f"'<section type>.<name>', e.g. 'soma.g_pas'"
+                    f"'<section type>.<name>', e.g. 'soma.g_pas', or a template "
+                    f"parameter such as 'global_diam'"
                 )
             sections = groups.get(sec_type)
             if sections is None:
@@ -397,7 +404,23 @@ class CellHandle(Cell):
                 for seg in sec:
                     setattr(seg, name, value)
 
+        if rebuild:
+            self._rebuild_template(rebuild)
+
         return self._env
+
+    def _rebuild_template(self, params: dict[str, float]):
+        template = self._template
+        axon = getattr(template, "axon_params", None)
+        for name, value in params.items():
+            if axon is not None and name in axon:
+                axon[name] = value
+            else:
+                setattr(template, name, value)
+        for step in ("geometry", "biophys"):
+            fn = getattr(template, step, None)
+            if callable(fn):
+                fn()
 
     def __getattr__(self, name):
         try:
@@ -411,6 +434,20 @@ class CellHandle(Cell):
             object.__setattr__(self, name, value)
         else:
             setattr(self._cell, name, value)
+
+
+def _accepts_gid(factory) -> bool:
+    """Whether a cell factory takes the `gid=` keyword."""
+    import inspect
+
+    try:
+        signature = inspect.signature(factory)
+    except (TypeError, ValueError):
+        return False
+    parameters = signature.parameters
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        return True
+    return "gid" in parameters
 
 
 class CellBuilder:
@@ -451,11 +488,17 @@ class CellBuilder:
                 "required to build it"
             )
 
+        takes_gid = _accepts_gid(factory)
+
         cells: dict[int, NeuronCell] = {}
         for gid in gids:
             if gid % nhost != rank:
                 continue
-            cell = factory(morphology=None)
+            cell = (
+                factory(morphology=None, gid=gid)
+                if takes_gid
+                else factory(morphology=None)
+            )
             xyz = coord_by_gid.get(gid)
             if xyz is not None:
                 cell.position(float(xyz[0]), float(xyz[1]), float(xyz[2]))

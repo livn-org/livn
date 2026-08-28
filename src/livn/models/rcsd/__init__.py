@@ -20,6 +20,10 @@ else:
     import numpy as np
 
 
+def hold_potential(params: dict) -> float:
+    return float(params.get("V_hold", params["V_rest"]))
+
+
 class ReducedCalciumSomaDendrite(Model):
     def __init__(
         self,
@@ -29,6 +33,8 @@ class ReducedCalciumSomaDendrite(Model):
         dendrite_offset: float = 60.0,
         dendrite_orientation: str = "random",
         dendrite_orientation_seed: int = 20260824,
+        size_cv: float | dict[str, float] = 0.0,
+        size_seed: int = 20260827,
     ):
         if input_mode is not None and input_mode not in {
             "current_density",
@@ -54,6 +60,34 @@ class ReducedCalciumSomaDendrite(Model):
             )
         self.dendrite_orientation = dendrite_orientation
         self.dendrite_orientation_seed = int(dendrite_orientation_seed)
+        self.size_cv = size_cv
+        self.size_seed = int(size_seed)
+        for population, cv in self._size_cv_map().items():
+            if cv < 0.0:
+                raise ValueError(f"size_cv for {population!r} must be >= 0, got {cv}")
+
+    def _size_cv_map(self) -> dict[str, float]:
+        if isinstance(self.size_cv, dict):
+            return {k: float(v) for k, v in self.size_cv.items()}
+        return {"EXC": float(self.size_cv), "INH": float(self.size_cv)}
+
+    def size_cv_for(self, population: str) -> float:
+        return self._size_cv_map().get(population, 0.0)
+
+    def size_scales(self, population: str, gids, cv: float | None = None):
+        gids = _onp.asarray(gids, dtype=_onp.int64).ravel()
+        cv = self.size_cv_for(population) if cv is None else float(cv)
+        if cv <= 0.0 or gids.size == 0:
+            return _onp.ones(gids.size, dtype=_onp.float64)
+
+        from statistics import NormalDist
+
+        seed = self.size_seed + (0 if population == "EXC" else 1)
+        unit = _onp.clip(P.stable_uniform(gids, seed=seed), 1e-9, 1.0 - 1e-9)
+        normal = NormalDist()
+        z = _onp.array([normal.inv_cdf(float(u)) for u in unit])
+        sigma = math.sqrt(math.log1p(cv * cv))
+        return _onp.exp(sigma * z - 0.5 * sigma * sigma)
 
     def _inh_params_name(self) -> str:
         return "V1In-Renshaw-InVitro"
@@ -227,6 +261,7 @@ class ReducedCalciumSomaDendrite(Model):
                 "axon_gmax_Na_ratio": 1.0,
                 "axon_gmax_K": 0.3,
                 "axon_g_pas": 5.1745027014177245e-05,
+                "V_hold": -60.0,
                 "V_rest": -53.0,
                 "V_threshold": -37.0,
             },
@@ -262,6 +297,7 @@ class ReducedCalciumSomaDendrite(Model):
                 "axon_gmax_Na_ratio": 0.22069636509544605,
                 "axon_gmax_K": 0.3,
                 "axon_g_pas": 1.9995308811205503e-05,
+                "V_hold": -60.0,
                 "V_rest": -53.0,
                 "V_threshold": -37.0,
             },
@@ -288,6 +324,7 @@ class ReducedCalciumSomaDendrite(Model):
                 "soma_gmax_KCa": 0.001865702157561832,
                 "soma_gmax_Na": 0.16667339205741882,
                 "soma_kCa_Caconc": 1.0,
+                "V_hold": -60.0,
                 "V_rest": -57.4,
                 "V_threshold": -37.0,
             },
@@ -324,6 +361,7 @@ class ReducedCalciumSomaDendrite(Model):
                 "soma_f_Caconc": 0.012550535520847662,
                 "soma_alpha_Caconc": 1.0873581573352384,
                 "soma_kCa_Caconc": 5.057104716106808,
+                "V_hold": -60.0,
                 "V_rest": -50.5,
                 "V_threshold": -30.8,
             },
@@ -348,6 +386,7 @@ class ReducedCalciumSomaDendrite(Model):
                 "axon_gmax_Na_ratio": 0.6172392336752061,
                 "axon_gmax_K": 0.3,
                 "axon_g_pas": 8.444644718803868e-06,
+                "V_hold": -60.0,
                 "V_rest": -60.0,
                 "V_threshold": -50.0,
             },
@@ -373,21 +412,34 @@ class ReducedCalciumSomaDendrite(Model):
         brk_params = self.params("BoothRinzelKiehn-MN")
         inh_params = self.params(self._inh_params_name())
 
-        def make_exc(morphology=None):
-            cell = BRK({"BoothRinzelKiehn": brk_params})
+        def scaled(params, population, gid):
+            """`params` with the cell's own size factor folded into its diameter."""
+            if gid is None or self.size_cv_for(population) <= 0.0:
+                return params
+            scale = float(self.size_scales(population, [gid])[0])
+            out = dict(params)
+            for key in ("global_diam", "axon_diam"):
+                if params.get(key) is not None:
+                    out[key] = float(params[key]) * scale
+            return out
+
+        def make_exc(morphology=None, gid=None):
+            params = scaled(brk_params, "EXC", gid)
+            cell = BRK({"BoothRinzelKiehn": params})
             return ReducedCell(
                 cell,
-                threshold=brk_params["V_threshold"],
-                v_rest=brk_params["V_rest"],
+                threshold=params["V_threshold"],
+                v_rest=hold_potential(params),
                 dend_type="hillock",
             )
 
-        def make_inh(morphology=None):
-            cell = V1In(inh_params)
+        def make_inh(morphology=None, gid=None):
+            params = scaled(inh_params, "INH", gid)
+            cell = V1In(params)
             return ReducedCell(
                 cell,
-                threshold=inh_params["V_threshold"],
-                v_rest=inh_params["V_rest"],
+                threshold=params["V_threshold"],
+                v_rest=hold_potential(params),
                 dend_type="hillock",
             )
 
@@ -583,13 +635,19 @@ class ReducedCalciumSomaDendrite(Model):
 
         sec_name = mechanism.get_segment().sec.name()
         is_soma = "soma" in sec_name
+        is_axon = "ais" in sec_name
 
         mechanism.tau_e = tau_e
         mechanism.tau_i = tau_i
         mechanism.E_e = E_e
         mechanism.E_i = E_i
 
-        if is_soma and population == "INH":
+        if is_axon:
+            mechanism.std_e = 0
+            mechanism.g_e0 = 0
+            mechanism.std_i = 0
+            mechanism.g_i0 = 0
+        elif is_soma and population == "INH":
             # The V1In Renshaw INH cell is single-compartment: its soma is the only
             # site, so it must carry BOTH the excitatory and inhibitory background.
             # With the soma-only inhibitory split below it would be pinned near E_i
@@ -1063,7 +1121,7 @@ class ReducedCalciumSomaDendrite(Model):
             p = self.params("BoothRinzelKiehn-MN")
 
             # Compute ic_constant dynamically from equilibrium condition
-            v_rest = p["V_rest"]
+            v_rest = hold_potential(p)
             e_pas = p["e_pas"]
             celsius = 6.3
             fN = ((36.0 / 293.15) * (celsius + 273.15)) / 2.0
@@ -1125,7 +1183,7 @@ class ReducedCalciumSomaDendrite(Model):
             )
 
             # Initial conditions
-            v_rest = p["V_rest"]
+            v_rest = hold_potential(p)
             population.Vs = v_rest
             population.Vd = v_rest
 
@@ -1184,7 +1242,7 @@ class ReducedCalciumSomaDendrite(Model):
         else:
             p = self.params(self._inh_params_name())
 
-            v_rest = p["V_rest"]
+            v_rest = hold_potential(p)
             e_pas = p["e_pas"]
             celsius = 6.3
             fN = ((36.0 / 293.15) * (celsius + 273.15)) / 2.0
