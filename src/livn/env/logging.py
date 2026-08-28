@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import faulthandler
-import logging
 import os
 import signal
 import sys
@@ -11,8 +10,6 @@ import time
 from livn.backend.config import backend
 from livn.types import Env
 from livn.utils import P
-
-logger = logging.getLogger(__name__)
 
 try:
     from tqdm.auto import tqdm as _tqdm
@@ -35,6 +32,7 @@ class _NeuronTimingLogger:
         self.env = env
 
         self.rank = int(getattr(env, "rank", P.rank()))
+        self.world_rank = P.rank()
         comm = getattr(env, "comm", None)
         self._sole_domain = comm is None or P.size(comm=comm) == P.size()
         self.log_interval_sim = float(log_interval_sim)
@@ -149,9 +147,11 @@ class _NeuronTimingLogger:
             sim_due = (sim_t - self._last_log_sim) >= self.log_interval_sim
             wall_due = (wt - self._last_log_wall) >= self.log_interval_wall
             if sim_due or wall_due:
-                logger.info(
-                    f"[timing] sim t={sim_t:.2f} ms "
-                    f"(+{wt - self._last_log_wall:.2f} s wall)"
+                print(
+                    f"[livn] rank={self.world_rank} sim t={sim_t:.2f} ms "
+                    f"(+{wt - self._last_log_wall:.2f} s wall)",
+                    file=sys.stderr,
+                    flush=True,
                 )
                 self._last_log_sim = sim_t
                 self._last_log_wall = wt
