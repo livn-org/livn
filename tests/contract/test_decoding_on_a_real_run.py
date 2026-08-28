@@ -1,3 +1,5 @@
+import hashlib
+import json
 import os
 
 import numpy as np
@@ -30,6 +32,19 @@ def _recording(it=None, tt=None, iv=None, vv=None, im=None, mp=None, dt=0.1):
     )
 
 
+def _graph_identity() -> str:
+    path = os.path.join(str(livn_test_system()).rstrip("/"), "graph.json")
+    try:
+        with open(path, "rb") as handle:
+            payload = handle.read()
+    except OSError:
+        return "no-graph"
+    try:
+        return str(json.loads(payload)["architecture"]["uuid"])
+    except (ValueError, KeyError, TypeError):
+        return hashlib.sha1(payload).hexdigest()[:12]
+
+
 @pytest.fixture
 def env_response(request):
     if not os.getenv("LIVN_BACKEND"):
@@ -40,6 +55,7 @@ def env_response(request):
             "livn/env/response",
             backend(),
             os.path.basename(str(livn_test_system()).rstrip("/")),
+            _graph_identity(),
             str(livn_test_selection() or "all"),
             f"{RESPONSE_DURATION}ms-{STIMULUS_AMPLITUDE}",
         ]

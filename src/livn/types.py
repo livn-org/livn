@@ -725,14 +725,31 @@ class Env(Protocol):
             coordinates = self.stimulus_coordinates()
         return self.io.reach(coordinates)
 
-    def recording_distances(self, gids=None):
-        """Distances for the coordinates the membrane currents are recorded at."""
-        import numpy as _np
-
+    def recording_coordinates(self, simulated_only: bool = False):
+        """The sections membrane current is recorded at, as `[gid, x, y, z]` rows."""
         coordinates = self.system.transform_coordinates(
             self.model.recording_coordinates,
             populations=self.active_populations(),
         )
+        if not simulated_only:
+            return coordinates
+
+        return self._at_simulated_gids(coordinates)
+
+    def recording_sections_per_cell(self, population: str) -> int:
+        """How many sections of a `population` cell carry a recording coordinate."""
+        coordinates = self.system.coordinate_array(population)
+        n = len(coordinates)
+        if n == 0:
+            return 0
+        rows = self.model.recording_coordinates(coordinates, population=population)
+        return max(1, len(rows) // n)
+
+    def recording_distances(self, gids=None):
+        """Distances for the coordinates the membrane currents are recorded at."""
+        import numpy as _np
+
+        coordinates = self.recording_coordinates()
         if gids is not None:
             gids = _np.asarray(gids).ravel()
             if len(gids) != len(coordinates):

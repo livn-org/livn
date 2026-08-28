@@ -117,6 +117,41 @@ def test_the_stimulus_still_covers_the_whole_graph():
     )
 
 
+def test_membrane_currents_line_up_with_the_recording_gain():
+    env = _driven_env()
+    spec, wanted = _explicit_selection(env)
+    env.selection(spec)
+    env.init()
+    env.record_membrane_current()
+
+    run = env.run(20)  # no stimulus: alignment does not depend on the drive
+    currents = np.asarray(run.current)
+    ids = np.asarray(run.current_ids)
+    assert currents.size, "nothing was recorded, so the test asserts nothing"
+
+    # a backend may name each row, or name each cell once for a block of rows
+    assert currents.shape[0] % len(ids) == 0, (
+        f"{currents.shape[0]} rows of membrane current do not divide over "
+        f"{len(ids)} ids"
+    )
+    row_gids = np.repeat(ids, currents.shape[0] // len(ids))
+    driven = {int(g) for g in row_gids[np.abs(currents).sum(axis=1) > 0]}
+    assert driven <= set(wanted), (
+        f"membrane current is attributed to {sorted(driven - set(wanted))}, "
+        "which the selection never instantiated"
+    )
+
+    gain = np.asarray(env.io.source_gain(env.recording_distances(ids)))
+    assert gain.shape[1] == currents.shape[0], (
+        f"the gain has {gain.shape[1]} columns but {currents.shape[0]} rows of "
+        "membrane current were recorded; potential_recording() cannot multiply them"
+    )
+
+    potential = np.asarray(env.potential_recording(currents, ids))
+    assert potential.shape == (env.io.num_channels, currents.shape[1])
+    assert np.isfinite(potential).all()
+
+
 def test_selection_is_refused_after_init():
     env = _driven_env()
     env.init()

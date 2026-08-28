@@ -502,10 +502,13 @@ class Env(EnvProtocol):
         cells = self.cells.get(population, {})
         if not cells:
             return self  # enabling fast_imem with no sections asserts in psolve
+        spn = self.recording_sections_per_cell(population)
+        if not spn:
+            return self
         self._h.cvode.use_fast_imem(1)
         self.i_dt[population] = dt
         for gid, cell in cells.items():
-            for sec_id, sec in enumerate(cell.sections):
+            for sec_id, sec in enumerate(cell.sections[:spn]):
                 vec = self._h.Vector()
                 vec.record(sec(0.5)._ref_i_membrane_, dt)
                 self.i_recs[(int(gid), sec_id)] = vec
@@ -602,7 +605,7 @@ class Env(EnvProtocol):
             self.pc.psolve(target_time)
         self.t = target_time
 
-        ii, tt, iv, v, sv, im, mp = self._collect(self.active_gids(), current_time)
+        ii, tt, iv, v, sv, im, mp = self._collect(current_time)
         self.duration = None
 
         return (
@@ -612,7 +615,7 @@ class Env(EnvProtocol):
             .add_current(im, mp, dt=self.membrane_current_recording_dt)
         )
 
-    def _collect(self, active_gids, current_time: float):
+    def _collect(self, current_time: float):
         """Assemble recorded buffers into the (it, tt, iv, v, im, mp) format."""
         tt = np.array(self.t_vec.as_numpy(), copy=True)
         ii = np.asarray(self.id_vec.as_numpy(), dtype=np.uint32)
@@ -630,27 +633,23 @@ class Env(EnvProtocol):
             iv = v = sv = None
 
         im = mp = None
-        if self.i_recs and len(active_gids):
-            gid_to_index = {int(g): i for i, g in enumerate(active_gids)}
-            spn = max((int(sec) for (_gid, sec) in self.i_recs), default=0) + 1
-            # i_membrane_ (fast_imem) is absolute nA per segment -> microampere;
-            # pack into a [n_neurons*spn, T] matrix in active_gids order
-            T = max((len(rec) for rec in self.i_recs.values()), default=0)
-            if T:
-                rows = len(active_gids) * spn
-                mp = np.zeros((rows, T), dtype=np.float32)
-                im = np.full(rows, -1, dtype=np.int32)
-                for (gid, sec_id), rec in self.i_recs.items():
-                    idx = gid_to_index.get(int(gid))
-                    if idx is None:
-                        continue
-                    row = idx * spn + int(sec_id)
-                    if row >= rows:
-                        continue
-                    arr = np.asarray(rec.as_numpy(), dtype=np.float32) * 1e-3
-                    n = min(arr.shape[0], T)
-                    mp[row, :n] = arr[:n]
-                    im[row] = gid
+        T = max((len(rec) for rec in self.i_recs.values()), default=0)
+        if T:
+            im = np.asarray(self.recording_coordinates(simulated_only=True))[
+                :, 0
+            ].astype(np.int32)
+            # i_membrane_ (fast_imem) is absolute nA per segment -> microampere
+            mp = np.zeros((len(im), T), dtype=np.float32)
+            section_of = {}
+            for row, gid in enumerate(im):
+                sec_id = section_of.get(int(gid), 0)
+                section_of[int(gid)] = sec_id + 1
+                rec = self.i_recs.get((int(gid), sec_id))
+                if rec is None:
+                    continue
+                arr = np.asarray(rec.as_numpy(), dtype=np.float32) * 1e-3
+                n = min(arr.shape[0], T)
+                mp[row, :n] = arr[:n]
 
         return ii, tt, iv, v, sv, im, mp
 

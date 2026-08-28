@@ -106,13 +106,16 @@ class ReducedCalciumSomaDendrite(Model):
         population: str | None = None,
     ) -> types.Float[types.Array, "n_stim_coords ixyz=4"]:
         """
-        Where the two compartments sample the extracellular field.
+        Where each section samples the extracellular field.
 
             gid, x, y, z -> gid, x + dx(gid), y + dy(gid), z
 
+        One row per section, interleaved per neuron, so the width follows the
+        population.
+
         Returns:
-            [2*n_neurons, 4] with interleaved soma/dendrite coordinates
-            soma0, dend0, soma1, dend1, ...
+            [width*n_neurons, 4], `width` sections per neuron:
+            soma0, dend0, axon0.., soma1, dend1, axon1.., ...
         """
         n_neurons = neuron_coordinates.shape[0]
 
