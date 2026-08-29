@@ -80,8 +80,8 @@ BREAKPOINT {
 	SOLVE state METHOD cnexp
 	g = B - A
 	pnmda = mgblock(v)
-	i = g*(v - e)*(1-pf)
-	ica = g*(v - eca)*pf
+	i = g*pnmda*(v - e)*(1-pf)
+	ica = g*pnmda*(v - eca)*pf
 }
 
 DERIVATIVE state {
