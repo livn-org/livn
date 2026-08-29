@@ -56,7 +56,11 @@ CONSTRAINTS = {
         lambda x, min=0.0, max=float("inf"): np.minimum(x - min, max - x),
     ),
     "min_fraction_active": ("fraction_active", lambda x, min: x - min),
-    "steady_firing_bound": ("rate_cv", lambda x, max: max - x),
+    "steady_firing_bound": (
+        "rate_cv",
+        lambda x, max: max - x,
+        "mean_fraction_active_per_bin",
+    ),
     "rate_floor": ("rate_hz", lambda x, min: 1.0 if x > min else -1.0 - (min - x)),
     "fraction_active_band": (
         "mean_active_fraction",
@@ -68,9 +72,12 @@ CONSTRAINTS = {
     ),
 }
 
+INACTIVE = -1.0
+
 FACTOR_BANDS = {
     "mean_rate": lambda reference, k: {"min": reference / k, "max": reference * k},
     "rate_hz": lambda reference, k: {"min": reference / k, "max": reference * k},
+    "rate_cv": lambda reference, k: {"max": reference * k},
 }
 
 TRANSFORMS = {
@@ -93,7 +100,8 @@ class Scorer:
 
         self.kind = name
         self.population = entry["population"]
-        self.feature, self.fn = table[name]
+        self.feature, self.fn, *guard = table[name]
+        self.guard = guard[0] if guard else None
         self.name = entry.get("name") or f"{self.population}_{name}"
         self.binding = entry.get("binding")  # None -> decided by `tune`
         self.kwargs = {
@@ -102,7 +110,9 @@ class Scorer:
             if k not in ("name", "kind", "population", "binding")
         }
 
-    def __call__(self, measured: float) -> float:
+    def __call__(self, measured: float, active: float | None = None) -> float:
+        if self.guard is not None and not active:
+            return INACTIVE
         return float(self.fn(measured, **self.kwargs))
 
     def resolve(self, reference: dict) -> Scorer:
@@ -218,11 +228,20 @@ class CA1(TuningTargets):
         ]
         self.advisory = [c for c in constraints if c not in self.constraints]
 
+        def scored_against_reference(c) -> float | None:
+            recorded = self.reference.get(c.population) or {}
+            if recorded.get(c.feature) is None:
+                return None
+            if c.guard is None:
+                return c(float(recorded[c.feature]))
+            if recorded.get(c.guard) is None:
+                return None
+            return c(float(recorded[c.feature]), float(recorded[c.guard]))
+
         unmeetable = [
             c.name
             for c in self.constraints
-            if (self.reference.get(c.population) or {}).get(c.feature) is not None
-            and c(float(self.reference[c.population][c.feature])) <= 0
+            if (score := scored_against_reference(c)) is not None and score <= 0
         ]
         if unmeetable:
             logger.warning(
@@ -567,7 +586,12 @@ class CA1(TuningTargets):
             measured = float(
                 self.measure(scorer.feature, env).get(scorer.population, 0.0)
             )
-            result[scorer.name] = (scorer(measured), measured)
+            active = (
+                float(self.measure(scorer.guard, env).get(scorer.population, 0.0))
+                if scorer.guard
+                else None
+            )
+            result[scorer.name] = (scorer(measured, active), measured)
         return result
 
     def compute_objectives(self, env) -> dict:
