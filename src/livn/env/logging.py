@@ -17,6 +17,21 @@ except Exception:  # pragma: no cover
     _tqdm = None
 
 
+DEFAULT_TICK_MS = 100.0
+
+
+def _interval_from_env(default: float) -> float:
+    """`LIVN_PROGRESS_INTERVAL` in seconds; 0 silences the reporter."""
+    stated = os.environ.get("LIVN_PROGRESS_INTERVAL")
+    if stated in (None, ""):
+        return default
+    try:
+        value = float(stated)
+    except ValueError:
+        return default
+    return value if value > 0 else float("inf")
+
+
 class _NeuronTimingLogger:
     def __init__(
         self,
@@ -36,8 +51,12 @@ class _NeuronTimingLogger:
         comm = getattr(env, "comm", None)
         self._sole_domain = comm is None or P.size(comm=comm) == P.size()
         self.log_interval_sim = float(log_interval_sim)
-        self.log_interval_wall = float(log_interval_wall)
-        self.tick_dt = float(tick_dt) if tick_dt is not None else self.log_interval_sim
+        self.log_interval_wall = _interval_from_env(float(log_interval_wall))
+        self.tick_dt = (
+            float(tick_dt)
+            if tick_dt is not None
+            else min(DEFAULT_TICK_MS, self.log_interval_sim)
+        )
         self.use_tqdm = (
             progress and _tqdm is not None and self.rank == 0 and self._sole_domain
         )
@@ -96,15 +115,19 @@ class _NeuronTimingLogger:
         if not self.use_tqdm:
             return
 
-        duration = getattr(self.env, "duration", None)
+        window = self._current_window()
 
-        if duration is None:
+        if window is None:
             self._close_bar()
             return
 
-        if self._pbar is None or float(duration) != self._bar_duration:
+        start, duration = window
+        if self._pbar is None or (start, duration) != (
+            self._bar_start_t,
+            self._bar_duration,
+        ):
             self._close_bar()
-            self._open_bar(sim_t, duration)
+            self._open_bar(start, duration)
 
         self._update_bar(sim_t)
 
@@ -122,9 +145,7 @@ class _NeuronTimingLogger:
         if tick_dt is not None:
             self.tick_dt = float(tick_dt)
         elif log_interval_sim is not None:
-            # Re-derive default if caller bumped the sim interval but
-            # didn't override tick_dt explicitly.
-            self.tick_dt = self.log_interval_sim
+            self.tick_dt = min(DEFAULT_TICK_MS, self.log_interval_sim)
         if progress is not None:
             new_use_tqdm = (
                 bool(progress)
@@ -135,6 +156,34 @@ class _NeuronTimingLogger:
             if not new_use_tqdm:
                 self._close_bar()
             self.use_tqdm = new_use_tqdm
+
+    def _current_window(self) -> tuple[float, float] | None:
+        duration = getattr(self.env, "duration", None)
+        start = getattr(self.env, "t", None)
+        if duration is None or start is None:
+            return None
+        return float(start), float(duration)
+
+    def _progress_line(self, sim_t: float, wt: float) -> str:
+        elapsed = max(wt - self._last_log_wall, 1e-9)
+        rate = (sim_t - self._last_log_sim) / elapsed
+
+        window = self._current_window()
+        line = f"[livn] rank={self.world_rank}"
+        if window is not None:
+            start, duration = window
+            done = min(max(sim_t - start, 0.0), duration)
+            line += f" sim t={done:.0f}/{duration:.0f} ms ({done / duration:.0%})"
+        else:
+            line += f" sim t={sim_t:.0f} ms"
+
+        line += f" at {rate:.2f} ms/s"
+        if window is not None and rate > 0.0:
+            start, duration = window
+            remaining = (start + duration - sim_t) / rate
+            if remaining > 0.0:
+                line += f", ~{remaining / 60.0:.0f} min left"
+        return line
 
     def status(self) -> None:
         h = self._h
@@ -147,12 +196,7 @@ class _NeuronTimingLogger:
             sim_due = (sim_t - self._last_log_sim) >= self.log_interval_sim
             wall_due = (wt - self._last_log_wall) >= self.log_interval_wall
             if sim_due or wall_due:
-                print(
-                    f"[livn] rank={self.world_rank} sim t={sim_t:.2f} ms "
-                    f"(+{wt - self._last_log_wall:.2f} s wall)",
-                    file=sys.stderr,
-                    flush=True,
-                )
+                print(self._progress_line(sim_t, wt), file=sys.stderr, flush=True)
                 self._last_log_sim = sim_t
                 self._last_log_wall = wt
 
@@ -173,17 +217,27 @@ def with_progress_logging(
     """Enable live simulation-time logging on ``env``.
 
     For the NEURON backend this installs a periodic status handler that
-    logs the simulated time and wall time elapsed since the last log
-    line. Logs are emitted at most once per ``log_interval_sim`` ms of
-    simulated time, and at least once per ``log_interval_wall`` seconds
-    of wall-clock time (whichever threshold is crossed first).
+    reports how far into the current ``run()`` this rank has got, at what
+    rate, and when it is due to finish. A line is emitted once
+    ``log_interval_sim`` ms of simulated time or ``log_interval_wall``
+    seconds of wall clock have passed, whichever comes first, and goes to
+    stderr so it lands in a batch job's output log.
 
-    ``tick_dt`` controls how often the underlying ``cvode.event``
-    callback fires (in ms of simulated time). When ``None`` it defaults
-    to ``log_interval_sim``.
+    ``LIVN_PROGRESS_INTERVAL`` overrides ``log_interval_wall`` in seconds,
+    which is how a scheduled job turns the cadence down (100 workers each
+    reporting every 10 s is a lot of log) or off, with ``0``.
 
-    If `tqdm` is installed and ``progress`` is true, a tqdm progress bar
-    is shown on rank 0 for each ``env.run()``.
+    ``tick_dt`` controls how often the underlying ``cvode.event`` callback
+    fires, in ms of simulated time. It bounds how precisely the wall-clock
+    interval can be honoured, so it defaults to ``DEFAULT_TICK_MS`` rather
+    than to ``log_interval_sim`` -- a tick measured in tens of thousands of
+    simulated ms is hours of wall clock on a real network, and the reporter
+    never wakes.
+
+    On rank 0 of a run that owns the whole world, and only when `tqdm` is
+    installed and ``progress`` is true, the same handler drives a progress
+    bar instead. A worker holding a subcommunicator (one of many under
+    distwq) reports by line, since interleaved bars are unreadable.
 
     For all other backends this is a no-op and the env is returned unchanged.
     """
