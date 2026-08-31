@@ -147,16 +147,16 @@ def test_set_params_routes_by_prefix():
 
     env.set_params(
         {
-            "EXC_EXC-hillock-AMPA-weight": 0.5,
-            "weight-EXC_INH-hillock-AMPA-weight": 0.25,
+            "EXC_EXC-dend-AMPA-weight": 0.5,
+            "weight-EXC_INH-dend-AMPA-weight": 0.25,
             "noise-g_e0": 1.0,
             "cells-soma.g_pas": 3e-5,
         }
     )
 
     assert env.weights == {
-        "EXC_EXC-hillock-AMPA-weight": 0.5,
-        "EXC_INH-hillock-AMPA-weight": 0.25,
+        "EXC_EXC-dend-AMPA-weight": 0.5,
+        "EXC_INH-dend-AMPA-weight": 0.25,
     }
     assert env.noise == {"g_e0": 1.0}
     assert env.cells.params == {"soma.g_pas": 3e-5}

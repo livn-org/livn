@@ -255,7 +255,7 @@ Each file holds one block per model and one named group per promoted solution:
 ```json
 {
   "ReducedCalciumSomaDendrite": {
-    "default": {"params": {"EXC_EXC-hillock-AMPA-weight": 0.31, "noise-g_e0": 1.0},
+    "default": {"params": {"EXC_EXC-dend-AMPA-weight": 0.31, "noise-g_e0": 1.0},
                 "meta": {"loc": 7, "retained_in_degree": 0.624}}
   }
 }

@@ -430,7 +430,7 @@ class ReducedCalciumSomaDendrite(Model):
                 cell,
                 threshold=params["V_threshold"],
                 v_rest=hold_potential(params),
-                dend_type="hillock",
+                dend_type="dend",
             )
 
         def make_inh(morphology=None, gid=None):
@@ -440,7 +440,7 @@ class ReducedCalciumSomaDendrite(Model):
                 cell,
                 threshold=params["V_threshold"],
                 v_rest=hold_potential(params),
-                dend_type="hillock",
+                dend_type="dend",
             )
 
         return {"EXC": make_exc, "INH": make_inh}
@@ -720,18 +720,18 @@ class ReducedCalciumSomaDendrite(Model):
     def neuron_default_weights(self, system: str):
         return {
             "EI1": {
-                "EXC_EXC-hillock-AMPA-weight": 0.0010000000254350994,
-                "EXC_EXC-hillock-NMDA-weight": 0.37764625228307414,
-                "INH_EXC-hillock-AMPA-weight": 2.9091933347646908,
-                "INH_EXC-hillock-NMDA-weight": 0.0010000000254350994,
+                "EXC_EXC-dend-AMPA-weight": 0.0010000000254350994,
+                "EXC_EXC-dend-NMDA-weight": 0.37764625228307414,
+                "INH_EXC-dend-AMPA-weight": 2.9091933347646908,
+                "INH_EXC-dend-NMDA-weight": 0.0010000000254350994,
                 "EXC_INH-soma-GABA_A-weight": 9.406616405134113,
                 "INH_INH-soma-GABA_A-weight": 8.710510071227473,
             },
             "EI2": {
-                "EXC_EXC-hillock-AMPA-weight": 0.8598201979147386,
-                "EXC_EXC-hillock-NMDA-weight": 1.2337499089211241,
-                "INH_EXC-hillock-AMPA-weight": 1.1851855878120792,
-                "INH_EXC-hillock-NMDA-weight": 0.056837208512839466,
+                "EXC_EXC-dend-AMPA-weight": 0.8598201979147386,
+                "EXC_EXC-dend-NMDA-weight": 1.2337499089211241,
+                "INH_EXC-dend-AMPA-weight": 1.1851855878120792,
+                "INH_EXC-dend-NMDA-weight": 0.056837208512839466,
                 "EXC_INH-soma-GABA_A-weight": 1.5785464331652075,
                 "INH_INH-soma-GABA_A-weight": 4.262910407764182,
             },
@@ -1513,7 +1513,7 @@ class ReducedCalciumSomaDendrite(Model):
     def brian2_synapse_site(self, population: str, section: str) -> tuple[str, str]:
         if section == "soma":
             return "soma", "soma"
-        return ("dend" if population == "EXC" else "soma"), "hillock"
+        return ("dend" if population == "EXC" else "soma"), "dend"
 
     def brian2_noise_op(self, population_group, prng):
         """Ornstein-Uhlenbeck noise via run_regularly

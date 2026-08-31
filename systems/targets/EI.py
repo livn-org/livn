@@ -204,9 +204,9 @@ class Culture(TuningTargets):
     ADAPTATION_POPULATION = "EXC"
     ADAPTATION_PARAMS: ClassVar[dict] = {
         "cells-EXC:soma.gmax_KCa": "soma_gmax_KCa",
-        "cells-EXC:hillock.gmax_KCa": "dend_gmax_KCa",
+        "cells-EXC:dend.gmax_KCa": "dend_gmax_KCa",
         "cells-EXC:soma.kCa_Ca_conc": "soma_kCa_Caconc",
-        "cells-EXC:hillock.kCa_Ca_conc": "dend_kCa_Caconc",
+        "cells-EXC:dend.kCa_Ca_conc": "dend_kCa_Caconc",
     }
     RATIO_SUFFIX = "_ratio"
     RATIO_RANGES: ClassVar[dict] = {

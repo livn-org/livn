@@ -130,7 +130,7 @@ class SingleCellModel(ReducedCalciumSomaDendrite):
         template: str,
         threshold: float = -30.0,
         v_rest: float = -60.0,
-        dend_type: str = "hillock",
+        dend_type: str = "dend",
         celsius: float = 36.0,
         population: str = "EXC",
         construction: dict | None = None,

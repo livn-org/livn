@@ -86,14 +86,14 @@ RCSD declares four synapse types and the NEURON mechanism each maps to:
 
 ```python
 weights = {
-    "EXC_EXC-hillock-AMPA-weight": 0.001,   # MN -> MN, on the motoneuron dendrite
+    "EXC_EXC-dend-AMPA-weight": 0.001,   # MN -> MN, on the motoneuron dendrite
     "INH_EXC-soma-AMPA-weight": 2.9,        # MN -> Renshaw, cholinergic
     "EXC_INH-soma-GABA_A-weight": 9.4,      # Renshaw -> MN, glycinergic, on the soma
 }
 env.set_weights(weights)
 ```
 
-`hillock` is the motoneuron's dendritic compartment. A synapse placed off-soma on a Renshaw cell resolves to its soma, since it has no dendrite, but keeps the `hillock` key so the same dict addresses both cell types. `env.weight_names` lists the keys a given network accepts, and returns the same list on NEURON and brian2.
+`dend` is the motoneuron's dendritic compartment. A synapse placed off-soma on a Renshaw cell resolves to its soma, since it has no dendrite, but keeps the `dend` key so the same dict addresses both cell types. `env.weight_names` lists the keys a given network accepts, and returns the same list on NEURON and brian2.
 
 ### Synaptic plasticity (STDP)
 

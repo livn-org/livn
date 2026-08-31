@@ -20,9 +20,6 @@ class BRK:
         self.soma = h.Section(name="soma", cell=self)
         self.dend = h.Section(name="dend", cell=self)
 
-        # hack: use default attribute to trigger detection
-        self.hillock = self.dend
-
         # Initialize position coordinates
         self.x = self.y = self.z = 0
 

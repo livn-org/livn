@@ -266,11 +266,11 @@ Synaptic weights and background noise can be configured after initialization:
 env.apply_model_defaults()
 
 # Or set explicitly
-env.set_weights({"EXC_EXC-hillock-AMPA-weight": 0.5, ...})
+env.set_weights({"EXC_EXC-dend-AMPA-weight": 0.5, ...})
 env.set_noise({"g_e0": 1.0, "std_e": 0.3, ...})
 
 # Combined via params dict
-env.set_params({"weight-EXC_EXC-hillock-AMPA-weight": 0.5, "noise-g_e0": 1.0})
+env.set_params({"weight-EXC_EXC-dend-AMPA-weight": 0.5, "noise-g_e0": 1.0})
 ```
 
 ### Cell parameters
@@ -290,7 +290,7 @@ env.cells[7].get_params()          # {'soma.g_pas': 1e-05, 'soma.cm': 3.0, ...}
 env = env.cells[7].set_params({"soma.g_pas": 3e-5})
 ```
 
-On the NEURON backend a name is `"<section type>.<name>"`, where the section type is the same one weight keys select on (`soma`, `hillock`, `basal`, ...) and the name is a section attribute (`cm`, `Ra`) or a mechanism parameter under its suffixed NEURON name (`g_pas`, `gnabar_hh`). Reads report the value at the middle of that section type's first section, writes reach every segment of every section of that type.
+On the NEURON backend a name is `"<section type>.<name>"`, where the section type is the same one weight keys select on (`soma`, `dend`, `axon`, ...) and the name is a section attribute (`cm`, `Ra`) or a mechanism parameter under its suffixed NEURON name (`g_pas`, `gnabar_hh`). Reads report the value at the middle of that section type's first section, writes reach every segment of every section of that type.
 
 The whole population is addressed at once by the registry's own `get_params()` / `set_params()`, which work in `env.cells.gids` order. A scalar applies to every cell, an array holds one value per cell:
 

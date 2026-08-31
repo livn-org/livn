@@ -160,7 +160,7 @@ To scope by population, use:
 ```python
 def _protocol_space(self, model):
     return {
-        "cells-EXC:hillock.gmax_KCa": [1e-5, 1e-3, self.transform_log10],
+        "cells-EXC:dend.gmax_KCa": [1e-5, 1e-3, self.transform_log10],
     }
 ```
 
