@@ -480,7 +480,7 @@ class Env(EnvProtocol):
             name = f"{post}_{pre}-{sec_name}-{mech}-weight"
             if name not in names:
                 names.append(name)
-        return names or list(self.system.weight_names)
+        return names or list(super().weight_names)
 
     def set_weights(self, weights):
         for k, v in weights.items():

@@ -1240,15 +1240,31 @@ class System:
 
     @property
     def weight_names(self) -> list[str]:
+        """The weight keys this graph's synapses answer to."""
+        namer = self._weight_section_name()
         names = []
         for post, pre, section, mechanism, _ in self.synapse_projections():
-            if backend() != "neuron":
-                name = f"{post}_{pre}"
-            else:
-                name = f"{post}_{pre}-{section}-{mechanism}-weight"
+            name = f"{post}_{pre}-{namer(post, section)}-{mechanism}-weight"
             if name not in names:
                 names.append(name)
         return names
+
+    def _weight_section_name(self):
+        """`model.section_name`, or the identity when no model resolves."""
+        cached = getattr(self, "_weight_section_namer", None)
+        if cached is not None:
+            return cached
+
+        def identity(_population, section):
+            return section
+
+        namer = identity
+        with contextlib.suppress(
+            OSError, KeyError, TypeError, ValueError, AttributeError, ImportError
+        ):
+            namer = self.default_model().section_name
+        self._weight_section_namer = namer
+        return namer
 
     @property
     def num_neurons(self):

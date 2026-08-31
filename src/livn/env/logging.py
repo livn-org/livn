@@ -7,7 +7,6 @@ import signal
 import sys
 import time
 
-from livn.backend.config import backend
 from livn.types import Env
 from livn.utils import P
 
@@ -238,10 +237,8 @@ def with_progress_logging(
     installed and ``progress`` is true, the same handler drives a progress
     bar instead. A worker holding a subcommunicator (one of many under
     distwq) reports by line, since interleaved bars are unreadable.
-
-    For all other backends this is a no-op and the env is returned unchanged.
     """
-    if backend() != "neuron":
+    if not hasattr(env, "_h"):
         return env
 
     existing = getattr(env, "_timing_logger", None)

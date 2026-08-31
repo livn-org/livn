@@ -413,7 +413,14 @@ class Env(Protocol):
 
     @property
     def weight_names(self) -> list[str]:
-        return self.system.weight_names
+        """The weight keys this network accepts."""
+        names = []
+        for post, pre, section, mechanism, _ in self.system.synapse_projections():
+            resolved = self.model.section_name(post, section)
+            name = f"{post}_{pre}-{resolved}-{mechanism}-weight"
+            if name not in names:
+                names.append(name)
+        return names
 
     def set_weights(self, weights: dict) -> Self:
         """Set the synaptic weights"""
