@@ -133,7 +133,7 @@ The parameter names must match the names expected by [`env.set_params()`](/guide
 |---|---|---|
 | `weight-`, or no prefix | `env.set_weights()` | `EXC_INH-soma-GABA_A-weight` |
 | `noise-` | `env.set_noise()` | `noise-g_e0` |
-| `cells-` | `env.cells.set_params()` | `cells-soma.g_pas` |
+| `cells-` | `env.cells.set_params()` | `cells-soma.g_pas`, `cells-EXC:soma.g_pas` |
 
 Synaptic weight parameters follow the convention `{post}_{pre}-{section}-{mechanism}-weight` and are the search space's default, so an unprefixed name is read as a weight. The **postsynaptic** population comes first, because that is the population the synapse belongs to: on the shipped cultures the three keys are
 
@@ -145,13 +145,22 @@ Synaptic weight parameters follow the convention `{post}_{pre}-{section}-{mechan
 
 A key naming a section or mechanism the network does not have selects nothing and is applied silently, so `system.weight_names` is worth checking against the graph you are tuning. Parameters of the point process itself rather than of a connection (`tau_rec`, `U`, `tau_decay`) drop the source: `EXC-dend-AMPA-tau_rec`.
 
-`cells-` reaches the physical parameters of the cells themselves rather than the synapses between them, and applies one value to every cell. Its names are the ones the cells expose (`env.cells[gid].get_params()`), which on the NEURON backend are `"<section type>.<name>"` under the same section types weight keys select on. Searching over them tunes the cell model alongside the network:
+`cells-` reaches the physical parameters of the cells themselves rather than the synapses between them, and applies one value to every cell of every population unless the name says otherwise. Its names are the ones the cells expose (`env.cells[gid].get_params()`), which on the NEURON backend are `"<section type>.<name>"` under the same section types weight keys select on. Searching over them tunes the cell model alongside the network:
 
 ```python
 def _weight_space(self, model):
     return {
         "EXC_EXC-dend-AMPA-weight": [0.05, 10.0, self.transform_log10],
         "cells-soma.g_pas": [1e-5, 1e-3, self.transform_log10],
+    }
+```
+
+To scope by population, use:
+
+```python
+def _protocol_space(self, model):
+    return {
+        "cells-EXC:hillock.gmax_KCa": [1e-5, 1e-3, self.transform_log10],
     }
 ```
 

@@ -101,6 +101,8 @@ class ReducedCell:
         if not self.sections:
             raise ValueError("ReducedCell: template exposes no sections")
 
+        axon = {id(sec) for sec in (getattr(template, "axon", None) or [])}
+
         types = np.empty(len(self.sections), dtype=np.int8)
         self._soma = None
         self._dend = None
@@ -110,6 +112,8 @@ class ReducedCell:
                 types[i] = SWC_SOMA
                 if self._soma is None:
                     self._soma = sec
+            elif id(sec) in axon:
+                types[i] = SWC_AXON
             else:
                 types[i] = SWC_BASAL
                 if self._dend is None:
@@ -131,7 +135,12 @@ class ReducedCell:
         return segment_at(self._dend, loc)
 
     def dest_sec_type(self, swc_type: int) -> str:
-        default = self._soma_type if swc_type == SWC_SOMA else self._dend_type
+        if swc_type == SWC_SOMA:
+            default = self._soma_type
+        elif swc_type == SWC_AXON:
+            default = _MORPH_SECTYPE_NAMES[SWC_AXON]
+        else:
+            default = self._dend_type
         return self._sec_types.get(swc_type, default)
 
     def spike_source(self):

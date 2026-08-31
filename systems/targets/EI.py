@@ -201,11 +201,12 @@ class Culture(TuningTargets):
     IGNITION_SUFFIX = "_ignition"
     IGNITION_RANGE: ClassVar[list] = [0.0005, 0.1]
     ADAPTATION_DECADES = 1.0
+    ADAPTATION_POPULATION = "EXC"
     ADAPTATION_PARAMS: ClassVar[dict] = {
-        "cells-soma.gmax_KCa": "soma_gmax_KCa",
-        "cells-hillock.gmax_KCa": "dend_gmax_KCa",
-        "cells-soma.kCa_Ca_conc": "soma_kCa_Caconc",
-        "cells-hillock.kCa_Ca_conc": "dend_kCa_Caconc",
+        "cells-EXC:soma.gmax_KCa": "soma_gmax_KCa",
+        "cells-EXC:hillock.gmax_KCa": "dend_gmax_KCa",
+        "cells-EXC:soma.kCa_Ca_conc": "soma_kCa_Caconc",
+        "cells-EXC:hillock.kCa_Ca_conc": "dend_kCa_Caconc",
     }
     RATIO_SUFFIX = "_ratio"
     RATIO_RANGES: ClassVar[dict] = {

@@ -111,21 +111,56 @@ class CellRegistry(Mapping):
         """
         order = [int(g) for g in self.gids]
         local = {int(g) for g in self.local_gids}
-        values = {
-            name: _as_values(name, value, len(order)) for name, value in params.items()
-        }
+        population_of = self._population_of()
+
+        scoped = []
+        for name, value in params.items():
+            population, key = self._split_population(name)
+            scoped.append((population, key, _as_values(key, value, len(order))))
 
         env = self._env
         cells = self
         for position, gid in enumerate(order):
             if gid not in local:
                 continue
-            env = cells[gid].set_params(
-                {name: value[position] for name, value in values.items()}
-            )
+            population = population_of.get(gid)
+            applicable = {
+                key: value[position]
+                for scope, key, value in scoped
+                if scope is None or scope == population
+            }
+            if not applicable:
+                continue
+            env = cells[gid].set_params(applicable)
             cells = env.cells
 
         return env
+
+    def _population_of(self) -> dict[int, str]:
+        if self._gid_to_population is None:
+            self._gid_to_population = {
+                int(cell_gid): population
+                for population, cells in self._cells.items()
+                for cell_gid in cells
+            }
+        return self._gid_to_population
+
+    def _split_population(self, name: str) -> tuple[str | None, str]:
+        """``"EXC:soma.g_pas"`` -> ``("EXC", "soma.g_pas")``."""
+        population, sep, rest = str(name).partition(":")
+        if not sep:
+            return None, str(name)
+
+        known = list(
+            getattr(getattr(self._env, "system", None), "populations", None)
+            or self._cells
+        )
+        if population not in known:
+            raise KeyError(
+                f"{name!r} is scoped to population {population!r}, which this "
+                f"system does not have (it has {sorted(known)})"
+            )
+        return population, rest
 
     def _allgather(self, value):
         if self._comm is None or self._comm.Get_size() <= 1:
