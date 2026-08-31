@@ -35,7 +35,7 @@ STATE {
     }
     
 BREAKPOINT { 
-    SOLVE state METHOD derivimplicit
+    SOLVE state METHOD cnexp
 }
 
 DERIVATIVE state { LOCAL channel_flow
