@@ -28,6 +28,9 @@ def nrnivmodl() -> str | None:
     return None
 
 
+CORENEURON_LIBRARY = "libcorenrnmech.so"
+
+
 def coreneuron_requested() -> bool:
     """Whether ``LIVN_CORENEURON`` asks for the CoreNEURON solver."""
     return os.environ.get("LIVN_CORENEURON", "").strip().lower() in {
@@ -70,6 +73,16 @@ def _atomic_compile(
             with open(os.path.join(tmp, os.path.basename(m)), "w") as f:
                 f.write(data)
         subprocess.run(command, cwd=tmp, check=True, env=environment)
+        if coreneuron and not os.path.isfile(
+            os.path.join(tmp, "x86_64", CORENEURON_LIBRARY)
+        ):
+            raise RuntimeError(
+                f"`{nrnivmodl_exe} -coreneuron` reported success but produced no "
+                f"x86_64/{CORENEURON_LIBRARY}, so CoreNEURON would fall back to "
+                "the bundled library and not find this model's mechanisms.\n"
+                f"Check CC={environment.get('CC')!r} CXX={environment.get('CXX')!r} set "
+                "to a GNU toolchain that supports -lgomp."
+            )
         open(os.path.join(tmp, ".livn_nrnivmodl_ok"), "w").close()
         try:
             os.rename(tmp, compiled)  # atomic publish
@@ -156,18 +169,14 @@ def load_mechanisms(directory: str) -> str:
     coreneuron = coreneuron_requested()
     compiled = compile_mechanisms(directory, coreneuron=coreneuron)
     if coreneuron:
-        # NEURON looks for the CoreNEURON mechanism library on CORENEURONLIB
-        # and otherwise falls back to the one bundled with the install, which
-        # holds only the standard mechanisms
-        library = os.path.join(compiled, "x86_64", "libcorenrnmech.so")
-        if os.path.isfile(library):
-            os.environ["CORENEURONLIB"] = library
-        else:
-            logger.warning(
-                "no libcorenrnmech.so under %s; CoreNEURON will fall back to "
-                "the bundled library and will not find this model's mechanisms",
-                compiled,
+        library = os.path.join(compiled, "x86_64", CORENEURON_LIBRARY)
+        if not os.path.isfile(library):
+            raise RuntimeError(
+                f"no {CORENEURON_LIBRARY} under {compiled}, so CoreNEURON would "
+                "fall back to the bundled library and silently simulate without "
+                "this model's mechanisms.\n"
             )
+        os.environ["CORENEURONLIB"] = library
     if compiled in _loaded:
         return compiled
 

@@ -886,7 +886,7 @@ class Env(EnvProtocol):
             if junction[0] in backed and junction[1] in backed
         ]
         dropped = len(self._stim_junctions) - len(kept)
-        if dropped and not self._stim_unbacked_warned:
+        if dropped and backed and not self._stim_unbacked_warned:
             self._stim_unbacked_warned = True
             logger.warning(
                 "%d of %d axial junctions are not driven: the stimulus does not "
