@@ -1826,6 +1826,8 @@ class Env(EnvProtocol):
         self.t = 0.0
         self._dt = None
         self._stim_rows = {}
+        self._stim_backed_rows = set()
+        self._stim_unbacked_warned = False
         self._stim_clamps = []
         self._stim_clamp_rows = {}
         self._stim_driven = set()
