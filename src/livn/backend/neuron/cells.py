@@ -128,7 +128,7 @@ class ReducedCell:
             loc = 0.0
         elif loc > 1.0:
             loc = 1.0
-        return self._dend(loc)
+        return segment_at(self._dend, loc)
 
     def dest_sec_type(self, swc_type: int) -> str:
         default = self._soma_type if swc_type == SWC_SOMA else self._dend_type
@@ -268,7 +268,7 @@ class MorphologyCell:
             x = 0.0
         elif x > 1.0:
             x = 1.0
-        return secs[i](x)
+        return segment_at(secs[i], x)
 
     def dest_sec_type(self, swc_type: int) -> str:
         return _MORPH_SECTYPE_NAMES.get(swc_type, "apical")

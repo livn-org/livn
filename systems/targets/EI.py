@@ -534,9 +534,9 @@ class Culture(TuningTargets):
 
     def decode_params(self, params: dict, model=None) -> dict:
         decoded = super().decode_params(params, model=model)
-        decoded = self._resolve_ignition(decoded, model)
         decoded = self._resolve_size(decoded)
         decoded = self._resolve_noise_drive(decoded)
+        decoded = self._resolve_ignition(decoded, model)
         decoded = self._resolve_noise_balance(decoded)
 
         suffix = self.RATIO_SUFFIX

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Protocol
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_VELOCITY = 250.0  # um/ms
 # NetCon delays are floored to 2*dt per NEURON fixed-step requirement but since dt
@@ -524,14 +527,24 @@ class SynapseBuilder:
         i_loc = info.get("syn_locs")
         if i_ids is None:
             return out
+        endpoints = 0
         for gid, data in it:
             syn_ids = np.asarray(data[i_ids])
             swc = np.asarray(data[i_swc])
             locs = np.asarray(data[i_loc])
+            endpoints += int(((locs <= 0.0) | (locs >= 1.0)).sum())
             out[int(gid)] = {
                 int(syn_ids[i]): (int(swc[i]), float(locs[i]))
                 for i in range(len(syn_ids))
             }
+        if endpoints:
+            logger.warning(
+                "%s: %d synapse site(s) are recorded at section position 0 or 1, "
+                "which cannot hold an ion mechanism; they were moved to the "
+                "nearest segment centre",
+                population,
+                endpoints,
+            )
         return out
 
     def _destination_index(self, pre: str, post: str):
