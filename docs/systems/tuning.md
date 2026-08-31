@@ -232,6 +232,7 @@ To fit fewer, pass `skip_objectives`.
 | `adaptation` / `ignition` | `False` | The optional search coordinates above |
 | `stimulus` | `None` | A `Protocol` (a `livn.policy.PulseSweepPolicy` plus the baseline, the recovery time and the driving electrode) to deliver after the measured window. Requires `readout='channels'`. Adds the `stimulus_threshold` objective and the `io-volume_conductor-stimulation_gain` coordinate. The sweep is `len(amplitudes) * repeats * trial_ms` of extra simulation, and `trial_ms` has to leave `recovery_ms` of quiet between one response and the next pulse's baseline &mdash; spend the budget on spacing before repeats |
 | `stimulus_threshold` | `{}` | The bracket the culture's own recruitment crossed in, as `livn.decoding.recruitment_threshold` reports it |
+| `gate_stimulus` | `True` | Deliver the sweep only to candidates the measured window leaves feasible. |
 
 ## Tuning against your own measurements
 

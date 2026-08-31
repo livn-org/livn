@@ -78,7 +78,7 @@ class Protocol(PulseSweepPolicy):
     post_ms: float = Field(default=500.0, gt=0)
     """The response proper, over which gain and latency are measured."""
 
-    recovery_ms: float = Field(default=4000.0, ge=0)
+    recovery_ms: float = Field(default=3500.0, ge=0)
     """Quiet time required between one response ending and the next baseline."""
 
     electrode: int | None = None
@@ -261,6 +261,7 @@ class Culture(TuningTargets):
         ignition: bool = False,
         stimulus: dict | None = None,
         stimulus_threshold: dict | None = None,
+        gate_stimulus: bool = True,
     ):
         self._targets = {
             "mfr": 1.0,
@@ -290,6 +291,7 @@ class Culture(TuningTargets):
         self.ignition = bool(ignition)
         self.stimulus = Protocol(**stimulus) if stimulus else None
         self.stimulus_threshold = dict(stimulus_threshold or {})
+        self.gate_stimulus = bool(gate_stimulus)
         self.skip_objectives = tuple(skip_objectives)
         self.skip_constraints = tuple(skip_constraints)
         self.readout = readout
@@ -317,6 +319,8 @@ class Culture(TuningTargets):
         self.metrics: dict = {}
         self.objectives: dict = {}
         self.curve: dict[float, float] = {}
+        self.simulated_ms: int = 0
+        self.evoked_recorded: bool = False
 
     def io(self):
         if not self.mea:
@@ -785,80 +789,111 @@ class Culture(TuningTargets):
         return resolved
 
     def __call__(self, env):
-        self.record(env)
-        return self.compute_objectives(env), self.compute_constraints(env)
+        self.record_resting(env)
+
+        objectives = self.compute_objectives(env)
+        constraints = self.compute_constraints(env)
+
+        if (
+            self.stimulus is not None
+            and "stimulus_threshold" in objectives
+            and self._admits_a_sweep(constraints)
+        ):
+            self.record_evoked(env)
+            objectives["stimulus_threshold"] = self._threshold_objective(env)
+
+        return objectives, constraints
+
+    def _admits_a_sweep(self, constraints: dict) -> bool:
+        """Whether the free-running window leaves this candidate feasible."""
+        if not self.gate_stimulus:
+            return True
+        return all(float(value) >= 0.0 for value, _ in constraints.values())
 
     def record(self, env, return_data=False):
+        self.record_resting(env)
+        self.record_evoked(env)
+
+        if return_data:
+            return GatherAndMerge(
+                duration=self.simulated_ms, voltages=False, membrane_currents=False
+            )(self.response_data, env)
+        return None
+
+    def record_resting(self, env):
         self._reset_state()
-        resting_duration = int(self.warmup_duration + self.recording_duration)
-        evoked_duration = (
-            math.ceil(self.stimulus.duration_ms) if self.stimulus is not None else 0
-        )
-        total_duration = resting_duration + evoked_duration
+        duration = int(self.warmup_duration + self.recording_duration)
 
         env.record_spikes()
         t0 = time.time()
+        self.response_data = env.run(duration, root_only=False)
+        self.simulated_ms = duration
+        self._log_simulated("free-running", duration, t0)
 
-        self.response_data = env.run(resting_duration, root_only=False)
-        if self.stimulus is not None:
-            electrode = self.stimulus.electrode
-            if electrode is None:
-                channel_ids = np.asarray(env.io.channel_ids)
-                distances = np.asarray(
-                    env.io.distances(env.active_neuron_coordinates())
-                )
-                within = distances[distances[:, -1] <= float(env.io.input_radius)]
-                if within.size == 0:
-                    electrode = 0
-                else:
-                    channels, counts = np.unique(
-                        within[:, 0].astype(np.int64), return_counts=True
-                    )
-                    driving = int(channels[int(np.argmax(counts))])
-                    found = np.flatnonzero(channel_ids == driving)
-                    electrode = int(found[0]) if found.size else 0
+    def record_evoked(self, env):
+        """Deliver the pulse sweep after whatever has been recorded so far."""
+        if self.stimulus is None:
+            return
 
-            dt = 0.1
-            trial_ms = float(self.stimulus.trial_ms)
-            for _at, amplitude in self.stimulus.schedule(start_ms=0.0):
-                trial = self.stimulus.for_array(
-                    len(env.io.channel_ids),
-                    [electrode],
-                    start_ms=0.0,
-                    total_ms=trial_ms,
-                    amplitudes=(float(amplitude),),
-                    repeats=1,
-                    order=(),
-                    dt=dt,
-                )
-                piece = env.run(trial_ms, stimulus=trial, root_only=False)
-                self.response_data = (
-                    piece
-                    if self.response_data is None
-                    else self.response_data.concat(piece)
-                )
+        evoked_duration = math.ceil(self.stimulus.duration_ms)
+        t0 = time.time()
 
-            remainder = evoked_duration - self.stimulus.duration_ms
-            if remainder > 1e-9:
-                self.response_data = self.response_data.concat(
-                    env.run(remainder, root_only=False)
+        electrode = self.stimulus.electrode
+        if electrode is None:
+            channel_ids = np.asarray(env.io.channel_ids)
+            distances = np.asarray(env.io.distances(env.active_neuron_coordinates()))
+            within = distances[distances[:, -1] <= float(env.io.input_radius)]
+            if within.size == 0:
+                electrode = 0
+            else:
+                channels, counts = np.unique(
+                    within[:, 0].astype(np.int64), return_counts=True
                 )
+                driving = int(channels[int(np.argmax(counts))])
+                found = np.flatnonzero(channel_ids == driving)
+                electrode = int(found[0]) if found.size else 0
 
+        dt = 0.1
+        trial_ms = float(self.stimulus.trial_ms)
+        for _at, amplitude in self.stimulus.schedule(start_ms=0.0):
+            trial = self.stimulus.for_array(
+                len(env.io.channel_ids),
+                [electrode],
+                start_ms=0.0,
+                total_ms=trial_ms,
+                amplitudes=(float(amplitude),),
+                repeats=1,
+                order=(),
+                dt=dt,
+            )
+            piece = env.run(trial_ms, stimulus=trial, root_only=False)
+            self.response_data = (
+                piece
+                if self.response_data is None
+                else self.response_data.concat(piece)
+            )
+
+        remainder = evoked_duration - self.stimulus.duration_ms
+        if remainder > 1e-9:
+            self.response_data = self.response_data.concat(
+                env.run(remainder, root_only=False)
+            )
+
+        self.evoked_recorded = True
+        self.simulated_ms += evoked_duration
+        self._log_simulated("evoked", evoked_duration, t0)
+
+    def _log_simulated(self, phase: str, duration: float, started: float):
         local = 0
         if self.response_data is not None and self.response_data.spike_ids is not None:
             local = len(self.response_data.spike_ids)
         logger.info(
-            "[phase] simulated %d ms in %.0f s (%d spikes on this rank); measuring",
-            total_duration,
-            time.time() - t0,
+            "[phase] simulated %d ms of %s in %.0f s (%d spikes on this rank)",
+            duration,
+            phase,
+            time.time() - started,
             local,
         )
-
-        if return_data:
-            return GatherAndMerge(
-                duration=total_duration, voltages=False, membrane_currents=False
-            )(self.response_data, env)
-        return None
 
     @property
     def stimulus_start(self) -> float:
@@ -1001,33 +1036,7 @@ class Culture(TuningTargets):
             )
 
         if self.stimulus is not None:
-            proxy, stimulated = self._readout(
-                network,
-                Slice(
-                    start=self.stimulus_start,
-                    stop=self.stimulus_start + self.stimulus.duration_ms,
-                )(self.response_data),
-            )
-
-            simulated = (
-                RecruitmentCurve(
-                    duration=int(self.stimulus.duration_ms),
-                    schedule=self.stimulus.schedule(0.0),
-                    pre_ms=float(self.stimulus.pre_ms),
-                    post_ms=float(self.stimulus.post_ms),
-                )(stimulated, proxy)
-                or {}
-            )
-            self.curve = simulated.pop("curve", {})
-            self.metrics["recruitment_curve"] = dict(self.curve)
-            self.metrics["threshold"] = simulated
-            self.metrics["threshold_censored"] = self.stimulus_threshold.get("censored")
-            miss = threshold_miss(self.stimulus_threshold, simulated)
-
-            result["stimulus_threshold"] = (
-                1e3 if np.isnan(miss) else float(miss),
-                miss,
-            )
+            result["stimulus_threshold"] = self._threshold_objective(network)
 
         avalanche_result = None
         if total_spike_count > 0:
@@ -1055,6 +1064,35 @@ class Culture(TuningTargets):
             time.time() - _measure_started,
         )
         return result
+
+    def _threshold_objective(self, network) -> tuple:
+        if not self.evoked_recorded:
+            return (1e3, float("nan"))
+
+        proxy, stimulated = self._readout(
+            network,
+            Slice(
+                start=self.stimulus_start,
+                stop=self.stimulus_start + self.stimulus.duration_ms,
+            )(self.response_data),
+        )
+
+        simulated = (
+            RecruitmentCurve(
+                duration=int(self.stimulus.duration_ms),
+                schedule=self.stimulus.schedule(0.0),
+                pre_ms=float(self.stimulus.pre_ms),
+                post_ms=float(self.stimulus.post_ms),
+            )(stimulated, proxy)
+            or {}
+        )
+        self.curve = simulated.pop("curve", {})
+        self.metrics["recruitment_curve"] = dict(self.curve)
+        self.metrics["threshold"] = simulated
+        self.metrics["threshold_censored"] = self.stimulus_threshold.get("censored")
+        miss = threshold_miss(self.stimulus_threshold, simulated)
+
+        return (1e3 if np.isnan(miss) else float(miss), miss)
 
     def _readout(self, env, data):
         if self.readout != "channels":

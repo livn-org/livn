@@ -549,8 +549,8 @@ class Tune(Interface):
         file: str,
         resting: str = "interstimulus",
         evoked: str = "evoked",
-        repeats: int = 4,
-        trial_ms: float = 6000.0,
+        repeats: int = 2,
+        trial_ms: float | None = None,
         **kwargs,
     ):
         from systems.targets.EI import Protocol
@@ -567,7 +567,9 @@ class Tune(Interface):
             )
 
         options["stimulus"] = Protocol.from_block(
-            block, repeats=int(repeats), trial_ms=float(trial_ms)
+            block,
+            repeats=int(repeats),
+            trial_ms=float(block.window_ms if trial_ms is None else trial_ms),
         ).model_dump()
         options["stimulus_threshold"] = block.threshold.model_dump()
 
@@ -584,7 +586,7 @@ class Tune(Interface):
         return {
             **self.version_rcsd(short_term_depression=bool(short_term_depression)),
             "system": "./systems/graphs/E",
-            "n_initial": 90,
+            "n_initial": 25,
             "autosize": True,
         }
 
@@ -592,10 +594,8 @@ class Tune(Interface):
         return {
             **self.version_rcsd(short_term_depression=True),
             "system": "./systems/graphs/EI",
-            # kept as the fallback for autosize=False; `Culture` states the same
-            # 2 as its floor, so sizing cannot go under it either
             "nprocs_per_worker": 2,
-            "n_initial": 90,
+            "n_initial": 25,
             "autosize": True,
         }
 
