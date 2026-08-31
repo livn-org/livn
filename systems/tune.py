@@ -98,6 +98,45 @@ def retained_in_degree(system, selection) -> float | None:
     return float(ratio[kept].mean())
 
 
+def electrode_coverage(system, mea, selection=None) -> float | None:
+    """Fraction of electrodes with a cell inside their recording radius.
+
+    An electrode that reaches no cell records nothing whatever the parameters
+    are, so this is a ceiling on `active_fraction` that no tune can raise. The
+    culture's own floor was measured over its own array and knows nothing about
+    this one over this graph.
+    """
+    import numpy as npn
+
+    electrodes = npn.asarray(mea.get("electrode_coordinates") or (), dtype=float)
+    if not len(electrodes):
+        return None
+
+    rows = [
+        system.coordinate_array(p)
+        for p in system.populations
+        if system.population_count(p)
+    ]
+    if not rows:
+        return None
+    coordinates = npn.vstack(rows)
+
+    if selection:
+        wanted = {int(g) for v in system.selection(selection).values() for g in v}
+        keep = npn.array([int(g) in wanted for g in coordinates[:, 0]], dtype=bool)
+        coordinates = coordinates[keep]
+        if not len(coordinates):
+            return None
+
+    xyz = coordinates[:, 1:4].astype(float)
+    reached = npn.zeros(len(electrodes), dtype=bool)
+    radius = float(mea["output_radius"])
+    for i, electrode in enumerate(electrodes):  # one row at a time; the cross
+        d = npn.linalg.norm(xyz - electrode[1:4], axis=1)  # product does not fit
+        reached[i] = bool((d <= radius).any())
+    return float(reached.mean())
+
+
 def _env_float(name: str) -> float | None:
     value = os.environ.get(name)
     return float(value) if value not in (None, "") else None
@@ -489,6 +528,24 @@ class Tune(Interface):
                 gates[key] = float(hi + slack)
             else:
                 gates[key] = float(max(0.0, lo - slack))
+
+        floor = gates.get("MIN_ACTIVE_FRACTION")
+        if mea is not None and floor is not None:
+            from livn.system import resolve
+
+            reachable = electrode_coverage(
+                resolve(system or self.config.system), mea, selection
+            )
+            if reachable is not None and reachable < 1.0:
+                gates["MIN_ACTIVE_FRACTION"] = max(
+                    0.0, reachable - (1.0 - float(floor))
+                )
+                print(
+                    f"{1.0 - reachable:.1%} of the array reaches no cell within "
+                    f"{mea['output_radius']:g} um, so active_fraction cannot "
+                    f"exceed {reachable:.4f}; lowered MIN_ACTIVE_FRACTION "
+                    f"{float(floor):.4f} -> {gates['MIN_ACTIVE_FRACTION']:.4f}"
+                )
 
         overrides = dict(gates)
         overrides["targets"] = dict(measured["targets"])

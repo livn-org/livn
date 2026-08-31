@@ -151,6 +151,47 @@ class Protocol(PulseSweepPolicy):
         return self.trial_ms - self.pre_ms - self.post_ms
 
 
+RECRUITED = 0.5
+CENSORED_SLOPE = 20.0
+MAX_CENSORED_DECADES = 1.0
+_P_FLOOR = 1e-3
+
+
+def _logit(p: float) -> float:
+    p = min(max(float(p), _P_FLOOR), 1.0 - _P_FLOOR)
+    return math.log(p / (1.0 - p))
+
+
+def _recruitment_slope(amplitudes: list, probabilities: list) -> float | None:
+    if any(a <= 0 for a in amplitudes) or len(amplitudes) < 2:
+        return None
+    xs = [math.log10(a) for a in amplitudes]
+    ys = [_logit(p) for p in probabilities]
+    mx = sum(xs) / len(xs)
+    my = sum(ys) / len(ys)
+    sxx = sum((x - mx) ** 2 for x in xs)
+    if sxx <= 0.0:
+        return None
+    slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys, strict=True)) / sxx
+    return slope if slope > 0.0 else None
+
+
+def _past_the_end(
+    bracket: dict, amplitudes: list, step: float, *, above: bool
+) -> float:
+    probabilities = [float(p) for p in bracket.get("probabilities") or ()]
+    if not probabilities or len(probabilities) != len(amplitudes):
+        return math.log10(step)  # no curve to read; one rung, as it always was
+
+    criterion = _logit(float(bracket.get("recruited", RECRUITED)))
+    shortfall = criterion - _logit(probabilities[-1 if above else 0])
+    if not above:
+        shortfall = -shortfall
+
+    slope = _recruitment_slope(amplitudes, probabilities) or CENSORED_SLOPE
+    return min(max(shortfall, 0.0) / slope, MAX_CENSORED_DECADES)
+
+
 def threshold_miss(measured: dict, simulated: dict) -> float:
     if not measured or not simulated:
         return float("nan")
@@ -165,9 +206,11 @@ def threshold_miss(measured: dict, simulated: dict) -> float:
 
         censored = bracket.get("censored")
         if censored == "above":
-            return float(bracket["highest_tested_mv"]) * step
+            past = _past_the_end(bracket, amplitudes, step, above=True)
+            return float(bracket["highest_tested_mv"]) * 10.0**past
         if censored == "below":
-            return float(bracket["above_mv"]) / step
+            past = _past_the_end(bracket, amplitudes, step, above=False)
+            return float(bracket["above_mv"]) / 10.0**past
         return math.sqrt(float(bracket["below_mv"]) * float(bracket["above_mv"]))
 
     difference = math.log10(point(simulated)) - math.log10(point(measured))
@@ -241,6 +284,7 @@ class Culture(TuningTargets):
     )
     RELEASE_PARAM = "U"
     STIMULUS_GAIN_DECADES = 1.0
+    GAIN_CEILING_MARGIN = 1e-6
 
     def __init__(
         self,
@@ -576,15 +620,47 @@ class Culture(TuningTargets):
             resolved[name[: -len(suffix)]] = float(decoded[name]) * scale
         return self._resolve_release(resolved)
 
+    def _gain_ceiling(self, model, lo: float, hi: float) -> float:
+        declares = getattr(model, "stimulus_bounds", None)
+        bounds = declares("extracellular") if declares else None
+        if not bounds:
+            return hi
+
+        peak = max(self.stimulus.amplitudes) * self.stimulus.uA_per_mv
+        if peak <= 0:
+            return hi
+        allowed = min(abs(float(b)) for b in bounds) / peak
+        allowed *= 1.0 - self.GAIN_CEILING_MARGIN
+        if allowed >= hi:
+            return hi
+        if allowed <= lo:
+            raise ValueError(
+                f"a {max(self.stimulus.amplitudes):g} mV pulse is {peak:g} uA, "
+                f"which reaches this model's extracellular bound at a gain of "
+                f"{allowed:g}"
+            )
+        logger.info(
+            "[space] a %g mV pulse is %g uA, so gains above %g leave the "
+            "%s mV this model is defined over; capping the search at it "
+            "instead of %g",
+            max(self.stimulus.amplitudes),
+            peak,
+            allowed,
+            list(bounds),
+            hi,
+        )
+        return allowed
+
     def _protocol_space(self, model) -> dict[str, list]:
         space = {}
         if self.stimulus is not None:
             from livn.io import DEFAULT_STIMULATION_GAIN
 
             span = 10.0**self.STIMULUS_GAIN_DECADES
+            lo = DEFAULT_STIMULATION_GAIN / span
             space["io-volume_conductor-stimulation_gain"] = [
-                DEFAULT_STIMULATION_GAIN / span,
-                DEFAULT_STIMULATION_GAIN * span,
+                lo,
+                self._gain_ceiling(model, lo, DEFAULT_STIMULATION_GAIN * span),
                 self.transform_log10,
             ]
 

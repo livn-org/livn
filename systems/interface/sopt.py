@@ -27,7 +27,13 @@ live_envs = []
 
 
 class Evaluation:
-    def __init__(self):
+    def __init__(self, objectives=None, constraints=None, features=None):
+        self.declared = {
+            "objectives": None if objectives is None else list(objectives),
+            "constraints": None if constraints is None else list(constraints),
+            "features": None if features is None else list(features),
+        }
+        """What dmosopt will name each column, from `declared_names`."""
         self.features = {}
         self.objectives = {}
         self.constraints = {}
@@ -49,18 +55,38 @@ class Evaluation:
         self.features.setdefault(name, [])
         self.features[name].append(feature)
 
+    def _order(self, kind: str, collected: dict) -> list:
+        declared = self.declared.get(kind)
+        if declared is None:
+            return list(collected)
+
+        missing = [name for name in declared if name not in collected]
+        unexpected = [name for name in collected if name not in declared]
+        if missing or unexpected:
+            raise ValueError(
+                f"the target declares {kind} {declared} but this evaluation "
+                f"produced {list(collected)}; dmosopt names the columns from "
+                f"the declaration, so the two have to agree (missing "
+                f"{missing}, unexpected {unexpected})"
+            )
+        return declared
+
     def result(self):
-        objectives = [np.mean(self.objectives[name]) for name in self.objectives]
-        features = [np.mean(self.features[name]) for name in self.features]
+        objective_names = self._order("objectives", self.objectives)
+        feature_names = self._order("features", self.features)
+
+        objectives = [np.mean(self.objectives[name]) for name in objective_names]
+        features = [np.mean(self.features[name]) for name in feature_names]
 
         reduced_objectives = np.array(objectives)
         reduced_features = np.asarray(
-            [tuple(rf for rf in features)],
-            dtype=np.dtype([(name, np.float32) for name in self.features]),
+            [tuple(features)],
+            dtype=np.dtype([(name, np.float32) for name in feature_names]),
         )
 
         if len(self.constraints) > 0:
-            constraints = [np.min(self.constraints[name]) for name in self.constraints]
+            constraint_names = self._order("constraints", self.constraints)
+            constraints = [np.min(self.constraints[name]) for name in constraint_names]
 
             return {
                 0: (
@@ -76,21 +102,32 @@ class Evaluation:
         return {0: (reduced_objectives, reduced_features)}
 
 
+def declared_names(target) -> dict:
+    objectives = list(target.objective_names())
+    return {
+        "objectives": objectives,
+        "constraints": list(target.constraint_names()),
+        "features": objectives
+        + [n for n in target.observed_feature_names() if n not in objectives],
+    }
+
+
+def _declared(c) -> dict:
+    return declared_names(
+        import_instance(c.config.dopt_params.obj_fun_init_args.target)
+    )
+
+
 def objective_names(c):
-    target = import_instance(c.config.dopt_params.obj_fun_init_args.target)
-    return target.objective_names()
+    return _declared(c)["objectives"]
 
 
 def constraint_names(c):
-    target = import_instance(c.config.dopt_params.obj_fun_init_args.target)
-    return target.constraint_names()
+    return _declared(c)["constraints"]
 
 
 def feature_dtypes(c):
-    target = import_instance(c.config.dopt_params.obj_fun_init_args.target)
-    names = list(target.objective_names())
-    names += [n for n in target.observed_feature_names() if n not in names]
-    return [(f, np.float32) for f in names]
+    return [(f, np.float32) for f in _declared(c)["features"]]
 
 
 def _build_env(target, system, model, comm, subworld_size, selection=None):
@@ -168,15 +205,14 @@ def obj_fun(x, env, trials, target):
             observed.setdefault(name, [])
             observed[name].append(val)
 
-    return results, constraints, observed
+    return results, constraints, observed, declared_names(target)
 
 
 def obj_reduce(payload):
-    evaluation = Evaluation()
-
     result = payload[-1][0]
     objectives_dict, constraints_dict = result[0], result[1]
     observed_dict = result[2] if len(result) > 2 else {}
+    evaluation = Evaluation(**(result[3] if len(result) > 3 else {}))
 
     for name, trials in objectives_dict.items():
         for objective, feature in trials:

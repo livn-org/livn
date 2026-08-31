@@ -79,6 +79,7 @@ def test_a_network_that_never_answers_is_reported_as_a_bound():
     assert out["censored"] == "above"
     assert out["above_mv"] is None
     assert out["highest_tested_mv"] == 600.0
+    assert out["recruited"] == 0.5
 
 
 def test_a_network_already_recruited_at_the_lowest_is_bounded_the_other_way():

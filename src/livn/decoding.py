@@ -1441,6 +1441,7 @@ def recruitment_threshold(curve: dict[float, float], *, recruited: float = 0.5) 
             "probability_at_highest": probabilities[-1],
             "amplitudes_mv": amplitudes,
             "probabilities": probabilities,
+            "recruited": float(recruited),
         }
 
     crossing = min(above)
@@ -1453,6 +1454,7 @@ def recruitment_threshold(curve: dict[float, float], *, recruited: float = 0.5) 
         "probability_at_highest": probabilities[-1],
         "amplitudes_mv": amplitudes,
         "probabilities": probabilities,
+        "recruited": float(recruited),
     }
 
 
