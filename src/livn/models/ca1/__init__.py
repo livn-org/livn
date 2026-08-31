@@ -133,6 +133,9 @@ class PinskyRinzel(Model):
             "SCA",
         ]
 
+    def section_name(self, population: str, section: str) -> str:
+        return "apical" if section == "dend" else section
+
     def neuron_cells(self):
         from livn.backend.neuron.cells import (
             SWC_APICAL,
@@ -154,7 +157,11 @@ class PinskyRinzel(Model):
 
         factories = {"PYR": make_pyr}
 
-        sec_types = {SWC_SOMA: "soma", SWC_APICAL: "apical", SWC_BASAL: "basal"}
+        sec_types = {
+            SWC_SOMA: self.section_name("", "soma"),
+            SWC_APICAL: self.section_name("", "apical"),
+            SWC_BASAL: self.section_name("", "basal"),
+        }
         cell_config = self.neuron_cell_config()
         for population in self.interneuron_populations():
             params = cell_config[self.cell_config_key(population)]["PinskyRinzel"]

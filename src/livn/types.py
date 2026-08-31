@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import pickle
 from enum import StrEnum
@@ -36,6 +37,8 @@ if TYPE_CHECKING:
 PopulationName = str
 PostSynapticPopulationName = PopulationName
 PreSynapticPopulationName = PopulationName
+
+SECTION_VOCABULARY = ("apical", "axon", "basal", "dend", "soma")
 
 # list | dict | tuple | Stimulus | Float[Array, "batch timestep n_channels"] | None
 StimulusLike = Any
@@ -391,7 +394,22 @@ class Env(Protocol):
         )
 
     def destination_sections(self) -> dict[str, dict[str, str]]:
-        return {}
+        """Config section name -> key section name, per population."""
+        declared = set(SECTION_VOCABULARY)
+        with contextlib.suppress(
+            OSError, KeyError, TypeError, ValueError, AttributeError
+        ):
+            declared |= {s for _, _, s, _, _ in self.system.synapse_projections()}
+
+        namer = getattr(self.model, "section_name", None)
+        if not callable(namer):
+            return {}
+        return {
+            population: {
+                section: str(namer(population, section)) for section in sorted(declared)
+            }
+            for population in self.system.populations
+        }
 
     @property
     def weight_names(self) -> list[str]:
@@ -859,6 +877,10 @@ class Model(Protocol):
     def ignored_populations(self) -> set[str]:
         """Populations that backends should skip when instantiating cells/connections."""
         return set()
+
+    def section_name(self, population: str, section: str) -> str:
+        """Name a config section resolves to in weight and `cells-` keys."""
+        return section
 
     def params_key(self) -> str:
         """Key under which this model's parameter sets are stored."""

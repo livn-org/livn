@@ -429,9 +429,12 @@ class Culture(TuningTargets):
 
         return Env(self.system or 1, model=model)
 
-    def _section_names(self, env, population: str, section: str) -> str:
+    def _section_names(self, env, population: str, section: str, model=None) -> str:
         if section in self.section_aliases:
             return self.section_aliases[section]
+        namer = getattr(model, "section_name", None)
+        if callable(namer):
+            return str(namer(population, section))
         if env is None:
             return section
         return env.destination_sections().get(population, {}).get(section, section)
@@ -456,7 +459,13 @@ class Culture(TuningTargets):
                 found = None
         if found:
             found = [
-                (post, pre, self._section_names(env, post, section), mech, syn_type)
+                (
+                    post,
+                    pre,
+                    self._section_names(env, post, section, model),
+                    mech,
+                    syn_type,
+                )
                 for post, pre, section, mech, syn_type in found
             ]
         if not found:
@@ -468,7 +477,9 @@ class Culture(TuningTargets):
                 (
                     post,
                     pre,
-                    self._section_names(env, post, "soma" if pre == "INH" else "dend"),
+                    self._section_names(
+                        env, post, "soma" if pre == "INH" else "dend", model
+                    ),
                     mechanism,
                     "inhibitory" if pre == "INH" else "excitatory",
                 )

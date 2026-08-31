@@ -1248,22 +1248,6 @@ class Env(EnvProtocol):
                 return cells[gid]
         return None
 
-    def destination_sections(self) -> dict[str, dict[str, str]]:
-        from livn.backend.neuron.cells import CONFIG_SECTION_NAMES, config_section_swc
-
-        declared = CONFIG_SECTION_NAMES | {
-            section for _, _, section, _, _ in self.system.synapse_projections()
-        }
-
-        sections: dict[str, dict[str, str]] = {}
-        for population, factory in self.model.neuron_cells().items():
-            cell = factory(morphology=None)
-            sections[population] = {
-                section: str(cell.dest_sec_type(config_section_swc(section)))
-                for section in declared
-            }
-        return sections
-
     @property
     def weight_names(self) -> list[str]:
         if self.conn is None:

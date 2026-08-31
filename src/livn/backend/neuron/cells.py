@@ -6,7 +6,7 @@ from typing import Protocol, runtime_checkable
 
 import numpy as np
 
-from livn.types import Cell
+from livn.types import SECTION_VOCABULARY, Cell
 
 # SWC type codes (Cannon et al. convention, matching the neuroh5 attributes).
 SWC_SOMA = 1
@@ -191,6 +191,8 @@ _CONFIG_SECTION_SWC = {
 
 
 CONFIG_SECTION_NAMES = frozenset(_CONFIG_SECTION_SWC)
+
+assert frozenset(SECTION_VOCABULARY) == CONFIG_SECTION_NAMES
 
 
 def config_section_swc(name: str) -> int:

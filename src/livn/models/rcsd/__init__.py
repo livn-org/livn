@@ -404,6 +404,11 @@ class ReducedCalciumSomaDendrite(Model):
     def neuron_refractory_period(self) -> float:
         return self.refractory_period
 
+    def section_name(self, population: str, section: str) -> str:
+        if section in ("soma", "axon"):
+            return section
+        return "dend"
+
     def neuron_cells(self):
         from livn.backend.neuron.cells import ReducedCell
         from livn.models.rcsd.neuron.templates.BRK import BRK
@@ -430,7 +435,8 @@ class ReducedCalciumSomaDendrite(Model):
                 cell,
                 threshold=params["V_threshold"],
                 v_rest=hold_potential(params),
-                dend_type="dend",
+                soma_type=self.section_name("EXC", "soma"),
+                dend_type=self.section_name("EXC", "dend"),
             )
 
         def make_inh(morphology=None, gid=None):
@@ -440,7 +446,8 @@ class ReducedCalciumSomaDendrite(Model):
                 cell,
                 threshold=params["V_threshold"],
                 v_rest=hold_potential(params),
-                dend_type="dend",
+                soma_type=self.section_name("INH", "soma"),
+                dend_type=self.section_name("INH", "dend"),
             )
 
         return {"EXC": make_exc, "INH": make_inh}
