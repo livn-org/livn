@@ -954,6 +954,14 @@ class Env(EnvProtocol):
             field[source["rows"], at : at + n] += values[:n][:, source["columns"]].T
         return field
 
+    def _stim_delivered_over(self, start_step: int, steps: int) -> bool:
+        stop = start_step + steps
+        return any(
+            min(stop, source["start_step"] + source["n_steps"])
+            > max(start_step, source["start_step"])
+            for source in self._stim_sources
+        )
+
     def _play_window(self, current_time: float, duration: float) -> None:
         """Point the plays at the window this run covers."""
         if not self._stim_clamps:
@@ -963,13 +971,18 @@ class Env(EnvProtocol):
         start_step = round(current_time / stim_dt)
         steps = max(2, math.ceil(duration / stim_dt) + 2)
 
+        if not self._stim_delivered_over(start_step, steps):
+            steps = 2
+
         from livn.io import MAX_STIMULUS_GB_ENV, _max_stimulus_bytes
 
-        held = 2.0 * steps * len(self._stim_clamps) * 8.0
+        rows = len(self._stim_rows)
+        held = (2.0 * len(self._stim_clamps) + rows) * steps * 8.0
         limit = _max_stimulus_bytes()
         if held > limit:
             raise MemoryError(
                 f"delivering {duration:g} ms in one run needs a "
+                f"[{steps:,} x {rows:,}] field and a "
                 f"[{2 * steps:,} x {len(self._stim_clamps):,}] play of 8-byte "
                 f"values, {held / 2**30:.1f} GiB, over the "
                 f"{limit / 2**30:.1f} GiB ceiling.\n"
