@@ -98,6 +98,16 @@ def retained_in_degree(system, selection) -> float | None:
     return float(ratio[kept].mean())
 
 
+SYNCHRONY_DETECTION_FLOOR = 0.01
+
+
+def synchrony_band(measured, floor: float = SYNCHRONY_DETECTION_FLOOR):
+    lo, hi = measured
+    if lo <= 0.0 or hi < floor:
+        return [-float(floor), float(floor)]
+    return None
+
+
 def electrode_coverage(system, mea, selection=None) -> float | None:
     """Fraction of electrodes with a cell inside their recording radius.
 
@@ -552,10 +562,10 @@ class Tune(Interface):
 
         skip_constraints = ["avalanche_r2"]
 
-        synchrony_detection_floor = 0.01
-        sync_lo, sync_hi = measured.get("SYNCHRONY_BAND", (0.0, 1.0))
-        if sync_lo <= 0.0 or sync_hi < synchrony_detection_floor:
-            overrides["SYNCHRONY_BAND"] = [0.0, float(synchrony_detection_floor)]
+        sync_lo, sync_hi = measured.get("SYNCHRONY_BAND") or (0.0, 1.0)
+        band = synchrony_band((sync_lo, sync_hi))
+        if band is not None:
+            overrides["SYNCHRONY_BAND"] = band
         else:
             overrides["targets"]["mean_channel_correlation"] = float(
                 (sync_lo + sync_hi) / 2.0
