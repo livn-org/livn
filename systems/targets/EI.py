@@ -93,8 +93,28 @@ class Protocol(PulseSweepPolicy):
     def _render(self, start_ms: float, stop_ms: float, dt: float, strict: bool):
         return super()._render(start_ms, stop_ms, dt, strict) * self.uA_per_mv
 
+    @staticmethod
+    def _extended(amplitudes: tuple, probe_to_mv: float | None) -> tuple:
+        if probe_to_mv is None or probe_to_mv <= amplitudes[-1]:
+            return amplitudes
+
+        step = amplitudes[-1] - amplitudes[-2]
+        if step <= 0:
+            raise ValueError(
+                f"the measured sweep ends {amplitudes[-2]:g}, {amplitudes[-1]:g} "
+                "mV, which does not rise, so there is no spacing to continue"
+            )
+        extra = []
+        at = amplitudes[-1] + step
+        while at <= probe_to_mv + 1e-9:
+            extra.append(float(at))
+            at += step
+        return (*amplitudes, *extra)
+
     @classmethod
-    def from_block(cls, block, **overrides) -> "Protocol":
+    def from_block(
+        cls, block, probe_to_mv: float | None = None, **overrides
+    ) -> "Protocol":
         amplitudes = block.amplitudes_mv
         if len(amplitudes) < 2:
             raise ValueError(
@@ -113,7 +133,7 @@ class Protocol(PulseSweepPolicy):
         overrides.setdefault("uA_per_mv", cls.UA_AT_REFERENCE / cls.REFERENCE_MV)
 
         return cls(
-            amplitudes=amplitudes,
+            amplitudes=cls._extended(tuple(amplitudes), probe_to_mv),
             onset_ms=float(block.onsets_ms[0]),
             **overrides,
         )
@@ -253,8 +273,8 @@ class Culture(TuningTargets):
     }
     RATIO_SUFFIX = "_ratio"
     RATIO_RANGES: ClassVar[dict] = {
-        "excitatory": [0.01, 100.0],
-        "inhibitory": [0.01, 100.0],
+        "excitatory": [0.01, 1000.0],
+        "inhibitory": [0.01, 1000.0],
     }
     NOISE_TOTAL_RANGE: ClassVar[list] = [0.005, 0.2]
     NOISE_RATIO_RANGE: ClassVar[list] = [1.0, 30.0]
@@ -539,8 +559,8 @@ class Culture(TuningTargets):
         depressing = bool(getattr(model, "short_term_depression", False))
 
         default_ranges = {
-            "excitatory": [0.05, 10.0],
-            "inhibitory": [0.05, 10.0],
+            "excitatory": [0.05, 100.0],
+            "inhibitory": [0.05, 100.0],
         }
         mechanism_ranges = {"NMDA": [0.05, 5.0]}
         depression_ranges = {

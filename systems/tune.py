@@ -618,6 +618,7 @@ class Tune(Interface):
         evoked: str = "evoked",
         repeats: int = 2,
         trial_ms: float | None = None,
+        probe_to_mv: float | None = None,
         **kwargs,
     ):
         from systems.targets.EI import Protocol
@@ -635,6 +636,7 @@ class Tune(Interface):
 
         options["stimulus"] = Protocol.from_block(
             block,
+            probe_to_mv=None if probe_to_mv is None else float(probe_to_mv),
             repeats=int(repeats),
             trial_ms=float(block.window_ms if trial_ms is None else trial_ms),
         ).model_dump()
@@ -649,7 +651,7 @@ class Tune(Interface):
             options["short_term_depression"] = True
         return {"model": ["livn.models.rcsd.ReducedCalciumSomaDendrite", options]}
 
-    def version_E_only(self, short_term_depression: bool = False):
+    def version_E_only(self, short_term_depression: bool = True):
         return {
             **self.version_rcsd(short_term_depression=bool(short_term_depression)),
             "system": "./systems/graphs/E",
