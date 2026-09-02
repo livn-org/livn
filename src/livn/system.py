@@ -489,6 +489,24 @@ def projection_attribute(namespace, name: str, index: int = 0, default=None):
     return namespace
 
 
+def stored_projections(f) -> dict[str, list[str]]:
+    if "Projections" not in f:
+        return {}
+    return {post: list(f[f"Projections/{post}"]) for post in f["Projections"]}
+
+
+def require_projection(f, filepath, pre, post) -> None:
+    stored = stored_projections(f)
+    if pre in stored.get(post, ()):
+        return
+
+    available = sorted(f"{p}->{q}" for q, sources in stored.items() for p in sources)
+    raise KeyError(
+        f"{filepath} has no {pre}->{post} projection; it has "
+        f"{', '.join(available) if available else 'none'}"
+    )
+
+
 def _h5_read_graph(f, pre_start, post_start, pre, post, namespaces=None):
     if namespaces is None:
         namespaces = []
@@ -768,6 +786,8 @@ if _H5_BACKEND == "neuroh5":
         if comm is None:
             comm = MPI.COMM_WORLD
 
+        require_projection(_open_h5(filepath), filepath, pre, post)
+
         (graph, _a) = scatter_read_graph(
             filepath,
             comm=comm,
@@ -899,6 +919,7 @@ else:  # h5pyd or pyfive — both use _open_h5 + generic readers
         population_ranges: dict[str, tuple[int, int]] | None = None,
     ) -> Iterator[tuple[int, tuple[list[int], Projection]]]:
         f = _open_h5(filepath)
+        require_projection(f, filepath, pre, post)
         if population_ranges is None:
             population_ranges = _h5_read_population_ranges(f)
         pre_start = population_ranges[pre][0]
