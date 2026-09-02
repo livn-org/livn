@@ -102,6 +102,13 @@ SYNCHRONY_DETECTION_FLOOR = 0.01
 POP_TAU_BIN_MS = 10.0
 POP_TAU_MIN_WIDTH_BINS = 4
 
+SKIP_CONSTRAINTS = (
+    "avalanche_r2",
+    "pop_autocorr_tau_band",
+    "burst_rate_band",
+)
+"""Constraints the tune declines to score, and why each one is not worth a column."""
+
 
 def widen_to_resolution(band, bin_ms=POP_TAU_BIN_MS, bins=POP_TAU_MIN_WIDTH_BINS):
     lo, hi = float(band[0]), float(band[1])
@@ -599,7 +606,7 @@ class Tune(Interface):
         overrides = dict(gates)
         overrides["targets"] = dict(measured["targets"])
 
-        skip_constraints = ["avalanche_r2"]
+        skip_constraints = list(SKIP_CONSTRAINTS)
 
         sync_lo, sync_hi = measured.get("SYNCHRONY_BAND") or (0.0, 1.0)
         band = synchrony_band((sync_lo, sync_hi))
