@@ -5,7 +5,7 @@ import math
 import os
 import time
 from types import SimpleNamespace
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 import numpy as np
 from pydantic import Field, model_validator
@@ -358,7 +358,7 @@ class Culture(TuningTargets):
         stimulus: dict | None = None,
         stimulus_threshold: dict | None = None,
         gate_stimulus: bool = True,
-        save_spikes: bool = True,
+        save_spikes: bool | Literal["feasible", "all"] = "all",
     ):
         self._targets = {
             "mfr": 1.0,
@@ -389,7 +389,12 @@ class Culture(TuningTargets):
         self.stimulus = Protocol(**stimulus) if stimulus else None
         self.stimulus_threshold = dict(stimulus_threshold or {})
         self.gate_stimulus = bool(gate_stimulus)
-        self.save_spikes = bool(save_spikes)
+        if save_spikes not in (True, False, "feasible", "all"):
+            raise ValueError(
+                f"save_spikes={save_spikes!r}; expected 'all' (every evaluation), "
+                "'feasible' (only those satisfying every constraint), or a bool"
+            )
+        self.save_spikes = "feasible" if save_spikes is True else save_spikes
         self.skip_objectives = tuple(skip_objectives)
         self.skip_constraints = tuple(skip_constraints)
         self.readout = readout
@@ -957,8 +962,10 @@ class Culture(TuningTargets):
         )
 
         feasible = P.broadcast(feasible, comm=getattr(env, "comm", None))
+        if self.save_spikes == "feasible" and not feasible:
+            return
         data = self.response_data
-        if not feasible or data is None:
+        if data is None:
             return
 
         gathered = data.gather(comm=getattr(env, "comm", None), root=0)
@@ -982,6 +989,7 @@ class Culture(TuningTargets):
                         k: float(v[0] if isinstance(v, (list, tuple)) else v)
                         for k, v in constraints.items()
                     },
+                    "feasible": bool(feasible),
                     "simulated_ms": float(self.simulated_ms or 0.0),
                     "n_cells": 0 if gids is None else len(gids),
                 }
