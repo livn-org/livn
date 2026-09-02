@@ -412,6 +412,10 @@ class Generate2DSystem(Interface):
                 "allow_self_connections": False,
             }
         )
+        synapse_overrides: dict[str, dict[str, dict]] = Field(
+            default_factory=dict,
+            description=("Per-projection changes to the transmitter template"),
+        )
         population_definitions: dict[str, int] = Field(default={"EXC": 10, "INH": 11})
         random_seed: int = 123
         output_directory: str | None = None
@@ -443,12 +447,12 @@ class Generate2DSystem(Interface):
                 if isinstance(connectivity, dict)
                 else connectivity.mean_degree
             )
+            valid = {
+                f"{pre}->{post}"
+                for pre in self.populations
+                for post in self.populations
+            }
             if isinstance(degrees, dict):
-                valid = {
-                    f"{pre}->{post}"
-                    for pre in self.populations
-                    for post in self.populations
-                }
                 unknown = sorted(set(degrees) - valid - {"default"})
                 if unknown:
                     raise ValueError(
@@ -456,6 +460,13 @@ class Generate2DSystem(Interface):
                         f"of this system. Expected 'default' or one of "
                         f"{sorted(valid)}"
                     )
+
+            unknown = sorted(set(self.synapse_overrides) - valid)
+            if unknown:
+                raise ValueError(
+                    f"synapse_overrides names {unknown}, which are not "
+                    f"projections of this system. Expected one of {sorted(valid)}"
+                )
             return self
 
     @property
@@ -598,6 +609,10 @@ class Generate2DSystem(Interface):
             name: {**params, "weight": float(contacts)}
             for name, params in template.items()
         }
+        overrides = self.config.synapse_overrides.get(f"{pre}->{post}") or {}
+        for name, params in overrides.items():
+            base = mechanisms.get(name, {"weight": float(contacts)})
+            mechanisms[name] = {**base, **params}
         return mechanisms, [receives_on], contacts
 
     def __call__(self):

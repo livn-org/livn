@@ -624,7 +624,9 @@ class Culture(TuningTargets):
             key = f"{post}_{pre}-{section}-{mechanism}-weight"
 
             if reference is not None and key != reference:
-                low, high = self.RATIO_RANGES.get(syn_type, [0.01, 100.0])
+                low, high = mechanism_ranges.get(
+                    mechanism, self.RATIO_RANGES.get(syn_type, [0.01, 100.0])
+                )
                 weights[key + self.RATIO_SUFFIX] = [low, high, self.transform_log10]
                 continue
 
