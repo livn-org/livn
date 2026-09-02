@@ -212,6 +212,32 @@ def _past_the_end(
     return min(max(shortfall, 0.0) / slope, MAX_CENSORED_DECADES)
 
 
+def recruitment_miss(measured: dict, simulated: dict) -> float:
+    if not measured or not simulated:
+        return float("nan")
+
+    m_amplitudes = [float(a) for a in measured.get("amplitudes_mv") or ()]
+    m_probabilities = [float(p) for p in measured.get("probabilities") or ()]
+    s_amplitudes = [float(a) for a in simulated.get("amplitudes_mv") or ()]
+    s_probabilities = [float(p) for p in simulated.get("probabilities") or ()]
+    if len(m_amplitudes) != len(m_probabilities) or not m_amplitudes:
+        return float("nan")
+    if len(s_amplitudes) != len(s_probabilities) or not s_amplitudes:
+        return float("nan")
+
+    simulated_at = dict(zip(s_amplitudes, s_probabilities, strict=True))
+    shared = [
+        (a, p)
+        for a, p in zip(m_amplitudes, m_probabilities, strict=True)
+        if a in simulated_at
+    ]
+    if not shared:
+        return float("nan")
+
+    squares = [(_logit(simulated_at[a]) - _logit(p)) ** 2 for a, p in shared]
+    return math.sqrt(sum(squares) / len(squares))
+
+
 def threshold_miss(measured: dict, simulated: dict) -> float:
     if not measured or not simulated:
         return float("nan")
@@ -304,6 +330,8 @@ class Culture(TuningTargets):
     )
     RELEASE_PARAM = "U"
     STIMULUS_GAIN_DECADES = 1.0
+    ACTIVE_MIN_SPIKES = 1
+    THRESHOLD_OBJECTIVE = "curve"
     GAIN_CEILING_MARGIN = 1e-6
 
     def __init__(
@@ -1126,7 +1154,10 @@ class Culture(TuningTargets):
         self.metrics["burst_rate"] = float(burst_result.get("burst_rate_hz", 0.0))
 
         active_result = (
-            ActiveFraction(duration=d, min_spikes=1)(recording_data, env) or {}
+            ActiveFraction(duration=d, min_spikes=int(self.ACTIVE_MIN_SPIKES))(
+                recording_data, env
+            )
+            or {}
         )
         active_fraction = float(active_result.get("active_fraction", 0.0))
         self.metrics["active_fraction"] = active_fraction
@@ -1199,8 +1230,12 @@ class Culture(TuningTargets):
         self.metrics["threshold"] = simulated
         self.metrics["threshold_censored"] = self.stimulus_threshold.get("censored")
         miss = threshold_miss(self.stimulus_threshold, simulated)
+        curve_miss = recruitment_miss(self.stimulus_threshold, simulated)
+        self.metrics["threshold_miss"] = miss
+        self.metrics["recruitment_miss"] = curve_miss
 
-        return (1e3 if np.isnan(miss) else float(miss), miss)
+        scored = curve_miss if self.THRESHOLD_OBJECTIVE == "curve" else miss
+        return (1e3 if np.isnan(scored) else float(scored), miss)
 
     def _readout(self, env, data):
         if self.readout != "channels":

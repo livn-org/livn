@@ -651,7 +651,7 @@ class Tune(Interface):
             options["short_term_depression"] = True
         return {"model": ["livn.models.rcsd.ReducedCalciumSomaDendrite", options]}
 
-    def version_E_only(self, short_term_depression: bool = True):
+    def version_E_only(self, short_term_depression: bool = False):
         return {
             **self.version_rcsd(short_term_depression=bool(short_term_depression)),
             "system": "./systems/graphs/E",
