@@ -1141,7 +1141,7 @@ class SingleCell:
             "passive_trace": {"t": t, "v": v},
         }
 
-    def __call__(self, env):
+    def __call__(self, env, params=None, directory=None):
         m = self._measure(env)
         rn = m["rn"]
         tau = m["tau"]

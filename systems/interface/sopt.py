@@ -161,13 +161,16 @@ def obj_fun_init(
     subworld_size,
     selection=None,
     worker=None,
+    local_directory=None,
 ):
     target = import_instance(target)
     env = _build_env(
         target, system, model, worker.merged_comm, subworld_size, selection=selection
     )
     live_envs.append(env)
-    return partial(obj_fun, env=env, target=target, trials=trials)
+    return partial(
+        obj_fun, env=env, target=target, trials=trials, local_directory=local_directory
+    )
 
 
 def controller_init(system, model, target, subworld_size):
@@ -182,7 +185,7 @@ def controller_init(system, model, target, subworld_size):
     live_envs.append(env)
 
 
-def obj_fun(x, env, trials, target):
+def obj_fun(x, env, trials, target, local_directory=None):
     results = {}
     constraints = {}
     observed = {}
@@ -191,7 +194,9 @@ def obj_fun(x, env, trials, target):
         env.clear()
         env.set_params(target.transform_params(x))
 
-        objectives_dict, constraints_dict = target(env)
+        objectives_dict, constraints_dict = target(
+            env, params=x, directory=local_directory
+        )
 
         for name, val in objectives_dict.items():
             results.setdefault(name, [])
@@ -324,6 +329,11 @@ class Sopt(Dmosopt):
             "objectives": ", ".join(objectives),
             "problem": hashlib.sha256(canonical).hexdigest()[:8],
         }
+
+    def __call__(self) -> None:
+        args = self.config.dopt_params.setdefault("obj_fun_init_args", {})
+        args["local_directory"] = self.local_directory()
+        return super().__call__()
 
     def evaluate_objective_at(self, x, verbose=False, **reduce_kwargs):
         import logging

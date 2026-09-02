@@ -1,5 +1,8 @@
+import hashlib
+import json
 import logging
 import math
+import os
 import time
 from types import SimpleNamespace
 from typing import ClassVar
@@ -355,6 +358,7 @@ class Culture(TuningTargets):
         stimulus: dict | None = None,
         stimulus_threshold: dict | None = None,
         gate_stimulus: bool = True,
+        save_spikes: bool = True,
     ):
         self._targets = {
             "mfr": 1.0,
@@ -385,6 +389,7 @@ class Culture(TuningTargets):
         self.stimulus = Protocol(**stimulus) if stimulus else None
         self.stimulus_threshold = dict(stimulus_threshold or {})
         self.gate_stimulus = bool(gate_stimulus)
+        self.save_spikes = bool(save_spikes)
         self.skip_objectives = tuple(skip_objectives)
         self.skip_constraints = tuple(skip_constraints)
         self.readout = readout
@@ -924,7 +929,7 @@ class Culture(TuningTargets):
             resolved[f"noise-{population}-{parameter}"] = float(shared) * float(value)
         return resolved
 
-    def __call__(self, env):
+    def __call__(self, env, params=None, directory=None):
         self.record_resting(env)
 
         objectives = self.compute_objectives(env)
@@ -938,7 +943,50 @@ class Culture(TuningTargets):
             self.record_evoked(env)
             objectives["stimulus_threshold"] = self._threshold_objective(env)
 
+        self._keep_spikes(env, params, directory, constraints)
+
         return objectives, constraints
+
+    def _keep_spikes(self, env, params, directory, constraints) -> None:
+        if not self.save_spikes or directory is None or params is None:
+            return
+
+        feasible = all(
+            float(v[0] if isinstance(v, (list, tuple)) else v) >= 0.0
+            for v in constraints.values()
+        )
+
+        feasible = P.broadcast(feasible, comm=getattr(env, "comm", None))
+        data = self.response_data
+        if not feasible or data is None:
+            return
+
+        gathered = data.gather(comm=getattr(env, "comm", None), root=0)
+        if not P.is_root(comm=getattr(env, "comm", None)):
+            return
+
+        key = hashlib.md5(
+            json.dumps({k: float(v) for k, v in sorted(params.items())}).encode()
+        ).hexdigest()[:16]
+        out = os.path.join(directory, "spikes")
+        os.makedirs(out, exist_ok=True)
+        gids = getattr(getattr(env, "system", None), "gids", None)
+        np.savez_compressed(
+            os.path.join(out, f"spikes-{key}.npz"),
+            spike_ids=np.asarray(gathered.spike_ids, dtype=np.int64),
+            spike_times=np.asarray(gathered.spike_times, dtype=np.float64),
+            meta=json.dumps(
+                {
+                    "parameters": {k: float(v) for k, v in params.items()},
+                    "constraints": {
+                        k: float(v[0] if isinstance(v, (list, tuple)) else v)
+                        for k, v in constraints.items()
+                    },
+                    "simulated_ms": float(self.simulated_ms or 0.0),
+                    "n_cells": 0 if gids is None else len(gids),
+                }
+            ),
+        )
 
     def _admits_a_sweep(self, constraints: dict) -> bool:
         """Whether the free-running window leaves this candidate feasible."""

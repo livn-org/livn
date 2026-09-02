@@ -518,7 +518,7 @@ class CA1(TuningTargets):
         self.tunable = declared & wired
         return env
 
-    def __call__(self, env):
+    def __call__(self, env, params=None, directory=None):
         self.record(env)
         return self.compute_objectives(env), self.compute_constraints(env)
 
