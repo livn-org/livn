@@ -99,6 +99,27 @@ def retained_in_degree(system, selection) -> float | None:
 
 
 SYNCHRONY_DETECTION_FLOOR = 0.01
+POP_TAU_BIN_MS = 10.0
+POP_TAU_MIN_WIDTH_BINS = 4
+
+
+def widen_to_resolution(band, bin_ms=POP_TAU_BIN_MS, bins=POP_TAU_MIN_WIDTH_BINS):
+    lo, hi = float(band[0]), float(band[1])
+    floor = bin_ms * bins
+    if hi - lo >= floor:
+        return [lo, hi]
+    centre = 0.5 * (lo + hi)
+    return [max(0.0, centre - floor / 2.0), centre + floor / 2.0]
+
+
+def coverage_shifted(band, reachable):
+    if reachable is None or reachable >= 1.0:
+        return None
+    lo, hi = float(band[0]), float(band[1])
+    if lo <= reachable:
+        return None
+    shift = 1.0 - reachable
+    return [max(0.0, lo - shift), min(reachable, hi - shift)]
 
 
 def synchrony_band(measured, floor: float = SYNCHRONY_DETECTION_FLOOR):
@@ -106,6 +127,23 @@ def synchrony_band(measured, floor: float = SYNCHRONY_DETECTION_FLOOR):
     if lo <= 0.0 or hi < floor:
         return [-float(floor), float(floor)]
     return None
+
+
+def _corrected_bands(bands: dict, *, reachable=None, drop=()) -> dict:
+    out = {}
+    for name, band in bands.items():
+        if name in drop:
+            continue
+        if name == "active_fraction":
+            shifted = coverage_shifted(band, reachable)
+            if shifted is not None:
+                out[name] = shifted
+                continue
+        if name == "pop_autocorr_tau":
+            out[name] = widen_to_resolution(band)
+            continue
+        out[name] = band
+    return out
 
 
 def electrode_coverage(system, mea, selection=None) -> float | None:
@@ -539,6 +577,7 @@ class Tune(Interface):
             else:
                 gates[key] = float(max(0.0, lo - slack))
 
+        reachable = None
         floor = gates.get("MIN_ACTIVE_FRACTION")
         if mea is not None and floor is not None:
             from livn.system import resolve
@@ -584,14 +623,21 @@ class Tune(Interface):
                 band = overrides.get(key) or measured.get(key)
                 if band is not None:
                     overrides[key] = [0.0, float(band[1])]
+            band = overrides.get(key) or measured.get(key)
+            if band is not None:
+                overrides[key] = widen_to_resolution(band)
 
         options = {
             "overrides": overrides,
-            "feature_bands": {
-                name: (spec.q_lo, spec.q_hi)
-                for name, spec in features.items()
-                if spec is not None and spec.q_lo is not None
-            },
+            "feature_bands": _corrected_bands(
+                {
+                    name: (spec.q_lo, spec.q_hi)
+                    for name, spec in features.items()
+                    if spec is not None and spec.q_lo is not None
+                },
+                reachable=reachable,
+                drop=skip_constraints,
+            ),
             "readout": readout,
             "mea": mea,
             "skip_objectives": [],
