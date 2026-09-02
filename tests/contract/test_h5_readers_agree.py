@@ -23,6 +23,12 @@ neuroh5_required = pytest.mark.skipif(
 )
 
 
+def _namespace_arrays(namespace):
+    if isinstance(namespace, dict):
+        return list(namespace.values())
+    return list(namespace)
+
+
 @pytest.fixture
 def cells_filepath():
     cells = os.path.join(SYSTEM_DIR, "cells.h5")
@@ -257,7 +263,9 @@ class TestPyfiveVsNeuroh5:
                     assert set(n_proj.keys()) == set(p_proj.keys())
                     for ns_name in n_proj:
                         for n_arr, p_arr in zip(
-                            n_proj[ns_name], p_proj[ns_name], strict=False
+                            _namespace_arrays(n_proj[ns_name]),
+                            _namespace_arrays(p_proj[ns_name]),
+                            strict=True,
                         ):
                             np.testing.assert_array_almost_equal(
                                 n_arr,
@@ -361,5 +369,9 @@ class TestSystemPyfiveVsNeuroh5:
                     np.testing.assert_array_equal(np.sort(pre_n), np.sort(pre_p))
 
                     for ns in proj_n:
-                        for arr_n, arr_p in zip(proj_n[ns], proj_p[ns], strict=False):
+                        for arr_n, arr_p in zip(
+                            _namespace_arrays(proj_n[ns]),
+                            _namespace_arrays(proj_p[ns]),
+                            strict=True,
+                        ):
                             np.testing.assert_array_almost_equal(arr_n, arr_p)

@@ -511,11 +511,12 @@ def _h5_read_graph(f, pre_start, post_start, pre, post, namespaces=None):
                     ns_data_arrays[ns_name][ds_name] = ds[:]
 
     results = []
+    last_block = len(dest_block_index) - 1
     for block_idx in range(len(dest_block_index)):
         block_start_gid = int(dest_block_index[block_idx])
         ptr_start = int(dest_block_pointer[block_idx])
         ptr_end = int(dest_block_pointer[block_idx + 1])
-        n_dest = ptr_end - ptr_start - 1
+        n_dest = ptr_end - ptr_start - (1 if block_idx == last_block else 0)
 
         for d in range(n_dest):
             rel_dest_gid = block_start_gid + d
