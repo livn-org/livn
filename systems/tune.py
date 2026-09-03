@@ -699,10 +699,12 @@ class Tune(Interface):
         return composed
 
     def version_rcsd(self, short_term_depression: bool = False):
-        options = {}
-        if short_term_depression:
-            options["short_term_depression"] = True
-        return {"model": ["livn.models.rcsd.ReducedCalciumSomaDendrite", options]}
+        return {
+            "model": [
+                "livn.models.rcsd.ReducedCalciumSomaDendrite",
+                {"short_term_depression": bool(short_term_depression)},
+            ]
+        }
 
     def version_E_only(self, short_term_depression: bool = False):
         return {

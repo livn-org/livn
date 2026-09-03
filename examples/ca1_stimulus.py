@@ -1,8 +1,7 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#   "livn[neuron] @ git+https://github.com/livn-org/livn.git",
-#   "huggingface_hub",
+#   "livn[neuron]",
 # ]
 # ///
 import os

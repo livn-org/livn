@@ -29,7 +29,7 @@ class ReducedCalciumSomaDendrite(Model):
         self,
         input_mode: str | None = None,
         refractory_period: float = 2.0,
-        short_term_depression: bool = False,
+        short_term_depression: bool = True,
         dendrite_offset: float = 60.0,
         dendrite_orientation: str = "random",
         dendrite_orientation_seed: int = 20260824,
