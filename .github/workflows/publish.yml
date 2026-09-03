@@ -19,6 +19,9 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v4
+            - uses: actions/setup-python@v5
+              with:
+                  python-version: ${{ env.PYTHON_VERSION }}
             - name: Compare the tag with the package version
               if: github.event_name == 'release'
               shell: bash
@@ -69,16 +72,24 @@ jobs:
                   run = Env(64).init().run(100)
                   assert run.duration == 100
                   "
-                  # the degraded path: without the library, import still works
-                  # and the no-op backend answers
+                  # the degraded path: with the library gone, `import livn`
+                  # still works and the no-op backend answers. An empty
+                  # LIVN_CACHE_DIR keeps a cached build from standing in.
                   "$bin/python" -c "
-                  import glob, os, livn.backend.native.build as b
+                  import glob, os, livn
                   d = os.path.join(os.path.dirname(livn.__file__), 'backend', 'native')
-                  [os.remove(p) for p in glob.glob(os.path.join(d, 'librcsd.*')) + glob.glob(os.path.join(d, 'rcsd.dll'))]
-                  " || true
+                  found = glob.glob(os.path.join(d, 'librcsd.*')) + glob.glob(os.path.join(d, 'rcsd.dll'))
+                  assert found, 'the wheel shipped no library to remove: ' + d
+                  for path in found:
+                      os.remove(path)
+                  print('removed', found)
+                  "
                   LIVN_CACHE_DIR="$(mktemp -d)" "$bin/python" -c "
-                  from livn.backend import backend; assert backend() == '', backend()
                   import livn
+                  from livn.backend import backend
+                  assert backend() == '', backend()
+                  from livn.env import Env
+                  print('degraded to', Env.__module__)
                   "
             - uses: actions/upload-artifact@v4
               with:

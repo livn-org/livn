@@ -19,6 +19,7 @@ Options for 'verify' / 'test':
   --selection <name>      Subselection within it (default: e1, ~30 cells, when
                           --system is left at its default; empty otherwise)
   --tier <name>           Only one tier (unit|contract|concurrency|gradients)
+  --skip-tier <name>      Every tier but this one; repeatable
   --slow                  Include the long reference comparisons
   --fail-fast             Stop at the first failure
   --oversubscribe         Pass --oversubscribe to mpiexec (Open MPI only; MPICH
@@ -112,6 +113,7 @@ case "$cmd" in
     selection=""
     selection_given=false
     tier=""
+    skip_tiers=()
     pytest_args=""
     oversubscribe=false
     slow=false
@@ -123,6 +125,8 @@ case "$cmd" in
         --system)  system="$2";  shift 2 ;;
         --selection) selection="$2"; selection_given=true; shift 2 ;;
         --tier) tier="$2"; shift 2 ;;
+        --skip-tier) skip_tiers+=("$2"); shift 2 ;;
+        --skip-tier=*) skip_tiers+=("${1#*=}"); shift ;;
         --slow) slow=true; shift ;;
         --fail-fast) fail_fast=true; shift ;;
         --oversubscribe) oversubscribe=true; shift ;;
@@ -144,6 +148,7 @@ case "$cmd" in
         echo "=== $cmd with backend: $b ==="
         "$0" "$cmd" --backend "$b" --system "$system" --selection "$selection" \
           ${tier:+--tier "$tier"} \
+          "${skip_tiers[@]/#/--skip-tier=}" \
           $($slow && echo --slow) \
           $($fail_fast && echo --fail-fast) \
           $($oversubscribe && echo --oversubscribe) \
@@ -155,7 +160,15 @@ case "$cmd" in
     if [[ -n "$tier" ]]; then
       paths="$(existing_tiers "$tier")"
     else
-      paths="$(existing_tiers "${VERIFY_TIERS[@]}")"
+      wanted=()
+      for candidate in "${VERIFY_TIERS[@]}"; do
+        skip=false
+        for dropped in ${skip_tiers[@]+"${skip_tiers[@]}"}; do
+          [[ "$candidate" == "$dropped" ]] && skip=true
+        done
+        $skip || wanted+=("$candidate")
+      done
+      paths="$(existing_tiers ${wanted[@]+"${wanted[@]}"})"
     fi
     if [[ -z "$paths" ]]; then
       echo "No test modules in the requested tier(s)."

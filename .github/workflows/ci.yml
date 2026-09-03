@@ -195,8 +195,8 @@ jobs:
       - name: Build librcsd
         run: uv run python -m livn.backend.native.build
 
-      - name: Run the unit tier
-        run: uv run tests/cli fast
+      - name: Run the native unit tests
+        run: uv run pytest tests/unit/test_native_backend.py tests/unit/test_native_build.py -q
 
       - name: Run the contract tier on the 24-cell graph
         shell: bash
@@ -232,8 +232,14 @@ jobs:
       - name: Install dependencies
         run: uv sync --group dev --extra brian2
 
+      # the concurrency tier tests nothing brian2-specific: it declares no
+      # Capability.MPI, so the collective-symmetry checks skip and test_env is
+      # pinned to a single rank, leaving only the backend-agnostic
+      # rank-invariance checks that the neuron and default jobs already run.
+      # It costs ~45 min here because every Env build recompiles brian2's
+      # generated C++.
       - name: Run tests
-        run: uv run tests/cli verify --backend brian2${{ github.event_name == 'schedule' && ' --slow' || '' }}
+        run: uv run tests/cli verify --backend brian2 --skip-tier concurrency${{ github.event_name == 'schedule' && ' --slow' || '' }}
         env:
           LIVN_USE_LIBGSL: "1"
 
