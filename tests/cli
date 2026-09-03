@@ -67,7 +67,7 @@ existing_tiers() {
       out+=("tests/$tier")
     fi
   done
-  echo "${out[@]}"
+  echo ${out[@]+"${out[@]}"}
 }
 
 cmd="${1:-}"
@@ -148,7 +148,7 @@ case "$cmd" in
         echo "=== $cmd with backend: $b ==="
         "$0" "$cmd" --backend "$b" --system "$system" --selection "$selection" \
           ${tier:+--tier "$tier"} \
-          "${skip_tiers[@]/#/--skip-tier=}" \
+          ${skip_tiers[@]+"${skip_tiers[@]/#/--skip-tier=}"} \
           $($slow && echo --slow) \
           $($fail_fast && echo --fail-fast) \
           $($oversubscribe && echo --oversubscribe) \
@@ -187,7 +187,7 @@ case "$cmd" in
       echo "--- $target ---"
       local code=0
       # shellcheck disable=SC2086
-      env "${env_vars[@]}" pytest "$target" "${extra_args[@]}" $pytest_args || code=$?
+      env "${env_vars[@]}" pytest "$target" ${extra_args[@]+"${extra_args[@]}"} $pytest_args || code=$?
       if [[ $code -eq 5 ]]; then
         echo "(nothing selected)"
         return 0

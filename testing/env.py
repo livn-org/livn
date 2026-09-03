@@ -39,3 +39,15 @@ def livn_test_mea(system: str | None = None):
     reach = float(np.linalg.norm(xyz - electrode, axis=1).max()) + 200.0
 
     return MEA([[0, *electrode]], input_radius=reach, output_radius=reach)
+
+
+def safe_stimulus_amplitudes(env, fraction: float = 0.25):
+    import numpy as np
+
+    bounds = env.model.stimulus_bounds("extracellular")
+    if bounds is None:
+        return (125.0, 250.0)
+    reach = np.abs(np.asarray(env.channel_reach(env.stimulus_coordinates(False))))
+    gain = float(reach.max())  # mV per uA at the most strongly coupled section
+    peak = fraction * float(bounds[1]) / gain
+    return (peak / 2.0, peak)

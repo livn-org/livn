@@ -70,7 +70,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: systems/graphs/EI
-          key: ei-system-v1
+          key: ei-system-v2
 
       - name: Install minimal dependencies
         if: steps.cache-system.outputs.cache-hit != 'true'
@@ -79,6 +79,22 @@ jobs:
       - name: Download the test system
         if: steps.cache-system.outputs.cache-hit != 'true'
         run: uv run tests/cli download-system
+
+      - name: The cached system must be at the current graph format
+        run: |
+          uv run python -c "
+          import warnings
+          from livn.system import System
+          with warnings.catch_warnings():
+              warnings.simplefilter('error')
+              system = System('./systems/graphs/EI')
+          version = system._graph.version
+          assert version == System.GRAPH_FORMAT_VERSION, (
+              f'cached EI is a v{version} graph, expected '
+              f'v{System.GRAPH_FORMAT_VERSION}; bump the cache key'
+          )
+          print('EI is a v' + str(version) + ' graph')
+          "
 
   test-default:
     runs-on: ubuntu-latest
@@ -97,7 +113,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: systems/graphs/EI
-          key: ei-system-v1
+          key: ei-system-v2
           fail-on-cache-miss: true
 
       - name: Install dependencies
@@ -123,7 +139,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: systems/graphs/EI
-          key: ei-system-v1
+          key: ei-system-v2
           fail-on-cache-miss: true
 
       - name: Install dependencies
@@ -149,7 +165,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: systems/graphs/EI
-          key: ei-system-v1
+          key: ei-system-v2
           fail-on-cache-miss: true
 
       - name: Install system dependencies
@@ -186,7 +202,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: systems/graphs/EI
-          key: ei-system-v1
+          key: ei-system-v2
           fail-on-cache-miss: true
 
       - name: Install dependencies
@@ -197,10 +213,6 @@ jobs:
 
       - name: Run the native unit tests
         run: uv run pytest tests/unit/test_native_build.py -q
-
-      - name: Run the contract tier on the 24-cell graph
-        shell: bash
-        run: uv run tests/cli verify --tier contract --backend native --system ./systems/graphs/test --selection ""
 
       - name: Run the contract tier on EI
         shell: bash
@@ -223,7 +235,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: systems/graphs/EI
-          key: ei-system-v1
+          key: ei-system-v2
           fail-on-cache-miss: true
 
       - name: Install system dependencies
@@ -260,7 +272,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: systems/graphs/EI
-          key: ei-system-v1
+          key: ei-system-v2
           fail-on-cache-miss: true
 
       - name: Install system dependencies

@@ -9,7 +9,7 @@ import pytest
 
 from livn.io import MAX_STIMULUS_GB_ENV, calculate_cell_stimulus
 from livn.stimulus import STIMULUS_CHUNK_MB_ENV, Stimulus
-from testing import livn_test_env
+from testing import livn_test_env, safe_stimulus_amplitudes
 
 DT = 0.1
 CELLS = 20
@@ -219,7 +219,7 @@ def test_a_policy_is_delivered_over_the_run_it_is_handed_to():
     sweep = PulseSweepPolicy(
         n_channels=len(env.io.channel_ids),
         channels=[0],
-        amplitudes=(125.0, 250.0),
+        amplitudes=safe_stimulus_amplitudes(env),
         repeats=2,
         trial_ms=200.0,
         onset_ms=50.0,
