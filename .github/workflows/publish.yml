@@ -164,7 +164,7 @@ jobs:
             - name: Verify the sdist compiles the library on install
               run: |
                   python -m venv sdist-smoke
-                  sdist-smoke/bin/pip install --quiet --no-binary :all: dist/*.tar.gz
+                  sdist-smoke/bin/pip install --quiet dist/*.tar.gz
                   sdist-smoke/bin/python -c "
                   from livn.backend.native import _lib
                   _lib.load(build_if_missing=True)
