@@ -18,7 +18,19 @@ uv pip install livn
 
 ## Advanced Setup
 
-All backends and whistles! Required if you are interested in generating your own systems (instead of using the pre-defined ones), or scaling up via MPI using NEURON. 
+All backends and whistles! Required if you are interested in generating your own systems (instead of using the pre-defined ones), or scaling up via MPI using NEURON.
+
+::: warning The NEURON backend is a source install
+There is no `livn[neuron]` on PyPI as the backend needs compatible MPI, parallel HDF5, and a `neuroh5` build environment (see Prerequisites):
+
+```sh
+git clone https://github.com/livn-org/livn.git
+cd livn
+uv sync --group neuron
+```
+
+Prefer the [`native` backend](/guide/backends#native) to get started and move to NEURON when you need MPI across many ranks, full-morphology cells, or other advanced features.
+:::
 
 ### Prerequisites
 
@@ -36,24 +48,17 @@ apt install -y cmake mpich libmpich-dev libhdf5-mpich-dev hdf5-tools
 brew install hdf5-mpi
 ```
 
-#### neuroh5 (optional)
+#### neuroh5
 
-::: details Install if generating 3D morphological systems
-
-If you want to generate custom 3D systems with realistic morphology (not common), you will need to compile `neuroh5`. This is **not required** if you download livn's default systems or if you like to generate custom 2D systems.
+`neuroh5` is part of the NEURON stack and is installed by `uv sync --group neuron`. However, generating custom 3D systems with realistic morphology also requires the binaries build as follows:
 
 ```sh
 git clone https://github.com/iraikov/neuroh5.git
 cd neuroh5
 cmake .
 make
-
-# add the neuroh5 binaries to your PATH
 export PATH="/path/to/neuroh5/bin:$PATH"
 ```
-
-:::
-
 
 ### Installation
 
@@ -81,18 +86,10 @@ uv run https://raw.githubusercontent.com/GazzolaLab/MiV-Simulator/refs/heads/mai
 ```
 :::
 
-**Tests**
-
-You may need the following additional dependencies to run all tests:
-
-```sh
-uv pip install pyarrow multiprocess xxhash
-```
-
 ### Resources
 
 - [Paper describing the H5 file format](https://www.biorxiv.org/content/10.1101/2021.11.02.466940v1.full)
-- [h5py](https://docs.h5py.org/en/stable/) and [neuroh5](https://github.com/iraikov/neuroh5)
+- [neuroh5](https://github.com/iraikov/neuroh5)
 - A VS Code extension for opening H5 files: `h5web.vscode-h5web`
 
 

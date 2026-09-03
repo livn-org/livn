@@ -6,7 +6,7 @@ livn supports four simulation backends, each providing a full implementation of 
 export LIVN_BACKEND=native     # ships with livn, no further dependencies
 export LIVN_BACKEND=brian2     # requires livn[brian2] dependencies
 export LIVN_BACKEND=diffrax    # requires livn[diffrax] dependencies
-export LIVN_BACKEND=neuron     # requires livn[neuron] dependencies and MPI
+export LIVN_BACKEND=neuron     # source checkout only, see below
 ```
 
 When `LIVN_BACKEND` is not set at all, livn uses the `native` backend if its library is available (it is in the wheels published for Linux, macOS and Windows) and otherwise a neutral no-op backend that provides the full `Env` interface without running any simulation. Setting `LIVN_BACKEND=` (empty) selects that no-op backend explicitly, which is useful for working with systems, I/O, and datasets without simulating anything.
@@ -125,11 +125,15 @@ The [NEURON](https://www.neuron.yale.edu/neuron/) backend provides high-fidelity
 - MPI-parallel: scales to millions of neurons on supercomputers
 - Best choice for generating realistic synthetic data
 
-Requires system-level MPI and HDF5 libraries. See [Installation](/installation/) for setup instructions.
+**Installed from a source checkout only.** There is no `livn[neuron]` on PyPI: the backend needs system-level MPI and a parallel HDF5, and `neuroh5` publishes no distributions, which PyPI's ban on git dependencies makes impossible to express. Install the system libraries first ([Installation](/installation/)), then:
 
 ```sh
-pip install livn[neuron]
+git clone https://github.com/livn-org/livn.git
+cd livn
+uv sync --group neuron
 ```
+
+If you have not got that far, `native` is the stand-in and reproduces NEURON's results step for step. Selecting `LIVN_BACKEND=neuron` without the stack installed says as much, with these instructions.
 
 ```python
 import os

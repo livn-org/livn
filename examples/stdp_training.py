@@ -1,7 +1,10 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#   "livn[neuron]",
+#   "livn @ git+https://github.com/livn-org/livn.git",
+#   "neuron>=9.0.0",
+#   "mpi4py>=4.0.0",
+#   "neuroh5 @ git+https://github.com/iraikov/neuroh5.git@ae0c4b3",
 #   "matplotlib",
 # ]
 # ///

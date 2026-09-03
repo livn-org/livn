@@ -18,7 +18,10 @@ description: Install Python dependencies for the NEURON backend (neuroh5 with no
 # wrapper. This requires mpi4py to already be installed.
 #
 # The workaround is a four-step install:
-#   1. Sync everything except neuroh5 and h5py to create the venv
+#   1. Sync everything except neuroh5 and h5py to create the venv (the
+#      NEURON stack is a dependency group, not an extra: it cannot be a
+#      PyPI dependency, so livn ships `native` and supports `neuron`
+#      from a source checkout)
 #   2. Install mpi4py from source (needed for h5py and neuroh5 builds)
 #   3. Install h5py with HDF5_MPI=ON CC=mpicc, no-build-isolation
 #   4. Install neuroh5 via `uv pip install --no-build-isolation`
@@ -41,7 +44,7 @@ runs:
       if: steps.cache-venv.outputs.cache-hit != 'true'
       shell: bash
       run: |
-        uv sync --group dev --extra neuron --no-install-package neuroh5 --no-install-package h5py
+        uv sync --group dev --group neuron --no-install-package neuroh5 --no-install-package h5py
         uv pip install --no-build-isolation mpi4py
 
     - name: Install h5py with MPI support (no-build-isolation, needs mpi4py)
@@ -76,4 +79,4 @@ runs:
     - name: Sync venv from cache (fast, no-build packages already present)
       if: steps.cache-venv.outputs.cache-hit == 'true'
       shell: bash
-      run: uv sync --group dev --extra neuron --no-install-package neuroh5 --no-install-package h5py
+      run: uv sync --group dev --group neuron --no-install-package neuroh5 --no-install-package h5py

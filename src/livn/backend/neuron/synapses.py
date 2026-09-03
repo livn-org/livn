@@ -144,6 +144,16 @@ class _Growable:
     c_wslot: list = field(default_factory=list)
 
 
+def neuroh5_io():
+    try:
+        import neuroh5.io as io
+    except ImportError as e:  # the extra cannot carry it, so say what will
+        raise ImportError(
+            "neuroh5 is missing, see https://livn-org.github.io/livn/installation/#advanced-setup"
+        ) from e
+    return io
+
+
 class SynapseBuilder:
     """Builds the synapse/connection tables for the local rank.
 
@@ -505,7 +515,9 @@ class SynapseBuilder:
 
     def _read_placement(self, population: str, local_gids: set[int]):
         """gid -> {syn_id: (swc_type, loc)} for local cells."""
-        from neuroh5.io import scatter_read_cell_attribute_selection
+        scatter_read_cell_attribute_selection = (
+            neuroh5_io().scatter_read_cell_attribute_selection
+        )
 
         # Note: always call the collective scatter read even for an empty
         # selection, so a rank owning no cells of this population still
@@ -583,7 +595,7 @@ class SynapseBuilder:
 
     def _read_projection(self, pre: str, post: str, local_gids: set[int]):
         """Yield (post_gid, (pre_gids, projection)) scoped to ``local_gids``."""
-        from neuroh5.io import scatter_read_graph_selection
+        scatter_read_graph_selection = neuroh5_io().scatter_read_graph_selection
 
         graph, _ = scatter_read_graph_selection(
             self.system.files["connections"],

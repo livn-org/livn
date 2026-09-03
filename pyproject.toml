@@ -20,12 +20,9 @@ readme = "README.md"
 requires-python = ">= 3.11"
 
 [project.optional-dependencies]
-# backends
-neuron = [
-    "neuroh5 @ git+https://github.com/iraikov/neuroh5.git@ae0c4b3",
-    "mpi4py>=4.0.0",
-    "neuron>=9.0.0",
-]
+# backends 
+#  (deliberately no `neuron` since MPI, parallel HDF5 and neuroh5 wheels are tricky)
+#  use `uv sync --group neuron` instead.
 diffrax = [
     "jax>=0.10.0; platform_system == 'Darwin'",
     "jax[cuda]>=0.10.0; platform_system != 'Darwin'",
@@ -47,6 +44,11 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [dependency-groups]
+neuron = [
+    "mpi4py>=4.0.0",
+    "neuron>=9.0.0",
+    "neuroh5",
+]
 dev = [
     "pytest>=8.3.3",
     "pytest-reportlog",
@@ -68,6 +70,9 @@ override-dependencies = [
 
 no-binary-package = ["mpi4py", "h5py"]
 
+[tool.uv.sources]
+neuroh5 = { git = "https://github.com/iraikov/neuroh5.git", rev = "ae0c4b3" }
+
 [[tool.uv.dependency-metadata]]
 name = "neuroh5"
 version = "0.1.18"
@@ -76,8 +81,6 @@ requires-dist = ["click", "h5py", "mpi4py", "numpy"]
 [tool.uv.workspace]
 members = ["systems", "benchmarks", "optimization"]
 
-[tool.hatch.metadata]
-allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/livn"]

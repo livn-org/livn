@@ -1440,7 +1440,7 @@ wheels = [
 
 [[package]]
 name = "livn"
-version = "1.0.0"
+version = "2.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "fsspec" },
@@ -1469,11 +1469,6 @@ diffrax = [
     { name = "optimistix" },
     { name = "signax" },
 ]
-neuron = [
-    { name = "mpi4py" },
-    { name = "neuroh5" },
-    { name = "neuron" },
-]
 
 [package.dev-dependencies]
 dev = [
@@ -1484,6 +1479,11 @@ dev = [
     { name = "pytest-xdist" },
     { name = "ruff" },
     { name = "ty" },
+]
+neuron = [
+    { name = "mpi4py" },
+    { name = "neuroh5" },
+    { name = "neuron" },
 ]
 
 [package.metadata]
@@ -1498,9 +1498,6 @@ requires-dist = [
     { name = "jax", extras = ["cuda"], marker = "sys_platform != 'darwin' and extra == 'diffrax'", specifier = ">=0.10.0" },
     { name = "jaxtyping", marker = "extra == 'diffrax'", specifier = ">=0.3.9" },
     { name = "lineax", marker = "extra == 'diffrax'", specifier = ">=0.1.0" },
-    { name = "mpi4py", marker = "extra == 'neuron'", specifier = ">=4.0.0" },
-    { name = "neuroh5", marker = "extra == 'neuron'", git = "https://github.com/iraikov/neuroh5.git?rev=ae0c4b3" },
-    { name = "neuron", marker = "extra == 'neuron'", specifier = ">=9.0.0" },
     { name = "numpy", specifier = ">=1.26.2" },
     { name = "optax", marker = "extra == 'diffrax'", specifier = ">=0.2.8" },
     { name = "optimistix", marker = "extra == 'diffrax'", specifier = ">=0.1.0" },
@@ -1510,7 +1507,7 @@ requires-dist = [
     { name = "scipy", specifier = ">=1.17.1" },
     { name = "signax", marker = "extra == 'diffrax'", specifier = ">=0.2.1" },
 ]
-provides-extras = ["neuron", "diffrax", "brian2"]
+provides-extras = ["diffrax", "brian2"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1521,6 +1518,11 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "ruff", specifier = ">=0.11.5" },
     { name = "ty", specifier = "==0.0.74" },
+]
+neuron = [
+    { name = "mpi4py", specifier = ">=4.0.0" },
+    { name = "neuroh5", git = "https://github.com/iraikov/neuroh5.git?rev=ae0c4b3" },
+    { name = "neuron", specifier = ">=9.0.0" },
 ]
 
 [[package]]
@@ -3531,8 +3533,11 @@ dependencies = [
     { name = "dmosopt" },
     { name = "huggingface-hub" },
     { name = "keras" },
-    { name = "livn", extra = ["neuron"] },
+    { name = "livn" },
     { name = "machinable" },
+    { name = "mpi4py" },
+    { name = "neuroh5" },
+    { name = "neuron" },
     { name = "pandas" },
     { name = "sqlean-py" },
 ]
@@ -3542,8 +3547,11 @@ requires-dist = [
     { name = "dmosopt", git = "https://github.com/iraikov/dmosopt.git?rev=1de66e1" },
     { name = "huggingface-hub", specifier = ">=0.3.1" },
     { name = "keras", specifier = "==3.13.0" },
-    { name = "livn", extras = ["neuron"], editable = "." },
+    { name = "livn", editable = "." },
     { name = "machinable", git = "https://github.com/machinable-org/machinable.git?rev=b399212" },
+    { name = "mpi4py", specifier = ">=4.0.0" },
+    { name = "neuroh5", git = "https://github.com/iraikov/neuroh5.git?rev=ae0c4b3" },
+    { name = "neuron", specifier = ">=9.0.0" },
     { name = "pandas", specifier = ">=2.3.1" },
     { name = "sqlean-py", specifier = ">=3.47.0" },
 ]

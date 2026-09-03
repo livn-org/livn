@@ -27,6 +27,14 @@ if TYPE_CHECKING:
     from livn.system import System
     from livn.types import Model
 
+try:
+    import mpi4py  # noqa: F401
+    import neuron  # noqa: F401
+except ImportError as _missing:
+    raise ImportError(
+        "NEURON is missing, see https://livn-org.github.io/livn/installation/#advanced-setup"
+    ) from _missing
+
 logger = logging.getLogger(__name__)
 logger.setLevel(os.getenv("LIVN_NEURON_LOGGING", "WARNING"))
 

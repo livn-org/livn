@@ -12,7 +12,10 @@ dependencies = [
     "dmosopt @ git+https://github.com/iraikov/dmosopt.git@1de66e1",
     "machinable @ git+https://github.com/machinable-org/machinable.git@b399212",
     "sqlean-py>=3.47.0",
-    "livn[neuron]",
+    "livn",
+    "mpi4py>=4.0.0",
+    "neuron>=9.0.0",
+    "neuroh5",
     "pandas>=2.3.1",
     "keras==3.13.0",
     "huggingface-hub>=0.3.1",
@@ -20,6 +23,7 @@ dependencies = [
 
 [tool.uv.sources]
 livn = { workspace = true }
+neuroh5 = { git = "https://github.com/iraikov/neuroh5.git", rev = "ae0c4b3" }
 
 [build-system]
 requires = ["setuptools>=64"]
