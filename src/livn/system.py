@@ -766,12 +766,15 @@ if _H5_BACKEND == "neuroh5":
                 "swc_types",
             },
             comm=comm,
-            node_allocation=node_allocation,
+            node_allocation=None,
             io_size=1,
             return_type="dict",
         )
 
-        yield from cell_attributes_dict["Synapse Attributes"]
+        for gid, attributes in cell_attributes_dict["Synapse Attributes"]:
+            if node_allocation is not None and int(gid) not in node_allocation:
+                continue
+            yield gid, attributes
 
     def read_projections(
         filepath: str,

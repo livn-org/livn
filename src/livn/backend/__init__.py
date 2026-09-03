@@ -9,6 +9,8 @@ elif backend() == "neuron":
     from livn.backend.neuron import *  # noqa: F403
 elif backend() == "diffrax":
     from livn.backend.diffrax import *  # noqa: F403
+elif backend() == "native":
+    from livn.backend.native import *  # noqa: F403
 else:
     try:
         import importlib

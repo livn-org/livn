@@ -15,8 +15,12 @@ DT = 0.1
 CELLS = 20
 
 neuron_only = pytest.mark.skipif(
-    os.environ.get("LIVN_BACKEND") != "neuron",
+    os.environ.get("LIVN_BACKEND") not in ("neuron", "native"),
     reason="builds a network, which resolves the backend at import time",
+)
+neuron_clamps = pytest.mark.skipif(
+    os.environ.get("LIVN_BACKEND") != "neuron",
+    reason="reaches into the NEURON backend's IClamp drives",
 )
 
 

@@ -409,6 +409,12 @@ class ReducedCalciumSomaDendrite(Model):
             return section
         return "dend"
 
+    def cell_types(self) -> dict[str, tuple[str, str]]:
+        return {
+            "EXC": ("BoothRinzelKiehn", "BoothRinzelKiehn-MN"),
+            "INH": ("V1In", self._inh_params_name()),
+        }
+
     def neuron_cells(self):
         from livn.backend.neuron.cells import ReducedCell
         from livn.models.rcsd.neuron.templates.BRK import BRK
@@ -745,6 +751,14 @@ class ReducedCalciumSomaDendrite(Model):
             "EI3": {},
             "EI4": {},
         }[system]
+
+    # native
+
+    def native_default_noise(self, system: str):
+        return self.neuron_default_noise(system)
+
+    def native_default_weights(self, system: str):
+        return self.neuron_default_weights(system)
 
     # diffrax
 

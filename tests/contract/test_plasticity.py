@@ -9,12 +9,13 @@ from testing import livn_test_env
 pytestmark = pytest.mark.needs("plasticity")
 
 _is_neuron = backend() == "neuron"
+_has_point_processes = backend() in ("neuron", "native")
 
 LEARNING_MS = 200
 
 
 def _plasticity_config():
-    if _is_neuron:
+    if _has_point_processes:
         return {"A_ltp": 0.01, "A_ltd": 0.005}
     return {
         "A_ltp_exc": 0.01,
@@ -25,7 +26,7 @@ def _plasticity_config():
 
 
 def _noise_config():
-    if _is_neuron:
+    if _has_point_processes:
         return {
             "g_e0": 3.0,
             "g_i0": 1.0,
@@ -45,7 +46,7 @@ def _noise_config():
 
 
 def _plastic_sites(env):
-    if _is_neuron:
+    if _has_point_processes:
         for gid, syn_id, name, pp in env._iter_stdp_point_processes():
             yield f"{gid}/{syn_id}/{name}", pp
     else:
@@ -54,7 +55,7 @@ def _plastic_sites(env):
 
 
 def _plasticity_is_on(env) -> list[bool]:
-    if _is_neuron:
+    if _has_point_processes:
         return [bool(pp.plasticity_on) for _, pp in _plastic_sites(env)]
     return [
         bool(flag)
@@ -66,7 +67,7 @@ def _plasticity_is_on(env) -> list[bool]:
 def _by_post_neuron(weights: dict) -> dict:
     grouped = defaultdict(list)
     for key, weight in weights.items():
-        if _is_neuron:
+        if _has_point_processes:
             gid, _syn_id, _mech = key
             grouped[gid].append(weight)
         else:
@@ -128,7 +129,7 @@ def test_a_weight_is_addressed_by_the_synapse_it_belongs_to(resting_env):
     key, value = next(iter(weights.items()))
 
     assert isinstance(value, float)
-    if _is_neuron:
+    if _has_point_processes:
         gid, syn_id, mechanism = key
         assert isinstance(gid, int) and isinstance(syn_id, int)
         assert isinstance(mechanism, str)
@@ -164,7 +165,7 @@ def test_a_custom_config_reaches_the_synapses():
     try:
         env.apply_model_defaults()
 
-        if _is_neuron:
+        if _has_point_processes:
             env.enable_plasticity(
                 config={"A_ltp": 0.005, "A_ltd": 0.002, "theta_ltp": -40.0}
             )
@@ -182,7 +183,8 @@ def test_a_custom_config_reaches_the_synapses():
 
 
 @pytest.mark.skipif(
-    not _is_neuron, reason="per-population routing is addressed per point process"
+    not _has_point_processes,
+    reason="per-population routing is addressed per point process",
 )
 def test_a_per_population_config_goes_to_the_right_population():
     from livn.models.rcsd import ReducedCalciumSomaDendrite
@@ -247,9 +249,11 @@ def test_recording_weights_samples_the_whole_run(learning_env):
     learning_env.set_noise(_noise_config())
     learning_env.run(50)
 
-    if _is_neuron:
+    if _has_point_processes:
         recordings = {
-            key: np.asarray(vector.as_numpy())
+            key: np.asarray(
+                vector.as_numpy() if hasattr(vector, "as_numpy") else vector
+            )
             for key, vector in learning_env.w_recs.items()
         }
     else:
@@ -295,7 +299,7 @@ def test_normalising_to_a_target_respects_the_bounds():
     try:
         env.apply_model_defaults()
 
-        if _is_neuron:
+        if _has_point_processes:
             env.enable_plasticity(
                 config={**_plasticity_config(), "w_max": 5.0, "w_min": 0.0001}
             )

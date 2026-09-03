@@ -29,7 +29,7 @@ def test_a_name_no_capability_has_is_refused_rather_than_skipped():
 
 def test_every_capability_is_a_difference_between_backends():
     declared = {}
-    for name in ("default", "neuron", "brian2", "diffrax"):
+    for name in ("default", "neuron", "brian2", "diffrax", "native"):
         module = pytest.importorskip(
             f"livn.backend.{name}", reason=f"{name} is not installed"
         )

@@ -14,7 +14,7 @@ Options for 'fast':
   --args <pytest-args>    Extra arguments passed to pytest
 
 Options for 'verify' / 'test':
-  --backend <diffrax|neuron|brian2|none|all>  Backend to test (default: all)
+  --backend <diffrax|neuron|brian2|native|none|all>  Backend to test (default: all)
   --system  <path>        Path to test system (default: ./systems/graphs/EI)
   --selection <name>      Subselection within it (default: e1, ~30 cells, when
                           --system is left at its default; empty otherwise)
@@ -53,6 +53,7 @@ backend_env() {
     diffrax) echo "JAX_PLATFORMS=cpu LIVN_BACKEND=diffrax" ;;
     neuron)  echo "LIVN_BACKEND=neuron" ;;
     brian2)  echo "LIVN_BACKEND=brian2" ;;
+    native)  echo "LIVN_BACKEND=native" ;;
     none|"") echo "LIVN_BACKEND=" ;;
     *) echo "Unknown backend: $1" >&2; exit 1 ;;
   esac

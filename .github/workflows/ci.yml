@@ -163,6 +163,49 @@ jobs:
       - name: Run tests
         run: uv run tests/cli verify --backend neuron --oversubscribe${{ github.event_name == 'schedule' && ' --slow' || '' }}
 
+  test-native:
+    # the native backend: librcsd built with the platform's C compiler, then
+    # the contract tier on the pyfive graph readers (no MPI, no HDF5 library)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    needs: [lint, fast, download-system]
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Restore the test system
+        uses: actions/cache/restore@v5
+        with:
+          path: systems/graphs/EI
+          key: ei-system-v1
+          fail-on-cache-miss: true
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Build librcsd
+        run: uv run python -m livn.backend.native.build
+
+      - name: Run the unit tier
+        run: uv run tests/cli fast
+
+      - name: Run the contract tier on the 24-cell graph
+        shell: bash
+        run: uv run tests/cli verify --tier contract --backend native --system ./systems/graphs/test --selection ""
+
+      - name: Run the contract tier on EI
+        shell: bash
+        run: uv run tests/cli verify --tier contract --backend native${{ github.event_name == 'schedule' && ' --slow' || '' }}
+
   test-brian2:
     runs-on: ubuntu-latest
     needs: [lint, fast, download-system]

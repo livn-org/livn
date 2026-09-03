@@ -42,10 +42,11 @@ print("Initial voltages: ", v[:, 0])
 
 ### Backends
 
-livn supports three simulation backends:
+livn supports four simulation backends:
 
 ```sh
-export LIVN_BACKEND=brian2     # default; point-neuron models
+export LIVN_BACKEND=native     # default; ships with livn, no further dependencies
+export LIVN_BACKEND=brian2     # point-neuron models
 export LIVN_BACKEND=diffrax    # JAX-based, differentiable
 export LIVN_BACKEND=neuron     # MPI-parallel, multi-compartment
 ```

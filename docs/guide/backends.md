@@ -1,16 +1,37 @@
 # Backends
 
-livn supports three simulation backends, each providing a full implementation of the [`Env`](/guide/concepts/env) protocol. Select a backend via the `LIVN_BACKEND` environment variable **before** importing livn:
+livn supports four simulation backends, each providing a full implementation of the [`Env`](/guide/concepts/env) protocol. Select a backend via the `LIVN_BACKEND` environment variable **before** importing livn:
 
 ```sh
+export LIVN_BACKEND=native     # ships with livn, no further dependencies
 export LIVN_BACKEND=brian2     # requires livn[brian2] dependencies
 export LIVN_BACKEND=diffrax    # requires livn[diffrax] dependencies
 export LIVN_BACKEND=neuron     # requires livn[neuron] dependencies and MPI
 ```
 
-When no `LIVN_BACKEND` is set, livn uses a neutral default backend that provides the full `Env` interface without running any simulation. This is useful for working with systems, I/O, and datasets without installing a simulation engine. To run actual simulations, set one of the backends above.
+When `LIVN_BACKEND` is not set at all, livn uses the `native` backend if its library is available (it is in the wheels published for Linux, macOS and Windows) and otherwise a neutral no-op backend that provides the full `Env` interface without running any simulation. Setting `LIVN_BACKEND=` (empty) selects that no-op backend explicitly, which is useful for working with systems, I/O, and datasets without simulating anything.
 
 All backends share the same user-facing API - you write your simulation code once and switch backends by changing the environment variable.
+
+## native
+
+The default. A self-contained C library (`librcsd`) that implements the cell models of [`ReducedCalciumSomaDendrite`](/models/rcsd) -- the Booth-Rinzel-Kiehn motoneuron and the V1In Renshaw interneuron with their axon chains -- together with the synapses, the STDP rules, the Ornstein-Uhlenbeck background and the RhO3c opsin, using the same numerical scheme as NEURON (fixed-step staggered Crank-Nicolson with cnexp state updates). A run reproduces the NEURON backend step for step, spike for spike, including the seeded noise streams, so results can be mixed across the two.
+
+**Strengths:**
+- `pip install livn` is the whole installation: no MPI, no HDF5 library, no compiler
+- Streams a stimulus a window at a time, so a policy over a long protocol never has to be materialized, while voltage and membrane current recording stay available
+- Per-cell parameters, plasticity, replayable noise and extracellular, current, current-density and optical stimulation
+
+```python
+from livn import make
+
+env = make("EI")  # LIVN_BACKEND unset: native is picked up automatically
+it, t, iv, v, *_ = env.run(100)
+```
+
+It is also the only backend that runs in the browser via the PyEmscripten wheel, so `micropip.install("livn")` under Pyodide 314+ gives a simulating environment with bit-identical results (see [Pyodide](/installation/pyodide)).
+
+It is single-process (no MPI) and does not support the `conductance` stimulus mode. Systems whose cells are not one of the two templates above need the NEURON backend. On a source checkout without a wheel, the library is compiled on first use with the system's C compiler into `~/.cache/livn/native` (`LIVN_CACHE_DIR` overrides the location, `LIVN_NATIVE_LIB` points at a library built by hand).
 
 ## brian2
 
@@ -138,12 +159,12 @@ CoreNEURON can speed up the integration but it comes with the following limitati
 
 ## Comparison
 
-| Feature | brian2 | Diffrax | NEURON |
-|---------|--------|---------|--------|
-| Differentiable | No | **Yes** | No |
-| GPU support | No | **Yes** | No |
-| Multi-compartment models | No | **Yes** | **Yes** |
-| Built-in opsins | No | **Yes** (RhO3c) | **Yes** (RhO3c, RhO6c) |
-| MPI parallelism | No | No | **Yes** |
-| Setup complexity | Low | Medium | High |
-| Ideal scale | ≤1,000 neurons | ≤10,000 neurons | ≤millions |
+| Feature | native | brian2 | Diffrax | NEURON |
+|---------|--------|--------|---------|--------|
+| Differentiable | No | No | **Yes** | No |
+| GPU support | No | No | **Yes** | No |
+| Multi-compartment models | **Yes** (the rcsd templates) | No | **Yes** | **Yes** |
+| Built-in opsins | **Yes** (RhO3c) | No | **Yes** (RhO3c) | **Yes** (RhO3c, RhO6c) |
+| MPI parallelism | No | No | No | **Yes** |
+| Setup complexity | None | Low | Medium | High |
+| Ideal scale | ≤10,000 neurons | ≤1,000 neurons | ≤10,000 neurons | ≤millions |

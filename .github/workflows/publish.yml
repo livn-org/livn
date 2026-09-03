@@ -3,17 +3,47 @@ name: Publish to PyPI
 on:
     release:
         types: [published]
+    workflow_dispatch: # dry run to TestPyPI
+    schedule:
+        # build the wheel matrix weekly, so it breaks before release day
+        - cron: "0 3 * * 0"
 
 env:
     UV_CACHE_DIR: /tmp/.uv-cache
     PYTHON_VERSION: "3.12"
 
 jobs:
-    publish:
+    version-guard:
+        # every artifact carries the version from pyproject.toml; with a
+        # matrix a tag that disagrees is a partial upload, so fail early
         runs-on: ubuntu-latest
-        environment: pypi
-        permissions:
-            id-token: write
+        steps:
+            - uses: actions/checkout@v4
+            - name: Compare the tag with the package version
+              if: github.event_name == 'release'
+              shell: bash
+              run: |
+                  version=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+                  tag="${GITHUB_REF_NAME#v}"
+                  if [[ "$tag" != "$version" ]]; then
+                    echo "release tag $GITHUB_REF_NAME does not match version $version in pyproject.toml"
+                    exit 1
+                  fi
+
+    wheels:
+        # ctypes over a plain C library: one wheel per platform, tagged
+        # py3-none-<platform>, no interpreter matrix and nothing to vendor
+        needs: [version-guard]
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - { os: ubuntu-latest, tag: manylinux_2_28_x86_64 }
+                    - { os: ubuntu-24.04-arm, tag: manylinux_2_28_aarch64 }
+                    - { os: macos-14, tag: macosx_11_0_arm64 }
+                    - { os: macos-13, tag: macosx_10_13_x86_64 }
+                    - { os: windows-latest, tag: win_amd64 }
+        runs-on: ${{ matrix.os }}
         steps:
             - uses: actions/checkout@v4
             - uses: astral-sh/setup-uv@v6
@@ -22,7 +52,130 @@ jobs:
             - uses: actions/setup-python@v5
               with:
                   python-version: ${{ env.PYTHON_VERSION }}
-            - name: Build package
-              run: uv build
+            - name: Build the platform wheel
+              shell: bash
+              env:
+                  LIVN_WHEEL_PLATFORM: ${{ matrix.tag }}
+              run: uv build --wheel
+            - name: Smoke-test the wheel in a clean environment
+              shell: bash
+              run: |
+                  python -m venv smoke
+                  if [[ "$RUNNER_OS" == "Windows" ]]; then bin=smoke/Scripts; else bin=smoke/bin; fi
+                  "$bin/python" -m pip install --quiet dist/*.whl
+                  "$bin/python" -c "
+                  from livn.backend import backend; assert backend() == 'native', backend()
+                  from livn.env import Env
+                  run = Env(64).init().run(100)
+                  assert run.duration == 100
+                  "
+                  # the degraded path: without the library, import still works
+                  # and the no-op backend answers
+                  "$bin/python" -c "
+                  import glob, os, livn.backend.native.build as b
+                  d = os.path.join(os.path.dirname(livn.__file__), 'backend', 'native')
+                  [os.remove(p) for p in glob.glob(os.path.join(d, 'librcsd.*')) + glob.glob(os.path.join(d, 'rcsd.dll'))]
+                  " || true
+                  LIVN_CACHE_DIR="$(mktemp -d)" "$bin/python" -c "
+                  from livn.backend import backend; assert backend() == '', backend()
+                  import livn
+                  "
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: wheel-${{ matrix.tag }}
+                  path: dist/*.whl
+
+    wasm-wheel:
+        # PEP 783 PyEmscripten wheel, so `micropip.install("livn")` gives a
+        # simulating livn inside Pyodide. The Emscripten version has to match
+        # the one the target Pyodide was built with (314.x = 5.0.3), which is
+        # what the pyemscripten_2026_0 ABI tag promises.
+        needs: [version-guard]
+        runs-on: ubuntu-latest
+        env:
+            EMSCRIPTEN_VERSION: "5.0.3"
+            PYODIDE_VERSION: "314.0.6"
+            LIVN_WHEEL_PLATFORM: pyemscripten_2026_0_wasm32
+        steps:
+            - uses: actions/checkout@v4
+            - uses: astral-sh/setup-uv@v6
+              with:
+                  enable-cache: true
+            - uses: actions/setup-python@v5
+              with:
+                  python-version: ${{ env.PYTHON_VERSION }}
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: "20"
+            - uses: mymindstorm/setup-emsdk@v14
+              with:
+                  version: ${{ env.EMSCRIPTEN_VERSION }}
+            - name: Build the PyEmscripten wheel
+              run: CC=$(which emcc) uv build --wheel
+            - name: The wheel has to carry a wasm module, not host code
+              run: |
+                  python -c "
+                  import glob, zipfile, sys
+                  whl = glob.glob('dist/*wasm32.whl')[0]
+                  with zipfile.ZipFile(whl) as z:
+                      blob = z.read('livn/backend/native/librcsd.so')
+                  assert blob[:4] == b'\x00asm', 'not a WebAssembly module'
+                  print(whl, len(blob), 'bytes of wasm')
+                  "
+            - name: Simulate in Pyodide
+              run: |
+                  npm install --silent pyodide@${PYODIDE_VERSION}
+                  node .github/scripts/pyodide_smoke.mjs dist/*wasm32.whl
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: wheel-pyemscripten
+                  path: dist/*.whl
+
+    sdist-and-pure:
+        needs: [version-guard]
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: astral-sh/setup-uv@v6
+              with:
+                  enable-cache: true
+            - uses: actions/setup-python@v5
+              with:
+                  python-version: ${{ env.PYTHON_VERSION }}
+            - name: Build the sdist and the pure-Python wheel
+              run: |
+                  uv build --sdist
+                  LIVN_SKIP_NATIVE=1 uv build --wheel
+            - name: Verify the sdist compiles the library on install
+              run: |
+                  python -m venv sdist-smoke
+                  sdist-smoke/bin/pip install --quiet --no-binary :all: dist/*.tar.gz
+                  sdist-smoke/bin/python -c "
+                  from livn.backend.native import _lib
+                  _lib.load(build_if_missing=True)
+                  print('librcsd', _lib.version(), 'from', _lib.loaded_path())
+                  "
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: sdist-and-pure
+                  path: dist/*
+
+    publish:
+        needs: [wheels, wasm-wheel, sdist-and-pure]
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        runs-on: ubuntu-latest
+        environment: pypi
+        permissions:
+            id-token: write
+        steps:
+            - uses: astral-sh/setup-uv@v6
+            - uses: actions/download-artifact@v4
+              with:
+                  path: dist
+                  merge-multiple: true
             - name: Publish to PyPI
-              run: uv publish
+              if: github.event_name == 'release'
+              run: uv publish dist/*
+            - name: Dry run to TestPyPI
+              if: github.event_name == 'workflow_dispatch'
+              run: uv publish --publish-url https://test.pypi.org/legacy/ dist/*

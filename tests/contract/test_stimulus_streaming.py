@@ -15,8 +15,12 @@ DT = 0.1
 CELLS = 20
 
 neuron_only = pytest.mark.skipif(
-    os.environ.get("LIVN_BACKEND") != "neuron",
+    os.environ.get("LIVN_BACKEND") not in ("neuron", "native"),
     reason="builds a network, which resolves the backend at import time",
+)
+neuron_clamps = pytest.mark.skipif(
+    os.environ.get("LIVN_BACKEND") != "neuron",
+    reason="reaches into the NEURON backend's IClamp drives",
 )
 
 
@@ -213,7 +217,7 @@ def test_windows_do_not_accumulate_over_a_protocol_delivered_in_pieces():
     assert env._stim_streams[0]["start_step"] == round(sweep.duration_ms / DT)
 
 
-@neuron_only
+@neuron_clamps
 def test_a_run_handed_no_stimulus_is_not_stimulated_by_the_last_one():
     env = _env()
     sweep = _sweep(env)
@@ -228,7 +232,7 @@ def test_a_run_handed_no_stimulus_is_not_stimulated_by_the_last_one():
     assert all(clamp.amp == 0.0 for clamp in env._stim_clamps)
 
 
-@neuron_only
+@neuron_clamps
 def test_a_streamed_command_stops_when_it_ends():
     env = _env()
     sweep = _sweep(env)
