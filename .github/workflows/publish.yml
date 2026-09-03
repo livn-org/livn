@@ -43,8 +43,11 @@ jobs:
                 include:
                     - { os: ubuntu-latest, tag: manylinux_2_28_x86_64 }
                     - { os: ubuntu-24.04-arm, tag: manylinux_2_28_aarch64 }
-                    - { os: macos-14, tag: macosx_11_0_arm64 }
-                    - { os: macos-13, tag: macosx_10_13_x86_64 }
+                    - {
+                          os: macos-15,
+                          tag: macosx_11_0_universal2,
+                          archflags: -arch arm64 -arch x86_64,
+                      }
                     - { os: windows-latest, tag: win_amd64 }
         runs-on: ${{ matrix.os }}
         steps:
@@ -63,6 +66,8 @@ jobs:
               shell: bash
               env:
                   LIVN_WHEEL_PLATFORM: ${{ matrix.tag }}
+                  ARCHFLAGS: ${{ matrix.archflags }}
+                  MACOSX_DEPLOYMENT_TARGET: "11.0"
               run: uv build --wheel
             - name: Smoke-test the wheel in a clean environment
               shell: bash

@@ -4,6 +4,7 @@ import glob
 import hashlib
 import os
 import platform
+import shlex
 import shutil
 import subprocess
 import sys
@@ -78,6 +79,7 @@ def source_digest(compiler: list[str] | None = None) -> str:
     digest.update(" ".join(compiler or _compiler() or ["none"]).encode())
     digest.update(platform.machine().encode())
     digest.update(platform.system().encode())
+    digest.update(os.environ.get("ARCHFLAGS", "").encode())
     return digest.hexdigest()[:16]
 
 
@@ -103,8 +105,18 @@ def _command(compiler: list[str], output: str, sources: list[str]) -> list[str]:
         # a side module, which is what Emscripten's dlopen (and so Pyodide's
         # ctypes) can load; -fPIC and -lm are implied and -shared is not it
         return [*compiler, *EMSCRIPTEN_FLAGS, "-o", output, *sources]
-    shared = "-dynamiclib" if platform.system() == "Darwin" else "-shared"
-    return [*compiler, *POSIX_FLAGS, shared, "-o", output, *sources, "-lm"]
+    if platform.system() == "Darwin":
+        return [
+            *compiler,
+            *POSIX_FLAGS,
+            *shlex.split(os.environ.get("ARCHFLAGS", "")),
+            "-dynamiclib",
+            "-o",
+            output,
+            *sources,
+            "-lm",
+        ]
+    return [*compiler, *POSIX_FLAGS, "-shared", "-o", output, *sources, "-lm"]
 
 
 def compile_library(output_dir: str | None = None, force: bool = False) -> str:

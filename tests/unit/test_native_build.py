@@ -82,3 +82,19 @@ def test_the_cache_key_separates_targets(monkeypatch):
 def test_the_library_is_named_for_its_platform(monkeypatch, system, expected):
     monkeypatch.setattr(build.platform, "system", lambda: system)
     assert build.library_name() == expected
+
+
+def test_macos_takes_its_arch_slices_from_archflags(monkeypatch):
+    monkeypatch.setattr(build.platform, "system", lambda: "Darwin")
+    monkeypatch.setenv("ARCHFLAGS", "-arch arm64 -arch x86_64")
+
+    command = _command("/usr/bin/cc")
+    assert "-dynamiclib" in command
+    assert "-shared" not in command
+    assert command.count("-arch") == 2
+
+    universal = build.source_digest(["/usr/bin/cc"])
+    monkeypatch.delenv("ARCHFLAGS")
+    assert build.source_digest(["/usr/bin/cc"]) != universal, (
+        "a universal build and a single-slice one would share a cache entry"
+    )
