@@ -198,7 +198,11 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+
       - name: Restore the test system
+        if: runner.os != 'Windows'
         uses: actions/cache/restore@v5
         with:
           path: systems/graphs/EI
@@ -206,15 +210,37 @@ jobs:
           fail-on-cache-miss: true
 
       - name: Install dependencies
+        shell: bash
         run: uv sync --group dev
 
       - name: Build librcsd
+        shell: bash
         run: uv run python -c "from livn.backend.native.build import compile_library; print(compile_library(force=True))"
 
       - name: Run the native unit tests
+        shell: bash
         run: uv run pytest tests/unit/test_native_build.py -q
 
+      # no graph needed: ParallelSystem is cells without a network, which is
+      # what makes this a usable check of the library on a runner with no
+      # downloaded system
+      - name: Simulate without a graph
+        shell: bash
+        run: |
+          uv run python -c "
+          from livn.backend import backend
+          assert backend() == 'native', backend()
+          from livn.env import Env
+          env = Env(64).init()
+          env.record_spikes()
+          run = env.run(100)
+          assert run.duration == 100
+          print('64 cells x 100 ms on', backend())
+          env.close()
+          "
+
       - name: Run the contract tier on EI
+        if: runner.os != 'Windows'
         shell: bash
         run: uv run tests/cli verify --tier contract --backend native${{ github.event_name == 'schedule' && ' --slow' || '' }}
 
