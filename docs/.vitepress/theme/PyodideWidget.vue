@@ -36,7 +36,7 @@ async function run() {
         log("Installing packages (this may take a moment)…");
         await pyodide.loadPackage("micropip");
         const micropip = pyodide.pyimport("micropip");
-        await micropip.install(["livn", "fsspec", "huggingface_hub", "httpcore"]);
+        await micropip.install(["livn", "pyodide-http"]);
 
         log("Downloading EI system…");
         const result = await pyodide.runPythonAsync(`

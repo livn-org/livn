@@ -10,7 +10,7 @@ If you are planning to use supercomputing infrastruture, check out our installat
 
 ## Quick Install
 
-Provides the core functionality to get started (predefined systems and datasets, JAX/brian2 simulations). May be behind the latest development in the main branch.
+Provides the core functionality to get started, including the predefined systems and datasets, and simulation through the built-in `native` backend. May be behind the latest development in the main branch.
 
 ```sh
 uv pip install livn

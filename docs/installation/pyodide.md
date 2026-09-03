@@ -13,12 +13,34 @@ Install livn and its dependencies using `micropip` (Pyodide 0.29.3 or later is r
 
 ```python
 import micropip
-await micropip.install(['livn', 'fsspec', 'huggingface_hub', 'httpcore'])
+await micropip.install(['livn', 'pyodide-http'])
+
+import pyodide_http
+pyodide_http.patch_all()
 ```
 
-::: warning
-Simulation backends like brian2 are not available in Pyodide unless you provide a custom Wasm build. Out of the box, you can load and inspect systems and datasets but not run simulations.
-:::
+## Simulating in the browser
+
+Since livn publishes a [PyEmscripten wheel](https://peps.python.org/pep-0783/) carrying a WebAssembly build of the `native` backend, simulation works in the browser with no extra steps:
+
+```python
+import numpy as np
+from livn.backend import backend
+from livn.env import Env
+from livn.stimulus import Stimulus
+
+backend()  # 'native', picked up automatically
+
+env = Env({"EXC": 1}).init()
+env.record_spikes()
+
+current = np.zeros((2400, 1))
+current[80:, 0] = 1.0  # 1 nA from 2 ms
+run = env.run(60.0, stimulus=Stimulus.from_current(current, dt=0.025, gids=np.array([0])))
+list(run.spike_times)
+```
+
+Performance is roughly that of the native build divided by the browser's wasm overhead, but everything is single-threaded, so keep in-browser networks small (e.g. a few dozen cells).
 
 ## Usage
 

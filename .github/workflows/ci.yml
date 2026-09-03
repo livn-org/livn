@@ -70,7 +70,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: systems/graphs/EI
-          key: ei-system-v1
+          key: ei-system-v2
 
       - name: Install minimal dependencies
         if: steps.cache-system.outputs.cache-hit != 'true'
@@ -79,6 +79,22 @@ jobs:
       - name: Download the test system
         if: steps.cache-system.outputs.cache-hit != 'true'
         run: uv run tests/cli download-system
+
+      - name: The cached system must be at the current graph format
+        run: |
+          uv run python -c "
+          import warnings
+          from livn.system import System
+          with warnings.catch_warnings():
+              warnings.simplefilter('error')
+              system = System('./systems/graphs/EI')
+          version = system._graph.version
+          assert version == System.GRAPH_FORMAT_VERSION, (
+              f'cached EI is a v{version} graph, expected '
+              f'v{System.GRAPH_FORMAT_VERSION}; bump the cache key'
+          )
+          print('EI is a v' + str(version) + ' graph')
+          "
 
   test-default:
     runs-on: ubuntu-latest
@@ -97,7 +113,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: systems/graphs/EI
-          key: ei-system-v1
+          key: ei-system-v2
           fail-on-cache-miss: true
 
       - name: Install dependencies
@@ -123,7 +139,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: systems/graphs/EI
-          key: ei-system-v1
+          key: ei-system-v2
           fail-on-cache-miss: true
 
       - name: Install dependencies
@@ -149,7 +165,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: systems/graphs/EI
-          key: ei-system-v1
+          key: ei-system-v2
           fail-on-cache-miss: true
 
       - name: Install system dependencies
@@ -162,6 +178,71 @@ jobs:
 
       - name: Run tests
         run: uv run tests/cli verify --backend neuron --oversubscribe${{ github.event_name == 'schedule' && ' --slow' || '' }}
+
+  test-native:
+    # the native backend: librcsd built with the platform's C compiler, then
+    # the contract tier on the pyfive graph readers (no MPI, no HDF5 library)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    needs: [lint, fast, download-system]
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+
+      - name: Restore the test system
+        if: runner.os != 'Windows'
+        uses: actions/cache/restore@v5
+        with:
+          path: systems/graphs/EI
+          key: ei-system-v2
+          fail-on-cache-miss: true
+
+      - name: Install dependencies
+        shell: bash
+        run: uv sync --group dev
+
+      - name: Build librcsd
+        shell: bash
+        run: uv run python -c "from livn.backend.native.build import compile_library; print(compile_library(force=True))"
+
+      - name: Run the native unit tests
+        shell: bash
+        run: uv run pytest tests/unit/test_native_build.py -q
+
+      # no graph needed: ParallelSystem is cells without a network, which is
+      # what makes this a usable check of the library on a runner with no
+      # downloaded system
+      - name: Simulate without a graph
+        shell: bash
+        run: |
+          uv run python -c "
+          from livn.backend import backend
+          assert backend() == 'native', backend()
+          from livn.env import Env
+          env = Env(64).init()
+          env.record_spikes()
+          run = env.run(100)
+          assert run.duration == 100
+          print('64 cells x 100 ms on', backend())
+          env.close()
+          "
+
+      - name: Run the contract tier on EI
+        if: runner.os != 'Windows'
+        shell: bash
+        run: uv run tests/cli verify --tier contract --backend native${{ github.event_name == 'schedule' && ' --slow' || '' }}
 
   test-brian2:
     runs-on: ubuntu-latest
@@ -180,7 +261,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: systems/graphs/EI
-          key: ei-system-v1
+          key: ei-system-v2
           fail-on-cache-miss: true
 
       - name: Install system dependencies
@@ -189,8 +270,14 @@ jobs:
       - name: Install dependencies
         run: uv sync --group dev --extra brian2
 
+      # the concurrency tier tests nothing brian2-specific: it declares no
+      # Capability.MPI, so the collective-symmetry checks skip and test_env is
+      # pinned to a single rank, leaving only the backend-agnostic
+      # rank-invariance checks that the neuron and default jobs already run.
+      # It costs ~45 min here because every Env build recompiles brian2's
+      # generated C++.
       - name: Run tests
-        run: uv run tests/cli verify --backend brian2${{ github.event_name == 'schedule' && ' --slow' || '' }}
+        run: uv run tests/cli verify --backend brian2 --skip-tier concurrency${{ github.event_name == 'schedule' && ' --slow' || '' }}
         env:
           LIVN_USE_LIBGSL: "1"
 
@@ -211,7 +298,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: systems/graphs/EI
-          key: ei-system-v1
+          key: ei-system-v2
           fail-on-cache-miss: true
 
       - name: Install system dependencies

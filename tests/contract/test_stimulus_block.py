@@ -9,7 +9,7 @@ import pytest
 from testing import livn_test_env
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("LIVN_BACKEND") != "neuron",
+    os.environ.get("LIVN_BACKEND") not in ("neuron", "native"),
     reason="the extracellular block belongs to the neuron backend",
 )
 

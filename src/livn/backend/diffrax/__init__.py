@@ -277,6 +277,30 @@ class Env(EnvProtocol):
     def simulated_gids(self, everywhere: bool = False):
         return self.module_gids
 
+    def _compartment_columns(self):
+        widths, offset = [], 0
+        for population, coordinates in self._selected_coordinates():
+            n = len(coordinates)
+            if n == 0:
+                continue
+            rows = self.model.stimulus_coordinates(coordinates, population=population)
+            widths.append((n, len(rows) // n))
+            offset += len(rows)
+
+        if not widths or max(width for _n, width in widths) <= 2:
+            return None
+
+        index, mask, offset = [], [], 0
+        for n, width in widths:
+            for j in range(n):
+                base = offset + j * width
+                index.append(base)
+                mask.append(1.0)
+                index.append(base + 1 if width > 1 else base)
+                mask.append(1.0 if width > 1 else 0.0)
+            offset += n * width
+        return np.asarray(index, dtype=np.int32), np.asarray(mask, dtype=np.float64)
+
     def stimulus_coordinates(self):
         rows = [
             self.model.stimulus_coordinates(coordinates, population=population)
@@ -396,6 +420,7 @@ class Env(EnvProtocol):
         dt: float = 0.1,
         **kwargs,
     ):
+        compartments = None
         if stimulus is not None:
             stimulus = Stimulus.from_arg(stimulus, env=self, duration=duration)
             stimulus = self.model.prepare_stimulus(stimulus)
@@ -403,11 +428,16 @@ class Env(EnvProtocol):
                 from livn.io import section_labels
 
                 stimulus = stimulus.expand(*section_labels(self.stimulus_coordinates()))
+                compartments = self._compartment_columns()
 
         input_current = None
         if stimulus is not None:
             arr = stimulus.to_array(duration, dt)
             input_current = jnp.array(arr)
+            if compartments is not None:
+                index, mask = compartments
+                if input_current.shape[-1] > len(index):
+                    input_current = input_current[:, index] * mask
 
         dt_solver = kwargs.pop("dt_solver", 0.01)
         t0 = kwargs.pop("t0", 0.0)

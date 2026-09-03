@@ -10,7 +10,7 @@ from testing import livn_test_env
 CELLS = 12
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("LIVN_BACKEND") != "neuron",
+    os.environ.get("LIVN_BACKEND") not in ("neuron", "native"),
     reason="builds a network, which resolves the backend at import time",
 )
 

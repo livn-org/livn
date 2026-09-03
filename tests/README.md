@@ -19,6 +19,7 @@ tests/cli fast                      # unit, under no backend and under diffrax
 tests/cli verify --backend neuron   # every tier, one backend
 tests/cli verify                    # every tier, all three backends, serialized
 tests/cli verify --slow             # including the long reference comparisons
+tests/cli verify --backend brian2 --skip-tier concurrency
 ```
 
 ## The fast tier is enforced, not merely intended

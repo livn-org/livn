@@ -1443,7 +1443,11 @@ name = "livn"
 version = "1.0.0"
 source = { editable = "." }
 dependencies = [
+    { name = "fsspec" },
     { name = "gymnasium" },
+    { name = "huggingface-hub" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
     { name = "pandas" },
     { name = "pydantic" },
     { name = "pyfive" },
@@ -1487,7 +1491,9 @@ requires-dist = [
     { name = "cleosim", marker = "extra == 'brian2'", specifier = ">=0.18.1" },
     { name = "diffrax", marker = "extra == 'diffrax'", specifier = ">=0.7.2" },
     { name = "equinox", marker = "extra == 'diffrax'", specifier = ">=0.13.7" },
+    { name = "fsspec", specifier = ">=2024.1.0" },
     { name = "gymnasium", specifier = ">=1.2.0" },
+    { name = "huggingface-hub", specifier = ">=0.3.1" },
     { name = "jax", marker = "sys_platform == 'darwin' and extra == 'diffrax'", specifier = ">=0.10.0" },
     { name = "jax", extras = ["cuda"], marker = "sys_platform != 'darwin' and extra == 'diffrax'", specifier = ">=0.10.0" },
     { name = "jaxtyping", marker = "extra == 'diffrax'", specifier = ">=0.3.9" },
@@ -1495,6 +1501,7 @@ requires-dist = [
     { name = "mpi4py", marker = "extra == 'neuron'", specifier = ">=4.0.0" },
     { name = "neuroh5", marker = "extra == 'neuron'", git = "https://github.com/iraikov/neuroh5.git?rev=ae0c4b3" },
     { name = "neuron", marker = "extra == 'neuron'", specifier = ">=9.0.0" },
+    { name = "numpy", specifier = ">=1.26.2" },
     { name = "optax", marker = "extra == 'diffrax'", specifier = ">=0.2.8" },
     { name = "optimistix", marker = "extra == 'diffrax'", specifier = ">=0.1.0" },
     { name = "pandas", specifier = ">=2.3.1" },
