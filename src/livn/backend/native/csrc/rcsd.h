@@ -105,9 +105,8 @@ enum {
 enum {
     RCSD_SYN_LINEXP2 = 0,   /* LinExp2Syn */
     RCSD_SYN_NMDA,          /* LinExp2SynNMDA */
-    RCSD_SYN_DEP,           /* DepLinExp2Syn */
-    RCSD_SYN_STDP,          /* StdpLinExp2Syn */
-    RCSD_SYN_STDP_NMDA,     /* StdpLinExp2SynNMDA */
+    RCSD_SYN_STDP,          /* StdpLinExp2Syn: STDP and Tsodyks-Markram depression */
+    RCSD_SYN_STDP_NMDA,     /* StdpLinExp2SynNMDA: the same, under the Mg block */
     RCSD_SYN_STDP_INH       /* StdpLinExp2SynInh */
 };
 
@@ -153,7 +152,8 @@ enum {
 };
 
 /* NetCon weight slots per connection: weight, g_unit, w_plastic|R, last_int|tlast */
-#define RCSD_NWEIGHT 4
+/* weight, g_unit, w_plastic, last_int, R, tlast */
+#define RCSD_NWEIGHT 6
 
 /* --- stimulus modes ---------------------------------------------------- */
 enum {
@@ -202,6 +202,10 @@ RCSD_API int rcsd_cell_set(RCSDSim* sim, int cell, double v_threshold, double v_
                            double tref);
 RCSD_API double rcsd_node_state(RCSDSim* sim, int node, int state);
 RCSD_API double rcsd_node_area(RCSDSim* sim, int node);
+/* 1 / (axial resistance from the node to its parent node), uS */
+RCSD_API double rcsd_node_rinv(RCSDSim* sim, int node);
+/* h.define_shape(): give every section its 3-D points and build the geometry */
+RCSD_API int rcsd_define_shape(RCSDSim* sim);
 
 /* --- synapses -------------------------------------------------------------- */
 RCSD_API int rcsd_add_synapse(RCSDSim* sim, int cell, int section, double x, int kind);
@@ -231,6 +235,9 @@ RCSD_API int rcsd_set_noise(RCSDSim* sim, int cell, int section, double g_e0, do
 RCSD_API int rcsd_set_noise_stream(RCSDSim* sim, int cell, int section, unsigned id1,
                                    unsigned id2, unsigned id3);
 RCSD_API int rcsd_noise_count(RCSDSim* sim);
+/* one site's cell, section, node and its state: g_e1, g_i1, g_e, g_i, ival, t_last */
+RCSD_API int rcsd_noise_state(RCSDSim* sim, int index, int* cell, int* section, int* node,
+                              double* out);
 /* draw from a Random123 stream, for testing the generator against NEURON */
 RCSD_API double rcsd_random123_normal(unsigned id1, unsigned id2, unsigned id3,
                                       unsigned seq, int index);

@@ -29,7 +29,6 @@ class ReducedCalciumSomaDendrite(Model):
         self,
         input_mode: str | None = None,
         refractory_period: float = 2.0,
-        short_term_depression: bool = True,
         dendrite_offset: float = 60.0,
         dendrite_orientation: str = "random",
         dendrite_orientation_seed: int = 20260824,
@@ -50,7 +49,6 @@ class ReducedCalciumSomaDendrite(Model):
         if refractory_period < 0:
             raise ValueError(f"refractory_period must be >= 0, got {refractory_period}")
         self.refractory_period = float(refractory_period)
-        self.short_term_depression = bool(short_term_depression)
         self.dendrite_offset = float(dendrite_offset)
         if dendrite_orientation not in {"random", "aligned"}:
             raise ValueError(
@@ -477,9 +475,7 @@ class ReducedCalciumSomaDendrite(Model):
 
     def neuron_synapse_mechanisms(self):
         return {
-            "AMPA": (
-                "DepLinExp2Syn" if self.short_term_depression else "StdpLinExp2Syn"
-            ),
+            "AMPA": "StdpLinExp2Syn",
             "NMDA": "StdpLinExp2SynNMDA",
             "GABA_A": "StdpLinExp2SynInh",
             "GABA_B": "LinExp2Syn",
@@ -513,29 +509,16 @@ class ReducedCalciumSomaDendrite(Model):
                 "netcon_params": {"weight": 0, "g_unit": 1},
                 "netcon_state": {},
             },
-            "DepLinExp2Syn": {
-                # `LinExp2Syn` plus Tsodyks-Markram depression, per stream.
-                # `R` (available resources) and `tlast` are per-connection
-                # state carried in the NetCon weight vector, so each source
-                # depresses independently despite sharing the point process.
-                "mech_file": "dep_lin_exp2syn.mod",
-                "mech_params": ["tau_rise", "tau_decay", "e", "U", "tau_rec"],
-                "netcon_params": {
-                    "weight": 0,
-                    "g_unit": 1,
-                    "R": 2,
-                    "tlast": 3,
-                },
-                "netcon_state": {},
-            },
             "StdpLinExp2Syn": {
                 "mech_file": "stdp_lin_exp2syn.mod",
-                "mech_params": ["tau_rise", "tau_decay", "e"],
+                "mech_params": ["tau_rise", "tau_decay", "e", "U", "tau_rec"],
                 "netcon_params": {
                     "weight": 0,
                     "g_unit": 1,
                     "w_plastic": 2,
                     "last_int": 3,
+                    "R": 4,
+                    "tlast": 5,
                 },
                 "netcon_state": {},
             },
@@ -549,12 +532,16 @@ class ReducedCalciumSomaDendrite(Model):
                     "Kd",
                     "gamma",
                     "vshift",
+                    "U",
+                    "tau_rec",
                 ],
                 "netcon_params": {
                     "weight": 0,
                     "g_unit": 1,
                     "w_plastic": 2,
                     "last_int": 3,
+                    "R": 4,
+                    "tlast": 5,
                 },
                 "netcon_state": {},
             },

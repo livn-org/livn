@@ -9,7 +9,7 @@ CFLAGS ?= -O2
 CFLAGS += -std=c99 -fno-fast-math -fPIC -Wall -Wextra -D_USE_MATH_DEFINES
 LDLIBS ?= -lm
 
-SRC := rcsd.c synapse.c noise.c opsin.c stimulus.c random123.c
+SRC := rcsd.c shape.c synapse.c noise.c opsin.c stimulus.c random123.c
 HDR := rcsd.h internal.h mech.h
 
 UNAME_S := $(shell uname -s 2>/dev/null)

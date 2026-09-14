@@ -11,7 +11,15 @@ import sys
 import tempfile
 
 SOURCE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "csrc")
-SOURCES = ("rcsd.c", "synapse.c", "noise.c", "opsin.c", "stimulus.c", "random123.c")
+SOURCES = (
+    "rcsd.c",
+    "shape.c",
+    "synapse.c",
+    "noise.c",
+    "opsin.c",
+    "stimulus.c",
+    "random123.c",
+)
 CACHE_DIR_ENV = "LIVN_CACHE_DIR"
 # the flags are part of the contract, see csrc/Makefile
 POSIX_FLAGS = ("-O2", "-std=c99", "-fno-fast-math", "-fPIC", "-D_USE_MATH_DEFINES")

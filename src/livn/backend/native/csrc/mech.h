@@ -21,8 +21,13 @@ static inline double nas_htau(double v) {
 static inline double nas_hinf(double v) {
     return 1.0 / (1.0 + exp((v + 55.0) / 7.0));
 }
-static inline double nas_current(double v, double gmax, double minf, double h, double ena) {
-    double g = gmax * minf * minf * minf * h;
+/* mod2c renders minf^3 as pow(minf, 3.0), which rounds unlike minf*minf*minf;
+ * the caller evaluates it once for both the current and its derivative */
+static inline double nas_m3(double minf) {
+    return pow(minf, 3.0);
+}
+static inline double nas_current(double v, double gmax, double m3, double h, double ena) {
+    double g = gmax * m3 * h;
     return g * (v - ena);
 }
 
@@ -105,7 +110,9 @@ static inline double ka_current(double v, double gmax, double a, double b, doubl
 
 /* --- cnexp: y' = (yinf - y)/tau over one step --------------------------------- */
 static inline double cnexp_relax(double y, double yinf, double tau, double dt) {
-    return y + (1.0 - exp(dt * (-1.0 / tau))) * (yinf - y);
+    /* mod2c's form, literally: the steady state is -(yinf/tau)/(-1/tau), which
+     * is yinf only up to rounding */
+    return y + (1.0 - exp(dt * (((-1.0)) / tau))) * (-((yinf) / tau) / (((-1.0)) / tau) - y);
 }
 
 /* --- Na_conc.mod / K_conc.mod: x' = -i/(2 F d) 1e4 - beta (x - x0) ---------------- */

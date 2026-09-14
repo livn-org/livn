@@ -62,6 +62,7 @@ int rcsd_set_noise(RCSDSim* sim, int cell, int section, double g_e0, double g_i0
         DYN_PUSH(sim->noise, fresh);
         n = &sim->noise.data[sim->noise.n - 1];
         r123_seed(&n->stream, 0, 0, 0);
+        sim->pp_dirty = 1;
     }
     n->g_e0 = g_e0;
     n->g_i0 = g_i0;
@@ -96,6 +97,28 @@ int rcsd_noise_count(RCSDSim* sim) {
     return (int) sim->noise.n;
 }
 
+int rcsd_noise_state(RCSDSim* sim, int index, int* cell, int* section, int* node,
+                     double* out) {
+    Noise* n;
+    if (index < 0 || (size_t) index >= sim->noise.n) {
+        rcsd_set_error("no noise site %d", index);
+        return RCSD_ERROR;
+    }
+    n = &sim->noise.data[index];
+    if (cell) *cell = n->cell;
+    if (section) *section = n->section;
+    if (node) *node = n->node;
+    if (out) {
+        out[0] = n->g_e1;
+        out[1] = n->g_i1;
+        out[2] = n->g_e;
+        out[3] = n->g_i;
+        out[4] = n->ival;
+        out[5] = n->t_last;
+    }
+    return RCSD_OK;
+}
+
 void rcsd_noise_init(RCSDSim* sim) {
     size_t i;
     for (i = 0; i < sim->noise.n; ++i) {
@@ -104,6 +127,8 @@ void rcsd_noise_init(RCSDSim* sim) {
         n->g_e1 = 0.0;
         n->g_i1 = 0.0;
         n->ival = 0.0;
+        n->cur = 0.0;
+        n->dcur = 0.0;
         /* INITIAL recomputes from h, with exptrap */
         if (n->tau_e != 0.0) {
             n->exp_e = exp(-n->h / n->tau_e);
@@ -154,8 +179,8 @@ void rcsd_noise_advance(RCSDSim* sim, double t_mid) {
     }
 }
 
-/* invoked from the current evaluation through the synapse pass */
-void rcsd_noise_currents(RCSDSim* sim);
+/* nrn_cur of every site: the current and its numerical dI/dV, scaled to the
+ * node, which eval_membrane sums at the Gfluct3 position */
 void rcsd_noise_currents(RCSDSim* sim) {
     size_t i;
     for (i = 0; i < sim->noise.n; ++i) {
@@ -164,6 +189,8 @@ void rcsd_noise_currents(RCSDSim* sim) {
         double g_e, g_i, i0, i1, g, scale;
         if (n->on <= 0) {
             n->ival = 0.0;
+            n->cur = 0.0;
+            n->dcur = 0.0;
             continue;
         }
         g_e = n->g_e0 + n->g_e1;
@@ -181,7 +208,7 @@ void rcsd_noise_currents(RCSDSim* sim) {
         n->ival = i0;
         g = (i1 - i0) / 0.001;
         scale = 1e2 / sim->area[n->node];
-        sim->rhs[n->node] -= i0 * scale;
-        sim->d[n->node] += g * scale;
+        n->cur = i0 * scale;
+        n->dcur = g * scale;
     }
 }

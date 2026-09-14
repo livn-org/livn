@@ -386,6 +386,9 @@ class Env(EnvProtocol):
             cells = self._build_population(pop, types[pop], sel)
             cells_by_pop[pop] = cells
             self.cells.add(pop, cells)
+        # h.define_shape(): from here on a section's geometry lives in its
+        # 3-D points, as it does in the NEURON backend
+        L.check(self._lib.rcsd_define_shape(self._sim), self._lib)
 
         builder = SynapseBuilder(
             self,

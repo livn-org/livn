@@ -36,6 +36,7 @@ NEURON {
     RANGE learning_slope, learning_tau
     RANGE w_max, w_min
     RANGE plasticity_on
+    RANGE U, tau_rec
     NONSPECIFIC_CURRENT i
 }
 
@@ -58,6 +59,19 @@ PARAMETER {
 
     : -- Plasticity parameters --
     plasticity_on = 0         : 0 = off, 1 = on
+
+    : -- Tsodyks-Markram short-term depression, per presynaptic stream --
+    : `R` (available resources) and `tlast` ride in the NetCon weight vector
+    : (5th and 6th elements), so every source depletes and recovers on its
+    : own although they share this point process. Depression is a property
+    : of the terminal, not the receptor: a glutamatergic terminal releases
+    : onto AMPA and NMDA from one vesicle pool, so the AMPA and NMDA halves
+    : of a connection run the same U and tau_rec and, receiving the same
+    : events at the same delay, the same R. The defaults are no depression:
+    : U 1 releases the whole pool and a vanishing tau_rec has it back before
+    : the next event, so the increment is exactly `w_plastic*weight*g_unit*factor`.
+    U           = 1.0         : fraction of available resources released per event
+    tau_rec     = 1e-3  (ms)  : recovery time constant of the resource pool
 
     w_init      = 1.0         : initial weight multiplier
     A_ltp       = 1.0         : LTP amplitude scaling
@@ -100,6 +114,15 @@ INITIAL {
     tp = (tau_rise * tau_decay) / (tau_decay - tau_rise) * log(tau_decay / tau_rise)
     factor = -exp(-tp / tau_rise) + exp(-tp / tau_decay)
     factor = 1 / factor
+    if (U <= 0) {
+        U = 1e-6
+    }
+    if (U > 1) {
+        U = 1
+    }
+    if (tau_rec <= 0) {
+        tau_rec = 1e-3
+    }
 
     ltd = 0
     ltp = 0
@@ -140,10 +163,12 @@ DERIVATIVE state {
     learn_int' = learning_w
 }
 
-NET_RECEIVE(weight, g_unit (uS), w_plastic, last_int) {
+NET_RECEIVE(weight, g_unit (uS), w_plastic, last_int, R, tlast (ms)) {
     INITIAL {
         w_plastic = w_init
         last_int = 0
+        R = 1
+        tlast = -1e9
     }
     : Presynaptic spike - apply per-connection learning and update conductance
     if (plasticity_on > 0.5) {
@@ -159,8 +184,12 @@ NET_RECEIVE(weight, g_unit (uS), w_plastic, last_int) {
         }
         w = w_plastic
     }
-    A = A + w_plastic * weight * g_unit * factor
-    B = B + w_plastic * weight * g_unit * factor
+    : recover, release, deplete
+    R = 1 - (1 - R) * exp(-(t - tlast) / tau_rec)
+    tlast = t
+    A = A + w_plastic * weight * g_unit * R * U * factor
+    B = B + w_plastic * weight * g_unit * R * U * factor
+    R = R - R * U
 }
 
 FUNCTION mgblock(v(mV)) {

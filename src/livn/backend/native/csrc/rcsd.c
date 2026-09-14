@@ -91,6 +91,9 @@ void rcsd_destroy(RCSDSim* sim) {
         return;
     }
     DYN_FREE(sim->cells);
+    for (i = 0; i < sim->sections.n; ++i) {
+        rcsd_shape_free(&sim->sections.data[i]);
+    }
     DYN_FREE(sim->sections);
     free(sim->parent);
     free(sim->section_of);
@@ -113,10 +116,17 @@ void rcsd_destroy(RCSDSim* sim) {
     free(sim->ext_amp);
     free(sim->stim_amp);
     free(sim->stim_dens);
+    free(sim->stim_rhs);
+    for (m = 0; m < PP_N; ++m) {
+        free(sim->pp_start[m]);
+        free(sim->pp_list[m]);
+    }
     DYN_FREE(sim->synapses);
     free(sim->sp);
     free(sim->ss);
     free(sim->sc);
+    free(sim->site_cur);
+    free(sim->site_dcur);
     DYN_FREE(sim->connections);
     free(sim->w);
     for (i = 0; i < sim->inputs.n; ++i) {
@@ -194,6 +204,7 @@ int rcsd_alloc_nodes(RCSDSim* sim, int n) {
     GROW(sim->ext_amp, double, sim->cap_nodes, cap);
     GROW(sim->stim_amp, double, sim->cap_nodes, cap);
     GROW(sim->stim_dens, double, sim->cap_nodes, cap);
+    GROW(sim->stim_rhs, double, sim->cap_nodes, cap);
     sim->cap_nodes = cap;
     return RCSD_OK;
 }
@@ -453,11 +464,27 @@ int rcsd_section_geometry(RCSDSim* sim, int section, double L, double diam, doub
     if (sec == NULL) {
         return RCSD_ERROR;
     }
-    sec->L = L;
-    sec->diam = diam;
+    /* the template assigns L, then diam, then Ra; with a shape defined the
+     * first two rescale and re-diameter the points as NEURON's do */
+    rcsd_shape_length_change(sec, L);
+    rcsd_shape_diam_change(sec, diam);
     sec->Ra = Ra;
     sim->geometry_dirty = 1;
     return RCSD_OK;
+}
+
+int rcsd_define_shape(RCSDSim* sim) {
+    return rcsd_build_geometry(sim);
+}
+
+double rcsd_node_rinv(RCSDSim* sim, int node) {
+    if (node < 0 || node >= sim->n_nodes) {
+        return NAN;
+    }
+    if (sim->geometry_dirty) {
+        rcsd_build_geometry(sim);
+    }
+    return sim->rinv[node];
 }
 
 int rcsd_section_info(RCSDSim* sim, int section, int* nseg, double* L, double* diam,
@@ -494,25 +521,18 @@ double rcsd_node_area(RCSDSim* sim, int node) {
     return sim->area[node];
 }
 
-/* NEURON's nrn_area_ri for a stylised section, plus the coupling coefficients */
+/* NEURON's nrn_area_ri per section, plus the coupling coefficients. The
+ * shape is defined on the first build, as h.define_shape() does once the
+ * NEURON backend has built its cells; after that a section's points carry
+ * its geometry (shape.c). */
 int rcsd_build_geometry(RCSDSim* sim) {
     size_t s;
     int i;
+    if (rcsd_shape_define(sim) != RCSD_OK) {
+        return RCSD_ERROR;
+    }
     for (s = 0; s < sim->sections.n; ++s) {
-        Section* sec = &sim->sections.data[s];
-        double dx = sec->L / (double) sec->nseg;
-        double rright = 0.0;
-        double rleft;
-        int j;
-        for (j = 0; j < sec->nseg; ++j) {
-            int node = sec->node0 + j;
-            sim->area[node] = M_PI * dx * sec->diam;
-            rleft = 1e-2 * sec->Ra * (dx / 2.0) / (M_PI * sec->diam * sec->diam / 4.0);
-            sim->rinv[node] = 1.0 / (rleft + rright);
-            rright = rleft;
-        }
-        sim->area[sec->end_node] = 1e2;
-        sim->rinv[sec->end_node] = 1.0 / rright;
+        rcsd_shape_area_ri(sim, &sim->sections.data[s]);
     }
     for (i = 0; i < sim->n_nodes; ++i) {
         int p = sim->parent[i];
@@ -539,11 +559,119 @@ int rcsd_build_geometry(RCSDSim* sim) {
 /* Every density mechanism's BREAKPOINT at the present states, with the
  * numerical conductance NEURON derives from `_nrn_current(v + .001)`.
  * Fills rhs, d, the ion totals and their derivatives, i_pas and sav_*. */
+/* The instances of each point-process type at each node, later-created
+ * first, as NEURON's sorted Memb_list has them (nrn_sort_mech_data walks the
+ * nodes and each node's property list, to which prop_alloc prepends). */
+static int pp_slot_of_kind(int kind) {
+    switch (kind) {
+    case RCSD_SYN_LINEXP2: return PP_LINEXP2;
+    case RCSD_SYN_NMDA: return PP_NMDA;
+    case RCSD_SYN_STDP: return PP_STDP;
+    case RCSD_SYN_STDP_NMDA: return PP_STDP_NMDA;
+    case RCSD_SYN_STDP_INH: return PP_STDP_INH;
+    default: return -1;
+    }
+}
+
+static int pp_slot_instance_count(RCSDSim* sim, int slot) {
+    switch (slot) {
+    case PP_GFLUCT: return (int) sim->noise.n;
+    case PP_RHO3C: return (int) sim->opsins.n;
+    case PP_ICLAMP: return 0;
+    default: return (int) sim->synapses.n;
+    }
+}
+
+/* the node and slot of instance `k` of the family behind `slot`, or -1 when
+ * the instance belongs to another slot of the same family */
+static int pp_instance_node(RCSDSim* sim, int slot, int k) {
+    switch (slot) {
+    case PP_GFLUCT: return sim->noise.data[k].node;
+    case PP_RHO3C: return sim->opsins.data[k].node;
+    case PP_ICLAMP: return -1;
+    default:
+        return pp_slot_of_kind(sim->synapses.data[k].kind) == slot ? sim->synapses.data[k].node
+                                                                    : -1;
+    }
+}
+
+int rcsd_pp_index(RCSDSim* sim) {
+    int slot;
+    const int n = sim->n_nodes;
+    for (slot = 0; slot < PP_N; ++slot) {
+        int count = pp_slot_instance_count(sim, slot);
+        int k, i, total = 0;
+        int* start;
+        int* list;
+        GROW(sim->pp_start[slot], int, 0, (size_t) n + 1);
+        start = sim->pp_start[slot];
+        memset(start, 0, ((size_t) n + 1) * sizeof(int));
+        for (k = 0; k < count; ++k) {
+            int node = pp_instance_node(sim, slot, k);
+            if (node >= 0) {
+                start[node + 1] += 1;
+                total += 1;
+            }
+        }
+        for (i = 0; i < n; ++i) {
+            start[i + 1] += start[i];
+        }
+        GROW(sim->pp_list[slot], int, 0, (size_t) (total > 0 ? total : 1));
+        list = sim->pp_list[slot];
+        /* filled from the last instance down: at each node the latest first */
+        for (k = count - 1; k >= 0; --k) {
+            int node = pp_instance_node(sim, slot, k);
+            if (node >= 0) {
+                list[start[node]++] = k;
+            }
+        }
+        for (i = n; i > 0; --i) {
+            start[i] = start[i - 1];
+        }
+        start[0] = 0;
+    }
+    sim->pp_nodes = n;
+    sim->pp_dirty = 0;
+    return RCSD_OK;
+}
+
+/* nrn_cur and nrn_jacob of the point processes of one slot at one node */
+static inline void pp_accumulate(RCSDSim* sim, int slot, int node, double* rhs, double* dd) {
+    const int* start = sim->pp_start[slot];
+    const int* list = sim->pp_list[slot];
+    int q;
+    for (q = start[node]; q < start[node + 1]; ++q) {
+        int k = list[q];
+        double cur, dcur;
+        if (slot == PP_GFLUCT) {
+            cur = sim->noise.data[k].cur;
+            dcur = sim->noise.data[k].dcur;
+        } else if (slot == PP_RHO3C) {
+            cur = sim->opsins.data[k].cur;
+            dcur = sim->opsins.data[k].dcur;
+        } else {
+            cur = sim->site_cur[k];
+            dcur = sim->site_dcur[k];
+        }
+        *rhs -= cur;
+        *dd += dcur;
+    }
+}
+
+/* nrn_rhs and nrn_lhs for the membrane: every mechanism of a node in the
+ * order of NEURON's type indices (pas 4, IClamp 7, CaL 27, CaN 28, constant
+ * 30, Gfluct3 31, Ka_v1in 32, KCa 33, Kdr 37, LinExp2Syn 39, LinExp2SynNMDA
+ * 40, Nas 44, RhO3c 45, StdpLinExp2SynInh 47, StdpLinExp2Syn 48,
+ * StdpLinExp2SynNMDA 49), so that the sums round as
+ * NEURON's do. The ion currents accumulate in the same order. */
 static void eval_membrane(RCSDSim* sim) {
     const double celsius = sim->celsius;
     const double fN = can_f(celsius);
     const double fL = cal_f(celsius);
     int i;
+    if (sim->pp_dirty || sim->pp_nodes != sim->n_nodes) {
+        rcsd_pp_index(sim);
+    }
     for (i = 0; i < sim->n_nodes; ++i) {
         unsigned mech = sim->mech[i];
         double v = sim->v[i];
@@ -584,29 +712,18 @@ static void eval_membrane(RCSDSim* sim) {
             rhs -= i0;
             dd += (i1 - i0) / 0.001;
         }
-        if (mech & RCSD_M_CONSTANT) {
-            rhs -= PR(i, RCSD_P_IC);
+        /* IClamp: an ELECTRODE_CURRENT adds to rhs and has no Jacobian */
+        if (sim->stim_rhs[i] != 0.0) {
+            rhs += sim->stim_rhs[i];
         }
-        if (mech & RCSD_M_NAS) {
-            double gmax = PR(i, RCSD_P_GMAX_NAS);
-            double minf = nas_minf(v, PR(i, RCSD_P_VHALF_NAS), PR(i, RCSD_P_SLOPE_NAS));
-            double h = ST(i, RCSD_S_H);
-            double i1 = nas_current(vp, gmax, minf, h, ena);
-            double i0 = nas_current(v, gmax, minf, h, ena);
+        if (mech & RCSD_M_CAL) {
+            double gmax = PR(i, RCSD_P_GMAX_CAL);
+            double m = ST(i, RCSD_S_ML);
+            double i1 = cal_current(vp, gmax, m, cai, cao, fL);
+            double i0 = cal_current(v, gmax, m, cai, cao, fL);
             double g = (i1 - i0) / 0.001;
-            ina += i0;
-            dina += g;
-            rhs -= i0;
-            dd += g;
-        }
-        if (mech & RCSD_M_KDR) {
-            double gmax = PR(i, RCSD_P_GMAX_KDR);
-            double n = ST(i, RCSD_S_N);
-            double i1 = kdr_current(vp, gmax, n, ek);
-            double i0 = kdr_current(v, gmax, n, ek);
-            double g = (i1 - i0) / 0.001;
-            ik += i0;
-            dik += g;
+            ica += i0;
+            dica += g;
             rhs -= i0;
             dd += g;
         }
@@ -621,14 +738,18 @@ static void eval_membrane(RCSDSim* sim) {
             rhs -= i0;
             dd += g;
         }
-        if (mech & RCSD_M_CAL) {
-            double gmax = PR(i, RCSD_P_GMAX_CAL);
-            double m = ST(i, RCSD_S_ML);
-            double i1 = cal_current(vp, gmax, m, cai, cao, fL);
-            double i0 = cal_current(v, gmax, m, cai, cao, fL);
+        if (mech & RCSD_M_CONSTANT) {
+            rhs -= PR(i, RCSD_P_IC);
+        }
+        pp_accumulate(sim, PP_GFLUCT, i, &rhs, &dd);
+        if (mech & RCSD_M_KA_V1IN) {
+            double gmax = PR(i, RCSD_P_GMAX_KA);
+            double a = ST(i, RCSD_S_A), b = ST(i, RCSD_S_B);
+            double i1 = ka_current(vp, gmax, a, b, ek);
+            double i0 = ka_current(v, gmax, a, b, ek);
             double g = (i1 - i0) / 0.001;
-            ica += i0;
-            dica += g;
+            ik += i0;
+            dik += g;
             rhs -= i0;
             dd += g;
         }
@@ -642,17 +763,37 @@ static void eval_membrane(RCSDSim* sim) {
             rhs -= i0;
             dd += g;
         }
-        if (mech & RCSD_M_KA_V1IN) {
-            double gmax = PR(i, RCSD_P_GMAX_KA);
-            double a = ST(i, RCSD_S_A), b = ST(i, RCSD_S_B);
-            double i1 = ka_current(vp, gmax, a, b, ek);
-            double i0 = ka_current(v, gmax, a, b, ek);
+        if (mech & RCSD_M_KDR) {
+            double gmax = PR(i, RCSD_P_GMAX_KDR);
+            double n = ST(i, RCSD_S_N);
+            double i1 = kdr_current(vp, gmax, n, ek);
+            double i0 = kdr_current(v, gmax, n, ek);
             double g = (i1 - i0) / 0.001;
             ik += i0;
             dik += g;
             rhs -= i0;
             dd += g;
         }
+        pp_accumulate(sim, PP_LINEXP2, i, &rhs, &dd);
+        pp_accumulate(sim, PP_NMDA, i, &rhs, &dd);
+        if (mech & RCSD_M_NAS) {
+            double gmax = PR(i, RCSD_P_GMAX_NAS);
+            double m3 = nas_m3(nas_minf(v, PR(i, RCSD_P_VHALF_NAS), PR(i, RCSD_P_SLOPE_NAS)));
+            double h = ST(i, RCSD_S_H);
+            double i1 = nas_current(vp, gmax, m3, h, ena);
+            double i0 = nas_current(v, gmax, m3, h, ena);
+            double g = (i1 - i0) / 0.001;
+            ina += i0;
+            dina += g;
+            rhs -= i0;
+            dd += g;
+        }
+        pp_accumulate(sim, PP_RHO3C, i, &rhs, &dd);
+        pp_accumulate(sim, PP_STDP_INH, i, &rhs, &dd);
+        pp_accumulate(sim, PP_STDP, i, &rhs, &dd);
+        pp_accumulate(sim, PP_STDP_NMDA, i, &rhs, &dd);
+        /* nrn_rhs: sav_rhs holds the electrode current, less everything */
+        sim->sav_rhs[i] = sim->stim_rhs[i] - rhs;
         ST(i, RCSD_S_INA) = ina;
         ST(i, RCSD_S_IK) = ik;
         ST(i, RCSD_S_ICA) = ica;
@@ -825,6 +966,10 @@ int rcsd_init(RCSDSim* sim) {
         sim->ext_amp[i] = 0.0;
         sim->stim_amp[i] = 0.0;
         sim->stim_dens[i] = 0.0;
+        sim->stim_rhs[i] = 0.0;
+    }
+    if (rcsd_pp_index(sim) != RCSD_OK) {
+        return RCSD_ERROR;
     }
 
     /* resting.pin(): one initialisation per cell at its hold potential */
@@ -1149,19 +1294,17 @@ static int advance(RCSDSim* sim) {
     rcsd_noise_advance(sim, t_mid);
 
     PROF_MARK(1);
-    /* 3. membrane currents and the matrix */
-    eval_membrane(sim);
-    PROF_MARK(2);
-    rcsd_synapse_currents(sim);
-    PROF_MARK(3);
-    rcsd_noise_currents(sim);
-    rcsd_opsin_currents(sim);
-    for (i = 0; i < sim->n_nodes; ++i) {
-        sim->sav_rhs[i] = -sim->rhs[i];
-    }
+    /* 3. the currents of the point processes and the stimuli, then the
+     *    membrane, which sums them all in NEURON's order into the matrix */
     if (rcsd_stimulus_apply(sim, s, NULL, NULL) != RCSD_OK) {
         return RCSD_ERROR;
     }
+    rcsd_synapse_currents(sim);
+    PROF_MARK(2);
+    rcsd_noise_currents(sim);
+    rcsd_opsin_currents(sim);
+    PROF_MARK(3);
+    eval_membrane(sim);
     PROF_MARK(4);
     for (i = 0; i < sim->n_nodes; ++i) {
         if (sim->is_centre[i]) {

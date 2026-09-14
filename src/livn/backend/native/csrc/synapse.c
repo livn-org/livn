@@ -68,6 +68,18 @@ static int grow_sites(RCSDSim* sim, size_t n) {
         return RCSD_ERROR;
     }
     sim->sc = sc;
+    sc = grow_table(sim->site_cur, 1, used, sim->sp_cap, cap);
+    if (sc == NULL) {
+        rcsd_set_error("out of memory");
+        return RCSD_ERROR;
+    }
+    sim->site_cur = sc;
+    sc = grow_table(sim->site_dcur, 1, used, sim->sp_cap, cap);
+    if (sc == NULL) {
+        rcsd_set_error("out of memory");
+        return RCSD_ERROR;
+    }
+    sim->site_dcur = sc;
     sim->sp_cap = cap;
     return RCSD_OK;
 }
@@ -78,6 +90,13 @@ static int is_stdp(int kind) {
 
 static int is_nmda(int kind) {
     return kind == RCSD_SYN_NMDA || kind == RCSD_SYN_STDP_NMDA;
+}
+
+/* Tsodyks-Markram depression: the glutamatergic STDP mechanisms carry
+ * `R`/`tlast` per connection in weight slots 4/5 (no depression at their
+ * defaults, U 1 and a vanishing tau_rec) */
+static int is_dep(int kind) {
+    return kind == RCSD_SYN_STDP || kind == RCSD_SYN_STDP_NMDA;
 }
 
 int rcsd_add_synapse(RCSDSim* sim, int cell, int section, double x, int kind) {
@@ -99,6 +118,7 @@ int rcsd_add_synapse(RCSDSim* sim, int cell, int section, double x, int kind) {
     syn.node = rcsd_section_node(sim, sec, x);
     syn.kind = kind;
     DYN_PUSH(sim->synapses, syn);
+    sim->pp_dirty = 1;
     site = (int) sim->synapses.n - 1;
     /* the .mod defaults */
     SP(site, RCSD_SP_TAU_RISE) = is_nmda(kind) ? 10.0 : 1.0;
@@ -108,8 +128,11 @@ int rcsd_add_synapse(RCSDSim* sim, int cell, int section, double x, int kind) {
     SP(site, RCSD_SP_KD) = 3.57;
     SP(site, RCSD_SP_GAMMA) = 0.062;
     SP(site, RCSD_SP_VSHIFT) = 0.0;
-    SP(site, RCSD_SP_U) = 0.25;
-    SP(site, RCSD_SP_TAU_REC) = 400.0;
+    /* no depression unless asked for: U 1 releases the whole pool and a
+     * vanishing tau_rec has it back before the next event, so the increment
+     * is exactly the undepressed one (the merged .mod's defaults) */
+    SP(site, RCSD_SP_U) = 1.0;
+    SP(site, RCSD_SP_TAU_REC) = 1e-3;
     SP(site, RCSD_SP_PLASTICITY_ON) = 0.0;
     SP(site, RCSD_SP_W_INIT) = 1.0;
     SP(site, RCSD_SP_A_LTP) = 1.0;
@@ -170,7 +193,7 @@ void rcsd_synapse_finalize_factor(RCSDSim* sim, int site) {
         tau_rise = tau_decay * 1e-9;
     }
     SP(site, RCSD_SP_TAU_RISE) = tau_rise;
-    if (kind == RCSD_SYN_DEP) {
+    if (is_dep(kind)) {
         if (SP(site, RCSD_SP_U) <= 0.0) {
             SP(site, RCSD_SP_U) = 1e-6;
         }
@@ -218,6 +241,8 @@ void rcsd_synapse_init_states(RCSDSim* sim) {
         SS(i, RCSD_SS_W) = SP(i, RCSD_SP_W_INIT);
         SS(i, RCSD_SS_G) = 0.0;
         SS(i, RCSD_SS_I) = 0.0;
+        sim->site_cur[i] = 0.0;
+        sim->site_dcur[i] = 0.0;
     }
     for (i = 0; i < sim->connections.n; ++i) {
         int site = sim->connections.data[i].site;
@@ -225,9 +250,10 @@ void rcsd_synapse_init_states(RCSDSim* sim) {
         if (is_stdp(kind)) {
             W(i, 2) = SP(site, RCSD_SP_W_INIT);
             W(i, 3) = 0.0;
-        } else if (kind == RCSD_SYN_DEP) {
-            W(i, 2) = 1.0;
-            W(i, 3) = -1e9;
+        }
+        if (is_dep(kind)) {
+            W(i, 4) = 1.0;
+            W(i, 5) = -1e9;
         }
     }
 }
@@ -334,9 +360,10 @@ int rcsd_add_connections(RCSDSim* sim, int n, const int* source, const int* site
             if (is_stdp(kind)) {
                 sim->w[index * RCSD_NWEIGHT + 2] = SP(site[i], RCSD_SP_W_INIT);
                 sim->w[index * RCSD_NWEIGHT + 3] = 0.0;
-            } else if (kind == RCSD_SYN_DEP) {
-                sim->w[index * RCSD_NWEIGHT + 2] = 1.0;
-                sim->w[index * RCSD_NWEIGHT + 3] = -1e9;
+            }
+            if (is_dep(kind)) {
+                sim->w[index * RCSD_NWEIGHT + 4] = 1.0;
+                sim->w[index * RCSD_NWEIGHT + 5] = -1e9;
             }
         }
     }
@@ -514,15 +541,7 @@ void rcsd_synapse_receive(RCSDSim* sim, int conn, double te) {
     double weight = W(conn, 0), g_unit = W(conn, 1);
     double inc, primary, tau_rise, tau_decay;
 
-    if (kind == RCSD_SYN_DEP) {
-        double R = W(conn, 2), tlast = W(conn, 3), U = SP(site, RCSD_SP_U);
-        R = 1.0 - (1.0 - R) * exp(-(te - tlast) / SP(site, RCSD_SP_TAU_REC));
-        tlast = te;
-        inc = weight * g_unit * R * U * factor;
-        R = R - R * U;
-        W(conn, 2) = R;
-        W(conn, 3) = tlast;
-    } else if (is_stdp(kind)) {
+    if (is_stdp(kind)) {
         double w_plastic = W(conn, 2);
         if (SP(site, RCSD_SP_PLASTICITY_ON) > 0.5) {
             double delta_learn = SS(site, RCSD_SS_LEARN_INT) - W(conn, 3);
@@ -537,7 +556,20 @@ void rcsd_synapse_receive(RCSDSim* sim, int conn, double te) {
             W(conn, 2) = w_plastic;
             SS(site, RCSD_SS_W) = w_plastic;
         }
-        inc = w_plastic * weight * g_unit * factor;
+        if (is_dep(kind)) {
+            /* recover, release, deplete -- the .mod's expression order, so the
+             * product rounds as NEURON's does (exactly the undepressed value
+             * at the defaults R = U = 1) */
+            double R = W(conn, 4), tlast = W(conn, 5), U = SP(site, RCSD_SP_U);
+            R = 1.0 - (1.0 - R) * exp(-(te - tlast) / SP(site, RCSD_SP_TAU_REC));
+            tlast = te;
+            inc = w_plastic * weight * g_unit * R * U * factor;
+            R = R - R * U;
+            W(conn, 4) = R;
+            W(conn, 5) = tlast;
+        } else {
+            inc = w_plastic * weight * g_unit * factor;
+        }
     } else {
         inc = weight * g_unit * factor;
     }
@@ -600,6 +632,8 @@ static double site_current(RCSDSim* sim, int site, int kind, double v) {
     return i;
 }
 
+/* nrn_cur of every site: the current and its numerical dI/dV, scaled to the
+ * node, which eval_membrane sums at the position of the site's type */
 void rcsd_synapse_currents(RCSDSim* sim) {
     size_t s;
     for (s = 0; s < sim->synapses.n; ++s) {
@@ -611,8 +645,8 @@ void rcsd_synapse_currents(RCSDSim* sim) {
         double g = (i1 - i0) / 0.001;
         double scale = 1e2 / sim->area[node];
         SS(s, RCSD_SS_I) = i0;
-        sim->rhs[node] -= i0 * scale;
-        sim->d[node] += g * scale;
+        sim->site_cur[s] = i0 * scale;
+        sim->site_dcur[s] = g * scale;
     }
 }
 

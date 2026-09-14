@@ -305,14 +305,14 @@ static int apply_or_check(RCSDSim* sim, long step, int check, int* need, int* ne
                 double vb = b ? b[r] : 0.0;
                 double amp = (1.0 - x) * va + x * vb;
                 int node = s->node[r];
-                sim->rhs[node] += amp * 1e2 / sim->area[node];
+                sim->stim_rhs[node] += amp * 1e2 / sim->area[node];
             }
         } else if (m == RCSD_STIM_CURRENT_DENSITY) {
             const double* a = sample(s, i0);
             int r;
             if (a) {
                 for (r = 0; r < s->n_rows; ++r) {
-                    sim->rhs[s->node[r]] += a[r];
+                    sim->stim_rhs[s->node[r]] += a[r];
                 }
             }
         }
@@ -325,10 +325,12 @@ int rcsd_stimulus_apply(RCSDSim* sim, long step, int* need, int* need_mode) {
     if (need != NULL) {
         return apply_or_check(sim, step, 1, need, need_mode);
     }
-    /* the field's equivalent currents, set for this step by the previous one */
+    /* the field's equivalent currents, set for this step by the previous one;
+     * every injected current lands in the IClamp slot of the node */
     for (i = 0; i < sim->n_nodes; ++i) {
+        sim->stim_rhs[i] = 0.0;
         if (sim->ext_amp[i] != 0.0) {
-            sim->rhs[i] += sim->ext_amp[i] * 1e2 / sim->area[i];
+            sim->stim_rhs[i] += sim->ext_amp[i] * 1e2 / sim->area[i];
         }
     }
     return apply_or_check(sim, step, 0, NULL, NULL);

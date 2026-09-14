@@ -12,8 +12,10 @@
 #endif
 
 /* --- physical constants, as NEURON compiles them (CODATA 2018) --------------- */
-#define RCSD_FARADAY 96485.33212
-#define RCSD_GASCONSTANT 8.314462618
+/* h.FARADAY and h.R of NEURON 9 (CODATA 2018), which nrn_nernst and the
+ * FARADAY of the .mod files share to the last digit */
+#define RCSD_FARADAY 96485.33212331001
+#define RCSD_GASCONSTANT 8.31446261815324
 
 /* --- growable arrays ----------------------------------------------------------- */
 #define DYN(type)      \
@@ -42,6 +44,12 @@ int dyn_reserve(void** data, size_t* cap, size_t n, size_t itemsize);
     } while (0)
 
 /* --- cells and sections --------------------------------------------------------- */
+/* NEURON's Pt3d: single-precision coordinates and diameter, double arc */
+typedef struct {
+    float x, y, z, d;
+    double arc;
+} Pt3d;
+
 typedef struct {
     int cell;
     int kind;
@@ -53,6 +61,9 @@ typedef struct {
     int parent_node; /* node the first centre node couples to */
     double L, diam, Ra;
     unsigned mech;
+    Pt3d* pt3d; /* the 3-D points define_shape gave the section, if any */
+    int npt3d, pt3d_cap;
+    int recalc_area;
 } Section;
 
 typedef struct {
@@ -68,6 +79,25 @@ typedef struct {
     int above;           /* PreSyn.flag_ */
     int opsin;
 } Cell;
+
+/* --- point processes, in NEURON's mechanism-type order ------------------------- */
+/* nrn_rhs and nrn_lhs visit the mechanisms of a node in the order of their
+ * type index, density and point mechanisms interleaved, and the instances of
+ * one type at a node in reverse order of creation (prop_alloc links at the
+ * head). The sum of the currents and conductances of a node is taken in that
+ * order so that it rounds as NEURON's does; each slot is one point-process
+ * type at its position among the density mechanisms of mech.h. */
+enum {
+    PP_ICLAMP = 0, /* IClamp (7): the current stimuli */
+    PP_GFLUCT,     /* Gfluct3 (31) */
+    PP_LINEXP2,    /* LinExp2Syn (39) */
+    PP_NMDA,       /* LinExp2SynNMDA (40) */
+    PP_RHO3C,      /* RhO3c (45) */
+    PP_STDP_INH,   /* StdpLinExp2SynInh (47) */
+    PP_STDP,       /* StdpLinExp2Syn (48) */
+    PP_STDP_NMDA,  /* StdpLinExp2SynNMDA (49) */
+    PP_N
+};
 
 /* --- synapses -------------------------------------------------------------------- */
 enum { SC_EXP_RISE = 0, SC_EXP_DECAY, SC_HALF_RISE, SC_HALF_DECAY, SC_EXP_LEARN, SYN_CACHE_N };
@@ -114,6 +144,7 @@ typedef struct {
     int on;
     double g_e1, g_i1, exp_e, exp_i, amp_e, amp_i, t_last;
     double g_e, g_i, ival;
+    double cur, dcur; /* this step's current and dI/dV, scaled by 1e2/area */
     R123Stream stream;
     uint32_t id1, id2, id3;
     int seeded;
@@ -124,6 +155,7 @@ typedef struct {
     int cell, section, node;
     double g0, E, v0, v1, k_a, k_r, p, q, Gd, Gr0, phi_m;
     double C, O, phi;
+    double cur, dcur; /* this step's current and dI/dV, scaled by 1e2/area */
 } Opsin;
 
 /* --- stimulus ------------------------------------------------------------------------ */
@@ -195,12 +227,21 @@ struct RCSDSim {
     double* ext_amp;   /* nA, extracellular equivalent current, set for the next step */
     double* stim_amp;  /* nA, current-mode injection for this step */
     double* stim_dens; /* mA/cm2, current-density injection for this step */
+    double* stim_rhs;  /* what the current stimuli add to rhs this step (the IClamp slot) */
+
+    /* point-process instances per node and slot, in NEURON's order */
+    int* pp_start[PP_N]; /* [n_nodes + 1] */
+    int* pp_list[PP_N];
+    int pp_nodes;
+    int pp_dirty;
 
     /* synapses */
     DYN(Synapse) synapses;
     double* sp; /* [n_sites][RCSD_SP_N] */
     double* ss; /* [n_sites][RCSD_SS_N] */
     double* sc; /* [n_sites][SYN_CACHE_N]: the per-step decay factors, which depend only on dt and the taus */
+    double* site_cur;  /* this step's current per site, scaled by 1e2/area */
+    double* site_dcur; /* and its dI/dV */
     size_t sp_cap;
     DYN(Connection) connections;
     double* w; /* [n_conn][RCSD_NWEIGHT] */
@@ -236,8 +277,16 @@ struct RCSDSim {
 void rcsd_set_error(const char* fmt, ...);
 int rcsd_alloc_nodes(RCSDSim* sim, int n);
 int rcsd_build_geometry(RCSDSim* sim);
+int rcsd_pp_index(RCSDSim* sim);
 int rcsd_wire(RCSDSim* sim);
 void rcsd_synapse_init_states(RCSDSim* sim);
+/* shape.c: NEURON's 3-D points and the areas and resistances they imply */
+int rcsd_shape_define(RCSDSim* sim);
+void rcsd_shape_free(Section* sec);
+void rcsd_shape_length_change(Section* sec, double L);
+void rcsd_shape_diam_change(Section* sec, double diam);
+void rcsd_shape_area_ri(RCSDSim* sim, Section* sec);
+
 void rcsd_noise_init(RCSDSim* sim);
 void rcsd_noise_advance(RCSDSim* sim, double t_mid);
 void rcsd_noise_currents(RCSDSim* sim);

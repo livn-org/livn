@@ -34,6 +34,7 @@ int rcsd_add_opsin(RCSDSim* sim, int cell, int section, double x) {
     op.O = 0.0;
     op.phi = 0.0;
     DYN_PUSH(sim->opsins, op);
+    sim->pp_dirty = 1;
     if (sim->cells.data[cell].opsin < 0) {
         sim->cells.data[cell].opsin = (int) sim->opsins.n - 1;
     }
@@ -86,6 +87,8 @@ void rcsd_opsin_init(RCSDSim* sim) {
         op->C = 1.0;
         op->O = 0.0;
         op->phi = 0.0;
+        op->cur = 0.0;
+        op->dcur = 0.0;
         op->v1 = rho3c_v1(op->E, op->v0);
     }
 }
@@ -100,8 +103,8 @@ void rcsd_opsin_currents(RCSDSim* sim) {
         double i0 = rho3c_current(v, op->O, op->g0, op->E, op->v0, op->v1);
         double g = (i1 - i0) / 0.001;
         double scale = 1e2 / sim->area[op->node];
-        sim->rhs[op->node] -= i0 * scale;
-        sim->d[op->node] += g * scale;
+        op->cur = i0 * scale;
+        op->dcur = g * scale;
     }
 }
 

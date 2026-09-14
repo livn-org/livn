@@ -88,12 +88,11 @@ SEC_SOMA, SEC_DEND, SEC_AXON = 0, 1, 2
     NSTATE,
 ) = range(22)
 
-SYN_LINEXP2, SYN_NMDA, SYN_DEP, SYN_STDP, SYN_STDP_NMDA, SYN_STDP_INH = range(6)
+SYN_LINEXP2, SYN_NMDA, SYN_STDP, SYN_STDP_NMDA, SYN_STDP_INH = range(5)
 
 SYNAPSE_KINDS = {
     "LinExp2Syn": SYN_LINEXP2,
     "LinExp2SynNMDA": SYN_NMDA,
-    "DepLinExp2Syn": SYN_DEP,
     "StdpLinExp2Syn": SYN_STDP,
     "StdpLinExp2SynNMDA": SYN_STDP_NMDA,
     "StdpLinExp2SynInh": SYN_STDP_INH,
@@ -129,7 +128,8 @@ SS_NAMES = ("A", "B", "learning_w", "learn_int", "ltd", "ltp", "w", "factor", "g
 SS = {name: i for i, name in enumerate(SS_NAMES)}
 SS_N = len(SS_NAMES)
 
-NWEIGHT = 4
+# weight, g_unit, w_plastic, last_int, R, tlast
+NWEIGHT = 6
 
 STIM_EXTRACELLULAR, STIM_CURRENT, STIM_CURRENT_DENSITY, STIM_PHOTON_FLUX = range(4)
 STIM_MODES = {
@@ -183,6 +183,8 @@ _SIGNATURES = {
     "rcsd_cell_set": (c_int, [c_void_p, c_int, c_double, c_double, c_double]),
     "rcsd_node_state": (c_double, [c_void_p, c_int, c_int]),
     "rcsd_node_area": (c_double, [c_void_p, c_int]),
+    "rcsd_node_rinv": (c_double, [c_void_p, c_int]),
+    "rcsd_define_shape": (c_int, [c_void_p]),
     "rcsd_add_synapse": (c_int, [c_void_p, c_int, c_int, c_double, c_int]),
     "rcsd_add_input": (c_int, [c_void_p, c_int]),
     "rcsd_set_input_spikes": (c_int, [c_void_p, c_int, _c_double_p, c_int]),
@@ -218,6 +220,10 @@ _SIGNATURES = {
     ),
     "rcsd_set_noise_stream": (c_int, [c_void_p, c_int, c_int, c_uint, c_uint, c_uint]),
     "rcsd_noise_count": (c_int, [c_void_p]),
+    "rcsd_noise_state": (
+        c_int,
+        [c_void_p, c_int, _c_int_p, _c_int_p, _c_int_p, _c_double_p],
+    ),
     "rcsd_random123_normal": (c_double, [c_uint, c_uint, c_uint, c_uint, c_int]),
     "rcsd_add_opsin": (c_int, [c_void_p, c_int, c_int, c_double]),
     "rcsd_opsin_set": (
