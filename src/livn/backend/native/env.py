@@ -253,6 +253,7 @@ class Env(EnvProtocol):
         self._thresholds: list[float] = []
         self._pop_code: dict[str, int] = {}
         self._mech_code: dict[str, int] = {}
+        self._receptor_code: dict[str, int] = {}
         self._sectype_code: dict[str, int] = {}
         self._mech_id_to_name: dict[int, str] = {}
         self._wplastic_slot: dict[str, int] = {}
@@ -402,6 +403,7 @@ class Env(EnvProtocol):
             self._mech_code,
             self._sectype_code,
             self._input_indices,
+            self._receptor_code,
         ) = builder.build(cells_by_pop)
         self._refresh_views()
         self._index_plastic_synapses()
@@ -1039,18 +1041,17 @@ class Env(EnvProtocol):
             return []
         pop_of = {code: name for name, code in self._pop_code.items()}
         sec_of = {code: name for name, code in self._sectype_code.items()}
-        mech_of = {code: name for name, code in self._mech_code.items()}
+        receptor_of = {code: name for name, code in self._receptor_code.items()}
         built = {
-            (pop_of[po], pop_of[pr], sec_of[ds], mech_of[mi])
-            for po, pr, ds, mi in zip(
+            (pop_of[po], pop_of[pr], sec_of[ds], receptor_of[rc])
+            for po, pr, ds, rc in zip(
                 self.conn.post_pop.tolist(),
                 self.conn.pre_pop.tolist(),
                 self.conn.dest_sectype.tolist(),
-                self.conn.mech_id.tolist(),
+                self.conn.receptor.tolist(),
                 strict=False,
             )
         }
-        mech_names = self.model.neuron_synapse_mechanisms()
         names = []
         for (
             post,
@@ -1059,9 +1060,8 @@ class Env(EnvProtocol):
             syn_name,
             _,
         ) in self.system.synapse_projections():
-            mech = mech_names.get(syn_name, syn_name)
             for sec_type in sorted(
-                {s for (po, pr, s, m) in built if (po, pr, m) == (post, pre, mech)}
+                {s for (po, pr, s, r) in built if (po, pr, r) == (post, pre, syn_name)}
             ):
                 name = f"{post}_{pre}-{sec_type}-{syn_name}-weight"
                 if name not in names:
@@ -1080,26 +1080,30 @@ class Env(EnvProtocol):
             pop_of = {code: name for name, code in self._pop_code.items()}
             sec_of = {code: name for name, code in self._sectype_code.items()}
             mech_of = {code: name for name, code in self._mech_code.items()}
-            for pp, sec, mech in zip(
+            receptor_of = {code: name for name, code in self._receptor_code.items()}
+            for pp, sec, receptor, mech in zip(
                 post_pop.tolist(),
                 self.syn.dest_sectype.tolist(),
+                self.syn.receptor.tolist(),
                 self.syn.mech_id.tolist(),
                 strict=False,
             ):
                 if pp < 0 or pp not in pop_of:
                     continue
-                sites.add((pop_of[pp], sec_of.get(sec, ""), mech_of.get(mech, "")))
+                sites.add(
+                    (
+                        pop_of[pp],
+                        sec_of.get(sec, ""),
+                        receptor_of.get(receptor, ""),
+                        mech_of.get(mech, ""),
+                    )
+                )
 
-        receptor_of = {
-            pp: receptor
-            for receptor, pp in self.model.neuron_synapse_mechanisms().items()
-        }
         rules = self.model.neuron_synapse_rules()
         mechanisms: list[str] = []
-        for post, sec, pp_name in sorted(sites):
+        for post, sec, receptor, pp_name in sorted(sites):
             if not sec or not pp_name:
                 continue
-            receptor = receptor_of.get(pp_name, pp_name)
             for param in (rules.get(pp_name) or {}).get("mech_params") or []:
                 name = f"{post}-{sec}-{receptor}-{param}"
                 if name not in mechanisms:
@@ -1119,6 +1123,19 @@ class Env(EnvProtocol):
             [f"cells-{name}" for name in self.cells.get_params()] if cells else []
         )
         return found
+
+    def _receptor_mask(self, table, syn_name: str) -> np.ndarray:
+        """The rows of ``table`` that ``syn_name`` addresses.
+
+        A receptor (GABA_B) selects its own rows only, even where another
+        receptor (GABA_A) runs on the same mechanism (LinExp2Syn). A mechanism
+        name selects every receptor on it; anything else selects nothing.
+        """
+        if syn_name in self._receptor_code:
+            return table.receptor == self._receptor_code[syn_name]
+        if syn_name in self._mech_code:
+            return table.mech_id == self._mech_code[syn_name]
+        return np.zeros(table.size, dtype=bool)
 
     def _set_synapse_mech_params(self, params: dict) -> Self:
         from livn.types import SynapticParam
@@ -1148,13 +1165,7 @@ class Env(EnvProtocol):
             if p.population is not None and p.population in self._pop_code:
                 mask &= post_pop == self._pop_code[p.population]
             if p.syn_name is not None:
-                mech = self.model.neuron_synapse_mechanisms().get(
-                    p.syn_name, p.syn_name
-                )
-                if mech in self._mech_code:
-                    mask &= self.syn.mech_id == self._mech_code[mech]
-                else:
-                    mask &= False
+                mask &= self._receptor_mask(self.syn, p.syn_name)
             if p.sec_type is not None:
                 if p.sec_type in self._sectype_code:
                     mask &= self.syn.dest_sectype == self._sectype_code[p.sec_type]
@@ -1200,13 +1211,7 @@ class Env(EnvProtocol):
             if p.source is not None and p.source in self._pop_code:
                 mask &= self.conn.pre_pop == self._pop_code[p.source]
             if p.syn_name is not None:
-                mech_name = self.model.neuron_synapse_mechanisms().get(
-                    p.syn_name, p.syn_name
-                )
-                if mech_name in self._mech_code:
-                    mask &= self.conn.mech_id == self._mech_code[mech_name]
-                else:
-                    mask &= False
+                mask &= self._receptor_mask(self.conn, p.syn_name)
             if p.sec_type is not None:
                 if p.sec_type in self._sectype_code:
                     mask &= self.conn.dest_sectype == self._sectype_code[p.sec_type]

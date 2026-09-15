@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from array import array
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -85,29 +86,54 @@ def make_store(kind: str) -> ObjectStore:
 
 @dataclass
 class SynapseTable:
-    """One row per point process instantiated on a local cell."""
+    """One row per receptor of a point process instantiated on a local cell.
+
+    A point process whose rule is ``shared`` serves every synapse on its
+    segment with the same kinetics, and one whose rule has ``channels`` carries
+    several receptors with a row for each. Such rows reference the same object
+    in ``store``, and a shared one's ``syn_id`` is -1 since no synapse owns it.
+    """
 
     post_gid: np.ndarray  # int32[S]
     swc_type: np.ndarray  # int8[S]   (original placement type, for selection)
     dest_sectype: np.ndarray  # int8[S]  destination section-type code
-    mech_id: np.ndarray  # int16[S]
-    syn_id: np.ndarray  # int64[S]   neuroh5 synapse id
-    store: ObjectStore  # point processes
+    mech_id: np.ndarray  # int16[S]  the receptor's own mechanism
+    # int8[S] the receptor (connections_config synapse class, e.g. GABA_B); unlike
+    # the mechanism, it tells apart receptors that one mechanism implements
+    receptor: np.ndarray
+    syn_id: np.ndarray  # int64[S]   neuroh5 synapse id, -1 when shared
+    store: ObjectStore  # point processes, one entry per row
+    # int16[S] index into ``param_names``, the receptor's parameter names on the
+    # point process; None, or an entry of None, keeps the mechanism's own names
+    param_map: np.ndarray | None = None
+    param_names: list = field(default_factory=lambda: [None])
 
     @property
     def size(self) -> int:
         return len(self.post_gid)
 
+    def attribute(self, row: int, param: str) -> str | None:
+        """The point process attribute holding ``param`` of the receptor in ``row``."""
+        if self.param_map is None:
+            return param
+        names = self.param_names[int(self.param_map[row])]
+        return param if names is None else names.get(param)
+
 
 @dataclass
 class ConnectionTable:
-    """One row per NetCon (edge x mechanism)."""
+    """One row per connection and receptor (edge x mechanism).
+
+    A NetCon drives every receptor of its point process, so the rows of a
+    multi-receptor point process share one, which ``nc_row`` names.
+    """
 
     pre_gid: np.ndarray  # int32[C]
     syn_row: np.ndarray  # int32[C]  -> SynapseTable row
     post_pop: np.ndarray  # int8[C]
     pre_pop: np.ndarray  # int8[C]
     mech_id: np.ndarray  # int16[C]
+    receptor: np.ndarray  # int8[C]  receptor code, see SynapseTable.receptor
     swc_type: np.ndarray  # int8[C]
     dest_sectype: np.ndarray  # int8[C]  destination section-type code
     weight: np.ndarray  # float64[C]  mirror of nc.weight[wslot]
@@ -116,32 +142,79 @@ class ConnectionTable:
     )  # float32[C]  physical (distance) delay; NetCon = max(delay, 2*dt)
     wslot: np.ndarray  # int8[C]
     store: ObjectStore  # NetCons
+    # int32[C] -> NetCon in ``store``; None when row i is NetCon i
+    nc_row: np.ndarray | None = None
 
     @property
     def size(self) -> int:
         return len(self.pre_gid)
 
+    def netcon(self, row: int):
+        """The NetCon that carries connection ``row``."""
+        return self.store.get(row if self.nc_row is None else int(self.nc_row[row]))
 
-@dataclass
-class _Growable:
-    """Append-friendly list-backed column set, materialized to arrays at end."""
+    def netcons(self) -> tuple[np.ndarray, np.ndarray]:
+        """Each NetCon once: its index in ``store`` and a row it carries."""
+        if self.nc_row is None:
+            rows = np.arange(self.size)
+            return rows, rows
+        return np.unique(self.nc_row, return_index=True)
 
-    post_gid: list = field(default_factory=list)
-    swc_type: list = field(default_factory=list)
-    dest_sectype: list = field(default_factory=list)
-    mech_id: list = field(default_factory=list)
-    syn_id: list = field(default_factory=list)
 
-    c_pre_gid: list = field(default_factory=list)
-    c_syn_row: list = field(default_factory=list)
-    c_post_pop: list = field(default_factory=list)
-    c_pre_pop: list = field(default_factory=list)
-    c_mech_id: list = field(default_factory=list)
-    c_swc_type: list = field(default_factory=list)
-    c_dest_sectype: list = field(default_factory=list)
-    c_weight: list = field(default_factory=list)
-    c_delay: list = field(default_factory=list)
-    c_wslot: list = field(default_factory=list)
+class _Columns:
+    """Append-only typed columns that become numpy arrays without a copy.
+
+    A list of Python ints and floats costs several times the bytes of the
+    values it holds, and these columns have a row per NetCon.
+    """
+
+    def __init__(self, **typecodes: str):
+        for name, code in typecodes.items():
+            setattr(self, name, array(code))
+
+    def asarray(self, name: str, dtype) -> np.ndarray:
+        column = getattr(self, name)
+        if not len(column):
+            return np.empty(0, dtype=dtype)
+        return np.frombuffer(column, dtype=dtype)
+
+
+@dataclass(frozen=True, slots=True)
+class _PointProcessPlan:
+    """A point process a synapse needs, and the NetCon a connection makes onto it."""
+
+    name: str  # NEURON mechanism
+    pp_cls: object
+    set_params: tuple  # ((attribute, value), ...)
+    shared: bool
+    receptors: tuple  # receptor codes, in row order
+    # names (mechanism, parameters, receptors) in a shared point process's key
+    token: int
+    w0_items: tuple  # ((NetCon weight slot, value), ...)
+    syn_rows: tuple  # ((mech_id, receptor, param_map), ...), a row per receptor
+    # ((mech_id, receptor, weight slot, tunable weight), ...), per receptor
+    conn_rows: tuple
+
+
+def split_by_owner(gids: np.ndarray, hosts: np.ndarray) -> list[np.ndarray]:
+    """``gids`` split by the comm rank of the host that owns each (``gid % nhost``).
+
+    ``hosts[r]`` is the ParallelContext host of comm rank ``r``, which need not
+    be ``r``; ``len(hosts)`` is the number of hosts.
+    """
+    comm_rank_of = np.empty(len(hosts), dtype=np.int64)
+    comm_rank_of[hosts] = np.arange(len(hosts))
+    destination = comm_rank_of[gids % len(hosts)]
+    order = np.argsort(destination, kind="stable")
+    counts = np.bincount(destination, minlength=len(hosts))
+    return np.split(gids[order], np.cumsum(counts)[:-1])
+
+
+_NO_PLACEMENT = (
+    np.empty(0, dtype=np.int64),
+    np.empty(0, dtype=np.int64),
+    np.empty(0, dtype=np.float64),
+)
 
 
 def neuroh5_io():
@@ -161,6 +234,27 @@ class SynapseBuilder:
     system's ``connections_config`` mechanisms, which a projection states
     either once (``default``) or per destination SWC type. Mechanisms whose
     ``tau_decay`` is null are skipped as inactive.
+
+    A rule may let synapses share a point process. ``shared`` is for a
+    mechanism whose state sums linearly over its events, so that one point
+    process on a segment is the sum of one per synapse there; it must keep its
+    per-connection quantities (weight, unitary conductance) on the NetCon.
+    ``channels`` names a mechanism that carries several receptors behind one
+    NetCon, used where one connection has all of them::
+
+        "LinExp2SynAMPANMDA": {
+            "shared": True,
+            "channels": [
+                {"mechanism": "LinExp2Syn", "mech_params": {"tau_rise": "tau_rise"}},
+                {"mechanism": "LinExp2SynNMDA", "netcon_offset": 2,
+                 "mech_params": {"tau_rise": "nmda_tau_rise"}},
+            ],
+        }
+
+    Each channel's parameters are renamed through its ``mech_params`` and its
+    NetCon slots shifted by ``netcon_offset``. Rows in the tables stay per
+    receptor, so weights and parameters are addressed as before. ``share=False``
+    ignores both and builds a point process per synapse and receptor.
     """
 
     def __init__(
@@ -174,6 +268,7 @@ class SynapseBuilder:
         simulated_pops=None,
         io_size: int = 1,
         auto_store_threshold: int = 200_000,
+        share: bool = True,
     ):
         self.system = system
         self.model = model
@@ -212,9 +307,20 @@ class SynapseBuilder:
             else set()
         )
 
+        self._share = bool(share)
+        self._composites = (
+            [(name, rule) for name, rule in self._rules.items() if rule.get("channels")]
+            if self._share
+            else []
+        )
+        self._tokens: dict[tuple, int] = {}
+        self._param_names: list = [None]
+        self._param_map_ids: dict[tuple, int] = {}
+
         # categorical codes
         self._pop_code: dict[str, int] = {}
         self._mech_code: dict[str, int] = {}
+        self._receptor_code: dict[str, int] = {}
         self._sectype_code: dict[str, int] = {}
 
         # (pre, post) -> the projection's destination gids, read once each
@@ -230,10 +336,21 @@ class SynapseBuilder:
     def _mech_id(self, mech_name: str) -> int:
         return self._mech_code.setdefault(mech_name, len(self._mech_code))
 
+    def _receptor_id(self, receptor: str) -> int:
+        return self._receptor_code.setdefault(receptor, len(self._receptor_code))
+
     def _sectype_id(self, name: str) -> int:
         return self._sectype_code.setdefault(name, len(self._sectype_code))
 
-    def _create_input_sources(self, h, gids) -> None:
+    def _route_inputs(self, needed: np.ndarray) -> np.ndarray:
+        """The input gids any rank needs that this rank owns (``gid % nhost``)."""
+        if self.comm is None or int(self.pc.nhost()) == 1:
+            return needed
+        hosts = np.asarray(self.comm.allgather(int(self.pc.id())), dtype=np.int64)
+        received = self.comm.alltoall(split_by_owner(needed, hosts))
+        return np.unique(np.concatenate(received))
+
+    def _create_input_sources(self, h, gids: np.ndarray) -> None:
         """Register VecStim spike sources this rank owns (``gid % nhost``).
 
         Each external input gid has exactly one owner rank so NEURON's parallel
@@ -243,8 +360,7 @@ class SynapseBuilder:
         """
         nhost = int(self.pc.nhost())
         rank = int(self.pc.id())
-        for gid in gids:
-            gid = int(gid)
+        for gid in gids.tolist():
             if gid % nhost != rank or gid in self.input_vecstims:
                 continue
             vs = h.VecStim()
@@ -283,11 +399,6 @@ class SynapseBuilder:
     def build(self, cells_by_pop: dict[str, dict[int, object]]):
         from neuron import h
 
-        g = _Growable()
-
-        # map (post_gid, syn_id, mech_name) -> synapse table row (dedupe PPs)
-        pp_rows: dict[tuple[int, int, str], int] = {}
-
         connections_config = self.system.connections_config["synapses"]
         simulated = (
             self._simulated_pops
@@ -300,13 +411,12 @@ class SynapseBuilder:
             if self._selected_gids is None
             else np.array(sorted(self._selected_gids), dtype=np.int64)
         )
-        place_keys: dict[int, np.ndarray] = {}  # id(place) -> its syn_ids
 
         # --- Pass 1: read edges, cache payloads, collect needed input gids ----
-        # cached entry: (post_id, pre_id, is_input, active, cell, place, pre_gids,
-        #                syn_ids, distances)
+        # cached entry: (post_gid, post_id, pre_id, is_input, active, cell,
+        #                placement, pre_gids, syn_ids, distances)
         cached: list = []
-        needed_inputs: set[int] = set()
+        needed: list[np.ndarray] = []
         # Iterate a rank-consistent population order and always issue the
         # collective reads, even for a rank that owns no cells here since
         # skipping would desync the collective scatter reads and deadlock.
@@ -340,7 +450,7 @@ class SynapseBuilder:
                 ):
                     if post_gid not in cells:
                         continue
-                    place = placement.get(post_gid, {})
+                    place = placement.get(post_gid, _NO_PLACEMENT)
                     pre_gids = np.asarray(pre_gids)
                     syn_ids, distances = _edge_syn_ids_distances(projection, pre_gids)
                     cached.append(
@@ -358,13 +468,8 @@ class SynapseBuilder:
                         )
                     )
                     if is_input or self._microcircuit_inputs:
-                        keys = place_keys.get(id(place))
-                        if keys is None:
-                            keys = np.fromiter(place, dtype=np.int64, count=len(place))
-                            keys.sort()
-                            place_keys[id(place)] = keys
                         sources = np.asarray(pre_gids, dtype=np.int64)[
-                            np.isin(np.asarray(syn_ids, dtype=np.int64), keys)
+                            np.isin(np.asarray(syn_ids, dtype=np.int64), place[0])
                         ]
                         if not is_input and selected_sorted is not None:
                             # a source of a simulated population is external
@@ -372,13 +477,13 @@ class SynapseBuilder:
                             sources = sources[
                                 np.isin(sources, selected_sorted, invert=True)
                             ]
-                        needed_inputs.update(np.unique(sources).tolist())
+                        needed.append(np.unique(sources))
 
-        # --- Gather + create the input sources this rank owns -----------------
-        if self.comm is not None and int(self.pc.nhost()) > 1:
-            for part in self.comm.allgather(needed_inputs):
-                needed_inputs |= part
-        self._create_input_sources(h, needed_inputs)
+        # --- Route + create the input sources this rank owns ------------------
+        local = np.unique(np.concatenate(needed)) if needed else np.empty(0, np.int64)
+        del needed
+        self._create_input_sources(h, self._route_inputs(local))
+        del local
 
         # --- Choose object store now that the synapse count is known ----------
         kind = self.store_kind
@@ -390,9 +495,40 @@ class SynapseBuilder:
         nc_store = make_store(kind)
 
         # --- Pass 2: wire ------------------------------------------------------
-        # Precompute per-mechanism specs once (constant per projection's `active`
-        # dict) rather than per synapse. Bind hot attributes/methods to locals.
-        spec_cache: dict[int, list] = {}
+        s = _Columns(
+            post_gid="i",
+            swc_type="b",
+            dest_sectype="b",
+            mech_id="h",
+            receptor="b",
+            syn_id="q",
+            param_map="h",
+        )
+        c = _Columns(
+            pre_gid="i",
+            syn_row="i",
+            post_pop="b",
+            pre_pop="b",
+            mech_id="h",
+            receptor="b",
+            swc_type="b",
+            dest_sectype="b",
+            weight="d",
+            delay="f",
+            wslot="b",
+            nc_row="i",
+        )
+        # a point process's first synapse table row: per synapse, keyed by
+        # (post_gid, syn_id, receptors), or when shared, by (section, segment
+        # centre, mechanism, parameters and receptors, destination section type).
+        # Receptors, not the mechanism: GABA_A and GABA_B may both be LinExp2Syn
+        # on one synapse, and each needs its own kinetics
+        pp_rows: dict[tuple, int] = {}
+        shared_rows: dict[tuple, int] = {}
+
+        # Precompute per-mechanism plans once (constant per projection's
+        # `active` dict) rather than per synapse. Bind hot attributes to locals.
+        plan_cache: dict[int, dict] = {}
         gid_connect = self.pc.gid_connect
         VEL = DEFAULT_VELOCITY
         BUILD_FLOOR = 2 * DEFAULT_DT
@@ -403,20 +539,30 @@ class SynapseBuilder:
             is_input,
             active,
             cell,
-            place,
+            (place_ids, place_swc, place_loc),
             pre_gids,
             syn_ids,
             distances,
         ) in cached:
-            specs_by_swc = spec_cache.get(id(active))
-            if specs_by_swc is None:
-                specs_by_swc = {
-                    swc: self._mech_specs(h, mechs) for swc, mechs in active.items()
+            plans_by_swc = plan_cache.get(id(active))
+            if plans_by_swc is None:
+                plans_by_swc = {
+                    swc: self._plan(h, self._mech_specs(h, mechs))
+                    for swc, mechs in active.items()
                 }
-                spec_cache[id(active)] = specs_by_swc
-            default_specs = specs_by_swc.get(None)
+                plan_cache[id(active)] = plans_by_swc
+            default_plans = plans_by_swc.get(None)
 
-            place_get = place.get
+            if len(place_ids):
+                at = np.searchsorted(place_ids, syn_ids)
+                at[at == len(place_ids)] = 0
+                found_list = (place_ids[at] == syn_ids).tolist()
+                swc_list = place_swc[at].tolist()
+                loc_list = place_loc[at].tolist()
+            else:
+                found_list = [False] * len(syn_ids)
+                swc_list = loc_list = found_list
+
             cell_place = cell.place
             dest_code = {}  # swc_type -> dest_sectype code (per-cell tiny cache)
             cell_dest = cell.dest_sec_type
@@ -431,15 +577,14 @@ class SynapseBuilder:
                 pre_gid = pre_list[k]
                 if sel is not None and pre_gid not in sel:
                     continue
-                sid = syn_list[k]
-                site = place_get(sid)
-                if site is None:
+                if not found_list[k]:
                     continue
-                swc_type, loc = site
-                specs = specs_by_swc.get(swc_type, default_specs)
-                if specs is None:
+                sid = syn_list[k]
+                swc_type = swc_list[k]
+                plans = plans_by_swc.get(swc_type, default_plans)
+                if plans is None:
                     continue  # no mechanism declared for this destination type
-                seg = cell_place(swc_type, loc)
+                seg = cell_place(swc_type, loc_list[k])
                 dsec = dest_code.get(swc_type)
                 if dsec is None:
                     dsec = self._sectype_id(cell_dest(swc_type))
@@ -447,62 +592,87 @@ class SynapseBuilder:
                 phys = dist_list[k] / VEL  # physical (distance) delay, dt-independent
                 delay = phys if phys > BUILD_FLOOR else BUILD_FLOOR
 
-                for mech_name, pp_cls, set_params, mid, wslot, w0_items, wval in specs:
-                    key = (post_gid, sid, mech_name)
-                    row = pp_rows.get(key)
+                for plan in plans:
+                    if plan.shared:
+                        key = (seg.sec, seg.x, plan.token, dsec)
+                        rows = shared_rows
+                    else:
+                        key = (post_gid, sid, plan.receptors)
+                        rows = pp_rows
+                    row = rows.get(key)
                     if row is None:
-                        pp = pp_cls(seg)
-                        for pname, val in set_params:
-                            setattr(pp, pname, val)
-                        row = syn_store.append(pp)
-                        pp_rows[key] = row
-                        g.post_gid.append(post_gid)
-                        g.swc_type.append(swc_type)
-                        g.dest_sectype.append(dsec)
-                        g.mech_id.append(mid)
-                        g.syn_id.append(sid)
+                        pp = plan.pp_cls(seg)
+                        for attribute, value in plan.set_params:
+                            setattr(pp, attribute, value)
+                        row = len(syn_store)
+                        rows[key] = row
+                        owner = -1 if plan.shared else sid
+                        for mid, rid, param_map in plan.syn_rows:
+                            syn_store.append(pp)
+                            s.post_gid.append(post_gid)
+                            s.swc_type.append(swc_type)
+                            s.dest_sectype.append(dsec)
+                            s.mech_id.append(mid)
+                            s.receptor.append(rid)
+                            s.syn_id.append(owner)
+                            s.param_map.append(param_map)
                     else:
                         pp = syn_store.get(row)
 
                     nc = gid_connect(pre_gid, pp)
                     nc.delay = delay
-                    for slot, val in w0_items:
-                        nc.weight[slot] = val
-                    nc_store.append(nc)
+                    for slot, value in plan.w0_items:
+                        nc.weight[slot] = value
+                    nc_index = nc_store.append(nc)
 
-                    g.c_pre_gid.append(pre_gid)
-                    g.c_syn_row.append(row)
-                    g.c_post_pop.append(post_id)
-                    g.c_pre_pop.append(pre_id)
-                    g.c_mech_id.append(mid)
-                    g.c_swc_type.append(swc_type)
-                    g.c_dest_sectype.append(dsec)
-                    g.c_weight.append(wval)
-                    g.c_delay.append(
-                        phys
-                    )  # physical delay; effective = max(phys, 2*dt)
-                    g.c_wslot.append(wslot)
+                    for offset, (mid, rid, wslot, wval) in enumerate(plan.conn_rows):
+                        c.pre_gid.append(pre_gid)
+                        c.syn_row.append(row + offset)
+                        c.post_pop.append(post_id)
+                        c.pre_pop.append(pre_id)
+                        c.mech_id.append(mid)
+                        c.receptor.append(rid)
+                        c.swc_type.append(swc_type)
+                        c.dest_sectype.append(dsec)
+                        c.weight.append(wval)
+                        # physical delay; effective = max(phys, 2*dt)
+                        c.delay.append(phys)
+                        c.wslot.append(wslot)
+                        c.nc_row.append(nc_index)
+        cached.clear()
+        del pp_rows, shared_rows
 
         syn = SynapseTable(
-            post_gid=np.asarray(g.post_gid, dtype=np.int32),
-            swc_type=np.asarray(g.swc_type, dtype=np.int8),
-            dest_sectype=np.asarray(g.dest_sectype, dtype=np.int8),
-            mech_id=np.asarray(g.mech_id, dtype=np.int16),
-            syn_id=np.asarray(g.syn_id, dtype=np.int64),
+            post_gid=s.asarray("post_gid", np.int32),
+            swc_type=s.asarray("swc_type", np.int8),
+            dest_sectype=s.asarray("dest_sectype", np.int8),
+            mech_id=s.asarray("mech_id", np.int16),
+            receptor=s.asarray("receptor", np.int8),
+            syn_id=s.asarray("syn_id", np.int64),
             store=syn_store,
+            param_map=(
+                s.asarray("param_map", np.int16) if len(self._param_names) > 1 else None
+            ),
+            param_names=list(self._param_names),
         )
         conn = ConnectionTable(
-            pre_gid=np.asarray(g.c_pre_gid, dtype=np.int32),
-            syn_row=np.asarray(g.c_syn_row, dtype=np.int32),
-            post_pop=np.asarray(g.c_post_pop, dtype=np.int8),
-            pre_pop=np.asarray(g.c_pre_pop, dtype=np.int8),
-            mech_id=np.asarray(g.c_mech_id, dtype=np.int16),
-            swc_type=np.asarray(g.c_swc_type, dtype=np.int8),
-            dest_sectype=np.asarray(g.c_dest_sectype, dtype=np.int8),
-            weight=np.asarray(g.c_weight, dtype=np.float64),
-            delay=np.asarray(g.c_delay, dtype=np.float32),
-            wslot=np.asarray(g.c_wslot, dtype=np.int8),
+            pre_gid=c.asarray("pre_gid", np.int32),
+            syn_row=c.asarray("syn_row", np.int32),
+            post_pop=c.asarray("post_pop", np.int8),
+            pre_pop=c.asarray("pre_pop", np.int8),
+            mech_id=c.asarray("mech_id", np.int16),
+            receptor=c.asarray("receptor", np.int8),
+            swc_type=c.asarray("swc_type", np.int8),
+            dest_sectype=c.asarray("dest_sectype", np.int8),
+            weight=c.asarray("weight", np.float64),
+            delay=c.asarray("delay", np.float32),
+            wslot=c.asarray("wslot", np.int8),
             store=nc_store,
+            nc_row=(
+                c.asarray("nc_row", np.int32)
+                if len(c.nc_row) != len(nc_store)
+                else None
+            ),
         )
         return (
             syn,
@@ -511,10 +681,11 @@ class SynapseBuilder:
             dict(self._mech_code),
             dict(self._sectype_code),
             self.input_vecstims,
+            dict(self._receptor_code),
         )
 
     def _read_placement(self, population: str, local_gids: set[int]):
-        """gid -> {syn_id: (swc_type, loc)} for local cells."""
+        """gid -> (syn_ids, swc_types, locs) for local cells, sorted by syn_id."""
         scatter_read_cell_attribute_selection = (
             neuroh5_io().scatter_read_cell_attribute_selection
         )
@@ -522,7 +693,7 @@ class SynapseBuilder:
         # Note: always call the collective scatter read even for an empty
         # selection, so a rank owning no cells of this population still
         # participates, otherwise ranks desync and deadlock.
-        out: dict[int, dict[int, tuple[int, float]]] = {}
+        out: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
 
         it, info = scatter_read_cell_attribute_selection(
             self.system.files["cells"],
@@ -541,14 +712,16 @@ class SynapseBuilder:
             return out
         endpoints = 0
         for gid, data in it:
-            syn_ids = np.asarray(data[i_ids])
-            swc = np.asarray(data[i_swc])
-            locs = np.asarray(data[i_loc])
+            syn_ids = np.asarray(data[i_ids]).astype(np.int64, copy=False)
+            swc = np.asarray(data[i_swc]).astype(np.int64, copy=False)
+            locs = np.asarray(data[i_loc]).astype(np.float64, copy=False)
             endpoints += int(((locs <= 0.0) | (locs >= 1.0)).sum())
-            out[int(gid)] = {
-                int(syn_ids[i]): (int(swc[i]), float(locs[i]))
-                for i in range(len(syn_ids))
-            }
+            # sorted for lookup; a repeated syn_id keeps its last site
+            order = np.argsort(syn_ids, kind="stable")
+            ids = syn_ids[order]
+            last = np.append(ids[1:] != ids[:-1], True)
+            keep = order[last]
+            out[int(gid)] = (ids[last], swc[keep], locs[keep])
         if endpoints:
             logger.warning(
                 "%s: %d synapse site(s) are recorded at section position 0 or 1, "
@@ -616,7 +789,7 @@ class SynapseBuilder:
 
         Returns one tuple per active mechanism:
         ``(mech_name, pp_class, [(param, value)...], mech_id, weight_slot,
-        [(slot, value)...], tunable_weight_value)``
+        [(slot, value)...], tunable_weight_value, shared, receptor_id)``
         """
         specs = []
         for cls_name, params in active.items():
@@ -647,9 +820,101 @@ class SynapseBuilder:
                     wslot,
                     list(w0.items()),
                     w0.get(wslot, 0.0),
+                    self._share and bool(rule.get("shared", False)),
+                    self._receptor_id(cls_name),
                 )
             )
         return specs
+
+    def _plan(self, h, specs: list) -> list[_PointProcessPlan]:
+        """The point processes one synapse with these mechanisms needs.
+
+        Receptors a ``channels`` rule covers go into one of its point processes
+        each time all of them are present; the rest get one of their own, in the
+        order they are declared.
+        """
+        remaining = list(specs)
+        plans = []
+        for name, rule in self._composites:
+            channels = rule["channels"]
+            while True:
+                pool = list(remaining)
+                picked = []
+                for channel in channels:
+                    at = next(
+                        (
+                            i
+                            for i, spec in enumerate(pool)
+                            if spec[0] == channel["mechanism"]
+                        ),
+                        None,
+                    )
+                    if at is None:
+                        break
+                    picked.append((pool.pop(at), channel))
+                if len(picked) < len(channels):
+                    break
+                remaining = pool
+                plans.append(self._composite_plan(h, name, rule, picked))
+        for spec in remaining:
+            mech_name, pp_cls, set_params, mid, wslot, w0, wval, shared, rid = spec
+            plans.append(
+                _PointProcessPlan(
+                    name=mech_name,
+                    pp_cls=pp_cls,
+                    set_params=tuple(set_params),
+                    shared=shared,
+                    receptors=(rid,),
+                    token=self._token(mech_name, set_params, (rid,)),
+                    w0_items=tuple(w0),
+                    syn_rows=((mid, rid, 0),),
+                    conn_rows=((mid, rid, wslot, wval),),
+                )
+            )
+        return plans
+
+    def _composite_plan(self, h, name: str, rule: dict, picked) -> _PointProcessPlan:
+        set_params, w0_items, syn_rows, conn_rows, receptors = [], [], [], [], []
+        for spec, channel in picked:
+            mech_name, _, params, mid, wslot, w0, wval, _, rid = spec
+            names = channel.get("mech_params", {})
+            offset = int(channel.get("netcon_offset", 0))
+            for param, value in params:
+                attribute = names.get(param)
+                if attribute is None:
+                    raise ValueError(
+                        f"{name} carries {mech_name} but its channel does not "
+                        f"name an attribute for {mech_name}'s {param!r}; add it "
+                        "to that channel's mech_params"
+                    )
+                set_params.append((attribute, value))
+            w0_items.extend((slot + offset, value) for slot, value in w0)
+            syn_rows.append((mid, rid, self._param_map_id(names)))
+            conn_rows.append((mid, rid, wslot + offset, wval))
+            receptors.append(rid)
+        return _PointProcessPlan(
+            name=name,
+            pp_cls=getattr(h, name),
+            set_params=tuple(set_params),
+            shared=bool(rule.get("shared", False)),
+            receptors=tuple(receptors),
+            token=self._token(name, set_params, receptors),
+            w0_items=tuple(w0_items),
+            syn_rows=tuple(syn_rows),
+            conn_rows=tuple(conn_rows),
+        )
+
+    def _token(self, name: str, set_params, receptors) -> int:
+        key = (name, tuple(set_params), tuple(receptors))
+        return self._tokens.setdefault(key, len(self._tokens))
+
+    def _param_map_id(self, names: dict) -> int:
+        key = tuple(sorted(names.items()))
+        found = self._param_map_ids.get(key)
+        if found is None:
+            found = self._param_map_ids[key] = len(self._param_names)
+            self._param_names.append(dict(names))
+        return found
 
 
 def _edge_syn_ids_distances(projection, pre_gids):

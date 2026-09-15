@@ -72,13 +72,14 @@ def estimated_netcons(system, selection: str | None = None) -> float:
 
 class TuningTargets:
     MIN_RANKS_PER_WORKER = 1
+    NETCON_BYTES = NETCON_BYTES
 
     def worker_memory(
         self, system, ranks: int = 1, selection: str | None = None
     ) -> float:
         if selection is None:
             selection = getattr(self, "selection_name", None)
-        return ranks * RANK_FLOOR_BYTES + NETCON_BYTES * estimated_netcons(
+        return ranks * RANK_FLOOR_BYTES + self.NETCON_BYTES * estimated_netcons(
             system, selection
         )
 

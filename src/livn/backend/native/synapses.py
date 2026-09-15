@@ -25,6 +25,9 @@ class SynapseTable:
     swc_type: np.ndarray  # int8[S]
     dest_sectype: np.ndarray  # int8[S]
     mech_id: np.ndarray  # int16[S]
+    # int8[S] the receptor (connections_config synapse class, e.g. GABA_B); unlike
+    # the mechanism, it tells apart receptors that one mechanism implements
+    receptor: np.ndarray
     syn_id: np.ndarray  # int64[S]
 
     @property
@@ -41,6 +44,7 @@ class ConnectionTable:
     post_pop: np.ndarray  # int8[C]
     pre_pop: np.ndarray  # int8[C]
     mech_id: np.ndarray  # int16[C]
+    receptor: np.ndarray  # int8[C]  receptor code, see SynapseTable.receptor
     swc_type: np.ndarray  # int8[C]
     dest_sectype: np.ndarray  # int8[C]
     weight: np.ndarray  # float64[C]
@@ -58,6 +62,7 @@ class _Growable:
     swc_type: list = field(default_factory=list)
     dest_sectype: list = field(default_factory=list)
     mech_id: list = field(default_factory=list)
+    receptor: list = field(default_factory=list)
     syn_id: list = field(default_factory=list)
     site_params: list = field(default_factory=list)  # (site, [(column, value)])
 
@@ -70,6 +75,7 @@ class _Growable:
     c_post_pop: list = field(default_factory=list)
     c_pre_pop: list = field(default_factory=list)
     c_mech_id: list = field(default_factory=list)
+    c_receptor: list = field(default_factory=list)
     c_swc_type: list = field(default_factory=list)
     c_dest_sectype: list = field(default_factory=list)
     c_weight: list = field(default_factory=list)
@@ -124,6 +130,7 @@ class SynapseBuilder:
         )
         self._pop_code: dict[str, int] = {}
         self._mech_code: dict[str, int] = {}
+        self._receptor_code: dict[str, int] = {}
         self._sectype_code: dict[str, int] = {}
         self.input_indices: dict[int, int] = {}
 
@@ -132,6 +139,9 @@ class SynapseBuilder:
 
     def _mech_id(self, mech_name: str) -> int:
         return self._mech_code.setdefault(mech_name, len(self._mech_code))
+
+    def _receptor_id(self, receptor: str) -> int:
+        return self._receptor_code.setdefault(receptor, len(self._receptor_code))
 
     def _sectype_id(self, name: str) -> int:
         return self._sectype_code.setdefault(name, len(self._sectype_code))
@@ -222,6 +232,7 @@ class SynapseBuilder:
                     wslot,
                     w0,
                     w0[wslot],
+                    self._receptor_id(cls_name),
                 )
             )
         return specs
@@ -306,8 +317,11 @@ class SynapseBuilder:
                             dest_code[swc_type] = dsec
                         phys = float(distances[k]) / VEL
 
-                        for mech_name, kind, set_params, mid, wslot, w0, wval in specs:
-                            key = (post_gid, sid, mech_name)
+                        for spec in specs:
+                            _, kind, set_params, mid, wslot, w0, wval, rid = spec
+                            # by receptor: two receptors on one mechanism are
+                            # still two sites, each with its own kinetics
+                            key = (post_gid, sid, rid)
                             row = site_rows.get(key)
                             if row is None:
                                 c_site = L.check(
@@ -326,6 +340,7 @@ class SynapseBuilder:
                                 g.swc_type.append(swc_type)
                                 g.dest_sectype.append(dsec)
                                 g.mech_id.append(mid)
+                                g.receptor.append(rid)
                                 g.syn_id.append(sid)
                                 g.site_params.append((row, set_params))
                             g.c_source.append(source)
@@ -337,6 +352,7 @@ class SynapseBuilder:
                             g.c_post_pop.append(post_id)
                             g.c_pre_pop.append(pre_id)
                             g.c_mech_id.append(mid)
+                            g.c_receptor.append(rid)
                             g.c_swc_type.append(swc_type)
                             g.c_dest_sectype.append(dsec)
                             g.c_weight.append(wval)
@@ -373,6 +389,7 @@ class SynapseBuilder:
             swc_type=np.asarray(g.swc_type, dtype=np.int8),
             dest_sectype=np.asarray(g.dest_sectype, dtype=np.int8),
             mech_id=np.asarray(g.mech_id, dtype=np.int16),
+            receptor=np.asarray(g.receptor, dtype=np.int8),
             syn_id=np.asarray(g.syn_id, dtype=np.int64),
         )
         conn = ConnectionTable(
@@ -381,6 +398,7 @@ class SynapseBuilder:
             post_pop=np.asarray(g.c_post_pop, dtype=np.int8),
             pre_pop=np.asarray(g.c_pre_pop, dtype=np.int8),
             mech_id=np.asarray(g.c_mech_id, dtype=np.int16),
+            receptor=np.asarray(g.c_receptor, dtype=np.int8),
             swc_type=np.asarray(g.c_swc_type, dtype=np.int8),
             dest_sectype=np.asarray(g.c_dest_sectype, dtype=np.int8),
             weight=np.asarray(g.c_weight, dtype=np.float64),
@@ -394,6 +412,7 @@ class SynapseBuilder:
             dict(self._mech_code),
             dict(self._sectype_code),
             dict(self.input_indices),
+            dict(self._receptor_code),
         )
 
     def _input(self, gid: int) -> int:

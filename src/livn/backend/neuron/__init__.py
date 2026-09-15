@@ -154,6 +154,7 @@ class Env(EnvProtocol):
         self._input_spike_vecs: dict[int, object] = {}
         self._pop_code: dict[str, int] = {}
         self._mech_code: dict[str, int] = {}
+        self._receptor_code: dict[str, int] = {}
         self._sectype_code: dict[str, int] = {}
         self._mech_id_to_name: dict[int, str] = {}
         self._wplastic_slot: dict[str, int] = {}
@@ -322,6 +323,7 @@ class Env(EnvProtocol):
             self._mech_code,
             self._sectype_code,
             self._input_vecstims,
+            self._receptor_code,
         ) = sb.build(self.cells)
         self.store_kind = sb.store_kind  # resolved value when store="auto"
         self._index_plastic_synapses()
@@ -671,9 +673,9 @@ class Env(EnvProtocol):
         floor = 2.0 * dt
         phys = self.conn.delay  # physical delays (float32[C])
         store = self.conn.store
-        for i in range(self.conn.size):
-            d = float(phys[i])
-            store.get(i).delay = d if d > floor else floor
+        for index, row in zip(*(a.tolist() for a in self.conn.netcons()), strict=True):
+            d = float(phys[row])
+            store.get(index).delay = d if d > floor else floor
         self._delay_floor_dt = dt
 
     def _compile_mechanisms(self, directory: str) -> None:
@@ -1276,16 +1278,16 @@ class Env(EnvProtocol):
 
         pop_of = {code: name for name, code in self._pop_code.items()}
         sec_of = {code: name for name, code in self._sectype_code.items()}
-        mech_of = {code: name for name, code in self._mech_code.items()}
+        receptor_of = {code: name for name, code in self._receptor_code.items()}
 
-        # (post, pre, section, mechanism) by name
+        # (post, pre, section, receptor) by name
         built = {
-            (pop_of[po], pop_of[pr], sec_of[ds], mech_of[mi])
-            for po, pr, ds, mi in zip(
+            (pop_of[po], pop_of[pr], sec_of[ds], receptor_of[rc])
+            for po, pr, ds, rc in zip(
                 self.conn.post_pop.tolist(),
                 self.conn.pre_pop.tolist(),
                 self.conn.dest_sectype.tolist(),
-                self.conn.mech_id.tolist(),
+                self.conn.receptor.tolist(),
                 strict=False,
             )
         }
@@ -1293,7 +1295,6 @@ class Env(EnvProtocol):
             for other in self.comm.allgather(built):
                 built |= other
 
-        mech_names = self.model.neuron_synapse_mechanisms()
         names = []
         for (
             post,
@@ -1302,9 +1303,8 @@ class Env(EnvProtocol):
             syn_name,
             _,
         ) in self.system.synapse_projections():
-            mech = mech_names.get(syn_name, syn_name)
             for sec_type in sorted(
-                {s for (po, pr, s, m) in built if (po, pr, m) == (post, pre, mech)}
+                {s for (po, pr, s, r) in built if (po, pr, r) == (post, pre, syn_name)}
             ):
                 name = f"{post}_{pre}-{sec_type}-{syn_name}-weight"
                 if name not in names:
@@ -1326,29 +1326,33 @@ class Env(EnvProtocol):
             pop_of = {code: name for name, code in self._pop_code.items()}
             sec_of = {code: name for name, code in self._sectype_code.items()}
             mech_of = {code: name for name, code in self._mech_code.items()}
-            for pp, sec, mech in zip(
+            receptor_of = {code: name for name, code in self._receptor_code.items()}
+            for pp, sec, receptor, mech in zip(
                 post_pop.tolist(),
                 self.syn.dest_sectype.tolist(),
+                self.syn.receptor.tolist(),
                 self.syn.mech_id.tolist(),
                 strict=False,
             ):
                 if pp < 0 or pp not in pop_of:
                     continue
-                sites.add((pop_of[pp], sec_of.get(sec, ""), mech_of.get(mech, "")))
+                sites.add(
+                    (
+                        pop_of[pp],
+                        sec_of.get(sec, ""),
+                        receptor_of.get(receptor, ""),
+                        mech_of.get(mech, ""),
+                    )
+                )
         if self.comm is not None and self.comm.Get_size() > 1:
             for other in self.comm.allgather(sites):
                 sites |= other
 
-        receptor_of = {
-            pp: receptor
-            for receptor, pp in self.model.neuron_synapse_mechanisms().items()
-        }
         rules = self.model.neuron_synapse_rules()
         mechanisms: list[str] = []
-        for post, sec, pp_name in sorted(sites):
+        for post, sec, receptor, pp_name in sorted(sites):
             if not sec or not pp_name:
                 continue
-            receptor = receptor_of.get(pp_name, pp_name)
             for param in (rules.get(pp_name) or {}).get("mech_params") or []:
                 name = f"{post}-{sec}-{receptor}-{param}"
                 if name not in mechanisms:
@@ -1372,6 +1376,13 @@ class Env(EnvProtocol):
         )
 
         return found
+
+    def _receptor_mask(self, table, syn_name: str) -> np.ndarray:
+        if syn_name in self._receptor_code:
+            return table.receptor == self._receptor_code[syn_name]
+        if syn_name in self._mech_code:
+            return table.mech_id == self._mech_code[syn_name]
+        return np.zeros(table.size, dtype=bool)
 
     def _set_synapse_mech_params(self, params: dict) -> Self:
         """Set mechanism parameters on synaptic point processes."""
@@ -1404,13 +1415,7 @@ class Env(EnvProtocol):
             if p.population is not None and p.population in self._pop_code:
                 mask &= post_pop == self._pop_code[p.population]
             if p.syn_name is not None:
-                mech = self.model.neuron_synapse_mechanisms().get(
-                    p.syn_name, p.syn_name
-                )
-                if mech in self._mech_code:
-                    mask &= self.syn.mech_id == self._mech_code[mech]
-                else:
-                    mask &= False
+                mask &= self._receptor_mask(self.syn, p.syn_name)
             if p.sec_type is not None:
                 if p.sec_type in self._sectype_code:
                     mask &= self.syn.dest_sectype == self._sectype_code[p.sec_type]
@@ -1418,9 +1423,12 @@ class Env(EnvProtocol):
                     mask &= False
 
             for row in np.flatnonzero(mask):
+                attribute = self.syn.attribute(int(row), name)
+                if attribute is None:
+                    continue
                 pp = self.syn.store.get(int(row))
-                if hasattr(pp, name):
-                    setattr(pp, name, float(value))
+                if hasattr(pp, attribute):
+                    setattr(pp, attribute, float(value))
         return self
 
     def set_weights(self, weights: dict) -> Self:
@@ -1450,15 +1458,7 @@ class Env(EnvProtocol):
             if p.source is not None and p.source in self._pop_code:
                 mask &= self.conn.pre_pop == self._pop_code[p.source]
             if p.syn_name is not None:
-                mech_name = self.model.neuron_synapse_mechanisms().get(
-                    p.syn_name, p.syn_name
-                )
-                if mech_name in self._mech_code:
-                    mask &= self.conn.mech_id == self._mech_code[mech_name]
-                else:
-                    # syn_name names a mechanism that this network has no
-                    # synapses of -> select nothing
-                    mask &= False
+                mask &= self._receptor_mask(self.conn, p.syn_name)
             if p.sec_type is not None:
                 if p.sec_type in self._sectype_code:
                     mask &= self.conn.dest_sectype == self._sectype_code[p.sec_type]
@@ -1469,7 +1469,7 @@ class Env(EnvProtocol):
             idx = np.flatnonzero(mask)
             self.conn.weight[idx] = val
             for i in idx:
-                nc = self.conn.store.get(int(i))
+                nc = self.conn.netcon(int(i))
                 nc.weight[int(self.conn.wslot[i])] = val
         return self
 
@@ -1541,7 +1541,7 @@ class Env(EnvProtocol):
             row = int(row)
             syn_row = int(self.conn.syn_row[row])
             pp = self.syn.store.get(syn_row)
-            nc = self.conn.store.get(row)
+            nc = self.conn.netcon(row)
             name = self._mech_id_to_name.get(int(self.conn.mech_id[row]))
             yield (
                 int(self.syn.post_gid[syn_row]),

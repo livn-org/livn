@@ -208,6 +208,7 @@ class PinskyRinzel(Model):
                 "mech_params": ["tau_rise", "tau_decay", "e"],
                 "netcon_params": {"weight": 0, "g_unit": 1},
                 "netcon_state": {},
+                "shared": True,
             },
             "LinExp2SynNMDA": {
                 "mech_file": "lin_exp2synNMDA.mod",
@@ -222,6 +223,58 @@ class PinskyRinzel(Model):
                 ],
                 "netcon_params": {"weight": 0, "g_unit": 1},
                 "netcon_state": {},
+                "shared": True,
+            },
+            "LinExp2SynAMPANMDA": {
+                "mech_file": "lin_exp2syn_ampa_nmda.mod",
+                "shared": True,
+                "channels": [
+                    {
+                        "mechanism": "LinExp2Syn",
+                        "mech_params": {
+                            "tau_rise": "tau_rise",
+                            "tau_decay": "tau_decay",
+                            "e": "e",
+                        },
+                    },
+                    {
+                        "mechanism": "LinExp2SynNMDA",
+                        "netcon_offset": 2,
+                        "mech_params": {
+                            "tau_rise": "nmda_tau_rise",
+                            "tau_decay": "nmda_tau_decay",
+                            "e": "nmda_e",
+                            "mg": "mg",
+                            "Kd": "Kd",
+                            "gamma": "gamma",
+                            "vshift": "vshift",
+                            "pf": "pf",
+                        },
+                    },
+                ],
+            },
+            "LinExp2SynPair": {
+                "mech_file": "lin_exp2syn_pair.mod",
+                "shared": True,
+                "channels": [
+                    {
+                        "mechanism": "LinExp2Syn",
+                        "mech_params": {
+                            "tau_rise": "tau_rise",
+                            "tau_decay": "tau_decay",
+                            "e": "e",
+                        },
+                    },
+                    {
+                        "mechanism": "LinExp2Syn",
+                        "netcon_offset": 2,
+                        "mech_params": {
+                            "tau_rise": "tau_rise2",
+                            "tau_decay": "tau_decay2",
+                            "e": "e2",
+                        },
+                    },
+                ],
             },
             "SatExp2Syn": {
                 "mech_file": "sat_exp2syn.mod",

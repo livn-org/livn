@@ -152,6 +152,8 @@ def expand_grouped(params: dict) -> dict:
 
 
 class CA1(TuningTargets):
+    NETCON_BYTES = 283
+
     def __init__(
         self,
         config: str = "./systems/graphs/CA1/tuning.json",
