@@ -270,7 +270,7 @@ class MonophasicPulsePolicy(ElectrodePolicy):
 class PulseSweepPolicy(ElectrodePolicy):
     """One pulse per trial, cycling through a set of amplitudes."""
 
-    amplitudes: tuple[float, ...] = (300.0, 400.0, 500.0, 600.0)
+    amplitudes: tuple[float | tuple[float, ...], ...] = (300.0, 400.0, 500.0, 600.0)
     """The amplitudes to sweep, in the order they are first delivered."""
 
     repeats: int = Field(default=8, ge=1)
@@ -304,10 +304,23 @@ class PulseSweepPolicy(ElectrodePolicy):
 
     @field_validator("amplitudes")
     @classmethod
-    def _at_least_one_amplitude(cls, v: tuple[float, ...]) -> tuple[float, ...]:
+    def _at_least_one_amplitude(cls, v: tuple) -> tuple:
         if not v:
             raise ValueError("a sweep needs at least one amplitude")
         return v
+
+    @model_validator(mode="after")
+    def _every_pattern_names_one_value_per_channel(self):
+        widths = {len(a) for a in self.amplitudes if isinstance(a, tuple)}
+        if len(widths) > 1:
+            raise ValueError(f"the sweep mixes patterns of {sorted(widths)} channels")
+        if widths and self.channels:
+            width = next(iter(widths))
+            if width != len(self.channels):
+                raise ValueError(
+                    f"{width} amplitudes for {len(self.channels)} channels"
+                )
+        return self
 
     @model_validator(mode="after")
     def _the_pulse_fits_its_trial(self):
@@ -343,7 +356,9 @@ class PulseSweepPolicy(ElectrodePolicy):
     def extent_ms(self) -> float:
         return self.start_ms + self.duration_ms
 
-    def schedule(self, start_ms: float | None = None) -> list[tuple[float, float]]:
+    def schedule(
+        self, start_ms: float | None = None
+    ) -> list[tuple[float, float | tuple[float, ...]]]:
         """`(pulse time, amplitude)` per trial, in order.
 
         Times are absolute, so `start_ms` is where the stimulated segment
@@ -356,7 +371,7 @@ class PulseSweepPolicy(ElectrodePolicy):
         return [
             (
                 start + trial * self.trial_ms + self.onset_ms,
-                float(self.amplitudes[index]),
+                self.amplitudes[index],
             )
             for trial, index in enumerate(order)
         ]
@@ -401,8 +416,13 @@ class PulseSweepPolicy(ElectrodePolicy):
                         f"{stop_ms - start_ms:g} ms run"
                     )
             half = start + max(1, width // 2)
-            for channel in channels:
-                inputs = _write(inputs, slice(start, half), channel, -amplitude)
-                inputs = _write(inputs, slice(half, end), channel, amplitude)
+            values = _np.broadcast_to(
+                _np.asarray(amplitude, dtype=_np.float64), channels.shape
+            )
+            for channel, value in zip(channels, values, strict=False):
+                if value == 0.0:
+                    continue
+                inputs = _write(inputs, slice(start, half), channel, -float(value))
+                inputs = _write(inputs, slice(half, end), channel, float(value))
 
         return inputs
