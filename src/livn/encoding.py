@@ -31,18 +31,9 @@ class H5Inputs(Encoding):
 
 
 class ElectrodeStimulus(Encoding):
-    """Deliver an electrode policy, sized to the array the env actually has.
-
-    A policy names channels of an array of known width, and the width is not
-    known until an env exists -- which is what an encoding is for.
-
-    `channel` is an index into `io.channel_ids`. `None` drives the one coupling
-    most strongly into the tissue, since that is what decides whether a cell is
-    driven; `input_radius` does not gate stimulation at all.
-    """
-
     policy: ObjSpec = None
-    channel: int | None = None
+    channel: int | list[int] | None = None
+    """Which channels to drive, as indices into `io.channel_ids`."""
 
     _resolved: object = PrivateAttr(default=None)
 
@@ -72,9 +63,13 @@ class ElectrodeStimulus(Encoding):
                 "measured with -- so give the run an `io`"
             )
 
-        channel = self.channel
-        if channel is None:
-            channel = int(np.asarray(env.channel_reach()).sum(axis=1).argmax())
+        channels = self.channel
+        if isinstance(channels, int):
+            channels = [channels]
+        if channels is None:
+            channels = list(getattr(policy, "channels", None) or [])
+        if not channels:
+            channels = [int(np.asarray(env.channel_reach()).sum(axis=1).argmax())]
 
         overrides = {}
         if "total_ms" in type(policy).model_fields:
@@ -82,5 +77,5 @@ class ElectrodeStimulus(Encoding):
             # of the same command rather than a separate call
             overrides["total_ms"] = float(t_end)
 
-        self._resolved = policy.for_array(n_channels, [channel], **overrides)
+        self._resolved = policy.for_array(n_channels, channels, **overrides)
         return self._resolved
