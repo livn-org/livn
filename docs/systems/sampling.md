@@ -24,7 +24,7 @@ Via the CLI:
 ```sh
 livn systems sample \
     system=./systems/graphs/EI \
-    duration=5000 \
+    decoding='["systems.sample.Raw", {"duration": 5000}]' \
     samples=1000 \
     output_directory=./my_dataset \
     --launch
@@ -43,7 +43,7 @@ from machinable import get
 
 sampler = get("sample", {
     "system": "./systems/graphs/EI",
-    "duration": 5000,
+    "decoding": ("systems.sample.Raw", {"duration": 5000}),
     "samples": 1000,
     "output_directory": "./my_dataset",
 })
@@ -57,15 +57,18 @@ sampler.merge()
 |--------|---------|-------------|
 | `system` | `./systems/graphs/EI` | Path to the system |
 | `model` | `None` | Model class (None = system default) |
-| `duration` | `31000` | Simulation duration per sample (ms) |
-| `samples` | `100` | Number of samples to generate |
+| `io` | `None` | IO device (None = the system's own array) |
+| `selection` | `None` | Subselection of the system to simulate |
+| `params` | `None` | Parameter overrides (None = the system's stored parameters) |
+| `samples` | `100` | Number of samples to generate, or a `(train, test)` split |
 | `noise` | `True` | Enable background noise |
-| `encoding` | `systems.sample.WithouInput` | Encoding class (dotted path) |
-| `encoding_kwargs` | `{}` | Keyword arguments for the encoding |
-| `decoding` | `systems.sample.Raw` | Decoding class (dotted path) |
-| `decoding_kwargs` | `{}` | Keyword arguments for the decoding |
-| `output_directory` | - | Where to save individual samples |
+| `inputs` | `None` | Design deciding what each sample is run with (None = the sample index) |
+| `encoding` | `systems.sample.WithoutInput` | Encoding class (dotted path) |
+| `decoding` | `("systems.sample.Raw", {"duration": 31000})` | Decoding class, which also sets the duration of each sample |
+| `output_directory` | `None` | Where to save individual samples (None = the run's own `samples/`) |
 | `nprocs_per_worker` | `1` | MPI ranks per simulation worker |
+| `ranks` | `-1` | MPI ranks to request when launching (-1 reads `MPI_RANKS`) |
+| `nodes` | `None` | Nodes to request when launching |
 
 ### Custom encoding
 
@@ -77,10 +80,11 @@ livn systems sample encoding=my_module.MyEncoding --launch
 
 ### Custom decoding
 
-The default decoding (`Raw`) records spikes, voltages, and membrane currents. Customize with a [Decoding](/guide/concepts/decoding) class:
+The default decoding (`Raw`) records spikes, voltages, and membrane currents for 31 s. To customize, use:
 
 ```sh
-livn systems sample decoding=my_module.MyDecoding --launch
+livn systems sample decoding='["systems.sample.Raw", {"duration": 5000, "voltages": false}]' --launch
+livn systems sample decoding='["my_module.MyDecoding", {"duration": 5000}]' --launch
 ```
 
 ## Running at scale
@@ -105,9 +109,19 @@ livn systems slurm sample \
     --launch
 ```
 
-The execution module handles MPI launch commands, job submission, and resource allocation automatically. See the [machinable execution docs](https://machinable.org/guide/execution) for details.
+See the [machinable execution docs](https://machinable.org/guide/execution) for details.
 
-The controller process distributes simulation tasks to workers. Each completed simulation is saved as an individual pickle file in the output directory.
+Or size the job from the sampler's own configuration:
+
+```sh
+livn systems slurm sample \
+    system=./systems/graphs/EI \
+    nodes=2 ranks=56 \
+    **resources='{"-p": "normal", "-t": "4:00:00"}' \
+    --launch
+```
+
+Note that jobs are resumable in that only missing inputs are generated.
 
 ### Work distribution
 

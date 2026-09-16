@@ -9,7 +9,8 @@ from datasets import Dataset
 from datasets.arrow_writer import ArrowWriter
 from huggingface_hub import HfApi
 from machinable import Interface
-from machinable.utils import load_file, random_str, save_file
+from machinable.config import Field as ConfigField
+from machinable.utils import load_file, save_file
 from pydantic import BaseModel, ConfigDict
 
 from livn.decoding import GatherAndMerge, Slice
@@ -49,68 +50,113 @@ class Sample(Interface):
     class Config(BaseModel):
         model_config = ConfigDict(extra="forbid")
 
-        duration: int = 31000
         samples: int | tuple[int, int] = 100
         noise: bool = True
 
         system: str = "./systems/graphs/EI"
         model: ObjSpec = None
+        io: ObjSpec = None
+        selection: str | int | float | dict | None = None
+        params: dict | None = None
+        inputs: ObjSpec = None
         encoding: ObjSpec = "systems.sample.WithoutInput"
-        decoding: ObjSpec = "systems.sample.Raw"
+        decoding: ObjSpec = ("systems.sample.Raw", {"duration": 31000})
 
-        output_directory: str = "???"
+        output_directory: str | None = None
         nprocs_per_worker: int = 1
+
+        ranks: int = ConfigField(-1, identifying=False)
+        nodes: int | None = ConfigField(None, identifying=False)
 
     def model(self):
         return import_instance(self.config.model)
+
+    def output_directory(self) -> str:
+        return self.config.output_directory or self.local_directory("samples")
 
     def __call__(self):
         env = DistributedEnv(
             self.config.system,
             model=self.model(),
+            io=import_instance(self.config.io),
             subworld_size=self.config.nprocs_per_worker,
         )
+        if self.config.selection is not None:
+            env.selection(self.config.selection)
 
         env.init()
-        env.apply_model_defaults(noise=self.config.noise)
+
+        if self.config.params is not None:
+            env.apply_model_defaults(noise=self.config.noise)
+            env.set_params(dict(self.config.params))
+        elif self.config.noise:
+            env.apply_default_params()
+        else:
+            env.apply_model_defaults(noise=False)
 
         if env.is_root():
-            encoding = import_instance(self.config.encoding)
-
-            decoding_spec = self.config.decoding
-            if isinstance(decoding_spec, str):
-                decoding_spec = (decoding_spec, {"duration": self.config.duration})
-            elif decoding_spec is not None:
-                decoding_spec = (
-                    decoding_spec[0],
-                    {"duration": self.config.duration, **decoding_spec[1]},
-                )
-            decoding = import_instance(decoding_spec)
-
-            batch_size = max(1, (P.size() - 1) // self.config.nprocs_per_worker)
-            num_batches = (self.config.samples + batch_size - 1) // batch_size
-
-            for batch_id in range(num_batches):
-                batch_start = batch_id * batch_size
-                batch_end = min(batch_start + batch_size, self.config.samples)
-
-                for i in range(batch_start, batch_end):
-                    env.submit_call(decoding, batch_start + i, encoding)
-
-                for _ in range(batch_start, batch_end):
-                    response = env.receive_response()
-                    # we assume that the reduction happens
-                    # through decoding on subworld root 0
-                    payload = response[0]
-
-                    save_file(
-                        [self.config.output_directory, random_str(8) + ".p"], payload
-                    )
+            self.collect(env)
 
         env.shutdown()
 
+    def collect(self, env) -> None:
+        directory = self.output_directory()
+        os.makedirs(directory, exist_ok=True)
+
+        design = import_instance(self.config.inputs)
+        encoding = import_instance(self.config.encoding)
+        decoding = import_instance(self.config.decoding)
+
+        samples = self.config.samples
+        count = samples if isinstance(samples, int) else sum(samples)
+        todo = [
+            index
+            for index in range(count)
+            if not os.path.isfile(os.path.join(directory, f"{index:05d}.p"))
+        ]
+        if not todo:
+            print(f"{directory} already holds every sample", flush=True)
+            return
+
+        in_flight = max(1, (P.size() - 1) // self.config.nprocs_per_worker)
+        pending: dict[int, tuple[int, object]] = {}
+
+        for index in todo:
+            if len(pending) >= in_flight:
+                self._receive(env, pending, directory)
+            inputs = index if design is None else design(index)
+            pending[env.submit_call(decoding, inputs, encoding)] = (index, inputs)
+
+        while pending:
+            self._receive(env, pending, directory)
+
+    @staticmethod
+    def _receive(env, pending: dict, directory: str) -> None:
+        task_id = next(iter(pending))
+        index, inputs = pending.pop(task_id)
+        response = env.receive_response(task_id)
+        if not response:
+            raise RuntimeError(f"sample {index} came back with no payload")
+
+        payload = response[0]
+        record = {
+            "index": index,
+            "inputs": inputs.as_json()
+            if hasattr(inputs, "as_json")
+            else json.dumps(inputs, default=str),
+        }
+        if isinstance(payload, dict):
+            record.update(payload)
+        else:
+            record["payload"] = payload
+
+        print(
+            save_file(os.path.join(directory, f"{index:05d}.p"), record),
+            flush=True,
+        )
+
     def count(self):
-        print(len(list(glob.glob(os.path.join(self.config.output_directory, "*.p")))))
+        print(len(list(glob.glob(os.path.join(self.output_directory(), "*.p")))))
 
     def merge(
         self,
@@ -134,16 +180,16 @@ class Sample(Interface):
         writers = {}
         split_counts = {"train": 0, "test": 0}
 
-        env = Env(self.config.system, self.model())
+        env = Env(self.config.system, self.model(), import_instance(self.config.io))
 
         _meta_fs = None
         _meta_n_channels = None
 
         for i, file_path in enumerate(
-            sorted(glob.glob(os.path.join(self.config.output_directory, "*.p")))
+            sorted(glob.glob(os.path.join(self.output_directory(), "*.p")))
         ):
             fn = os.path.basename(file_path).replace(".p", "")
-            if len(fn) != 8:
+            if not fn.isdigit():
                 continue
 
             if isinstance(self.config.samples, int):
@@ -187,6 +233,7 @@ class Sample(Interface):
 
             result = {
                 "sample_id": fn,
+                "inputs": data.get("inputs", "null"),
                 "cit": cit_array,
                 "ctt": ctt_array,
                 "cp": p,
@@ -269,3 +316,11 @@ class Sample(Interface):
             print(f"Successfully uploaded {dataset_base}")
         else:
             print(f"Directory {dataset_base} not found, skipping upload")
+
+    def on_write_meta_data(self):
+        return P.rank() == 0
+
+    def on_commit(self):
+        if P.rank() != 0:
+            return False
+        return None
