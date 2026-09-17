@@ -933,6 +933,8 @@ class PopulationSpikeDensity(Decoding):
       spikes in the window (one spike leaves the estimate identically zero), so
       a population where a tenth of the cells fire fast does not read as a slow
       population.
+    - ``mean_rate_population`` averages the same per-cell estimates over every
+      simulated cell, silent ones included.
     - ``fraction_active`` is those active cells over the population's simulated
       cell count.
     - ``mean/std_fraction_active_per_bin`` interpolate each cell's rate onto
@@ -1031,6 +1033,7 @@ class PopulationSpikeDensity(Decoding):
         )
 
         mean_rate: dict = {}
+        mean_rate_population: dict = {}
         fraction_active: dict = {}
         mean_fraction: dict = {}
         std_fraction: dict = {}
@@ -1045,6 +1048,7 @@ class PopulationSpikeDensity(Decoding):
             totals[p] = total
             actives[p] = active
             mean_rate[p] = float(rate_sum[i] / active) if active else 0.0
+            mean_rate_population[p] = float(rate_sum[i] / total)
             fraction_active[p] = active / total
             fraction = np.asarray(active_per_bin[i], dtype=np.float64) / total
             mean_fraction[p] = float(fraction.mean())
@@ -1055,6 +1059,7 @@ class PopulationSpikeDensity(Decoding):
 
         return {
             "mean_rate": mean_rate,
+            "mean_rate_population": mean_rate_population,
             "fraction_active": fraction_active,
             "mean_fraction_active_per_bin": mean_fraction,
             "std_fraction_active_per_bin": std_fraction,
