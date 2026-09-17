@@ -3,6 +3,7 @@ import json
 from machinable import Interface
 from pydantic import BaseModel, ConfigDict
 
+import livn
 from livn.env import Env
 from livn.utils import ObjSpec, P, import_instance
 
@@ -15,7 +16,7 @@ class Run(Interface):
         model: ObjSpec = None
         io: ObjSpec = None
         selection: str | int | float | dict | None = None
-        params: dict | None = None
+        params: bool | dict = True
         encoding: ObjSpec = None
         decoding: ObjSpec = ("livn.decoding.GatherAndMerge", {"duration": 60_000})
         figure: ObjSpec = None
@@ -40,23 +41,20 @@ class Run(Interface):
         return {"params": dict(document.get("params", document))}
 
     def __call__(self):
-        env = Env(
-            self.config.system,
-            model=import_instance(self.config.model),
-            io=import_instance(self.config.io),
+        params = self.config.params
+        if params is True:
+            params = Env.stored_params(self.config.system)
+
+        env = livn.make(
+            {
+                "system": self.config.system,
+                "model": self.config.model,
+                "io": self.config.io,
+                "selection": self.config.selection,
+                "params": dict(params or {}),
+            },
             comm=P.comm(),
         )
-        if self.config.selection is not None:
-            env.selection(self.config.selection)
-
-        env.init()
-
-        env.apply_model_defaults()
-        params = self.config.params
-        if params is None:
-            params = Env.stored_params(self.config.system)
-        if params:
-            env.set_params(dict(params))
 
         decoding = import_instance(self.config.decoding)
         encoding = import_instance(self.config.encoding)

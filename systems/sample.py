@@ -13,6 +13,7 @@ from machinable.config import Field as ConfigField
 from machinable.utils import load_file, save_file
 from pydantic import BaseModel, ConfigDict
 
+import livn
 from livn.decoding import GatherAndMerge, Slice
 from livn.env import Env
 from livn.env.distributed import DistributedEnv
@@ -58,7 +59,7 @@ class Sample(Interface):
         io: ObjSpec = None
         selection: str | int | float | dict | None = None
         selection_method: str = "first"
-        params: dict | None = None
+        params: bool | dict = True
         inputs: ObjSpec = None
         encoding: ObjSpec = "systems.sample.WithoutInput"
         decoding: ObjSpec = ("systems.sample.Raw", {"duration": 31000})
@@ -76,23 +77,24 @@ class Sample(Interface):
         return self.config.output_directory or self.local_directory("samples")
 
     def __call__(self):
-        env = DistributedEnv(
-            self.config.system,
-            model=self.model(),
-            io=import_instance(self.config.io),
+        env = livn.make(
+            {
+                "system": self.config.system,
+                "model": self.model(),
+                "io": self.config.io,
+                "selection": self.config.selection,
+            },
+            cls=DistributedEnv,
+            method=self.config.selection_method,
             subworld_size=self.config.nprocs_per_worker,
         )
-        if self.config.selection is not None:
-            env.selection(self.config.selection, method=self.config.selection_method)
-
-        env.init()
 
         env.apply_model_defaults(noise=self.config.noise)
         params = self.config.params
-        if params is None and self.config.noise:
-            params = Env.stored_params(self.config.system)
+        if params is True:
+            params = Env.stored_params(self.config.system) if self.config.noise else {}
         if params:
-            env.set_params(dict(params))
+            env.set_params(dict(params), strict=True)
 
         if env.is_root():
             self.collect(env)
