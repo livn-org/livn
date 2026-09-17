@@ -1,3 +1,4 @@
+import contextlib
 import hashlib
 import os
 from collections.abc import Mapping
@@ -11,8 +12,9 @@ from machinable.config import to_dict
 from mpi4py import MPI
 from pydantic import Field
 
+import livn
 from livn.env import Env
-from livn.utils import import_instance
+from livn.utils import import_instance, sentinel
 
 # NEURON compatible rank order
 os.environ.setdefault("DISTWQ_CONTROLLER_RANK", "-1")
@@ -112,10 +114,16 @@ def declared_names(target) -> dict:
     }
 
 
+def _target_for(target, system):
+    target = import_instance(target)
+    if system is not None and getattr(target, "system", sentinel) is None:
+        target.system = system
+    return target
+
+
 def _declared(c) -> dict:
-    return declared_names(
-        import_instance(c.config.dopt_params.obj_fun_init_args.target)
-    )
+    params = c.config.dopt_params
+    return declared_names(_target_for(params.obj_fun_init_args.target, c.config.system))
 
 
 def objective_names(c):
@@ -140,16 +148,16 @@ def _build_env(target, system, model, comm, subworld_size, selection=None):
                 "overriding it here"
             )
         return target.build_env(system, model, comm=comm, subworld_size=subworld_size)
-    env = Env(
-        system,
-        model=model,
-        io=target.io() if hasattr(target, "io") else None,
+    env = livn.make(
+        {
+            "system": system,
+            "model": model,
+            "io": target.io() if hasattr(target, "io") else None,
+            "selection": selection,
+        },
         comm=comm,
         subworld_size=subworld_size,
     )
-    if selection is not None:
-        env.selection(selection)
-    env.init()
     return target.init(env)
 
 
@@ -163,18 +171,25 @@ def obj_fun_init(
     worker=None,
     local_directory=None,
 ):
-    target = import_instance(target)
-    env = _build_env(
-        target, system, model, worker.merged_comm, subworld_size, selection=selection
+    target = _target_for(target, system)
+    build = partial(
+        _build_env,
+        target,
+        model=model,
+        comm=worker.merged_comm,
+        subworld_size=subworld_size,
+        selection=selection,
     )
-    live_envs.append(env)
     return partial(
-        obj_fun, env=env, target=target, trials=trials, local_directory=local_directory
+        obj_fun,
+        worker=_Worker(target, system, build),
+        trials=trials,
+        local_directory=local_directory,
     )
 
 
 def controller_init(system, model, target, subworld_size):
-    target = import_instance(target)
+    target = _target_for(target, system)
     env = Env(
         system,
         model=import_instance(model),
@@ -185,14 +200,67 @@ def controller_init(system, model, target, subworld_size):
     live_envs.append(env)
 
 
-def obj_fun(x, env, trials, target, local_directory=None):
+class _Worker:
+    __slots__ = ("_build", "_env", "system", "target")
+
+    def __init__(self, target, system, build):
+        self.target = target
+        self.system = system
+        self._build = build
+        self._env = None
+
+    @property
+    def env(self):
+        if self._env is None:
+            self._hold(self._build(self.system))
+        return self._env
+
+    def evaluate_on(self, params):
+        held = self.env
+        env = self.target.env_for(held, params, self._build, self.release)
+        if env is not held:
+            self._hold(env)
+        return env
+
+    def _hold(self, env):
+        self._env = env
+        live_envs.append(env)
+
+    def release(self, env=None) -> None:
+        if env is None:
+            env = self._env
+        if env is None:
+            return
+        import gc
+
+        if env is self._env:
+            self._env = None
+        with contextlib.suppress(Exception):
+            env.close()
+        while env in live_envs:
+            live_envs.remove(env)
+        del env
+        gc.collect()
+
+    def close(self) -> None:
+        env = self._env
+        if env is not None and hasattr(env, "pc"):
+            with contextlib.suppress(Exception):
+                env.pc.done()
+        self.release(env)
+
+
+def obj_fun(x, worker, trials, local_directory=None):
     results = {}
     constraints = {}
     observed = {}
+    target = worker.target
 
     for _ in range(trials):
-        env.clear()
-        env.set_params(target.transform_params(x))
+        params = target.transform_params(x)
+
+        env = worker.evaluate_on(x)
+        env.set_params(params)
 
         objectives_dict, constraints_dict = target(
             env, params=x, directory=local_directory
@@ -236,7 +304,7 @@ def obj_reduce(payload):
 
 class Sopt(Dmosopt):
     class Config(Dmosopt.Config):
-        system: str | int | dict[str, int] | None = ConfigField(None, identifying=False)
+        system: str | int | dict | None = ConfigField(None, identifying=False)
         dopt_params: dict = Field(
             default_factory=lambda: {
                 "opt_id": "default",

@@ -1,3 +1,4 @@
+import json
 import math
 from typing import Any
 
@@ -21,12 +22,27 @@ def _active_mechanisms(projection: dict) -> int:
 
 
 def wiring_profile(system) -> dict[str, tuple[float, int]]:
-    import h5py
-
+    """`{post: (netcons per cell, cells)}` for each postsynaptic population."""
     from livn.system import resolve
 
     resolved = resolve(system)
     connections = resolved.connections_config["synapses"]
+
+    if not getattr(resolved, "files", None):
+        return {
+            post: (
+                sum(
+                    float(spec["kernel"]["mean_degree"])
+                    * _active_mechanisms(connections[post][pre])
+                    for pre, spec in sources.items()
+                ),
+                resolved.population_count(post),
+            )
+            for post, sources in connections.items()
+            if sources and resolved.population_count(post)
+        }
+
+    import h5py
 
     profile: dict[str, tuple[float, int]] = {}
     with h5py.File(resolved.files["connections"], "r") as fh:
@@ -53,7 +69,12 @@ def wiring_profile(system) -> dict[str, tuple[float, int]]:
 def estimated_netcons(system, selection: str | None = None) -> float:
     from livn.system import resolve
 
-    key = (repr(system), selection)
+    key = (
+        json.dumps(system, sort_keys=True)
+        if isinstance(system, dict)
+        else repr(system),
+        selection,
+    )
     if key in _NETCON_CACHE:  # sizing asks repeatedly while it searches a layout
         return _NETCON_CACHE[key]
 
@@ -173,6 +194,27 @@ class TuningTargets:
 
     def init(self, env):
         return env
+
+    def system_for(self, params: dict[str, Any]) -> Any | None:
+        """The system this parameter vector asks for, or `None` for no change."""
+        return None
+
+    def env_for(self, env, params: dict[str, Any], build, release):
+        """The env `params` should be evaluated on."""
+        from livn.system import identity
+
+        wanted = self.system_for(params)
+        if wanted is None:
+            env.clear()
+            return env
+
+        held = getattr(getattr(env, "system", None), "uuid", None)
+        if held is not None and identity(wanted) == held:
+            env.clear()
+            return env
+
+        release(env)
+        return build(wanted)
 
     def search_space(self, model=None) -> dict[str, list[float]]:
         """Return the transformed search space for optimization.
