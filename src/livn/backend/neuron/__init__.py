@@ -87,6 +87,24 @@ def _overrides_init_ic(cell) -> bool:
     return getattr(type(owner), "init_ic", None) is not getattr(fn, "__func__", None)
 
 
+_SUBWORLD_SIZE: int | None = None
+
+
+def _partition_subworlds(pc, subworld_size: int) -> None:
+    global _SUBWORLD_SIZE
+
+    wanted = int(subworld_size)
+    if wanted == _SUBWORLD_SIZE:
+        return
+    if _SUBWORLD_SIZE is not None:
+        raise RuntimeError(
+            f"this process already partitioned the world into subworld size {_SUBWORLD_SIZE}; "
+            f"this cannot change to requested size {wanted} without re-init."
+        )
+    pc.subworlds(wanted)
+    _SUBWORLD_SIZE = wanted
+
+
 class Env(EnvProtocol):
     capabilities = frozenset(
         {
@@ -138,7 +156,7 @@ class Env(EnvProtocol):
         self._h = mechanisms.configure(mech_dir)
         self.pc = self._h.pc
         if subworld_size is not None:
-            self.pc.subworlds(subworld_size)
+            _partition_subworlds(self.pc, subworld_size)
         self.rank = int(self.pc.id())
         self._require_comm_spans_solve_domain()
 
