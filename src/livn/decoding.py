@@ -506,6 +506,137 @@ class BurstRate(Decoding):
         return P.broadcast(result, comm=env.comm)
 
 
+class BurstAnatomy(Decoding):
+    """Measure the shape of network bursts in a spike raster.
+
+    Nearby suprathreshold runs are merged before measuring burst width,
+    spikes per participating unit, normalized peak rate, recruitment, and
+    inter-burst interval CV. Shape metrics are NaN when unmeasured.
+    """
+
+    bin_size: float = 5.0
+    merge_ms: float = 200.0
+    mad_k: float = 5.0
+    min_floor_fraction: float = 0.25
+    min_floor: float = 3.0
+    pre_ms: float = 100.0
+    post_ms: float = 200.0
+
+    def _decode(self, it, tt, n_units: int) -> dict:
+        empty = {
+            "burst_width_ms": float("nan"),
+            "spikes_per_unit_per_burst": float("nan"),
+            "burst_onset_peak": float("nan"),
+            "units_recruited_per_burst": float("nan"),
+            "burst_interval_cv": float("nan"),
+            "n_bursts": 0,
+            "burst_threshold": 0.0,
+            "peak_bin_rate": 0.0,
+            "burst_spike_fraction": 0.0,
+        }
+
+        it = np.asarray(it)
+        tt = np.asarray(tt, dtype=np.float64)
+        n_units = max(int(n_units), 1)
+        duration_ms = float(self.duration)
+        if tt.size == 0 or duration_ms <= 0.0:
+            return empty
+
+        n_bins = max(1, int(duration_ms // self.bin_size))
+        counts, _ = np.histogram(tt, bins=n_bins, range=(0.0, n_bins * self.bin_size))
+        empty["peak_bin_rate"] = float(counts.max()) / n_units
+
+        median = float(np.median(counts))
+        mad = float(np.median(np.abs(counts - median))) or 1.0
+        floor = max(float(self.min_floor), self.min_floor_fraction * n_units)
+        threshold = max(median + self.mad_k * 1.4826 * mad, floor)
+        empty["burst_threshold"] = float(threshold)
+
+        bursting = counts >= threshold
+        if not bursting.any():
+            return empty
+
+        edges = np.diff(np.concatenate([[0], bursting.astype(np.int8), [0]]))
+        starts = np.flatnonzero(edges == 1)
+        stops = np.flatnonzero(edges == -1)
+
+        spans: list[list[float]] = []
+        for start, stop in zip(starts, stops, strict=True):
+            b0 = float(start * self.bin_size)
+            b1 = float(stop * self.bin_size)
+            if spans and b0 - spans[-1][1] < self.merge_ms:
+                spans[-1][1] = b1
+            else:
+                spans.append([b0, b1])
+
+        order = np.argsort(tt, kind="stable")
+        it, tt = it[order], tt[order]
+
+        widths, per_unit, peaks, recruited = [], [], [], []
+        onsets = [span[0] for span in spans]
+        in_bursts = 0
+        previous_hi = 0.0
+        for index, (b0, b1) in enumerate(spans):
+            lo = max(0.0, b0 - self.pre_ms, previous_hi)
+            hi = min(duration_ms, b1 + self.post_ms)
+            if index + 1 < len(spans):
+                hi = min(hi, max(lo, spans[index + 1][0] - self.pre_ms))
+            previous_hi = hi
+            window = (tt >= lo) & (tt < hi)
+            n_spikes = int(window.sum())
+            if n_spikes == 0:
+                continue
+            in_bursts += n_spikes
+
+            bins = max(1, round((hi - lo) / self.bin_size))
+            profile, _ = np.histogram(
+                tt[window], bins=bins, range=(lo, lo + bins * self.bin_size)
+            )
+            peak = float(profile.max())
+            above = np.flatnonzero(profile >= peak / 2.0)
+            widths.append(float(above[-1] - above[0] + 1) * self.bin_size)
+            peaks.append(peak / n_units)
+
+            participating = int(np.unique(it[window]).size)
+            per_unit.append(n_spikes / max(participating, 1))
+            recruited.append(participating / n_units)
+
+        if not widths:
+            return empty
+
+        intervals = np.diff(np.asarray(onsets, dtype=np.float64))
+        interval_cv = float("nan")
+        if intervals.size >= 2 and intervals.mean() > 0.0:
+            interval_cv = float(intervals.std() / intervals.mean())
+
+        return {
+            "burst_width_ms": float(np.mean(widths)),
+            "spikes_per_unit_per_burst": float(np.mean(per_unit)),
+            "burst_onset_peak": float(np.mean(peaks)),
+            "units_recruited_per_burst": float(np.mean(recruited)),
+            "burst_interval_cv": interval_cv,
+            "n_bursts": len(widths),
+            "burst_threshold": float(threshold),
+            "peak_bin_rate": empty["peak_bin_rate"],
+            "burst_spike_fraction": float(in_bursts) / float(tt.size),
+        }
+
+    def __call__(self, signal: Run, env=None):
+        comm = getattr(env, "comm", None)
+        merged_it, merged_tt = merged_spikes(signal, env)
+
+        result = None
+        if P.is_root(comm=comm):
+            gids = getattr(getattr(env, "system", None), "gids", None)
+            result = self._decode(
+                merged_it,
+                merged_tt,
+                len(gids) if gids is not None else len(set(merged_it)),
+            )
+
+        return P.broadcast(result, comm=comm)
+
+
 class PeakSynchrony(Decoding):
     """Peak fraction of active units co-firing in a single `bin_size` bin.
 

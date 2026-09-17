@@ -9,6 +9,7 @@ from livn.decoding import (
     ActiveFraction,
     ArrowDataset,
     AvalancheAnalysis,
+    BurstAnatomy,
     ChannelRecording,
     MeanFiringRate,
     Pipe,
@@ -809,3 +810,146 @@ class TestChannelRecording:
         assert np.array_equal(vv_out, vv)
         assert np.array_equal(channel_ids, np.array([0, 1], dtype=np.int32))
         assert p is None
+
+
+def _bursting(
+    n_units,
+    n_bursts,
+    spikes_per_unit,
+    spread_ms,
+    *,
+    period=1000.0,
+    start=500.0,
+    jitter=3.0,
+    background=200,
+    duration=5000.0,
+    seed=0,
+):
+    rng = np.random.default_rng(seed)
+    it, tt = [], []
+    step = spread_ms / max(spikes_per_unit - 1, 1)
+    for k in range(n_bursts):
+        t0 = start + period * k
+        for unit in range(n_units):
+            for s in range(spikes_per_unit):
+                it.append(unit)
+                tt.append(t0 + s * step + rng.normal(0.0, jitter))
+    for _ in range(background):
+        it.append(int(rng.integers(0, n_units)))
+        tt.append(float(rng.uniform(0.0, duration)))
+    order = np.argsort(tt, kind="stable")
+    return np.asarray(it)[order], np.asarray(tt)[order]
+
+
+def _burst_anatomy(it, tt, n_units, duration, **kwargs):
+    decoder = BurstAnatomy(duration=duration, **kwargs)
+    return decoder(_recording(it, tt), MockEnv(n_units=n_units))
+
+
+class TestBurstAnatomy:
+    def test_reverberation_and_volley_differ(self):
+        wide = _burst_anatomy(*_bursting(40, 5, 6, 100.0), 40, 5000.0)
+        volley = _burst_anatomy(
+            *_bursting(40, 5, 1, 0.0, jitter=4.0, seed=1), 40, 5000.0
+        )
+
+        assert wide["n_bursts"] == volley["n_bursts"] == 5
+        assert 80.0 <= wide["burst_width_ms"] <= 130.0
+        assert volley["burst_width_ms"] <= 30.0
+        assert wide["spikes_per_unit_per_burst"] > 4.0
+        assert volley["spikes_per_unit_per_burst"] < 2.0
+
+    def test_recruitment_is_a_fraction_of_the_units(self):
+        it, tt = _bursting(20, 4, 3, 60.0, seed=2)
+        result = _burst_anatomy(it, tt, 40, 5000.0)
+
+        # 20 of 40 units ever fire, so no burst can recruit more than half
+        assert 0.4 <= result["units_recruited_per_burst"] <= 0.55
+
+    def test_interval_cv_separates_clockwork_from_irregular(self):
+        clockwork = _burst_anatomy(*_bursting(40, 6, 4, 80.0, seed=3), 40, 6500.0)
+
+        rng = np.random.default_rng(4)
+        it, tt = [], []
+        at = 400.0
+        onsets = []
+        while at < 11_000.0:
+            onsets.append(at)
+            for unit in range(40):
+                for s in range(4):
+                    it.append(unit)
+                    tt.append(at + s * 25.0 + rng.normal(0.0, 3.0))
+            at += float(rng.exponential(1200.0)) + 300.0
+        irregular = _burst_anatomy(np.asarray(it), np.asarray(tt), 40, 11_000.0)
+
+        assert clockwork["burst_interval_cv"] < 0.05
+        assert irregular["burst_interval_cv"] > 0.3
+        assert len(onsets) >= 4
+
+    def test_a_dip_inside_a_burst_does_not_split_it(self):
+        rng = np.random.default_rng(5)
+        it, tt = [], []
+        for k in range(3):
+            t0 = 500.0 + 1500.0 * k
+            for offset in (0.0, 150.0):  # two volleys 150 ms apart
+                for unit in range(40):
+                    it.append(unit)
+                    tt.append(t0 + offset + rng.normal(0.0, 2.0))
+        it, tt = np.asarray(it), np.asarray(tt)
+
+        merged = _burst_anatomy(it, tt, 40, 5000.0)
+        split = _burst_anatomy(it, tt, 40, 5000.0, merge_ms=50.0)
+
+        assert merged["n_bursts"] == 3
+        assert split["n_bursts"] == 6
+        assert merged["spikes_per_unit_per_burst"] > 1.5
+        assert split["spikes_per_unit_per_burst"] < 1.5
+
+    def test_a_window_with_no_burst_is_unmeasured_not_zero(self):
+        rng = np.random.default_rng(6)
+        it = rng.integers(0, 40, 200)
+        tt = rng.uniform(0.0, 5000.0, 200)
+
+        result = _burst_anatomy(it, tt, 40, 5000.0)
+
+        assert result["n_bursts"] == 0
+        for name in (
+            "burst_width_ms",
+            "spikes_per_unit_per_burst",
+            "burst_onset_peak",
+            "units_recruited_per_burst",
+            "burst_interval_cv",
+        ):
+            assert np.isnan(result[name]), name
+        # the rate peak is defined whether or not anything crossed threshold
+        assert result["peak_bin_rate"] > 0.0
+
+    def test_empty_window(self):
+        result = _burst_anatomy(np.array([]), np.array([]), 40, 5000.0)
+
+        assert result["n_bursts"] == 0
+        assert result["burst_spike_fraction"] == 0.0
+        assert np.isnan(result["burst_width_ms"])
+
+    def test_decoder_takes_its_unit_count_from_the_readout(self):
+        it, tt = _bursting(40, 5, 5, 90.0, seed=7)
+        env = MockEnv(n_units=40)
+
+        result = BurstAnatomy(duration=5000)(_recording(it, tt), env)
+
+        assert result["n_bursts"] == 5
+        assert 0.0 < result["units_recruited_per_burst"] <= 1.0
+        # a readout over half as many units doubles the per-unit peak
+        half = BurstAnatomy(duration=5000)(_recording(it, tt), MockEnv(n_units=20))
+        assert half["burst_onset_peak"] == pytest.approx(
+            2.0 * result["burst_onset_peak"]
+        )
+
+    def test_windows_of_consecutive_bursts_are_disjoint(self):
+        """Every spike is counted for at most one burst, at any burst rate."""
+        it, tt = _bursting(40, 9, 3, 60.0, period=420.0, duration=5000.0, seed=8)
+
+        result = _burst_anatomy(it, tt, 40, 5000.0, merge_ms=100.0)
+
+        assert result["n_bursts"] >= 2
+        assert 0.0 < result["burst_spike_fraction"] <= 1.0
