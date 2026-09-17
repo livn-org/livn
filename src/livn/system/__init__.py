@@ -115,6 +115,10 @@ def resolve(
 ) -> System:
     if isinstance(spec, bool):
         raise TypeError("system must be an int, a path or a System, not a bool")
+    if isinstance(spec, Mapping) and "cls" in spec:
+        from livn.types import _build
+
+        return _build(spec)
     if isinstance(spec, (int, numpy.integer, Mapping)):
         return ParallelSystem(spec, comm=comm)
     if isinstance(spec, (str, os.PathLike)):

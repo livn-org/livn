@@ -493,6 +493,8 @@ class CellBuilder:
             gids = sorted(int(g) for g in selection)
         elif coord_by_gid:
             gids = sorted(coord_by_gid.keys())
+        elif not self.system.population_count(population):
+            return {}
         else:
             raise RuntimeError(
                 f"population {population!r} has no coordinates; a selection() is "

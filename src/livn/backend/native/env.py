@@ -427,6 +427,8 @@ class Env(EnvProtocol):
             gids = sorted(int(g) for g in selection)
         elif available:
             gids = available
+        elif not self.system.population_count(population):
+            return {}
         else:
             raise RuntimeError(
                 f"population {population!r} has no coordinates; a selection() is "

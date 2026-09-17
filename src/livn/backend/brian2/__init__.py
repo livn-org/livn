@@ -235,6 +235,8 @@ class Env(EnvProtocol):
             if population_name in ignored:
                 continue
             n = self.system.population_count(population_name)
+            if n == 0:
+                continue
             offset = population_ranges[population_name][0]
             coordinates = self.system.coordinate_array(population_name)
 

@@ -4,7 +4,7 @@ import contextlib
 import hashlib
 import os
 import pickle
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from enum import StrEnum
 from typing import (
     TYPE_CHECKING,
@@ -314,6 +314,16 @@ def _describe(obj) -> dict | None:
     }
 
 
+def _plain(value):
+    if isinstance(value, Mapping):
+        return {str(k): _plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)) or (
+        isinstance(value, Sequence) and not isinstance(value, (str, bytes))
+    ):
+        return [_plain(v) for v in value]
+    return value
+
+
 def _build(described):
     """Rebuild :func:`_describe`d."""
     if described is None:
@@ -321,7 +331,7 @@ def _build(described):
     if isinstance(described, (list, tuple)):
         path, kwargs = [*list(described), {}][:2]
         described = {"cls": path, "kwargs": kwargs}
-    if not isinstance(described, dict) or "cls" not in described:
+    if not isinstance(described, Mapping) or "cls" not in described:
         raise ValueError(
             f"expected {{'cls': ..., 'kwargs': ...}} naming what to build, got "
             f"{described!r}"
@@ -329,7 +339,9 @@ def _build(described):
 
     from livn.utils import import_object_by_path
 
-    return import_object_by_path(described["cls"])(**(described.get("kwargs") or {}))
+    return import_object_by_path(described["cls"])(
+        **_plain(described.get("kwargs") or {})
+    )
 
 
 def _is_the_systems_own_io(system, io) -> bool:
