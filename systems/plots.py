@@ -106,6 +106,123 @@ class Raster(Figure):
         return path
 
 
+class BurstRaster(Figure):
+    warmup: float = 0.0
+    duration: float | None = None
+    bin_ms: float = 10.0
+    zoom_ms: float = 200.0
+    axis: int = 2
+
+    def __call__(self, run, path, *, env=None, encoding=None):
+        plt = _plt()
+        it, tt = _spikes(run)
+
+        keep = tt >= self.warmup
+        it, tt = it[keep], tt[keep] - self.warmup
+        duration = self.duration
+        if duration is None:
+            duration = float(run.duration or (tt.max() if len(tt) else 1.0))
+            duration -= self.warmup
+        keep = tt < duration
+        it, tt = it[keep], tt[keep]
+
+        coordinates = np.asarray(
+            getattr(getattr(env, "system", None), "neuron_coordinates", [])
+        )
+        if coordinates.size:
+            gids = coordinates[:, 0].astype(np.int64)
+            rank = {
+                int(g): i for i, g in enumerate(np.argsort(coordinates[:, self.axis]))
+            }
+            row_of = {int(g): rank[i] for i, g in enumerate(gids)}
+            rows = np.asarray([row_of.get(int(g), 0) for g in it])
+            n_units = len(gids)
+            label = f"unit, ordered by {'xyz'[self.axis - 1]}"
+        else:
+            rows, n_units = it, int(it.max()) + 1 if len(it) else 1
+            label = "unit"
+
+        fig = plt.figure(figsize=(13, 9), constrained_layout=True)
+        grid = fig.add_gridspec(3, 2, height_ratios=[3, 1, 2.6], width_ratios=[3, 1.2])
+
+        ax = fig.add_subplot(grid[0, :])
+        ax.scatter(tt / 1000.0, rows, s=0.6, c="#1e6b86", marker="|", linewidths=0.6)
+        ax.set_xlim(0, duration / 1000.0)
+        ax.set_ylim(0, max(n_units, 1))
+        ax.set_ylabel(f"{label} ({n_units})")
+        ax.set_title(
+            self.title
+            or f"{len(tt)} spikes in {duration / 1000:g} s, "
+            f"{len(tt) / max(n_units, 1) / (duration / 1000):.2f} Hz per unit",
+            fontsize=10,
+        )
+
+        edges = np.arange(0.0, duration + self.bin_ms, self.bin_ms)
+        counts, _ = np.histogram(tt, bins=edges)
+        rate = counts / (self.bin_ms / 1000.0) / max(n_units, 1)
+
+        fine, _ = np.histogram(tt, bins=np.arange(0.0, duration + 1.0, 1.0))
+        sliding = np.convolve(fine, np.ones(int(self.zoom_ms)), mode="valid")
+        at = float(np.argmax(sliding)) if sliding.size else 0.0
+        zoom = (tt >= at) & (tt < at + self.zoom_ms)
+
+        bx = fig.add_subplot(grid[1, :], sharex=ax)
+        bx.fill_between(
+            edges[:-1] / 1000.0, rate, step="post", color="#1e6b86", alpha=0.7
+        )
+        bx.set_ylabel(f"Hz per unit\n({self.bin_ms:g} ms bins)")
+        bx.set_xlabel("time (s)")
+        bx.axvspan(
+            at / 1000.0, (at + self.zoom_ms) / 1000.0, color="#b8860b", alpha=0.25
+        )
+
+        cx = fig.add_subplot(grid[2, 0])
+        cx.scatter(
+            tt[zoom] - at, rows[zoom], s=4, c="#1e6b86", marker="|", linewidths=1.0
+        )
+        cx.set_xlim(0, self.zoom_ms)
+        cx.set_ylim(0, max(n_units, 1))
+        cx.set_xlabel(f"time from {at / 1000:.2f} s (ms)")
+        cx.set_ylabel(label)
+        cx.set_title(
+            f"largest burst, {self.zoom_ms:g} ms; a travelling one reads as a slope",
+            fontsize=9,
+        )
+
+        dx = fig.add_subplot(grid[2, 1])
+        if coordinates.size:
+            position = {
+                int(g): float(c)
+                for g, c in zip(gids, coordinates[:, self.axis], strict=True)
+            }
+            dx.scatter(
+                tt[zoom] - at,
+                [position.get(int(g), 0.0) / 1000.0 for g in it[zoom]],
+                s=4,
+                c="#9a6a12",
+                marker="|",
+                linewidths=1.0,
+            )
+            dx.set_ylabel(f"{'xyz'[self.axis - 1]} (mm)")
+        dx.set_xlim(0, self.zoom_ms)
+        dx.set_xlabel("ms")
+        dx.set_title("same burst, position", fontsize=9)
+
+        participating = len(np.unique(it[zoom]))
+        fig.text(
+            0.01,
+            0.004,
+            f"largest burst: {int(zoom.sum())} spikes from {participating} units "
+            f"({int(zoom.sum()) / max(participating, 1):.1f} each, "
+            f"{participating / max(n_units, 1):.0%} of the population)",
+            fontsize=9,
+        )
+
+        fig.savefig(path, dpi=130)
+        plt.close(fig)
+        return path
+
+
 class Traces(Figure):
     cells: int = 3
     pre_ms: float = 4.0
