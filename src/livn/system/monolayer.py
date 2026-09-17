@@ -307,7 +307,24 @@ class Monolayer(Jsonable):
     # a periodic box narrower than this many sigma wraps onto itself
     MIN_EXTENT_IN_SIGMA: ClassVar[float] = 4.0
 
-    def __init__(
+    def __init__(self, *args, **kwargs):
+        self._configure(*args, **kwargs)
+        self._draw_cells()
+        self._resolve_projections()
+
+    @classmethod
+    def canonical(cls, *args, **kwargs) -> dict:
+        blank = cls.__new__(cls)
+        blank._configure(*args, **kwargs)
+        return blank.serialize()
+
+    @classmethod
+    def spec_uuid(cls, *args, **kwargs) -> str:
+        blank = cls.__new__(cls)
+        blank._configure(*args, **kwargs)
+        return blank.uuid
+
+    def _configure(
         self,
         total_cells: int | None = None,
         populations: dict | None = None,
@@ -323,7 +340,7 @@ class Monolayer(Jsonable):
         seed: int = 123,
         name: str = "Monolayer",
         comm: MPI.Intracomm | None = None,
-    ):
+    ) -> None:
         if populations is None:
             populations = {
                 "EXC": {"ratio": 0.8, "synapse_type": "excitatory"},
@@ -376,9 +393,6 @@ class Monolayer(Jsonable):
             raise ValueError(
                 f"population(s) {sorted(missing)} are not in population_definitions"
             )
-
-        self._draw_cells()
-        self._resolve_projections()
 
     # -- the spec ------------------------------------------------------------
 
