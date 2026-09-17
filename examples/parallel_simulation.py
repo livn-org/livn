@@ -17,10 +17,10 @@ os.environ["LIVN_BACKEND"] = "neuron"
 from livn.env import Env
 from livn.env.logging import with_progress_logging
 from livn.io import MEA, electrode_array_coordinates_for_area
-from livn.system import System, predefined
+from livn.system import NeuroH5System, predefined
 from livn.utils import P
 
-system = System(predefined("EI"))
+system = NeuroH5System(predefined("EI"))
 (xmin, ymin, _), (xmax, ymax, _) = system.bounding_box
 mea = MEA(electrode_array_coordinates_for_area(400, ((xmin, ymin), (xmax, ymax))))
 

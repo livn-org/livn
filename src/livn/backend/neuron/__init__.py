@@ -24,8 +24,7 @@ if TYPE_CHECKING:
     from mpi4py import MPI
 
     from livn.io import IO
-    from livn.system import System
-    from livn.types import Model
+    from livn.types import Model, System
 
 try:
     import mpi4py  # noqa: F401

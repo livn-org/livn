@@ -57,6 +57,7 @@ class Sample(Interface):
         model: ObjSpec = None
         io: ObjSpec = None
         selection: str | int | float | dict | None = None
+        selection_method: str = "first"
         params: dict | None = None
         inputs: ObjSpec = None
         encoding: ObjSpec = "systems.sample.WithoutInput"
@@ -82,17 +83,16 @@ class Sample(Interface):
             subworld_size=self.config.nprocs_per_worker,
         )
         if self.config.selection is not None:
-            env.selection(self.config.selection)
+            env.selection(self.config.selection, method=self.config.selection_method)
 
         env.init()
 
-        if self.config.params is not None:
-            env.apply_model_defaults(noise=self.config.noise)
-            env.set_params(dict(self.config.params))
-        elif self.config.noise:
-            env.apply_default_params()
-        else:
-            env.apply_model_defaults(noise=False)
+        env.apply_model_defaults(noise=self.config.noise)
+        params = self.config.params
+        if params is None and self.config.noise:
+            params = Env.stored_params(self.config.system)
+        if params:
+            env.set_params(dict(params))
 
         if env.is_root():
             self.collect(env)

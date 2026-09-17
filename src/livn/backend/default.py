@@ -11,8 +11,7 @@ if TYPE_CHECKING:
 
     from livn.io import IO
     from livn.stimulus import Stimulus
-    from livn.system import System
-    from livn.types import Model
+    from livn.types import Model, System
 
 
 class Env(EnvProtocol):

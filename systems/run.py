@@ -51,10 +51,12 @@ class Run(Interface):
 
         env.init()
 
-        if self.config.params is None:
-            env.apply_default_params()
-        else:
-            env.set_params(dict(self.config.params))
+        env.apply_model_defaults()
+        params = self.config.params
+        if params is None:
+            params = Env.stored_params(self.config.system)
+        if params:
+            env.set_params(dict(params))
 
         decoding = import_instance(self.config.decoding)
         encoding = import_instance(self.config.encoding)

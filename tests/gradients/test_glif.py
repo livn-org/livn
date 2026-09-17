@@ -949,13 +949,18 @@ def test_the_reconstruction_is_differentiable():
     assert float(np.abs(np.asarray(gradients)).max()) > 0.0
 
 
-def _predefined(name="S1"):
-    from livn.system import predefined, resolve
+def _connected_system():
+    from livn.system import Monolayer
 
-    try:
-        return resolve(predefined(name))
-    except Exception as error:
-        pytest.skip(f"the predefined system {name} is not available ({error})")
+    return Monolayer(
+        total_cells=40,
+        area_kwargs={"x_range": (0.0, 1400.0), "y_range": (0.0, 1400.0)},
+        connectivity={
+            "sigma": 300.0,
+            "mean_degree": {"EXC->EXC": 4.0, "INH->EXC": 3.0, "default": 0.0},
+        },
+        seed=4242,
+    )
 
 
 @_env
@@ -964,7 +969,7 @@ def test_a_run_through_env_on_a_connected_system(mechanism):
     from livn.env import Env
     from livn.stimulus import Stimulus
 
-    system = _predefined()
+    system = _connected_system()
     duration, dt = 40.0, 0.1
     env = Env(
         system,

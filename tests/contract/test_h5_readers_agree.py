@@ -57,7 +57,7 @@ class TestPyfiveVsNeuroh5:
         from mpi4py import MPI
         from neuroh5.io import read_population_names as neuroh5_read_pop_names
 
-        from livn.system import _h5_read_population_names, _pyfive_open
+        from livn.system.neuroh5 import _h5_read_population_names, _pyfive_open
 
         comm = MPI.COMM_WORLD
         neuroh5_names = neuroh5_read_pop_names(cells_filepath, comm)
@@ -70,7 +70,7 @@ class TestPyfiveVsNeuroh5:
         from mpi4py import MPI
         from neuroh5.io import read_population_ranges as neuroh5_read_pop_ranges
 
-        from livn.system import _h5_read_population_ranges, _pyfive_open
+        from livn.system.neuroh5 import _h5_read_population_ranges, _pyfive_open
 
         comm = MPI.COMM_WORLD
         neuroh5_ranges, _ = neuroh5_read_pop_ranges(cells_filepath, comm)
@@ -88,7 +88,7 @@ class TestPyfiveVsNeuroh5:
             read_population_names,
         )
 
-        from livn.system import _h5_read_cell_attribute_info, _pyfive_open
+        from livn.system.neuroh5 import _h5_read_cell_attribute_info, _pyfive_open
 
         comm = MPI.COMM_WORLD
         pop_names = read_population_names(cells_filepath, comm)
@@ -106,7 +106,7 @@ class TestPyfiveVsNeuroh5:
         from mpi4py import MPI
         from neuroh5.io import scatter_read_cell_attributes
 
-        from livn.system import (
+        from livn.system.neuroh5 import (
             _h5_read_cell_attributes_tuple,
             _h5_read_population_names,
             _h5_read_population_ranges,
@@ -149,7 +149,7 @@ class TestPyfiveVsNeuroh5:
         from mpi4py import MPI
         from neuroh5.io import scatter_read_cell_attributes
 
-        from livn.system import (
+        from livn.system.neuroh5 import (
             _h5_read_cell_attributes,
             _h5_read_population_names,
             _h5_read_population_ranges,
@@ -200,7 +200,7 @@ class TestPyfiveVsNeuroh5:
         from mpi4py import MPI
         from neuroh5.io import scatter_read_graph
 
-        from livn.system import (
+        from livn.system.neuroh5 import (
             _h5_read_graph,
             _h5_read_population_ranges,
             _pyfive_open,
@@ -278,15 +278,15 @@ class TestPyfiveVsNeuroh5:
 @neuroh5_required
 class TestSystemPyfiveVsNeuroh5:
     def test_coordinate_array_equivalence(self):
-        from livn.system import (
-            System,
+        from livn.system import NeuroH5System
+        from livn.system.neuroh5 import (
             _h5_read_cell_attributes_tuple,
             _h5_read_population_names,
             _h5_read_population_ranges,
             _pyfive_open,
         )
 
-        system = System(SYSTEM_DIR)
+        system = NeuroH5System(SYSTEM_DIR)
         f = _pyfive_open(system._graph.cells_filepath)
         pop_names = _h5_read_population_names(f)
         pop_ranges = _h5_read_population_ranges(f)
@@ -310,15 +310,15 @@ class TestSystemPyfiveVsNeuroh5:
             np.testing.assert_array_almost_equal(coords_n, coords_p)
 
     def test_cells_meta_data_equivalence(self):
-        from livn.system import (
-            System,
+        from livn.system import NeuroH5System
+        from livn.system.neuroh5 import (
             _h5_read_cell_attribute_info,
             _h5_read_population_names,
             _h5_read_population_ranges,
             _pyfive_open,
         )
 
-        system = System(SYSTEM_DIR)
+        system = NeuroH5System(SYSTEM_DIR)
         f = _pyfive_open(system._graph.cells_filepath)
 
         pop_names = _h5_read_population_names(f)
@@ -331,14 +331,14 @@ class TestSystemPyfiveVsNeuroh5:
         assert meta_n.cell_attribute_info == attr_info
 
     def test_projection_array_equivalence(self):
-        from livn.system import (
-            System,
+        from livn.system import NeuroH5System
+        from livn.system.neuroh5 import (
             _h5_read_graph,
             _h5_read_population_ranges,
             _pyfive_open,
         )
 
-        system = System(SYSTEM_DIR)
+        system = NeuroH5System(SYSTEM_DIR)
         f_cells = _pyfive_open(system._graph.cells_filepath)
         pop_ranges = _h5_read_population_ranges(f_cells)
 

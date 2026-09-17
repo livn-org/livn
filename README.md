@@ -27,9 +27,10 @@ pip install livn
 ### Running a simulation
 
 ```python
-from livn import make
+from livn.env import Env
+from livn.system import Monolayer
 
-env = make("EI")
+env = Env(Monolayer(total_cells=650)).init()
 
 env.apply_model_defaults()
 env.record_spikes()

@@ -54,7 +54,7 @@ env = Env(predefined('EI'))
 env.io.electrode_coordinates
 ```
 
-Note that `predefined()` downloads system files into the in-browser filesystem. Since Pyodide uses an in-memory filesystem by default, downloaded systems are not persisted and will need to be re-downloaded on each page load.
+Note that `fetch()` downloads into the in-browser filesystem; since Pyodide's is in-memory by default, a fetched system is not persisted and has to be downloaded again on each page load.
 
 ## Interactive Demo
 

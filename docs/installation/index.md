@@ -21,7 +21,7 @@ uv pip install livn
 All backends and whistles! Required if you are interested in generating your own systems (instead of using the pre-defined ones), or scaling up via MPI using NEURON.
 
 ::: warning The NEURON backend is a source install
-There is no `livn[neuron]` on PyPI as the backend needs compatible MPI, parallel HDF5, and a `neuroh5` build environment (see Prerequisites):
+There is no `livn[neuron]` on PyPI as the backend needs a compatible MPI (see Prerequisites):
 
 ```sh
 git clone https://github.com/livn-org/livn.git
@@ -50,7 +50,13 @@ brew install hdf5-mpi
 
 #### neuroh5
 
-`neuroh5` is part of the NEURON stack and is installed by `uv sync --group neuron`. However, generating custom 3D systems with realistic morphology also requires the binaries build as follows:
+`neuroh5` is optional. Only the H5-backed [`System`](/guide/concepts/system) reads through it, and only for the MPI-collective scatter reads; without it those fall back to `pyfive`, where every rank reads the whole file. That is correct and fast enough for the culture-scale systems, so install it when you run a large system such as CA1 across many ranks, or when you generate your own:
+
+```sh
+uv sync --group neuroh5
+```
+
+Generating custom 3D systems with realistic morphology additionally requires the binaries, built as follows:
 
 ```sh
 git clone https://github.com/iraikov/neuroh5.git

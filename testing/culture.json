@@ -1,0 +1,86 @@
+{
+  "system": {
+    "cls": "livn.system.Monolayer",
+    "kwargs": {
+      "name": "test",
+      "total_cells": 40,
+      "area": "rectangle",
+      "area_kwargs": {
+        "x_range": [
+          0.0,
+          1400.0
+        ],
+        "y_range": [
+          0.0,
+          1400.0
+        ]
+      },
+      "z_range": [
+        0.0,
+        10.0
+      ],
+      "populations": {
+        "EXC": {
+          "ratio": 0.75,
+          "synapse_type": "excitatory",
+          "transmitter": "cholinergic",
+          "soma_only": false
+        },
+        "INH": {
+          "ratio": 0.25,
+          "synapse_type": "inhibitory",
+          "transmitter": "glycinergic",
+          "soma_only": true
+        }
+      },
+      "population_definitions": {
+        "EXC": 10,
+        "INH": 11
+      },
+      "connectivity": {
+        "kernel": "exponential",
+        "sigma": 300.0,
+        "mean_degree": {
+          "EXC->EXC": 4.0,
+          "EXC->INH": 2.0,
+          "INH->EXC": 3.0,
+          "INH->INH": 0.0,
+          "default": 0.0
+        },
+        "allow_self_connections": false,
+        "floor": {
+          "EXC->INH": 1
+        }
+      },
+      "synapse_overrides": {
+        "EXC->EXC": {
+          "NMDA": {
+            "e": 0,
+            "g_unit": 0.0005,
+            "tau_decay": 80.0,
+            "tau_rise": 0.5,
+            "weight": 0.0
+          }
+        }
+      },
+      "boundary": null,
+      "mea": {
+        "pitch": 200.0,
+        "input_radius": 50.0,
+        "output_radius": 50.0
+      },
+      "seed": 7717,
+      "normalization": "per_post"
+    }
+  },
+  "model": {
+    "cls": "livn.models.rcsd.ReducedCalciumSomaDendrite",
+    "kwargs": {}
+  },
+  "io": null,
+  "selection": null,
+  "params": {},
+  "meta": {
+    "purpose": "the test tier's default system: a real 40-cell culture with the in-degree its spec asks for, rather than a subselection of a large one with most of its recurrence cut away"
+  }
+}

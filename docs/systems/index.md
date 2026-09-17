@@ -1,6 +1,6 @@
 # Standard Systems
 
-livn includes predefined systems that cover a range of scales and biological models. These systems are ready to use and come with tuned parameters and default models.
+livn includes systems that cover a range of scales and biological models, ready to use and carrying their tuned parameters and default models.
 
 ::: tip
 This section assumes familiarity with the core [concepts](/guide/concepts/env). If you haven't already, read through the Concepts guide first.
@@ -9,27 +9,6 @@ This section assumes familiarity with the core [concepts](/guide/concepts/env). 
 ## Cultures
 
 The cultures are 2D flat networks of excitatory and inhibitory neurons, built to reproduce the dynamics of in vitro preparations grown on multi-electrode arrays. They are the recommended starting point for most users.
-
-| System | Neurons | EXC | INH | Inhibitory share | Ratio |
-|--------|---------|-----|-----|------------------|-------|
-| **`E`** | 2,600 | 2,600 | 0 | none | 1:0 |
-| **`E5I`** | 2,600 | 2,167 | 433 | 17% | 5:1 |
-| **`E3I`** | 2,600 | 1,950 | 650 | 25% | 3:1 |
-| **`EI`** | 2,600 | 1,300 | 1,300 | 50% | 1:1 |
-
-See [reading a name](/guide/concepts/system#reading-a-name).
-
-Each culture has a replicate draw under `_b` (`EI_b`, `E3I_b`) so a result can be checked against a second sample of the same composition.
-
-### Architecture
-
-Every culture occupies the same 1.6 × 3.2 mm area with the same 2,600 cells, the same cell types, and the same per-projection in-degrees.
-
-- Distance-dependent connectivity, exponential kernel with a 600 µm length constant
-- `EXC→EXC` in-degree 20, `EXC→INH` 4, `INH→EXC` 40
-- AMPA on excitatory targets, GABA_A on inhibitory ones
-
-Holding the per-projection degrees fixed means each excitatory cell receives the same inhibitory convergence in every culture; what varies across the series is how concentrated that inhibition is in fewer, more divergent cells.
 
 See [Generating 2D systems](/systems/generate) for how to create custom cultures.
 
@@ -54,35 +33,41 @@ This system requires the NEURON backend with MPI and is designed for supercomput
 import os
 os.environ["LIVN_BACKEND"] = "neuron"
 
-from livn.system import predefined
+from livn.system import NeuroH5System, fetch
 
-system_path = predefined("CA1")
+system = NeuroH5System(fetch("CA1"))   # downloads once, then reuses
 ```
 
 ## Loading and using systems
 
-All predefined systems can be loaded with `make()`:
-
 ```python
 from livn import make
 
-# Downloads the system on first use, caches locally
 env = make("EI")
+env = make("runs/bursting/env.json")  # a configured env of your own
 
 env.record_spikes()
 env.record_voltage()
 it, t, iv, v, *_ = env.run(100)
 ```
 
-Or individually:
+A hosted system is assembled explicitly, since fetching it goes to the network:
 
 ```python
-from livn.system import predefined, System
+from livn.env import Env
+from livn.system import NeuroH5System, fetch
 
-path = predefined("EI")
-system = System(path)
+env = Env(NeuroH5System(fetch("CA1"))).init()
+```
 
-print(system.num_neurons)        # 2600
+Or take the system on its own:
+
+```python
+from livn.system import predefined
+
+system = predefined("EI")        # a Monolayer; ships with livn
+
+print(system.num_neurons)        # 2608
 print(system.populations)        # ['EXC', 'INH']
 print(system.weight_names)       # tunable weight parameters
 print(system.summary())          # neuron and projection counts

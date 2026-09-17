@@ -21,9 +21,10 @@ See the [Installation guide](/installation/) for more details, including backend
 ## Running simulations
 
 ```python
-from livn import make
+from livn.env import Env
+from livn.system import Monolayer
 
-env = make('EI')
+env = Env(Monolayer(total_cells=650)).init()
 
 env.record_spikes()
 env.record_voltage()

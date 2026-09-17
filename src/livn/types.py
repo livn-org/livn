@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import os
 import pickle
+from collections.abc import Iterable, Iterator
 from enum import StrEnum
 from typing import (
     TYPE_CHECKING,
@@ -14,6 +16,8 @@ from typing import (
 )
 
 from pydantic import BaseModel, field_validator
+
+from livn.utils import Jsonable
 
 if TYPE_CHECKING:
     import gymnasium
@@ -169,7 +173,40 @@ class System(Protocol):
         post: PostSynapticPopulationName,
         all: bool = True,
     ) -> list[tuple[int, tuple[list[int], Projection]]]:
-        """Edges onto ``post`` from ``pre`` as ``(post_gid, (pre_gids, projection))``"""
+        """Edges onto ``post`` from ``pre`` as ``(post_gid, (pre_gids, projection))``
+
+        Every rank gets every edge. Prefer :meth:`edges`, which is scoped to the
+        cells a rank actually builds.
+        """
+        ...
+
+    def placement(
+        self, population: PopulationName, gids: Iterable[int]
+    ) -> dict[int, tuple[Array, Array, Array]]:
+        """Where each synapse sits on the cell that owns it.
+
+        ``{gid: (syn_ids, swc_types, syn_locs)}`` for ``gids``, each triple sorted
+        by ``syn_id`` with duplicates dropped (a repeated id keeps its last site).
+
+        May be collective, so a caller iterating populations has to call it for
+        every population on every rank, including where ``gids`` is empty.
+        """
+        ...
+
+    def edges(
+        self,
+        pre: PreSynapticPopulationName,
+        post: PostSynapticPopulationName,
+        gids: Iterable[int],
+    ) -> Iterator[tuple[int, tuple[Array, Projection]]]:
+        """Edges of one projection onto ``gids``.
+
+        Yields ``(post_gid, (pre_gids, projection))`` for the postsynaptic cells
+        in ``gids`` that this projection reaches, with ``projection`` carrying the
+        ``"Synapses"`` (``syn_id``) and ``"Connections"`` (``distance``) namespaces.
+
+        May be collective, call it for every ``(pre, post)`` pair on every rank.
+        """
         ...
 
     def connectivity_matrix(
@@ -267,6 +304,50 @@ class Capability(StrEnum):
     """Delivers an ``extracellular`` (mV) stimulus."""
 
 
+def _describe(obj) -> dict | None:
+    """``{"cls", "kwargs"}`` for a system, model or io."""
+    if obj is None:
+        return None
+    return {
+        "cls": f"{type(obj).__module__}.{type(obj).__qualname__}",
+        "kwargs": obj.serialize(),
+    }
+
+
+def _build(described):
+    """Rebuild :func:`_describe`d."""
+    if described is None:
+        return None
+    if isinstance(described, (list, tuple)):
+        path, kwargs = [*list(described), {}][:2]
+        described = {"cls": path, "kwargs": kwargs}
+    if not isinstance(described, dict) or "cls" not in described:
+        raise ValueError(
+            f"expected {{'cls': ..., 'kwargs': ...}} naming what to build, got "
+            f"{described!r}"
+        )
+
+    from livn.utils import import_object_by_path
+
+    return import_object_by_path(described["cls"])(**(described.get("kwargs") or {}))
+
+
+def _is_the_systems_own_io(system, io) -> bool:
+    if io is None:
+        return True
+
+    import json
+
+    from livn.utils import serialize as _default
+
+    def rendered(value):
+        return json.dumps(_describe(value), default=_default, sort_keys=True)
+
+    with contextlib.suppress(Exception):
+        return rendered(system.default_io()) == rendered(io)
+    return False
+
+
 @runtime_checkable
 class Env(Protocol):
     """Protocol defining the interface for livn environments"""
@@ -291,62 +372,6 @@ class Env(Protocol):
         self.model.apply_defaults(self, weights=weights, noise=noise)
 
         return self
-
-    def apply_default_params(self, group: str | None = None, strict: bool = False):
-        import warnings
-
-        system = getattr(self, "system", None)
-        selection_name = getattr(self, "selection_name", None)
-
-        source, document = (None, None)
-        if system is not None and hasattr(system, "params_document"):
-            source, document = system.params_document(
-                selection_name, comm=getattr(self, "comm", None)
-            )
-
-        if document is None:
-            return self.apply_model_defaults()
-
-        key = self.model.params_key()
-        if key not in document:
-            return self.apply_model_defaults()
-
-        groups = document[key]
-        name = group or "default"
-        if name not in groups:
-            raise KeyError(
-                f"{source} has no parameter group {name!r} for "
-                f"{key}; available: {', '.join(sorted(groups)) or 'none'}"
-            )
-        entry = groups[name]
-        params = entry.get("params", entry) if isinstance(entry, dict) else entry
-
-        if hasattr(self, "admissible_params"):
-            admissible = self.admissible_params()
-            known = set().union(
-                *(
-                    set(admissible.get(g) or ())
-                    for g in ("weights", "mechanisms", "noise")
-                )
-            )
-            unknown = sorted(
-                k
-                for k in params
-                if k not in known
-                and not k.startswith("cells-")
-                and not k.startswith("io-")
-            )
-            if unknown:
-                complaint = (
-                    f"{source} names {len(unknown)} parameter(s) this "
-                    f"network has nothing for, which `set_params` drops "
-                    f"silently: {unknown}"
-                )
-                if strict:
-                    raise RuntimeError(complaint)
-                warnings.warn(complaint, stacklevel=2)
-
-        return self.set_params(dict(params))
 
     def cell_stimulus(
         self,
@@ -491,7 +516,116 @@ class Env(Protocol):
                 )
             self.io.set_params(io)
 
+        # remember what was applied
+        applied = {**getattr(self, "_applied_params", {}), **params}
+        self._applied_params = applied
+        if env is not self:
+            env._applied_params = applied
+
         return env
+
+    @property
+    def applied_params(self) -> dict:
+        return dict(getattr(self, "_applied_params", {}))
+
+    def serialize(self) -> dict:
+        system = self.system
+        io = getattr(self, "io", None)
+        return {
+            "system": _describe(system),
+            "model": _describe(self.model),
+            "io": None if _is_the_systems_own_io(system, io) else _describe(io),
+            "selection": getattr(self, "selection_name", None),
+            "params": self.applied_params,
+            "meta": dict(getattr(self, "meta", {}) or {}),
+        }
+
+    as_json = Jsonable.as_json
+
+    def save(self, path: str) -> str:
+        if os.path.isdir(path) or not path.endswith(".json"):
+            os.makedirs(path, exist_ok=True)
+            path = os.path.join(path, "env.json")
+
+        document = self.serialize()
+
+        system = document.get("system") or {}
+        uri = (system.get("kwargs") or {}).get("uri")
+        if isinstance(uri, str):
+            here = os.path.dirname(os.path.abspath(path))
+            absolute = os.path.abspath(uri)
+            if os.path.commonpath([here, absolute]) == here:
+                system["kwargs"]["uri"] = os.path.relpath(absolute, here)
+            else:
+                system["kwargs"]["uri"] = absolute
+
+        import json
+
+        from livn.utils import serialize as _default
+
+        with open(path, "w") as f:
+            json.dump(document, f, default=_default, indent=2)
+        return path
+
+    @staticmethod
+    def document(source) -> dict:
+        import json
+
+        if not isinstance(source, (str, os.PathLike)):
+            return dict(source)
+
+        path = os.fspath(source)
+        if os.path.isdir(path):
+            path = os.path.join(path, "env.json")
+        if not path.endswith(".json"):
+            return json.loads(path)
+
+        with open(path) as f:
+            document = json.load(f)
+
+        here = os.path.dirname(os.path.abspath(path))
+        kwargs = (document.get("system") or {}).get("kwargs") or {}
+        uri = kwargs.get("uri")
+        if isinstance(uri, str) and not os.path.isabs(uri):
+            kwargs["uri"] = os.path.normpath(os.path.join(here, uri))
+        return document
+
+    @staticmethod
+    def stored_params(source) -> dict:
+        if source is None:
+            return {}
+        try:
+            return dict(Env.document(source).get("params") or {})
+        except (OSError, ValueError):
+            return {}
+
+    @classmethod
+    def from_json(cls, serialized, selection=None, **kwargs) -> Env:
+        document = cls.document(serialized)
+
+        system = _build(document.get("system"))
+        if system is None:
+            raise ValueError("an env document has to name a system")
+
+        env = cls(
+            system,
+            model=_build(document.get("model")),
+            io=_build(document.get("io")),
+            **kwargs,
+        )
+        env.meta = dict(document.get("meta") or {})
+
+        selection = selection if selection is not None else document.get("selection")
+        if selection is not None:
+            env = env.selection(selection) or env
+        env = env.init() or env
+
+        params = document.get("params")
+        return env.set_params(dict(params)) if params else env
+
+    @classmethod
+    def from_directory(cls, directory: str, **kwargs) -> Env:
+        return cls.from_json(os.path.join(directory, "env.json"), **kwargs)
 
     def active_populations(self) -> list[str]:
         ignored: set[str] = set()
@@ -889,9 +1023,26 @@ class Model(Protocol):
         """Name a config section resolves to in weight and `cells-` keys."""
         return section
 
-    def params_key(self) -> str:
-        """Key under which this model's parameter sets are stored."""
-        return type(self).__name__
+    def serialize(self) -> dict:
+        import inspect
+
+        kwargs = {}
+        for name, parameter in inspect.signature(
+            type(self).__init__
+        ).parameters.items():
+            if name == "self" or parameter.kind in (
+                parameter.VAR_POSITIONAL,
+                parameter.VAR_KEYWORD,
+            ):
+                continue
+            if not hasattr(self, name):
+                raise NotImplementedError(
+                    f"{type(self).__name__} takes {name!r} but does not keep it "
+                    f"under that name, so it cannot be serialized by reading its "
+                    f"attributes back; give {type(self).__name__} a `serialize`"
+                )
+            kwargs[name] = getattr(self, name)
+        return kwargs
 
     def apply_defaults(self, env, weights: bool = True, noise: bool = True):
         if weights:

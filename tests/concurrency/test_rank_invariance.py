@@ -5,9 +5,9 @@ import pytest
 
 from livn.backend import backend
 from livn.run import Run
-from livn.system import System
+from livn.system import resolve
 from livn.utils import P
-from testing import livn_test_env, livn_test_system
+from testing import livn_test_env, livn_test_h5_system
 
 try:
     import mpi4py  # noqa: F401
@@ -147,11 +147,11 @@ def test_utils_reduce_sum_parallel(mpiexec_n):
 @pytest.mark.mpiexec(timeout=60)
 @pytest.mark.parametrize("mpiexec_n", [1, 2])
 def test_every_rank_sees_the_whole_coordinate_set(mpiexec_n):
-    system = System(livn_test_system())
+    system = resolve(livn_test_h5_system())
 
     cc = np.asarray(system.neuron_coordinates)
 
-    from livn.system import (
+    from livn.system.neuroh5 import (
         _h5_read_cell_attributes_tuple,
         _h5_read_population_names,
         _h5_read_population_ranges,

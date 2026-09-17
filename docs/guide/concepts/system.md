@@ -2,9 +2,9 @@
 
 A **system** in livn defines the physical architecture of an in vitro neural network: the neuron positions, cell populations, connectivity, and synaptic structure. It is the static substrate on which [models](/guide/concepts/model) define dynamics and [IO](/guide/concepts/io) devices interface with the outside world.
 
-## Predefined systems
+## Hosted systems
 
-livn ships a series of 2D cultures, plus a hippocampal slice model, hosted on [Hugging Face](https://huggingface.co/datasets/livn-org/livn) and loaded by name:
+livn's [Hugging Face](https://huggingface.co/datasets/livn-org/livn) hosts a number of neuroh5 graphs:
 
 | Name | Neurons | EXC / INH | E→E | I→E | E→I | Description |
 |------|---------|-----------|-----|-----|-----|-------------|
@@ -14,59 +14,24 @@ livn ships a series of 2D cultures, plus a hippocampal slice model, hosted on [H
 | `EI` | 2,608 | 1306 / 1302 | 9.8 | 39.9 | 4.0 | Balanced |
 | `CA1` | ~10,000 | 15 cell types | | | | Hippocampal CA1 model |
 
-
-### Reading a name
-
-A culture's name states its excitatory-to-inhibitory ratio, with inhibition fixed at 1:
-
-| Name | Ratio | Inhibitory share |
-|------|-------|------------------|
-| `E` | 1:0 | none |
-| `E5I` | 5:1 | 17% |
-| `E3I` | 3:1 | 25% |
-| `EI` | 1:1 | 50% |
-
-The number always follows `E`, never `I`, so `E3I` is three parts excitatory to one part inhibitory.
-
-`systems.naming` parses this convention:
-
-```python
-from systems.naming import composition_of, ratios
-
-composition_of("E3I")   # (3.0, 1.0)
-ratios("E3I")           # {'EXC': 0.75, 'INH': 0.25}
-```
-
-### Replicates
-
-Each culture has a second draw under a `_b` suffix (e.g. `EI_b`) built from the same configuration with a different RNG seed. Two systems of one composition are statistically identical replicates, so a target may be fitted on either and the spread between them is the network's sensitivity to the draw.
-
-### Scale
-
-Every culture carries one stored spatial subselection, `e1`, cut from a 250 um box at its centre (about 30 cells) for tests and smoke runs.
-
 ### Loading a system
 
 ```python
-from livn.system import predefined, make
+from livn.env import Env
+from livn.system import NeuroH5System, fetch
 
-# Download and return the path to a predefined system
-system_path = predefined("EI")
-
-# Or use make() which returns a System object directly
-system = make("EI")
+system = NeuroH5System(fetch("CA1"))   # downloads once into ./systems/graphs/
+env = Env(system).init()
 ```
-
-Systems are cached locally in `./systems/graphs/` after the first download.
 
 ## The `System` class
 
 The `System` class provides access to all structural properties of a neural system:
 
 ```python
-from livn.system import System
+from livn.system import NeuroH5System
 
-system = System("./systems/graphs/EI")
+system = NeuroH5System("./systems/graphs/EI")
 
 # Cell populations
 system.populations          # ['EXC', 'INH']
@@ -192,11 +157,11 @@ Systems are stored on disk as a directory containing:
 | `cells.h5` (or `graph.h5`) | Neuron coordinates and synapse attributes in NeuroH5 format |
 | `connections.h5` (or `graph.h5`) | Synaptic projections between populations |
 | `graph.json` | System metadata (architecture, connectivity config, element provenance) |
-| `provenance.json` | How the graph was built: seed, kernel, in-degrees, degree rule, and the superset it was thinned from |
+| `provenance.json` | How the graph was built: seed, kernel, in-degrees, degree rule |
 | `mea.json` | Default IO device configuration (optional) |
 | `model.json` | Default model configuration (optional) |
 | `selection/<name>.json` | Stored subselections, as resolved cell ids (optional) |
-| `params/<selection>.json` | Tuned parameters per selection, `default.json` for the whole system (optional) |
+| `env.json` | The configured env built on it: model, io and fitted parameters (optional) |
 
 
 ## Default model and IO
@@ -204,21 +169,19 @@ Systems are stored on disk as a directory containing:
 Each system can specify default configurations:
 
 ```python
-system = System("./systems/graphs/EI")
+system = NeuroH5System(...)
 
 model = system.default_model()       # e.g., ReducedCalciumSomaDendrite
 io = system.default_io()             # e.g., MEA with stored electrode layout
 ```
-
-These are used automatically by `livn.make()`.
 
 ## Subselections
 
 `env.selection(name)` builds only part of a system:
 
 ```python
-env = Env("./systems/graphs/EI")
-env.selection("e1")   # ~30 cells instead of 2600
+env = Env("./systems/graphs/CA1")
+env.selection("e1")
 env.init()
 ```
 
@@ -236,32 +199,30 @@ Even so, a subselection is a different network. For example, on `EI`, the rungs 
 
 ## Tuned parameters
 
-A system ships its tuned parameters under `params/`, keyed by the model and by which selection is in force. Applying them is a method on the environment, because the choice depends on what was actually built:
+Parameters are not a property of a system. The same graph fitted with a different model, or on a different subset of its cells, yields a different set of numbers. You can load them from a env document:
 
 ```python
-env = Env("./systems/graphs/EI").init()
-env.apply_default_params()                  # the whole system
-```
+from livn.env import Env
 
-```python
-env = Env("./systems/graphs/E")
-env.selection("e1")                          # a stored subselection
-env.init()
-env.apply_default_params()                   # -> params/e1.json
+env = Env.from_json("./systems/graphs/EI/env.json")
 ```
-
-Each file holds one block per model and one named group per promoted solution:
 
 ```json
 {
-  "ReducedCalciumSomaDendrite": {
-    "default": {"params": {"EXC_EXC-dend-AMPA-weight": 0.31, "noise-g_e0": 1.0},
-                "meta": {"loc": 7, "retained_in_degree": 0.624}}
-  }
+  "system": {"cls": "livn.system.Monolayer", "kwargs": {"total_cells": 650, "...": "..."}},
+  "model":  {"cls": "livn.models.rcsd.ReducedCalciumSomaDendrite", "kwargs": {}},
+  "io":     null,
+  "selection": null,
+  "params": {"EXC_EXC-dend-AMPA-weight": 0.31, "noise-g_e0": 1.0},
+  "meta":   {"loc": 7, "retained_in_degree": 0.624}
 }
 ```
 
-Pass `group=` to pick a different one. When a system ships nothing, the model's own built-in defaults apply instead.
+Any env can write one:
+
+```python
+env.save("./runs/bursting")     # -> ./runs/bursting/env.json
+```
 
 ## Custom systems
 

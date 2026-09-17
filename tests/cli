@@ -15,9 +15,9 @@ Options for 'fast':
 
 Options for 'verify' / 'test':
   --backend <diffrax|neuron|brian2|native|none|all>  Backend to test (default: all)
-  --system  <path>        Path to test system (default: ./systems/graphs/EI)
-  --selection <name>      Subselection within it (default: e1, ~30 cells, when
-                          --system is left at its default; empty otherwise)
+  --system  <path>        Test system: a graph directory, or a JSON spec
+                          (default: ./testing/culture.json, a 40-cell culture)
+  --selection <name>      Subselection within it
   --tier <name>           Only one tier (unit|contract|concurrency|gradients)
   --skip-tier <name>      Every tier but this one; repeatable
   --slow                  Include the long reference comparisons
@@ -136,8 +136,7 @@ case "$cmd" in
     done
 
     if [[ -z "$system" ]]; then
-      system="./systems/graphs/EI"
-      $selection_given || selection="e1"
+      system="./testing/culture.json"
     fi
 
     export LIVN_TEST_SYSTEM="$system"

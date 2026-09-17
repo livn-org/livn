@@ -330,6 +330,14 @@ class P:
         return MPI.COMM_WORLD
 
     @staticmethod
+    def self_comm():
+        try:
+            from mpi4py import MPI
+        except ImportError:
+            return None
+        return MPI.COMM_SELF
+
+    @staticmethod
     def is_root(root: int = 0, comm: MPI.Intracomm | None = None):
         root = int(root)
         if root < 0:

@@ -101,15 +101,15 @@ def test_point_to_point_traffic_is_not_compared():
 def test_the_tracer_sees_livn_s_own_collectives():
     from mpi4py import MPI
 
-    from livn.system import System
-    from testing import livn_test_system
+    from livn.system import resolve
+    from testing import livn_test_h5_system
     from testing.collectives import tracer
 
     comm = MPI.COMM_WORLD
     tracer.watch(("livn",))
     tracer.start_test("sees-livn")
 
-    system = System(livn_test_system())
+    system = resolve(livn_test_h5_system())
     assert system.populations
 
     trace = tracer.finish_test()
@@ -126,7 +126,7 @@ def test_the_tracer_sees_livn_s_own_collectives():
         f"split is a collective too: {sorted(set(operations))}"
     )
 
-    from livn.system import _H5_BACKEND
+    from livn.system.neuroh5 import _H5_BACKEND
 
     if _H5_BACKEND == "neuroh5" and comm.rank == 0:
         opaque = [record.op for record in tracer.opaque_trace()]
@@ -136,7 +136,7 @@ def test_the_tracer_sees_livn_s_own_collectives():
         )
 
     sites = {record.site for record in everything}
-    assert any(site.startswith("src/livn/system.py:") for site in sites), (
+    assert any(site.startswith("src/livn/system/") for site in sites), (
         f"sites are not repo-relative, so ranks would spell them differently: {sites}"
     )
 

@@ -3,13 +3,13 @@ from livn.backend.config import backend
 
 _MISSING = {
     "neuron": (
-        ("neuron", "mpi4py", "neuroh5", "h5py"),
-        "the NEURON backend is not installed. It needs MPI, a parallel HDF5 "
-        "and neuroh5:\n"
+        ("neuron", "mpi4py"),
+        "the NEURON backend is not installed. It needs MPI and NEURON:\n"
         "    git clone https://github.com/livn-org/livn.git\n"
         "    cd livn && uv sync --group neuron\n"
         "See https://livn-org.github.io/livn/installation/ for the system "
-        "packages to install first.",
+        "packages to install first. Reading a NeuroH5 system at CA1 scale "
+        "additionally requires `--group neuroh5`.",
     ),
     "brian2": (
         ("brian2", "cleo", "cleosim"),

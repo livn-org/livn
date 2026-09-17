@@ -18,9 +18,9 @@ pytestmark = pytest.mark.skipif(
 def _env(electrodes=None):
     pytest.importorskip("livn")
     from livn.io import MEA
-    from livn.system import System
+    from livn.system import resolve
 
-    xyz = np.asarray(System(os.environ["LIVN_TEST_SYSTEM"]).neuron_coordinates)[:, 1:]
+    xyz = np.asarray(resolve(os.environ["LIVN_TEST_SYSTEM"]).neuron_coordinates)[:, 1:]
     if electrodes is None:
         near = [xyz[:, 0].min() - 50.0, xyz[:, 1].mean(), xyz[:, 2].mean()]
         far = [xyz[:, 0].max() + 5000.0, xyz[:, 1].mean(), xyz[:, 2].mean()]

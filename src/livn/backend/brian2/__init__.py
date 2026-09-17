@@ -17,8 +17,7 @@ if TYPE_CHECKING:
     from mpi4py import MPI
 
     from livn.io import IO
-    from livn.system import System
-    from livn.types import Model
+    from livn.types import Model, System
 
 
 def _population_parameters(group) -> list[str]:

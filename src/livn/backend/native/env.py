@@ -18,19 +18,19 @@ from livn.run import Run
 from livn.stimulus import Stimulus, check_bounds, chunk_bytes
 from livn.types import Capability
 from livn.types import Env as EnvProtocol
-from livn.utils import NOISE_STREAM_STRIDE
+from livn.utils import NOISE_STREAM_STRIDE, P
 
 if TYPE_CHECKING:
     from mpi4py import MPI
 
     from livn.io import IO
-    from livn.system import System
-    from livn.types import Model
+    from livn.types import Model, System
 
 logger = logging.getLogger(__name__)
 logger.setLevel(os.getenv("LIVN_NATIVE_LOGGING", "WARNING"))
 
 DEFAULT_DT = 0.025
+
 NOISE_H = 0.025  # Gfluct3's update interval parameter
 
 SUPPORTED_MODES = ("extracellular", "current", "current_density", "irradiance")
@@ -231,7 +231,7 @@ class Env(EnvProtocol):
         self.seed = seed
         self.comm = comm
         self.subworld_size = subworld_size
-        self.system = resolve(system, comm=comm)
+        self.system = resolve(system, comm=P.self_comm())
         self.model = (
             model if model is not None else self.system.default_model(comm=comm)
         )

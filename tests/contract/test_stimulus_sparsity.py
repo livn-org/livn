@@ -39,9 +39,9 @@ def _close_envs():
 def _env(reach=1e9):
     pytest.importorskip("livn")
     from livn.io import MEA
-    from livn.system import System
+    from livn.system import resolve
 
-    xyz = np.asarray(System(os.environ["LIVN_TEST_SYSTEM"]).neuron_coordinates)[:, 1:]
+    xyz = np.asarray(resolve(os.environ["LIVN_TEST_SYSTEM"]).neuron_coordinates)[:, 1:]
     centre = [xyz[:, 0].min() - 100.0, xyz[:, 1].mean(), xyz[:, 2].mean()]
     env = livn_test_env(io=MEA([[0, *centre]], input_radius=reach, output_radius=reach))
     env.selection(CELLS)

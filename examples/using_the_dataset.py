@@ -9,7 +9,7 @@ import numpy as np
 from datasets import load_dataset
 
 from livn.io import MEA
-from livn.system import make
+from livn.system import NeuroH5System, fetch
 
 system_name = "S1"
 
@@ -19,8 +19,7 @@ sample = dataset["train_with_noise"][0]
 it = sample["trial_it"][0]
 t = sample["trial_t"][0]
 
-# use a multi-electrode array to 'observe' the data
-system = make(system_name)
+system = NeuroH5System(fetch(system_name))
 mea = MEA.from_directory(system.uri)
 
 features = sample["features"]

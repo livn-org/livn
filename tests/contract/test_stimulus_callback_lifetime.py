@@ -58,14 +58,14 @@ def test_the_pulse_arrives_at_the_same_time_on_every_run(env):
 
     control = run(None)
 
-    peaks = []
+    starts = []
     for _ in range(4):
         evoked = run(_pulse(env, duration, onset)) - control
         if evoked.max() <= 0:
             pytest.skip("this system does not spike under the probe stimulus")
-        peaks.append(float(bins[int(np.argmax(evoked))]))
+        starts.append(float(bins[int(np.argmax(evoked > 0))]))
 
-    assert peaks == [onset] * 4, (
-        f"the response moved across runs: {peaks} (pulse at {onset} ms). "
+    assert starts == [onset] * 4, (
+        f"the response began at {starts} for a pulse at {onset} ms. "
         "Stimulus callbacks are accumulating, so the array plays fast."
     )

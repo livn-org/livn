@@ -234,6 +234,9 @@ class IO(Jsonable):
             os.path.join(directory, cls.__name__.lower() + ".json"), comm=comm
         )
 
+    def serialize(self) -> dict:
+        return {}
+
     def parameter_children(self) -> dict:
         return {}
 

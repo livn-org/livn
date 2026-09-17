@@ -119,9 +119,9 @@ The cultures ship without an array so that the recording setup stays a choice of
 
 ```python
 from livn.io import MEA, electrode_array_coordinates_for_area
-from livn.system import System
+from livn.system import NeuroH5System
 
-system = System("./systems/graphs/EI")
+system = NeuroH5System("./systems/graphs/EI")
 (xmin, ymin, _), (xmax, ymax, _) = system.bounding_box
 
 mea = MEA(electrode_array_coordinates_for_area(200, ((xmin, ymin), (xmax, ymax))))

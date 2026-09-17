@@ -6,7 +6,7 @@ from machinable import Interface
 from miv_simulator.spikedata import read_spike_events
 from pydantic import BaseModel, ConfigDict, Field
 
-from livn.system import read_cells_meta_data
+from livn.system.neuroh5 import read_cells_meta_data
 
 
 def neuroh5_to_parquet(neuroh5_file: str, output_filepath: str | None = None) -> str:

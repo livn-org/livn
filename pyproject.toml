@@ -47,6 +47,8 @@ build-backend = "hatchling.build"
 neuron = [
     "mpi4py>=4.0.0",
     "neuron>=9.0.0",
+]
+neuroh5 = [
     "neuroh5",
 ]
 dev = [
@@ -85,6 +87,7 @@ members = ["systems", "benchmarks", "optimization"]
 [tool.hatch.build.targets.wheel]
 packages = ["src/livn"]
 exclude = ["src/livn/backend/native/csrc"]
+artifacts = ["src/livn/system/predefined/*.json"]
 
 [tool.hatch.build.targets.wheel.hooks.custom]
 path = "hatch_build.py"

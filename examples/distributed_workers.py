@@ -16,13 +16,13 @@ import numpy as np
 from livn.decoding import ChannelRecording
 from livn.env.distributed import DistributedEnv
 from livn.io import MEA, electrode_array_coordinates_for_area
-from livn.system import System
+from livn.system import NeuroH5System
 from livn.types import Encoding
 
 SYSTEM = "./systems/graphs/EI"
 
 # the cultures ship without an array, so mount one over the system's extent
-(xmin, ymin, _), (xmax, ymax, _) = System(SYSTEM).bounding_box
+(xmin, ymin, _), (xmax, ymax, _) = NeuroH5System(SYSTEM).bounding_box
 mea = MEA(electrode_array_coordinates_for_area(400, ((xmin, ymin), (xmax, ymax))))
 
 

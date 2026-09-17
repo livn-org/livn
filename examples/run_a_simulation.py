@@ -10,12 +10,11 @@ import numpy as np
 
 from livn.env import Env
 from livn.policy import PulseSweepPolicy
-from livn.system import predefined
+from livn.system import Monolayer
 
 ELECTRODE = 0
 
-env = Env(predefined("EI")).init()
-env.apply_default_params()
+env = Env(Monolayer(total_cells=650)).init().apply_model_defaults()
 env.record_spikes()
 
 policy = PulseSweepPolicy(

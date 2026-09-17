@@ -295,10 +295,10 @@ my_system/
 └── mea.json          # MEA electrode coordinates (optional)
 ```
 
-This directory can be passed directly to `Env()` or `System()`:
+This directory can be passed directly to `Env()` or `NeuroH5System()`:
 
 ```python
-from livn.system import System
-system = System("./my_system")
+from livn.system import NeuroH5System
+system = NeuroH5System("./my_system")
 print(system.num_neurons, system.populations)
 ```

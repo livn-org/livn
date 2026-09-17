@@ -177,24 +177,13 @@ class SynapseBuilder:
         out: dict[int, dict[int, tuple[int, float]]] = {}
         if not local_gids:
             return out
-        endpoints = 0
-        for gid, attrs in self.system.synapses(population, node_allocation=local_gids):
-            syn_ids = np.asarray(attrs["syn_ids"])
-            swc = np.asarray(attrs["swc_types"])
-            locs = np.asarray(attrs["syn_locs"])
-            endpoints += int(((locs <= 0.0) | (locs >= 1.0)).sum())
+        for gid, (syn_ids, swc, locs) in self.system.placement(
+            population, local_gids
+        ).items():
             out[int(gid)] = {
                 int(syn_ids[i]): (int(swc[i]), float(locs[i]))
                 for i in range(len(syn_ids))
             }
-        if endpoints:
-            logger.warning(
-                "%s: %d synapse site(s) are recorded at section position 0 or 1, "
-                "which cannot hold an ion mechanism; they were moved to the "
-                "nearest segment centre",
-                population,
-                endpoints,
-            )
         return out
 
     def _mech_specs(self, active: dict) -> list:
@@ -280,8 +269,8 @@ class SynapseBuilder:
                 default_specs = specs_by_swc.get(None)
                 sel = None if (is_input or self._microcircuit_inputs) else selected
 
-                for post_gid, (pre_gids, projection) in self.system.projection_array(
-                    pre, post
+                for post_gid, (pre_gids, projection) in self.system.edges(
+                    pre, post, set(cells.keys())
                 ):
                     post_gid = int(post_gid)
                     if post_gid not in cells:

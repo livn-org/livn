@@ -2,26 +2,29 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
-import pathlib
 import random
 import warnings
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from functools import cached_property
-from typing import (
-    TYPE_CHECKING,
-    Any,
-)
+from typing import TYPE_CHECKING, Any
 
 import numpy
 import pyfive
-from pydantic import BaseModel
 
 from livn import types
 from livn.backend import backend
+from livn.system._common import (
+    CellsMetaData,
+    Element,
+    Projection,
+    Tree,
+    _placement_rows,
+    resolve_selection,
+)
 from livn.utils import (
     P,
-    download_directory,
     import_object_by_path,
     load_file,
     sentinel,
@@ -33,6 +36,8 @@ if TYPE_CHECKING:
     from livn.io import IO
     from livn.types import Model
 
+logger = logging.getLogger(__name__)
+
 _USES_JAX = False
 
 if "ax" in backend():
@@ -41,6 +46,7 @@ if "ax" in backend():
     _USES_JAX = True
 else:
     import numpy as np
+
 
 _H5_BACKEND = "pyfive"  # default
 
@@ -63,325 +69,6 @@ if os.environ.get("LIVN_HSDS"):
         pass
 
 _HAS_NEUROH5 = _H5_BACKEND == "neuroh5"
-
-
-class CellsMetaData(BaseModel):
-    """Cells metadata"""
-
-    population_names: list[types.PopulationName]
-    population_ranges: dict[types.PopulationName, tuple[int, int]]
-    cell_attribute_info: dict[types.PopulationName, dict[str, list[str]]]
-
-    def has(self, population: types.PopulationName, attribute: str) -> bool:
-        return attribute in self.cell_attribute_info.get(population, {})
-
-    def population_count(self, population: types.PopulationName) -> int:
-        return self.population_ranges[population][1]
-
-    def cell_count(self) -> int:
-        """Return the total number of cells across all populations."""
-        return sum(
-            self.population_count(population) for population in self.population_names
-        )
-
-
-class Tree(BaseModel):
-    """Tree"""
-
-
-class Projection(BaseModel):
-    """Projection"""
-
-
-class Element(BaseModel):
-    uuid: str = str | None
-    kind: str = "Element"
-    module: str | None = None
-    version: list[str | dict] = []
-    config: dict | None = None
-    predicate: dict | None = None
-    context: dict | None = None
-    lineage: tuple[str, ...] = ()
-
-
-def fetch(
-    source: str,
-    directory: str = ".",
-    name: str | None = None,
-    force: bool = False,
-    comm: MPI.Intracomm | None = None,
-):
-    target = None
-    comm = P.comm(comm)
-    if comm is not None and comm.Get_rank() != 0:
-        # await download on 0
-        return comm.bcast(target)
-
-    if name is None:
-        import fsspec
-
-        parsed = fsspec.utils.infer_storage_options(source).get("path", "")
-        name = os.path.basename(parsed.rstrip("/"))
-        if not name:
-            raise ValueError("Could not infer system name from source")
-
-    target = os.path.join(directory, "systems", "graphs", name)
-
-    if force or not os.path.isdir(target):
-        download_directory(source, target, force=force)
-
-    if comm is not None:
-        comm.bcast(target)
-
-    return target
-
-
-CULTURES = ("E", "E_b", "E5I", "E5I_b", "E3I", "E3I_b", "EI", "EI_b")
-LEGACY = ("EI1", "EI2", "EI3", "EI4")
-PREDEFINED = (
-    *CULTURES,
-    *[f"S{s + 1}" for s in range(4)],
-    "CA1",
-    "CA1d",
-    *LEGACY,
-)
-
-
-def predefined(name: str = "EI", download_directory: str = ".", force: bool = False):
-    if name not in PREDEFINED:
-        available = [n for n in PREDEFINED if n not in LEGACY]
-        raise ValueError(f"'{name}' is invalid, pick one of ", available)
-
-    return fetch(
-        source=f"hf://datasets/livn-org/livn/systems/graphs/{name}",
-        directory=download_directory,
-        name=name,
-        force=force,
-    )
-
-
-def make(name: str = "EI") -> System:
-    system = predefined(name)
-
-    return System(system)
-
-
-def resolve(
-    spec: System | ParallelSystem | str | int,
-    comm: MPI.Intracomm | None = None,
-) -> System | ParallelSystem:
-    """Resolve an ``Env(system=...)`` argument into a system object.
-
-    ``int`` -> :class:`ParallelSystem` with that many unconnected cells,
-    ``{population: count}`` -> :class:`ParallelSystem` over those populations,
-    ``str`` -> :class:`System` loaded from that directory,
-    anything else is assumed to satisfy the :class:`livn.types.System` protocol
-    and is returned unchanged.
-    """
-    if isinstance(spec, bool):
-        raise TypeError("system must be an int, a path or a System, not a bool")
-    if isinstance(spec, (int, numpy.integer, Mapping)):
-        return ParallelSystem(spec, comm=comm)
-    if isinstance(spec, (str, os.PathLike)):
-        return System(os.fspath(spec), comm=comm)
-    if not hasattr(spec, "populations"):
-        raise TypeError(
-            f"cannot resolve {type(spec).__name__} into a system; expected a number "
-            "of neurons, a system directory, or an object implementing the System "
-            "protocol"
-        )
-    return spec
-
-
-def resolve_selection(
-    system,
-    spec,
-    populations: Sequence[str] | None = None,
-    seed: int | None = 123,
-    method: str = "first",
-    bounds=None,
-) -> dict[str, Any] | None:
-    if isinstance(spec, str):
-        if bounds is not None or method not in ("first", None):
-            raise ValueError(
-                f"selection({spec!r}) names a stored selection, which already "
-                f"fixes which cells are built; method={method!r}/bounds= would "
-                "contradict it"
-            )
-        gids = system.selection_document(spec).get("gids")
-        if not isinstance(gids, dict) or not gids:
-            raise ValueError(
-                f"selection {spec!r} has no `gids` block; a stored selection "
-                "holds the resolved gids per population"
-            )
-        spec = {p: sorted(int(g) for g in v) for p, v in gids.items()}
-
-    names = system.populations if populations is None else populations
-    ranges = system.cells_meta_data.population_ranges
-
-    coordinates = None
-    if method == "patch":
-        coordinates = {p: system.coordinate_array(p) for p in names if p in ranges}
-
-    return selection_from_ranges(
-        ranges,
-        spec,
-        populations=names,
-        seed=seed,
-        method=method,
-        coordinates=coordinates,
-        bounds=bounds,
-    )
-
-
-def selection_from_ranges(
-    ranges: dict[types.PopulationName, tuple[int, int]],
-    spec,
-    populations: Sequence[str] | None = None,
-    seed: int | None = 123,
-    method: str = "first",
-    coordinates: dict[str, Any] | None = None,
-    bounds=None,
-) -> dict[str, Any] | None:
-    """Resolve a subselection spec against ``{population: (start, count)}`` ranges."""
-    if spec is None and bounds is None:
-        return None
-
-    # deliberately real numpy since selections index host-side gid arrays and must
-    # not depend on whichever array library the active backend pulled in
-    import numpy as npn
-
-    if populations is None:
-        populations = list(ranges.keys())
-    pops = [p for p in populations if p in ranges]
-
-    if bounds is not None and method != "patch":
-        raise ValueError(
-            f"bounds= is only meaningful for method='patch', got {method!r}"
-        )
-
-    if method == "patch" and isinstance(spec, dict):
-        offenders = [
-            p for p, v in spec.items() if not isinstance(v, (list, tuple, npn.ndarray))
-        ]
-        if offenders:
-            raise ValueError(
-                "method='patch' resolves one box for every population, so a "
-                f"per-population count is ambiguous (got {offenders}); pass a "
-                "float area fraction, an int cell budget, or bounds="
-            )
-
-    elif method == "patch":
-        if coordinates is None:
-            raise ValueError(
-                "method='patch' needs cell coordinates; use System.selection or "
-                "ParallelSystem.selection, which supply them"
-            )
-
-        table: dict[str, Any] = {}
-        for p in pops:
-            c = coordinates.get(p)
-            if c is None:
-                continue
-            c = npn.asarray(c, dtype=npn.float64)
-            if c.ndim == 2 and len(c):
-                table[p] = c
-        if not table:
-            return {}
-
-        stacked = npn.vstack(list(table.values()))
-        lo, hi = stacked[:, 1:3].min(axis=0), stacked[:, 1:3].max(axis=0)
-        centre = (lo + hi) / 2.0
-
-        if bounds is not None:
-            (x0, y0), (x1, y1) = bounds
-            box_lo = npn.array([min(x0, x1), min(y0, y1)], dtype=npn.float64)
-            box_hi = npn.array([max(x0, x1), max(y0, y1)], dtype=npn.float64)
-        elif isinstance(spec, float):
-            if spec <= 0:
-                return {}
-            if spec >= 1:
-                box_lo, box_hi = lo, hi
-            else:
-                half = (hi - lo) * npn.sqrt(spec) / 2.0
-                box_lo, box_hi = centre - half, centre + half
-        else:
-            k = min(int(spec), len(stacked))
-            if k <= 0:
-                return {}
-            d2 = ((stacked[:, 1:3] - centre) ** 2).sum(axis=1)
-            keep = stacked[npn.lexsort((stacked[:, 0], d2))[:k], 0].astype(npn.int64)
-            budgeted: dict[str, Any] = {}
-            for p, c in table.items():
-                gids = c[:, 0].astype(npn.int64)
-                inside = gids[npn.isin(gids, keep)]
-                if len(inside):
-                    budgeted[p] = npn.sort(inside)
-            return budgeted
-
-        boxed: dict[str, Any] = {}
-        for p, c in table.items():
-            xy = c[:, 1:3]
-            inside = npn.all((xy >= box_lo) & (xy <= box_hi), axis=1)
-            if inside.any():
-                boxed[p] = npn.sort(c[inside, 0].astype(npn.int64))
-        return boxed
-
-    counts: dict[str, int] = {}
-    explicit: dict[str, npn.ndarray] = {}
-
-    def _frac_count(f: float, size: int) -> int:
-        if f <= 0:
-            return 0
-        if f >= 1:
-            return size
-        return max(1, round(f * size))
-
-    if isinstance(spec, dict):
-        for p in pops:
-            if p not in spec:
-                continue
-            v = spec[p]
-            if isinstance(v, (list, tuple, npn.ndarray)):
-                explicit[p] = npn.asarray(sorted(int(g) for g in v), dtype=npn.int64)
-            elif isinstance(v, float):
-                counts[p] = _frac_count(v, ranges[p][1])
-            else:
-                counts[p] = min(int(v), ranges[p][1])
-    elif isinstance(spec, float):
-        for p in pops:
-            counts[p] = _frac_count(spec, ranges[p][1])
-    elif isinstance(spec, int):
-        total_size = sum(ranges[p][1] for p in pops)
-        if total_size == 0:
-            return {}
-        for p in pops:
-            counts[p] = min(ranges[p][1], round(spec * ranges[p][1] / total_size))
-    else:
-        raise TypeError(f"unsupported selection spec: {type(spec).__name__}")
-
-    rng = npn.random.default_rng(seed)
-    out: dict[str, npn.ndarray] = {}
-    for p in pops:
-        if p in explicit:
-            out[p] = explicit[p]
-            continue
-        k = counts.get(p, 0)
-        if k <= 0:
-            continue
-        start, count = ranges[p]
-        k = min(k, count)
-        if method == "random":
-            gids = npn.sort(
-                rng.choice(count, size=k, replace=False).astype(npn.int64) + start
-            )
-        else:  # "first" -> contiguous block
-            gids = npn.arange(start, start + k, dtype=npn.int64)
-        out[p] = gids
-    return out
-
-
-# --- Generic H5 readers (backend-agnostic) ---
 
 
 def _h5_read_population_names(f):
@@ -477,16 +164,6 @@ def _h5_read_cell_attributes_tuple(f, pop_start, population, namespace):
         items.append((abs_gid, tuple(values)))
 
     return items, attr_info
-
-
-def projection_attribute(namespace, name: str, index: int = 0, default=None):
-    if namespace is None:
-        return default
-    if isinstance(namespace, dict):
-        return namespace.get(name, default)
-    if isinstance(namespace, list | tuple):
-        return namespace[index] if len(namespace) > index else default
-    return namespace
 
 
 def stored_projections(f) -> dict[str, list[str]]:
@@ -594,14 +271,7 @@ def _h5pyd_open(filepath):
 
 
 def _to_hsds_domain(filepath):
-    """Map a local file path to an HSDS domain path.
-
-    The server's root_dir is systems/graphs/, so a local path like
-    .../systems/graphs/EI/graph.h5 maps to the HSDS domain /EI/graph.h5.
-    Relative paths like EI/graph.h5 are used directly.
-    Absolute paths without 'graphs' (e.g. /home/pyodide/EI/cells.h5)
-    use the last two path components as the domain.
-    """
+    """Map a local file path to an HSDS domain path."""
     parts = pathlib.PurePosixPath(filepath).parts
     try:
         idx = parts.index("graphs")
@@ -826,6 +496,87 @@ if _H5_BACKEND == "neuroh5":
 
         return projections
 
+    def read_placement(
+        filepath: str,
+        population: types.PopulationName,
+        gids,
+        comm: MPI.Intracomm | None = None,
+        io_size: int = 1,
+    ) -> dict[int, tuple]:
+        from mpi4py import MPI
+        from neuroh5.io import scatter_read_cell_attribute_selection
+
+        if comm is None:
+            comm = MPI.COMM_WORLD
+
+        # Collective, so issue the read even for an empty selection: a rank that
+        # owns no cells of this population still has to participate or the ranks
+        # that do will block waiting for it.
+        out: dict[int, tuple] = {}
+        it, info = scatter_read_cell_attribute_selection(
+            filepath,
+            population,
+            sorted(int(g) for g in gids),
+            namespace="Synapse Attributes",
+            mask={"syn_ids", "swc_types", "syn_locs"},
+            comm=comm,
+            io_size=max(1, int(io_size)),
+            return_type="tuple",
+        )
+        i_ids, i_swc, i_loc = (
+            info.get("syn_ids"),
+            info.get("swc_types"),
+            info.get("syn_locs"),
+        )
+        if i_ids is None:
+            return out
+        for gid, data in it:
+            out[int(gid)] = _placement_rows(data[i_ids], data[i_swc], data[i_loc])
+        return out
+
+    def read_edges(
+        filepath: str,
+        pre: types.PreSynapticPopulationName,
+        post: types.PostSynapticPopulationName,
+        gids,
+        comm: MPI.Intracomm | None = None,
+        io_size: int = 1,
+        destinations=None,
+        population_ranges: dict[str, tuple[int, int]] | None = None,
+    ):
+        del population_ranges  # neuroh5 resolves gids itself
+        from mpi4py import MPI
+        from neuroh5.io import scatter_read_graph_selection
+
+        if comm is None:
+            comm = MPI.COMM_WORLD
+
+        # neuroh5 wants only gids the projection actually has a destination for.
+        # `destinations is None` means it stores no edges at all, which is not an
+        # error -- the config may declare a projection the graph left empty -- so
+        # ask for nothing rather than for gids that cannot be there.
+        wanted: list[int] = []
+        if destinations is not None:
+            asked = sorted(int(g) for g in gids)
+            if asked:
+                import numpy as npn
+
+                index = npn.fromiter(asked, dtype=npn.int64, count=len(asked))
+                wanted = npn.sort(index[npn.isin(index, destinations)]).tolist()
+
+        # Collective in the same way `read_placement` is: the selection may be
+        # empty on this rank, but the call may not be skipped.
+        graph, _ = scatter_read_graph_selection(
+            filepath,
+            comm=comm,
+            io_size=max(1, int(io_size)),
+            selection=wanted,
+            projections=[(pre, post)],
+            namespaces=["Synapses", "Connections"],
+        )
+        if post in graph and pre in graph[post]:
+            yield from graph[post][pre]
+
 else:  # h5pyd or pyfive — both use _open_h5 + generic readers
 
     def read_cells_meta_data(
@@ -951,6 +702,52 @@ else:  # h5pyd or pyfive — both use _open_h5 + generic readers
         ):
             projections.append([post_gid, (pre_gids, projection)])
         return projections
+
+    def read_placement(
+        filepath: str,
+        population: types.PopulationName,
+        gids,
+        comm: MPI.Intracomm | None = None,
+        io_size: int = 1,
+    ) -> dict[int, tuple]:
+        # No scatter read here: every rank opens the file and keeps the rows it
+        # was asked for. Correct, and fine up to the scale at which neuroh5 is
+        # worth installing.
+        wanted = {int(g) for g in gids}
+        out: dict[int, tuple] = {}
+        f = _open_h5(filepath)
+        pop_start = _h5_read_population_ranges(f)[population][0]
+        attrs = _h5_read_cell_attributes(
+            f,
+            pop_start,
+            population,
+            "Synapse Attributes",
+            mask={"syn_ids", "swc_types", "syn_locs"},
+        )
+        for gid, data in attrs.items():
+            if int(gid) not in wanted:
+                continue
+            out[int(gid)] = _placement_rows(
+                data["syn_ids"], data["swc_types"], data["syn_locs"]
+            )
+        return out
+
+    def read_edges(
+        filepath: str,
+        pre: types.PreSynapticPopulationName,
+        post: types.PostSynapticPopulationName,
+        gids,
+        comm: MPI.Intracomm | None = None,
+        io_size: int = 1,
+        destinations=None,
+        population_ranges: dict[str, tuple[int, int]] | None = None,
+    ):
+        wanted = {int(g) for g in gids}
+        for post_gid, payload in read_projections(
+            filepath, pre, post, population_ranges=population_ranges
+        ):
+            if int(post_gid) in wanted:
+                yield post_gid, payload
 
 
 class NeuroH5Graph:
@@ -1083,14 +880,18 @@ class NeuroH5Graph:
         return list(self.architecture.config.layer_extents.keys())
 
 
-class System:
+class NeuroH5System:
     """In vitro system"""
 
     GRAPH_FORMAT_VERSION = 1
 
-    def __init__(self, uri: str, comm: MPI.Intracomm | None = None):
+    def __init__(self, uri: str, comm: MPI.Intracomm | None = None, io_size: int = 1):
         self.uri = uri
         self.comm = comm
+        # How many ranks neuroh5 reads through. A backend that knows its rank
+        # count raises this before building (the NEURON env sets `pc.nhost()`);
+        # it changes throughput, never what is read.
+        self.io_size = max(1, int(io_size))
 
         self._graph = NeuroH5Graph(uri)
         self._check_format_version()
@@ -1101,6 +902,15 @@ class System:
         self._num_neurons = None
         self._bounding_box = None
         self._coordinate_arrays: dict[types.PopulationName, Any] = {}
+        self._destination_indices: dict[tuple[str, str], Any] = {}
+
+    def serialize(self) -> dict:
+        """The directory to read this system back from.
+
+        Relative when it sits below the env file that will carry it, so a
+        directory can be moved or shared without rewriting what is inside it.
+        """
+        return {"uri": self.uri}
 
     def _check_format_version(self) -> None:
         found = self._graph.version
@@ -1171,13 +981,6 @@ class System:
                 with urllib.request.urlopen(url) as resp:
                     return json.loads(resp.read())
         raise FileNotFoundError(f"No HTTP endpoint for {filename}")
-
-    def params_document(
-        self, selection_name: str | None = None, comm=None
-    ) -> tuple[str | None, dict | None]:
-        path = ["params", f"{selection_name or 'default'}.json"]
-        document = self.load_file(path, None, comm=self.comm if comm is None else comm)
-        return (None, None) if document is None else ("/".join(path), document)
 
     def load_file(
         self,
@@ -1436,6 +1239,84 @@ class System:
             self._graph.cells_filepath, population, self.comm, node_allocation
         )
 
+    def placement(
+        self, population: types.PopulationName, gids
+    ) -> dict[int, tuple[Any, Any, Any]]:
+        placement = read_placement(
+            self._graph.cells_filepath,
+            population,
+            gids,
+            comm=self.comm,
+            io_size=self.io_size,
+        )
+
+        endpoints = sum(
+            int(((locs <= 0.0) | (locs >= 1.0)).sum())
+            for _, _, locs in placement.values()
+        )
+        if endpoints:
+            logger.warning(
+                "%s: %d synapse site(s) are recorded at section position 0 or 1, "
+                "which cannot hold an ion mechanism; they were moved to the "
+                "nearest segment centre",
+                population,
+                endpoints,
+            )
+
+        return placement
+
+    def _destination_index(
+        self,
+        pre: types.PreSynapticPopulationName,
+        post: types.PostSynapticPopulationName,
+    ):
+        """The sorted destination gids a projection carries edges for.
+
+        Read once per projection so that ``edges`` can hand neuroh5 only gids the
+        projection actually has, which it requires.
+        """
+        key = (pre, post)
+        if key in self._destination_indices:
+            return self._destination_indices[key]
+
+        import numpy as npn
+
+        f = _open_h5(self._graph.connections_filepath)
+        if pre not in stored_projections(f).get(post, ()):
+            self._destination_indices[key] = None
+            return None
+        group = f[f"Projections/{post}/{pre}/Edges"]
+
+        starts = npn.asarray(group["Destination Block Index"][:]).astype(npn.int64)
+        block_ptr = npn.asarray(group["Destination Block Pointer"][:]).astype(npn.int64)
+        n_dst = int(group["Destination Pointer"].shape[0]) - 1
+
+        counts = npn.diff(block_ptr)
+        within = npn.arange(int(counts.sum())) - npn.repeat(block_ptr[:-1], counts)
+        gids = (npn.repeat(starts, counts) + within)[:n_dst]
+        gids += int(self.population_ranges[post][0])
+
+        self._destination_indices[key] = npn.sort(gids)
+        return self._destination_indices[key]
+
+    def edges(
+        self,
+        pre: types.PreSynapticPopulationName,
+        post: types.PostSynapticPopulationName,
+        gids,
+    ):
+        yield from read_edges(
+            self._graph.connections_filepath,
+            pre,
+            post,
+            gids,
+            comm=self.comm,
+            io_size=self.io_size,
+            # only the neuroh5 reader needs it, and building it costs a read
+            destinations=self._destination_index(pre, post) if _HAS_NEUROH5 else None,
+            population_ranges=self.cells_meta_data.population_ranges,
+        )
+
     def projection_array(
         self,
         pre: types.PreSynapticPopulationName,
@@ -1508,574 +1389,3 @@ class System:
             "num_projections": num_projections,
             "population_counts": population_counts,
         }
-
-
-class ParallelSystem:
-    """A number of unconnected neurons, simulated independently in parallel
-
-    Implements the :class:`livn.types.System` protocol without an H5 graph.
-    Use it to simulate a single cell, or N cells that never interact::
-
-        env = Env(64).init()   # 64 independent cells
-
-    Arguments:
-        num_neurons: Either a total cell count, which puts every cell in
-            ``"EXC"`` (``3`` is short for ``{"EXC": 3}``), or a
-            ``{population: count}`` mapping for several populations, e.g.
-            ``{"EXC": 3, "INH": 5}``. Gids are assigned contiguously in the
-            order the populations are given. Models key their cell factories by
-            population name, so each name has to be one the model defines.
-        coordinates: Where the cells sit, as either
-
-            - a ``float`` spacing in um, laying the cells out along x in gid
-              order (the default ``0.0`` puts every cell at the origin),
-            - an ``[n_neurons, 3]`` array of ``x, y, z`` (or ``[n_neurons, 4]``
-              of ``gid, x, y, z``, whose gids may be arbitrary as long as they
-              are whole and unique), or
-            - a callable taking the total cell count and returning either of
-              the above.
-
-        name: Identifier that keys per-system model defaults.
-    """
-
-    def __init__(
-        self,
-        num_neurons: int | Mapping[types.PopulationName, int] = 1,
-        coordinates: float | Callable | Any = 0.0,
-        name: str = "ParallelSystem",
-        comm: MPI.Intracomm | None = None,
-    ):
-        if isinstance(num_neurons, bool):
-            raise TypeError("num_neurons must be an int or a mapping, not a bool")
-        if isinstance(num_neurons, (int, numpy.integer)):
-            counts = {"EXC": int(num_neurons)}
-        elif isinstance(num_neurons, Mapping):
-            counts = {str(p): int(c) for p, c in num_neurons.items()}
-            if not counts:
-                raise ValueError("num_neurons must name at least one population")
-        else:
-            raise TypeError(
-                f"num_neurons must be an int or a {{population: count}} mapping, "
-                f"not {type(num_neurons).__name__}"
-            )
-        for p, count in counts.items():
-            if count < 0:
-                raise ValueError(f"population {p!r} has a negative count ({count})")
-
-        self.population_counts = counts
-        self.num_neurons = sum(counts.values())
-        if self.num_neurons < 1:
-            raise ValueError(
-                f"num_neurons must be >= 1 in total, not {self.num_neurons}"
-            )
-
-        self.name = name
-        self.comm = comm
-        self.uri = None
-
-        populations = list(self.population_counts)
-
-        self.files: dict[str, str] = {}
-        self.connections_config = {"synapses": {p: {} for p in populations}}
-
-        ranges: dict[types.PopulationName, tuple[int, int]] = {}
-        start = 0
-        for p, count in self.population_counts.items():
-            ranges[p] = (start, count)
-            start += count
-
-        self.cells_meta_data = CellsMetaData(
-            population_names=populations,
-            population_ranges=ranges,
-            cell_attribute_info={p: {} for p in populations},
-        )
-
-        # resolve the coordinate spec into [gid, x, y, z] rows
-        if callable(coordinates):
-            coordinates = coordinates(self.num_neurons)
-
-        gids = np.arange(self.num_neurons, dtype=float).reshape(-1, 1)
-
-        if isinstance(
-            coordinates, (int, float, numpy.integer, numpy.floating)
-        ) and not isinstance(coordinates, bool):
-            zeros = np.zeros((self.num_neurons, 1))
-            self._neuron_coordinates = np.concatenate(
-                [gids, gids * float(coordinates), zeros, zeros], axis=1
-            )
-            return
-
-        array = np.asarray(coordinates, dtype=float)
-        if array.ndim != 2 or array.shape[1] not in (3, 4):
-            raise ValueError(
-                "coordinates must be a spacing, an [n_neurons, 3] array of x, y, z "
-                "or an [n_neurons, 4] array of gid, x, y, z; got shape "
-                f"{tuple(array.shape)}"
-            )
-        if array.shape[0] != self.num_neurons:
-            raise ValueError(
-                f"expected {self.num_neurons} coordinate rows, one per neuron, "
-                f"got {array.shape[0]}"
-            )
-
-        if array.shape[1] == 3:
-            self._neuron_coordinates = np.concatenate([gids, array], axis=1)
-            return
-
-        gid_column = array[:, 0]
-        if not bool(np.array_equal(gid_column, np.floor(gid_column))):
-            raise ValueError("GID column of a coordinates array must contain integers")
-        if len(numpy.unique(numpy.asarray(gid_column))) != self.num_neurons:
-            raise ValueError("GID column of a coordinates array must be unique")
-        self._neuron_coordinates = array
-
-    def __repr__(self):
-        return f"ParallelSystem({self.population_counts!r})"
-
-    def default_io(self, comm=None) -> IO:
-        from livn.io import IO
-
-        return IO()
-
-    def default_model(self, comm=None) -> Model:
-        from livn.models.rcsd import ReducedCalciumSomaDendrite
-
-        return ReducedCalciumSomaDendrite()
-
-    def params_document(
-        self, selection_name: str | None = None, comm=None
-    ) -> tuple[list[str] | None, dict | None]:
-        return None, None
-
-    def load_file(self, filepath: str | list[str], default: Any = sentinel, **kwargs):
-        if default is sentinel:
-            raise FileNotFoundError(f"{self!r} has no files ({filepath})")
-        return default
-
-    @property
-    def population_ranges(self) -> dict[types.PopulationName, tuple[int, int]]:
-        return self.cells_meta_data.population_ranges
-
-    def population_count(self, population: types.PopulationName) -> int:
-        return self.cells_meta_data.population_count(population)
-
-    @property
-    def populations(self) -> list[types.PopulationName]:
-        return self.cells_meta_data.population_names
-
-    def synapse_projections(self) -> list[tuple[str, str, str, str, str]]:
-        return []
-
-    @property
-    def weight_names(self) -> list[str]:
-        return []
-
-    @property
-    def neuron_coordinates(self) -> types.Float[types.Array, "n_coords ixyz=4"]:
-        return self._neuron_coordinates
-
-    @property
-    def gids(self) -> types.Int[types.Array, "n_neurons"]:
-        if _USES_JAX:
-            return np.asarray(self._neuron_coordinates[:, 0], dtype=int)
-
-        return self._neuron_coordinates[:, 0].astype(int)
-
-    @property
-    def bounding_box(self) -> types.Float[types.Array, "2 xyz=3"]:
-        coordinates = self._neuron_coordinates[:, 1:4]
-        padding = 100.0
-        return np.stack(
-            [coordinates.min(axis=0) - padding, coordinates.max(axis=0) + padding]
-        )
-
-    @property
-    def center_point(self) -> types.Float[types.Array, "xyz=3"]:
-        bb = self.bounding_box
-        return (bb[0] + bb[1]) / 2.0
-
-    def _population_slice(self, population: types.PopulationName) -> slice:
-        try:
-            start, count = self.cells_meta_data.population_ranges[population]
-        except KeyError:
-            raise KeyError(
-                f"{self!r} has no population {population!r}; "
-                f"expected one of {list(self.population_counts)}"
-            ) from None
-        return slice(start, start + count)
-
-    def coordinates(
-        self, population: types.PopulationName
-    ) -> Iterator[tuple[int, tuple[float, float, float]]]:
-        for row in self._neuron_coordinates[self._population_slice(population)]:
-            yield int(row[0]), (float(row[1]), float(row[2]), float(row[3]))
-
-    def coordinate_array(
-        self, population: types.PopulationName
-    ) -> types.Float[types.Array, "n_coords cxyz=4"]:
-        return self._neuron_coordinates[self._population_slice(population)]
-
-    def transform_coordinates(
-        self,
-        transform: Callable,
-        populations: list[str] | None = None,
-    ) -> types.Float[types.Array, "n_coords ixyz=4"]:
-        if populations is None:
-            populations = self.populations
-        return np.vstack(
-            [transform(self.coordinate_array(p), population=p) for p in populations]
-        )
-
-    def selection(
-        self,
-        spec,
-        populations: Sequence[str] | None = None,
-        seed: int | None = 123,
-        method: str = "first",
-        bounds=None,
-    ) -> dict[str, Any] | None:
-        return resolve_selection(self, spec, populations, seed, method, bounds)
-
-    def selections(self, comm=None) -> list[str]:
-        return []
-
-    def selection_document(self, name: str, comm=None) -> dict:
-        raise FileNotFoundError(f"{self!r} stores no selections")
-
-    def projections(
-        self,
-        pre: types.PreSynapticPopulationName,
-        post: types.PostSynapticPopulationName,
-    ) -> Iterator[tuple[int, tuple[list[int], Projection]]]:
-        return iter(())
-
-    def projection_array(
-        self,
-        pre: types.PreSynapticPopulationName,
-        post: types.PostSynapticPopulationName,
-        all: bool = True,
-    ) -> list[tuple[int, tuple[list[int], Projection]]]:
-        return []
-
-    def synapses(
-        self,
-        population: types.PostSynapticPopulationName,
-        node_allocation: set[int] | None = None,
-    ):
-        return iter(())
-
-    def connectivity_matrix(
-        self, weights: dict | None = None, seed=123, gids=None
-    ) -> types.Float[types.Array, "num_neurons num_neurons"]:
-        """Unconnected, so the only thing ``gids`` changes is the size."""
-        # use numpy, not jax
-        import numpy as npn
-
-        n = self.num_neurons if gids is None else len(npn.asarray(gids))
-        return npn.zeros([n, n], dtype=npn.float32)
-
-    def summary(self) -> dict[str, int | dict[str, int]]:
-        return {
-            "num_neurons": self.num_neurons,
-            "num_projections": 0,
-            "population_counts": dict(self.population_counts),
-        }
-
-
-if _USES_JAX:
-    import equinox as eqx
-    import jax
-
-    class PositionParameterization(eqx.Module):
-        def __call__(self):
-            raise NotImplementedError
-
-        @classmethod
-        def from_cartesian(cls, offsets, **kwargs):
-            raise NotImplementedError
-
-        @classmethod
-        def from_lateral_depth(cls, lateral_xy, depth=50.0, **kwargs):
-            """Construct from 2D lateral offsets and a depth value
-
-            Convenience alternative to ``from_cartesian`` for the common case
-            where neurons are initialised from their peak-channel (x, y) offset
-            from the probe origin and a uniform starting depth
-
-            Args:
-                lateral_xy: [n_neurons, 2] or [n_pop, n_neurons, 2] lateral (x, y)
-                    offsets from the population origin
-                depth: Scalar or array of z-depths in um (positive = into tissue)
-                **kwargs: Passed to ``from_cartesian`` (e.g. ``r_min``, ``r_max``)
-            """
-            lateral_xy = np.array(lateral_xy)
-            if lateral_xy.ndim == 2:
-                n_neurons = lateral_xy.shape[0]
-                z = (
-                    np.full((n_neurons, 1), float(depth))
-                    if np.isscalar(depth)
-                    else np.array(depth).reshape(n_neurons, 1)
-                )
-                offsets = np.concatenate([lateral_xy, z], axis=-1)[
-                    None
-                ]  # [1, n_neurons, 3]
-            else:
-                n_pop, n_neurons = lateral_xy.shape[:2]
-                z = (
-                    np.full((n_pop, n_neurons, 1), float(depth))
-                    if np.isscalar(depth)
-                    else np.array(depth).reshape(n_pop, n_neurons, 1)
-                )
-                offsets = np.concatenate(
-                    [lateral_xy, z], axis=-1
-                )  # [n_pop, n_neurons, 3]
-            return cls.from_cartesian(offsets, **kwargs)
-
-    class CartesianParameterization(PositionParameterization):
-        offsets: Any
-
-        def __call__(self):
-            return self.offsets
-
-        @classmethod
-        def from_cartesian(cls, offsets, **kwargs):
-            return cls(offsets=np.array(offsets))
-
-    class LogRadialParameterization(PositionParameterization):
-        """Log-radial (log r, unnormalized direction)
-
-        Args:
-            r_min: Minimum radial distance in um
-            r_max: Maximum radial distance in um
-        """
-
-        log_r: Any
-        dir_raw: Any
-        r_min: float = eqx.field(static=True)
-        r_max: float = eqx.field(static=True)
-
-        def __init__(self, log_r, dir_raw, r_min: float = 5.0, r_max: float = 500.0):
-            self.log_r = log_r
-            self.dir_raw = dir_raw
-            self.r_min = r_min
-            self.r_max = r_max
-
-        def __call__(self):
-            r = np.exp(np.clip(self.log_r, np.log(self.r_min), np.log(self.r_max)))
-            # Force z > 0
-            dir_z_pos = np.abs(self.dir_raw[..., 2:3])
-            dir_clipped = np.concatenate([self.dir_raw[..., :2], dir_z_pos], axis=-1)
-            direction = dir_clipped / np.maximum(
-                np.linalg.norm(dir_clipped, axis=-1, keepdims=True), 1e-6
-            )
-            return r[..., None] * direction  # [n_pop, n_neurons, 3]
-
-        @classmethod
-        def from_cartesian(cls, offsets, r_min: float = 5.0, r_max: float = 500.0):
-            offsets = np.array(offsets)
-            r = np.maximum(np.linalg.norm(offsets, axis=-1), r_min)
-            log_r = np.log(r)
-            dir_raw = offsets / r[..., None]
-            return cls(log_r=log_r, dir_raw=dir_raw, r_min=r_min, r_max=r_max)
-
-    class SphericalParameterization(PositionParameterization):
-        """Explicit spherical coordinates (log r, theta_raw, phi_raw).
-
-        Args:
-            r_min: Minimum radial distance in um.
-            r_max: Maximum radial distance in um.
-        """
-
-        log_r: Any
-        theta_raw: Any
-        phi_raw: Any
-        r_min: float = eqx.field(static=True)
-        r_max: float = eqx.field(static=True)
-
-        def __init__(
-            self,
-            log_r,
-            theta_raw,
-            phi_raw,
-            r_min: float = 5.0,
-            r_max: float = 500.0,
-        ):
-            self.log_r = log_r
-            self.theta_raw = theta_raw
-            self.phi_raw = phi_raw
-            self.r_min = r_min
-            self.r_max = r_max
-
-        def __call__(self):
-            r = np.exp(np.clip(self.log_r, np.log(self.r_min), np.log(self.r_max)))
-            theta = (np.pi / 2) * (1.0 / (1.0 + np.exp(-self.theta_raw)))
-            x = r * np.sin(theta) * np.cos(self.phi_raw)
-            y = r * np.sin(theta) * np.sin(self.phi_raw)
-            z = r * np.cos(theta)
-            return np.stack([x, y, z], axis=-1)  # [n_pop, n_neurons, 3]
-
-        @classmethod
-        def from_cartesian(cls, offsets, r_min: float = 5.0, r_max: float = 500.0):
-            offsets = np.array(offsets)
-            r = np.maximum(np.linalg.norm(offsets, axis=-1), r_min)
-            log_r = np.log(r)
-            z_clipped = np.clip(offsets[..., 2], 0.0, None)
-            theta = np.arccos(np.clip(z_clipped / r, 0.0, 1.0))  # [0, pi/2]
-            t = np.clip(theta / (np.pi / 2), 1e-6, 1.0 - 1e-6)
-            theta_raw = np.log(t / (1.0 - t))
-            phi_raw = np.arctan2(offsets[..., 1], offsets[..., 0])
-            return cls(
-                log_r=log_r,
-                theta_raw=theta_raw,
-                phi_raw=phi_raw,
-                r_min=r_min,
-                r_max=r_max,
-            )
-
-    class TrainableSystem:
-        """System with trainable neuron positions
-
-        Neuron absolute coordinates = origins + parameterization()
-
-        Arguments:
-            n_neurons: Number of neurons per population
-            n_populations: Number of populations
-            parameterization: A PositionParameterization instance
-            origins: Reference origins [n_populations, xyz=3] for channel locations;
-                defaults to vec{0} for all populations
-            uri: Optional URI for loading IO configuration
-        """
-
-        def __init__(
-            self,
-            parameterization: PositionParameterization,
-            n_neurons: int,
-            n_populations: int = 1,
-            origins: types.Float[types.Array, "n_populations xyz=3"] | None = None,
-            uri: str | None = None,
-        ):
-            self.n_neurons = n_neurons
-            self.n_populations = n_populations
-            self.name = "TrainableSystem"
-            self.populations = [str(i) for i in range(n_populations)]
-            self.uri = uri
-
-            if origins is None:
-                origins = np.tile(np.array([0.0, 0.0, 0.0]), (n_populations, 1))
-            self.origins = np.array(origins)
-
-            self.parameterization = parameterization
-
-        @property
-        def params(self):
-            return self.parameterization()
-
-        def default_io(self) -> IO:
-            from livn.io import MEA
-
-            if hasattr(self, "uri") and self.uri is not None:
-                try:
-                    return MEA.from_directory(self.uri)
-                except (FileNotFoundError, AttributeError):
-                    pass
-
-            return MEA()
-
-        @property
-        def num_neurons(self):
-            return self.n_populations * self.n_neurons
-
-        @property
-        def neuron_coordinates(
-            self,
-        ) -> types.Float[types.Array, "n_total_neurons ixyz=4"]:
-            absolute_coords = (
-                self.origins[:, None, :] + self.params
-            )  # [n_pop, n_neurons, 3]
-
-            xyz_flat = absolute_coords.reshape(-1, 3)  # [n_total_neurons, 3]
-
-            # [n_total_neurons, 1]
-            n_total = self.n_populations * self.n_neurons
-            gids = np.arange(n_total, dtype=xyz_flat.dtype).reshape(-1, 1)
-
-            # [n_total_neurons, ixyz=4]
-            return np.concatenate([gids, xyz_flat], axis=1)
-
-        def coordinate_array(
-            self, population: str, all: bool = True
-        ) -> types.Float[types.Array, "n_coords cxyz=4"]:
-            pop_idx = self.populations.index(population)
-            absolute_coords = (
-                self.origins[pop_idx] + self.params[pop_idx]
-            )  # [n_neurons, 3]
-            gid_offset = pop_idx * self.n_neurons
-            gids = np.arange(
-                gid_offset, gid_offset + self.n_neurons, dtype=absolute_coords.dtype
-            ).reshape(-1, 1)
-            return np.concatenate([gids, absolute_coords], axis=1)
-
-        def transform_coordinates(
-            self,
-            transform: Callable,
-            populations: list[str] | None = None,
-            all: bool = True,
-        ) -> types.Float[types.Array, "n_coords ixyz=4"]:
-            if populations is None:
-                populations = self.populations
-            return np.vstack(
-                [
-                    transform(self.coordinate_array(p, all=all), population=p)
-                    for p in populations
-                ]
-            )
-
-        @property
-        def gids(self) -> types.Int[types.Array, "n_total_neurons"]:
-            return np.arange(self.n_populations * self.n_neurons, dtype=np.int32)
-
-        @property
-        def bounding_box(self) -> types.Float[types.Array, "2 xyz=3"]:
-            coords = self.neuron_coordinates[:, 1:4]
-            min_coords = coords.min(axis=0)
-            max_coords = coords.max(axis=0)
-
-            padding = 100.0
-            min_coords = min_coords - padding
-            max_coords = max_coords + padding
-
-            return np.stack([min_coords, max_coords])
-
-        @property
-        def center_point(self) -> types.Float[types.Array, "xyz=3"]:
-            bb = self.bounding_box
-            return (bb[0] + bb[1]) / 2.0
-
-    def _trainable_system_flatten(system):
-        children = (system.parameterization, system.origins)
-        aux = (
-            system.n_neurons,
-            system.n_populations,
-            system.name,
-            tuple(system.populations),
-            system.uri,
-        )
-        return children, aux
-
-    def _trainable_system_unflatten(aux, children):
-        parameterization, origins = children
-        n_neurons, n_populations, name, populations, uri = aux
-
-        system = object.__new__(TrainableSystem)
-        system.n_neurons = n_neurons
-        system.n_populations = n_populations
-        system.origins = origins
-        system.name = name
-        system.populations = list(populations)
-        system.uri = uri
-        system.parameterization = parameterization
-        return system
-
-    jax.tree_util.register_pytree_node(
-        TrainableSystem, _trainable_system_flatten, _trainable_system_unflatten
-    )

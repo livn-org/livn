@@ -15,11 +15,13 @@ def get_version() -> str:
 __version__: str = get_version()
 
 
-def make(system: str = "EI"):
-    """Initializes a default env from a predefined system, or from any URL"""
+def make(env: str):
+    """Initialize a ready-to-run env.
+
+    env = livn.make("EI")
+    env = livn.make("runs/bursting/env.json")
+    """
     from livn.env import Env
-    from livn.system import PREDEFINED, fetch, predefined
+    from livn.system import predefined_document
 
-    source = predefined(system) if system in PREDEFINED else fetch(system)
-
-    return Env(source).init().apply_default_params()
+    return Env.from_json(env if env.endswith(".json") else predefined_document(env))

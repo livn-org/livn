@@ -125,13 +125,15 @@ The [NEURON](https://www.neuron.yale.edu/neuron/) backend provides high-fidelity
 - MPI-parallel: scales to millions of neurons on supercomputers
 - Best choice for generating realistic synthetic data
 
-**Installed from a source checkout only.** There is no `livn[neuron]` on PyPI: the backend needs system-level MPI and a parallel HDF5, and `neuroh5` publishes no distributions, which PyPI's ban on git dependencies makes impossible to express. Install the system libraries first ([Installation](/installation/)), then:
+**Installed from a source checkout only.** There is no `livn[neuron]` on PyPI: the backend needs system-level MPI, and NEURON is easiest to pin from a checkout. Install the system libraries first ([Installation](/installation/)), then:
 
 ```sh
 git clone https://github.com/livn-org/livn.git
 cd livn
 uv sync --group neuron
 ```
+
+For large-scale systems like CA1, see [neuroh5](/installation/#neuroh5) for when you need it.
 
 If you have not got that far, `native` is the stand-in and reproduces NEURON's results step for step. Selecting `LIVN_BACKEND=neuron` without the stack installed says as much, with these instructions.
 

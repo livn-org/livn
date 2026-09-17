@@ -232,10 +232,6 @@ class DistributedEnv(EnvProtocol):
         self._broadcast_to_workers("apply_model_defaults", (weights, noise))
         return self
 
-    def apply_default_params(self, group: str | None = None, strict: bool = False):
-        self._broadcast_to_workers("apply_default_params", (group, strict))
-        return self
-
     def set_weights(self, weights: dict) -> Self:
         self._broadcast_to_workers("set_weights", (weights,))
         return self
@@ -922,9 +918,10 @@ class _ControllerSystem:
     _UNCACHED = frozenset({"neuron_coordinates", "gids"})
 
     def __init__(self, uri: str):
-        from livn.system import System
+        from livn.system import resolve
 
-        object.__setattr__(self, "_inner", System(uri, comm=MPI.COMM_SELF))
+        #  a graph directory, a spec file, or a cell count
+        object.__setattr__(self, "_inner", resolve(uri, comm=MPI.COMM_SELF))
 
     def __getattr__(self, name):
         if name == "_inner":

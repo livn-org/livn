@@ -217,16 +217,6 @@ _NO_PLACEMENT = (
 )
 
 
-def neuroh5_io():
-    try:
-        import neuroh5.io as io
-    except ImportError as e:  # the extra cannot carry it, so say what will
-        raise ImportError(
-            "neuroh5 is missing, see https://livn-org.github.io/livn/installation/#advanced-setup"
-        ) from e
-    return io
-
-
 class SynapseBuilder:
     """Builds the synapse/connection tables for the local rank.
 
@@ -275,9 +265,9 @@ class SynapseBuilder:
         self.pc = pc
         self.comm = comm
         self.store_kind = store
-        # number of ranks that perform file I/O in the scoped scatter reads;
-        # >1 parallelizes reading instead of funnelling through one rank
-        self._io_size = max(1, int(io_size))
+
+        if io_size is not None and hasattr(system, "io_size"):
+            system.io_size = max(1, int(io_size))
         # for store="auto", promote to the C++-side store once the wired synapse
         # count exceeds this (chosen after the read pass, when the count is known)
         self._auto_store_threshold = int(auto_store_threshold)
@@ -322,9 +312,6 @@ class SynapseBuilder:
         self._mech_code: dict[str, int] = {}
         self._receptor_code: dict[str, int] = {}
         self._sectype_code: dict[str, int] = {}
-
-        # (pre, post) -> the projection's destination gids, read once each
-        self._dst_index: dict[tuple[str, str], np.ndarray | None] = {}
 
     def _is_cell(self, gid: int) -> bool:
         """Whether ``gid`` is built as a cell rather than replayed from file."""
@@ -439,13 +426,13 @@ class SynapseBuilder:
             # entirely for an unconnected population (which has no H5 to read)
             if not active_by_pre:
                 continue
-            placement = self._read_placement(post, set(cells.keys()))
+            placement = self.system.placement(post, set(cells.keys()))
 
             for pre, active in active_by_pre.items():
                 pre_id = self._pop_id(pre)
                 is_input = pre not in simulated
 
-                for post_gid, (pre_gids, projection) in self._read_projection(
+                for post_gid, (pre_gids, projection) in self.system.edges(
                     pre, post, set(cells.keys())
                 ):
                     if post_gid not in cells:
@@ -683,106 +670,6 @@ class SynapseBuilder:
             self.input_vecstims,
             dict(self._receptor_code),
         )
-
-    def _read_placement(self, population: str, local_gids: set[int]):
-        """gid -> (syn_ids, swc_types, locs) for local cells, sorted by syn_id."""
-        scatter_read_cell_attribute_selection = (
-            neuroh5_io().scatter_read_cell_attribute_selection
-        )
-
-        # Note: always call the collective scatter read even for an empty
-        # selection, so a rank owning no cells of this population still
-        # participates, otherwise ranks desync and deadlock.
-        out: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
-
-        it, info = scatter_read_cell_attribute_selection(
-            self.system.files["cells"],
-            population,
-            sorted(local_gids),
-            namespace="Synapse Attributes",
-            mask={"syn_ids", "swc_types", "syn_locs"},
-            comm=self.comm,
-            io_size=self._io_size,
-            return_type="tuple",
-        )
-        i_ids = info.get("syn_ids")
-        i_swc = info.get("swc_types")
-        i_loc = info.get("syn_locs")
-        if i_ids is None:
-            return out
-        endpoints = 0
-        for gid, data in it:
-            syn_ids = np.asarray(data[i_ids]).astype(np.int64, copy=False)
-            swc = np.asarray(data[i_swc]).astype(np.int64, copy=False)
-            locs = np.asarray(data[i_loc]).astype(np.float64, copy=False)
-            endpoints += int(((locs <= 0.0) | (locs >= 1.0)).sum())
-            # sorted for lookup; a repeated syn_id keeps its last site
-            order = np.argsort(syn_ids, kind="stable")
-            ids = syn_ids[order]
-            last = np.append(ids[1:] != ids[:-1], True)
-            keep = order[last]
-            out[int(gid)] = (ids[last], swc[keep], locs[keep])
-        if endpoints:
-            logger.warning(
-                "%s: %d synapse site(s) are recorded at section position 0 or 1, "
-                "which cannot hold an ion mechanism; they were moved to the "
-                "nearest segment centre",
-                population,
-                endpoints,
-            )
-        return out
-
-    def _destination_index(self, pre: str, post: str):
-        """The sorted destination gids a projection carries edges for."""
-        key = (pre, post)
-        if key in self._dst_index:
-            return self._dst_index[key]
-
-        import h5py
-
-        with h5py.File(self.system.files["connections"], "r") as fh:
-            group = fh.get(f"/Projections/{post}/{pre}/Edges")
-            if group is None:
-                self._dst_index[key] = None
-                return None
-            starts = group["Destination Block Index"][:].astype(np.int64)
-            block_ptr = group["Destination Block Pointer"][:].astype(np.int64)
-            n_dst = int(group["Destination Pointer"].shape[0]) - 1
-
-        counts = np.diff(block_ptr)
-
-        within = np.arange(int(counts.sum())) - np.repeat(block_ptr[:-1], counts)
-        gids = (np.repeat(starts, counts) + within)[:n_dst]
-        gids += int(self.system.population_ranges[post][0])
-
-        self._dst_index[key] = np.sort(gids)
-        return self._dst_index[key]
-
-    def _carried_by(self, pre: str, post: str, gids) -> list[int]:
-        """The subset of ``gids`` that this projection has a destination for."""
-        destinations = self._destination_index(pre, post)
-        if destinations is None or not gids:
-            return []
-        wanted = np.fromiter(gids, dtype=np.int64, count=len(gids))
-        return np.sort(wanted[np.isin(wanted, destinations)]).tolist()
-
-    def _read_projection(self, pre: str, post: str, local_gids: set[int]):
-        """Yield (post_gid, (pre_gids, projection)) scoped to ``local_gids``."""
-        scatter_read_graph_selection = neuroh5_io().scatter_read_graph_selection
-
-        graph, _ = scatter_read_graph_selection(
-            self.system.files["connections"],
-            comm=self.comm,
-            io_size=self._io_size,
-            # collective, so it is called for the same projections on every
-            # rank; only the (rank-local) selection differs, and an empty one
-            # is fine for a rank that owns no cells here
-            selection=self._carried_by(pre, post, local_gids),
-            projections=[(pre, post)],
-            namespaces=["Synapses", "Connections"],
-        )
-        if post in graph and pre in graph[post]:
-            yield from graph[post][pre]
 
     def _mech_specs(self, h, active: dict) -> list:
         """Precompute per-mechanism creation specs for a projection's ``active``.

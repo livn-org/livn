@@ -39,15 +39,14 @@ Once set, all livn system reads will go through HSDS instead of local files:
 import os
 os.environ["LIVN_HSDS"] = '{"endpoint": "http://localhost:5101"}'
 
-from livn.system import predefined, System
+from livn.system import NeuroH5System, fetch
 
-path = predefined("EI")
-system = System(path)
+system = NeuroH5System(fetch("CA1"))
 print(system.populations)  # reads from HSDS
 ```
 
 ::: info
-`LIVN_HSDS` configures the server connection, not a specific system. The system is selected by the file path passed to `System()` — the same code works for any system served by the HSDS instance.
+`LIVN_HSDS` configures the server connection, not a specific system. The system is selected by the file path passed to `NeuroH5System()` — the same code works for any system served by the HSDS instance.
 :::
 
 ## Browser Usage (Pyodide + h5pyd)

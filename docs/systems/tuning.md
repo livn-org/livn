@@ -435,7 +435,7 @@ livn systems mpi tune \
     --launch
 ```
 
-The result is written to `params/e1.json`.
+The result is written to `env-e1.json` beside the graph.
 
 To use a custom target, specify its dotted import path:
 
@@ -572,28 +572,26 @@ This ranks all evaluated solutions and reports the front. A run produces a front
 livn systems tune system=./systems/graphs/EI "--promote('default', loc=0)"
 ```
 
-which writes `params/default.json` (or `params/<selection>.json` when the run used one):
+which writes `env.json` beside the graph (or `env-<selection>-<group>.json` when the run named either):
 
 ```json
 {
-    "ReducedCalciumSomaDendrite": {
-        "default": {
-            "params": {
-                "EXC_EXC-dend-AMPA-weight": 0.31,
-                "INH_EXC-soma-AMPA-weight": 2.909,
-                "EXC_INH-soma-GABA_A-weight": 9.407,
-                "noise-g_e0": 1.0,
-                "noise-std_e": 0.329
-            },
-            "meta": {"loc": 0, "source": "...", "space": ["..."]}
-        }
-    }
+    "system": {"cls": "livn.system.NeuroH5System", "kwargs": {"uri": "."}},
+    "model": {"cls": "livn.models.rcsd.ReducedCalciumSomaDendrite", "kwargs": {}},
+    "io": null,
+    "selection": null,
+    "params": {
+        "EXC_EXC-dend-AMPA-weight": 0.31,
+        "INH_EXC-soma-AMPA-weight": 2.909,
+        "EXC_INH-soma-GABA_A-weight": 9.407,
+        "noise-g_e0": 1.0,
+        "noise-std_e": 0.329
+    },
+    "meta": {"loc": 0, "source": "...", "space": ["..."]}
 }
 ```
 
 `meta` records where the solution came from, including its position in the ranked front.
-
-These parameters are then applied by `livn.make()` or `env.apply_default_params()`.
 
 `--export` writes the whole front to a `front.json` next to the run, which `--promote(front=...)` can bank from later without the run being at hand. Before promoting it is often worth looking at the dynamics since a solution can satisfy every scalar target and still be degenerate:
 

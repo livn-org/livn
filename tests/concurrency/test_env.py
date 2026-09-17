@@ -7,6 +7,7 @@ import pytest
 from livn.backend import backend
 from livn.utils import P
 from testing import livn_test_env, livn_test_mea
+from testing.capabilities import backend_supports
 
 TIMEOUT = int(os.environ.get("LIVN_TEST_TIMEOUT", 300))
 
@@ -15,6 +16,8 @@ _RANK_CASES = [
     (4, False),
     pytest.param(4, True, marks=pytest.mark.mpiexec(isolated=True)),
 ]
+if not backend_supports("mpi"):
+    _RANK_CASES = [(1, False)]
 
 
 def _create_env(comm, subworld):
@@ -129,7 +132,7 @@ def serial_reference(tmp_path_factory):
 @pytest.mark.mpiexec(timeout=TIMEOUT)
 @pytest.mark.parametrize(
     ("mpiexec_n", "subworld"),
-    [(1, False)] if backend() == "brian2" else _RANK_CASES,
+    _RANK_CASES,
 )
 def test_env(mpiexec_n, subworld, serial_reference):
     from mpi4py import MPI
@@ -266,7 +269,7 @@ def _subcomm(comm, subworld):
 @pytest.mark.mpiexec(timeout=TIMEOUT)
 @pytest.mark.parametrize(
     ("mpiexec_n", "subworld"),
-    [(1, False)] if backend() == "brian2" else _RANK_CASES,
+    _RANK_CASES,
 )
 @pytest.mark.parametrize(
     "placement",

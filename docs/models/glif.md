@@ -2,6 +2,7 @@
 
 ```python
 from livn.models.glif import GLIF
+from livn.system import NeuroH5System, fetch
 
 GLIF(level=5, mechanism="hard")     # full Allen GLIF5
 GLIF(level=1, mechanism="hard")     # leaky integrate-and-fire
@@ -41,14 +42,14 @@ GLIF(mechanism="escape", params={"sigma": 1.0})
 ## Networks
 
 ```python
-env = Env(predefined("S1"), model=GLIF(level=1)).init()
+env = Env(NeuroH5System(fetch("S1")), model=GLIF(level=1)).init()
 env.module.network        # (cells, cells), w[pre, post]; None when unconnected
 ```
 
 Weights must be set before `init()` on the diffrax backend since the connectivity is baked into the module:
 
 ```python
-env = Env(predefined("S1"), model=GLIF()).set_weights({"EXC_EXC": 400.0}).init()
+env = Env(NeuroH5System(fetch("S1")), model=GLIF()).set_weights({"EXC_EXC": 400.0}).init()
 ```
 
 ## Noise

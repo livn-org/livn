@@ -52,7 +52,7 @@ neuroh5_required = pytest.mark.skipif(
 
 class TestPyfiveReaders:
     def test_read_population_names(self, cells_filepath):
-        from livn.system import _h5_read_population_names, _pyfive_open
+        from livn.system.neuroh5 import _h5_read_population_names, _pyfive_open
 
         f = _pyfive_open(cells_filepath)
         names = _h5_read_population_names(f)
@@ -61,7 +61,7 @@ class TestPyfiveReaders:
         assert all(isinstance(n, str) for n in names)
 
     def test_read_population_ranges(self, cells_filepath):
-        from livn.system import (
+        from livn.system.neuroh5 import (
             _h5_read_population_names,
             _h5_read_population_ranges,
             _pyfive_open,
@@ -77,7 +77,7 @@ class TestPyfiveReaders:
             assert count > 0
 
     def test_read_cell_attribute_info(self, cells_filepath):
-        from livn.system import (
+        from livn.system.neuroh5 import (
             _h5_read_cell_attribute_info,
             _h5_read_population_names,
             _pyfive_open,
@@ -92,7 +92,7 @@ class TestPyfiveReaders:
             assert "X Coordinate" in namespaces["Generated Coordinates"]
 
     def test_read_cell_attributes_tuple(self, cells_filepath):
-        from livn.system import (
+        from livn.system.neuroh5 import (
             _h5_read_cell_attributes_tuple,
             _h5_read_population_names,
             _h5_read_population_ranges,
@@ -117,7 +117,7 @@ class TestPyfiveReaders:
                 assert gid < pop_start + pop_count
 
     def test_read_cell_attributes_dict(self, cells_filepath):
-        from livn.system import (
+        from livn.system.neuroh5 import (
             _h5_read_cell_attributes,
             _h5_read_population_names,
             _h5_read_population_ranges,
@@ -137,7 +137,7 @@ class TestPyfiveReaders:
             assert set(cell_attrs.keys()) == mask
 
     def test_read_graph(self, cells_filepath, connections_filepath):
-        from livn.system import (
+        from livn.system.neuroh5 import (
             _h5_read_graph,
             _h5_read_population_ranges,
             _pyfive_open,
@@ -178,17 +178,17 @@ class TestPyfiveReaders:
 
 class TestSystemWithPyfive:
     def test_cells_meta_data(self, system_dir):
-        from livn.system import System
+        from livn.system import NeuroH5System
 
-        system = System(system_dir)
+        system = NeuroH5System(system_dir)
         meta = system.cells_meta_data
         assert len(meta.population_names) > 0
         assert meta.cell_count() > 0
 
     def test_coordinate_array(self, system_dir):
-        from livn.system import System
+        from livn.system import NeuroH5System
 
-        system = System(system_dir)
+        system = NeuroH5System(system_dir)
         for pop in system.populations:
             coords = system.coordinate_array(pop)
             assert coords.ndim == 2
@@ -196,17 +196,17 @@ class TestSystemWithPyfive:
             assert coords.shape[0] == system.population_count(pop)
 
     def test_neuron_coordinates(self, system_dir):
-        from livn.system import System
+        from livn.system import NeuroH5System
 
-        system = System(system_dir)
+        system = NeuroH5System(system_dir)
         coords = system.neuron_coordinates
         assert coords.shape[0] == system.num_neurons
         assert coords.shape[1] == 4
 
     def test_projection_array(self, system_dir):
-        from livn.system import System
+        from livn.system import NeuroH5System
 
-        system = System(system_dir)
+        system = NeuroH5System(system_dir)
         for post, v in system.connections_config["synapses"].items():
             for pre in v:
                 projs = system.projection_array(pre, post)
@@ -216,18 +216,18 @@ class TestSystemWithPyfive:
                     assert len(pre_gids) > 0
 
     def test_connectivity_matrix(self, system_dir):
-        from livn.system import System
+        from livn.system import NeuroH5System
 
-        system = System(system_dir)
+        system = NeuroH5System(system_dir)
         w = system.connectivity_matrix()
         n = system.num_neurons
         assert w.shape == (n, n)
         assert np.count_nonzero(w) > 0
 
     def test_summary(self, system_dir):
-        from livn.system import System
+        from livn.system import NeuroH5System
 
-        system = System(system_dir)
+        system = NeuroH5System(system_dir)
         s = system.summary()
         assert s["num_neurons"] > 0
         assert s["num_projections"] > 0
@@ -235,12 +235,19 @@ class TestSystemWithPyfive:
 
 class TestParallelSystem:
     def test_satisfies_the_system_protocol(self):
-        from livn.system import ParallelSystem, System
+        from livn.system import NeuroH5System, ParallelSystem
         from livn.types import System as SystemProtocol
 
         assert isinstance(ParallelSystem(3), SystemProtocol)
         if os.path.isdir(SYSTEM_DIR):
-            assert isinstance(System(SYSTEM_DIR), SystemProtocol)
+            assert isinstance(NeuroH5System(SYSTEM_DIR), SystemProtocol)
+
+    def test_has_no_synapse_sites_or_edges(self):
+        from livn.system import ParallelSystem
+
+        system = ParallelSystem({"EXC": 3, "INH": 2})
+        assert system.placement("EXC", {0, 1, 2}) == {}
+        assert list(system.edges("EXC", "INH", {3, 4})) == []
 
     def test_resolve(self):
         from livn.system import ParallelSystem, resolve

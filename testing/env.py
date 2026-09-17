@@ -17,6 +17,17 @@ def livn_test_selection() -> str | None:
     return os.environ.get(SELECTION_ENV) or None
 
 
+H5_SYSTEM_ENV = "LIVN_TEST_H5_SYSTEM"
+
+
+def livn_test_h5_system() -> str:
+    """A graph directory, for tests that are about NeuroH5 specifically."""
+    system = os.environ.get(H5_SYSTEM_ENV, "./systems/graphs/test")
+    if not os.path.isfile(os.path.join(system, "graph.json")):
+        pytest.skip(f"{system} is not a graph directory")
+    return system
+
+
 def livn_test_env(*args, **kwargs):
     from livn.env import Env
     from testing.capabilities import supports
@@ -32,9 +43,9 @@ def livn_test_mea(system: str | None = None):
     import numpy as np
 
     from livn.io import MEA
-    from livn.system import System
+    from livn.system import resolve
 
-    xyz = np.asarray(System(system or livn_test_system()).neuron_coordinates)[:, 1:]
+    xyz = np.asarray(resolve(system or livn_test_system()).neuron_coordinates)[:, 1:]
     electrode = np.array([xyz[:, 0].min() - 100.0, xyz[:, 1].mean(), xyz[:, 2].mean()])
     reach = float(np.linalg.norm(xyz - electrode, axis=1).max()) + 200.0
 
