@@ -15,13 +15,42 @@ def get_version() -> str:
 __version__: str = get_version()
 
 
-def make(env: str):
-    """Initialize a ready-to-run env.
+def make(source="EI", *, cls=None, **kwargs):
+    """Build a ready-to-run env:
 
-    env = livn.make("EI")
-    env = livn.make("runs/bursting/env.json")
+        env = livn.make("EI")                       # a predefined culture
+        env = livn.make("runs/bursting/env.json")   # a promoted document
+        env = livn.make(document)                   # the same, already loaded
+        env = livn.make(spec, comm=comm)            # a bare system spec
+        env = livn.make(2600)                       # cells, no graph
+
+    Args:
+        source: A predefined name, a path to an `env.json`, a loaded document,
+            a described system (`{"cls": ..., "kwargs": ...}`), a `System`, a
+            `{population: count}` mapping, or a number of cells.
+        cls: The env class, e.g. `DistributedEnv`; `livn.env.Env` by default.
     """
+    from collections.abc import Mapping
+
     from livn.env import Env
     from livn.system import predefined_document
 
-    return Env.from_json(env if env.endswith(".json") else predefined_document(env))
+    def as_document(source) -> dict:
+        if isinstance(source, str):
+            if not source.endswith(".json"):
+                source = predefined_document(source)
+            return {"system": source}
+
+        if isinstance(source, Mapping):
+            if "system" in source and "cls" not in source:
+                return dict(source)
+            return {"system": dict(source)}
+
+        if hasattr(source, "serialize") and hasattr(source, "populations"):
+            from livn.types import _describe
+
+            return {"system": _describe(source)}
+
+        return {"system": source}
+
+    return (cls or Env).from_json(as_document(source), **kwargs)

@@ -325,13 +325,18 @@ def _plain(value):
 
 
 def _build(described):
-    """Rebuild :func:`_describe`d."""
     if described is None:
         return None
     if isinstance(described, (list, tuple)):
         path, kwargs = [*list(described), {}][:2]
         described = {"cls": path, "kwargs": kwargs}
-    if not isinstance(described, Mapping) or "cls" not in described:
+    if isinstance(described, str):
+        from livn.utils import import_instance
+
+        return import_instance(described)
+    if not isinstance(described, Mapping):
+        return described  # already built
+    if "cls" not in described:
         raise ValueError(
             f"expected {{'cls': ..., 'kwargs': ...}} naming what to build, got "
             f"{described!r}"
@@ -493,7 +498,57 @@ class Env(Protocol):
         ...
         return self
 
-    def set_params(self, params: dict) -> Env:
+    def unmatched_params(self, params: dict) -> dict[str, str]:
+        """`{key: reason} of `params` that do not match the network."""
+        declared = {
+            (post, pre, self.model.section_name(post, section), mechanism)
+            for post, pre, section, mechanism, _ in (self.system.synapse_projections())
+        }
+        populations = set(self.system.populations)
+        sections = {row[2] for row in declared}
+        mechanisms = {row[3] for row in declared}
+
+        unmatched: dict[str, str] = {}
+        for key in params:
+            if key.startswith(("noise-", "cells-", "io-", "weight-")):
+                continue
+            try:
+                p = SynapticParam.from_string(key)
+            except ValueError:
+                continue
+            for value, known, what in (
+                (p.population, populations, "population"),
+                (p.source, populations, "source population"),
+                (p.sec_type, sections, "section"),
+                (p.syn_name, mechanisms, "mechanism"),
+            ):
+                if value is not None and value not in known:
+                    unmatched[key] = (
+                        f"no {what} {value!r} in this network (it has {sorted(known)})"
+                    )
+                    break
+            else:
+                if (
+                    p.population,
+                    p.source,
+                    p.sec_type,
+                    p.syn_name,
+                ) not in declared and (p.source is not None):
+                    unmatched[key] = (
+                        f"{p.population!r} has no {p.syn_name} synapse from "
+                        f"{p.source!r} on {p.sec_type!r}"
+                    )
+        return unmatched
+
+    def set_params(self, params: dict, strict: bool = False) -> Env:
+        if strict:
+            unmatched = self.unmatched_params(params)
+            if unmatched:
+                lines = "\n".join(f"  {k}: {why}" for k, why in unmatched.items())
+                raise ValueError(
+                    f"{len(unmatched)} parameter(s) address nothing in this "
+                    f"network, so they would be silently ignored:\n{lines}"
+                )
         weights = {}
         noise = {}
         cells = {}
@@ -612,12 +667,32 @@ class Env(Protocol):
             return {}
 
     @classmethod
-    def from_json(cls, serialized, selection=None, **kwargs) -> Env:
+    def from_json(
+        cls,
+        serialized,
+        selection=None,
+        method: str = "first",
+        params: dict | None = None,
+        strict: bool = True,
+        **kwargs,
+    ) -> Env:
+        """Build the env a document describes.
+
+        Args:
+            serialized: A document, or a path to one.
+            selection: Overrides the document's, with `method`.
+            params: Applied after the document's, overriding them.
+            strict: Refuse parameters this network has nothing to apply to.
+        """
+        from livn.system import resolve
+
         document = cls.document(serialized)
 
-        system = _build(document.get("system"))
-        if system is None:
+        described = document.get("system")
+        if described is None:
             raise ValueError("an env document has to name a system")
+
+        system = resolve(described, comm=kwargs.get("comm"))
 
         env = cls(
             system,
@@ -629,11 +704,11 @@ class Env(Protocol):
 
         selection = selection if selection is not None else document.get("selection")
         if selection is not None:
-            env = env.selection(selection) or env
+            env = env.selection(selection, method=method) or env
         env = env.init() or env
 
-        params = document.get("params")
-        return env.set_params(dict(params)) if params else env
+        applied = {**(document.get("params") or {}), **(params or {})}
+        return env.set_params(applied, strict=strict) if applied else env
 
     @classmethod
     def from_directory(cls, directory: str, **kwargs) -> Env:

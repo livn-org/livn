@@ -19,6 +19,7 @@ __all__ = [
     "ParallelSystem",
     "Projection",
     "fetch",
+    "identity",
     "predefined",
     "predefined_document",
     "predefined_systems",
@@ -107,6 +108,20 @@ def predefined(name: str = "EI") -> Monolayer:
     with open(predefined_document(name)) as f:
         document = json.load(f)
     return Monolayer(**document["system"]["kwargs"])
+
+
+def identity(spec, comm: MPI.Intracomm | None = None) -> str | None:
+    if isinstance(spec, Mapping) and "cls" in spec:
+        from livn.types import _plain
+        from livn.utils import import_object_by_path
+
+        cheap = getattr(import_object_by_path(spec["cls"]), "spec_uuid", None)
+        if callable(cheap):
+            return cheap(**_plain(spec.get("kwargs") or {}))
+
+    with contextlib.suppress(Exception):
+        return getattr(resolve(spec, comm=comm), "uuid", None)
+    return None
 
 
 def resolve(
