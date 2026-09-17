@@ -14,6 +14,7 @@ from livn.decoding import (
     MeanFiringRate,
     Pipe,
     PopulationActiveFraction,
+    PopulationSpikeDensity,
     Slice,
     Stability,
 )
@@ -175,6 +176,47 @@ class MockPopulationEnv:
 
         self.system = MockSystem()
         self.cells = {"A": dict.fromkeys([0, 1, 2, 3]), "B": dict.fromkeys([10, 11])}
+
+
+class TestPopulationSpikeDensity:
+    @staticmethod
+    def _measure(it, tt, duration=250.0):
+        return PopulationSpikeDensity(
+            duration=int(duration),
+            temporal_resolution=5.0,
+            stability_resolution=5.0,
+        )(Run(duration=duration).add_spikes(it, tt), MockPopulationEnv())
+
+    def test_population_rate_is_the_active_rate_times_the_active_fraction(self):
+        it = np.array([0, 0, 0, 0, 1, 1, 1, 1])
+        tt = np.array([10.0, 60.0, 110.0, 160.0, 30.0, 80.0, 130.0, 180.0])
+
+        r = self._measure(it, tt)
+
+        assert r["fraction_active"]["A"] == pytest.approx(0.5)
+        assert r["mean_rate_population"]["A"] == pytest.approx(
+            r["mean_rate"]["A"] * r["fraction_active"]["A"]
+        )
+        assert r["mean_rate_population"]["A"] < r["mean_rate"]["A"]
+
+    def test_a_near_silent_population_reads_fast_by_the_active_rate_only(self):
+        it = np.zeros(20, dtype=np.int64)
+        tt = np.linspace(5.0, 245.0, 20)
+
+        r = self._measure(it, tt)
+
+        assert r["fraction_active"]["A"] == pytest.approx(0.25)
+        assert r["mean_rate"]["A"] > 20.0, "the one cell that fires, fires fast"
+        assert r["mean_rate_population"]["A"] == pytest.approx(
+            r["mean_rate"]["A"] / 4.0
+        )
+
+    def test_both_rates_are_zero_when_nothing_fires(self):
+        r = self._measure(np.array([], dtype=np.int64), np.array([]))
+
+        assert r["mean_rate"]["A"] == 0.0
+        assert r["mean_rate_population"]["A"] == 0.0
+        assert r["fraction_active"]["A"] == 0.0
 
 
 class TestPopulationActiveFraction:
