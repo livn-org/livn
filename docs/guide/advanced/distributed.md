@@ -52,6 +52,10 @@ if env.is_root():
 
 Only the controller process (`env.is_root() is True`) should issue simulation calls and process results.
 
+::: tip Threads inside a worker
+Under the [native backend](/guide/backends#native) a worker can use several cores itself, which is worth doing only when there are more cores on the node than workers to fill them. `LIVN_NATIVE_THREADS=auto` divides the node's cores by the ranks on it, so workers do not each claim the whole machine; a `subworld_size` above 1 is NEURON's parallelism and is unrelated. With one worker per core, leave it off.
+:::
+
 ## Async submission
 
 For finer-grained control, you can submit tasks individually and collect results later:

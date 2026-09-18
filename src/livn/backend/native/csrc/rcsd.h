@@ -173,6 +173,20 @@ enum {
 
 /* --- lifecycle ---------------------------------------------------------- */
 RCSD_API const char* rcsd_version(void);
+
+/* Shared-memory threading for the per-node and per-site loops. Results are
+ * bit-identical at any thread count -- the loops split have no cross-iteration
+ * dependency, so no arithmetic and no summation order changes.
+ *
+ * The default is 1, and it stays 1 unless asked: a process that raises it
+ * inside a multi-process sweep would oversubscribe the machine, so the choice
+ * belongs to whoever knows how many processes there are.
+ *
+ * rcsd_set_num_threads returns the count in effect, or -1 on failure (the pool
+ * is left serial and rcsd_last_error says why). Always 1 where threads are
+ * unavailable: Windows, Emscripten, or a build with RCSD_NO_THREADS. */
+RCSD_API int rcsd_set_num_threads(int n);
+RCSD_API int rcsd_num_threads(void);
 RCSD_API const char* rcsd_last_error(void);
 RCSD_API RCSDSim* rcsd_create(double celsius, double v_init);
 RCSD_API void rcsd_destroy(RCSDSim* sim);

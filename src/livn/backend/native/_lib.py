@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import sys
 from ctypes import (
     POINTER,
     c_char_p,
@@ -149,6 +150,8 @@ _c_uint_p = POINTER(c_uint)
 _SIGNATURES = {
     "rcsd_version": (c_char_p, []),
     "rcsd_last_error": (c_char_p, []),
+    "rcsd_set_num_threads": (c_int, [c_int]),
+    "rcsd_num_threads": (c_int, []),
     "rcsd_create": (c_void_p, [c_double, c_double]),
     "rcsd_destroy": (None, [c_void_p]),
     "rcsd_add_cell": (c_int, [c_void_p, c_int, c_int, c_double, c_double, c_double]),
@@ -272,6 +275,7 @@ _SIGNATURES = {
 
 _loaded: ctypes.CDLL | None = None
 _loaded_path: str | None = None
+_threads_configured = False
 
 
 def _module_directory() -> str:
@@ -315,7 +319,8 @@ def _bind(lib: ctypes.CDLL) -> ctypes.CDLL:
     return lib
 
 
-def load(build_if_missing: bool = True) -> ctypes.CDLL:
+def _load_library(build_if_missing: bool = True) -> ctypes.CDLL:
+    """Open and bind the library, with no configuration applied."""
     global _loaded, _loaded_path
     if _loaded is not None:
         return _loaded
@@ -333,6 +338,131 @@ def load(build_if_missing: bool = True) -> ctypes.CDLL:
     return lib
 
 
+def load(build_if_missing: bool = True) -> ctypes.CDLL:
+    """The library, configured from the environment.
+
+    Loading and configuring are separate because `available()` decides whether
+    this backend exists at all: a malformed `LIVN_NATIVE_THREADS` has to be an
+    error the caller sees, not a reason to report the backend as missing.
+    """
+    lib = _load_library(build_if_missing)
+    _threads_from_environment()
+    return lib
+
+
+THREADS_ENV = "LIVN_NATIVE_THREADS"
+
+# What a launcher tells a rank about how many of its siblings share this node.
+# Read from the environment rather than from MPI, so that asking the question
+# never initializes MPI in a process that was not going to use it.
+_LOCAL_RANK_VARS = (
+    "OMPI_COMM_WORLD_LOCAL_SIZE",  # Open MPI
+    "MV2_COMM_WORLD_LOCAL_SIZE",  # MVAPICH2
+    "MPI_LOCALNRANKS",  # MPICH / Hydra
+    "SLURM_NTASKS_PER_NODE",
+)
+
+
+def _local_ranks() -> int:
+    """How many processes of this job share this node, as far as we can tell."""
+    for name in _LOCAL_RANK_VARS:
+        raw = os.environ.get(name)
+        if not raw:
+            continue
+        # SLURM_NTASKS_PER_NODE can read "4(x2)" for a heterogeneous allocation
+        head = raw.split("(")[0].strip()
+        try:
+            found = int(head)
+        except ValueError:
+            continue
+        if found > 0:
+            return found
+    # only if MPI is already up; importing it here to count would be a side
+    # effect out of all proportion to the question
+    mpi = sys.modules.get("mpi4py.MPI")
+    if mpi is not None:
+        try:
+            return max(1, int(mpi.COMM_WORLD.Get_size()))
+        except Exception:
+            pass
+    return 1
+
+
+def available_threads() -> int:
+    """The thread count `"auto"` resolves to: this process's share of the cores.
+
+    Cores come from the affinity mask where there is one, so a `taskset` or a
+    cgroup quota is respected rather than the machine's total, and are divided
+    by the processes of this job on this node. It cannot see siblings that no
+    launcher announced -- a shell loop over N invocations looks like one process
+    to each of them -- which is why `"auto"` is something to ask for rather than
+    the default.
+    """
+    if hasattr(os, "sched_getaffinity"):
+        cores = len(os.sched_getaffinity(0))
+    else:  # macOS, Windows
+        cores = os.cpu_count() or 1
+    return max(1, cores // _local_ranks())
+
+
+def set_num_threads(n: int | str) -> int:
+    """Use `n` threads for the per-node and per-site loops; returns the count set.
+
+    `n` may be `"auto"` for this process's share of the cores; see
+    `available_threads`.
+
+    Results are bit-identical at any `n`: the loops split have no cross-iteration
+    dependency, so neither the arithmetic nor the summation order changes.
+
+    The default is 1 and stays 1 unless asked. A process cannot reliably know how
+    many siblings share the machine -- in a sweep that runs one evaluation per
+    core, each process raising this would oversubscribe every core it took -- so
+    the caller decides.
+    """
+    want = available_threads() if n == "auto" else int(n)
+    lib = load()
+    got = int(lib.rcsd_set_num_threads(want))
+    if got < 0:
+        raise RuntimeError(
+            f"could not use {want} threads: {lib.rcsd_last_error().decode()}"
+        )
+    return got
+
+
+def num_threads() -> int:
+    """Threads currently in effect (1 when serial, or where they are unavailable)."""
+    return int(load().rcsd_num_threads())
+
+
+def _threads_from_environment() -> None:
+    """Apply `LIVN_NATIVE_THREADS` once: a positive integer, or "auto".
+
+    Once, so that a later explicit `set_num_threads` is not undone by the next
+    call to `load`; and because the nested `set_num_threads` below re-enters
+    `load`, which the flag turns into a no-op rather than a recursion.
+    """
+    global _threads_configured
+    if _threads_configured:
+        return
+    _threads_configured = True
+
+    raw = os.environ.get(THREADS_ENV)
+    if not raw:
+        return
+    if raw.strip().lower() == "auto":
+        set_num_threads("auto")
+        return
+    try:
+        want = int(raw)
+    except ValueError:
+        raise ValueError(
+            f'{THREADS_ENV} must be a positive integer or "auto", got {raw!r}'
+        ) from None
+    if want < 1:
+        raise ValueError(f"{THREADS_ENV} must be >= 1, got {want}")
+    set_num_threads(want)
+
+
 def loaded_path() -> str | None:
     return _loaded_path
 
@@ -340,10 +470,12 @@ def loaded_path() -> str | None:
 def available() -> bool:
     """Whether a library can be loaded without building anything.
 
-    Cheap enough for import time: a file check and a dlopen.
+    Cheap enough for import time: a file check and a dlopen. Deliberately the
+    unconfigured load -- whether the backend exists is a different question from
+    whether its settings parse.
     """
     try:
-        load(build_if_missing=False)
+        _load_library(build_if_missing=False)
     except Exception:
         return False
     return True

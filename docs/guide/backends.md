@@ -31,7 +31,27 @@ it, t, iv, v, *_ = env.run(100)
 
 It is also the only backend that runs in the browser via the PyEmscripten wheel, so `micropip.install("livn")` under Pyodide 314+ gives a simulating environment with bit-identical results (see [Pyodide](/installation/pyodide)).
 
-It is single-process (no MPI) and does not support the `conductance` stimulus mode. Systems whose cells are not one of the two templates above need the NEURON backend. On a source checkout without a wheel, the library is compiled on first use with the system's C compiler into `~/.cache/livn/native` (`LIVN_CACHE_DIR` overrides the location, `LIVN_NATIVE_LIB` points at a library built by hand).
+It is single-process without MPI dependency, though a run can use several cores by using [threads](#threads). Systems whose cells are not one of the two templates above need the NEURON backend. On a source checkout without a wheel, the library is compiled on first use with the system's C compiler into `~/.cache/livn/native` (`LIVN_CACHE_DIR` overrides the location, `LIVN_NATIVE_LIB` points at a library built by hand).
+
+### Threads
+
+Threaded runs allow multi-core parallization on Linux and macOS while staying bit-identical to single-threaded execution as well as the NEURON backend. Threading is off by default but recommended for longer, standalone runs. Turn it on for the process:
+
+```sh
+export LIVN_NATIVE_THREADS=6      # a count
+export LIVN_NATIVE_THREADS=auto   # this process's share of the cores
+```
+
+or from Python, which overrides the variable:
+
+```python
+from livn.backend import native
+
+native.set_num_threads(6)
+native.set_num_threads("auto")
+native.num_threads()        # what is in effect
+native.available_threads()  # what "auto" would resolve to
+```
 
 ## brian2
 
@@ -172,5 +192,6 @@ CoreNEURON can speed up the integration but it comes with the following limitati
 | Multi-compartment models | **Yes** (the rcsd templates) | No | **Yes** | **Yes** |
 | Built-in opsins | **Yes** (RhO3c) | No | **Yes** (RhO3c) | **Yes** (RhO3c, RhO6c) |
 | MPI parallelism | No | No | No | **Yes** |
+| Shared-memory threads | **Yes** ([opt in](#threads)) | No | No | No |
 | Setup complexity | None | Low | Medium | High |
 | Ideal scale | ≤10,000 neurons | ≤1,000 neurons | ≤10,000 neurons | ≤millions |

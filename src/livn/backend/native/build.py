@@ -19,10 +19,20 @@ SOURCES = (
     "opsin.c",
     "stimulus.c",
     "random123.c",
+    "thread.c",
 )
 CACHE_DIR_ENV = "LIVN_CACHE_DIR"
 # the flags are part of the contract, see csrc/Makefile
-POSIX_FLAGS = ("-O2", "-std=c99", "-fno-fast-math", "-fPIC", "-D_USE_MATH_DEFINES")
+POSIX_FLAGS = (
+    "-O2",
+    "-std=c99",
+    "-fno-fast-math",
+    "-fPIC",
+    "-D_USE_MATH_DEFINES",
+    # the worker pool in thread.c; it compiles to a serial fallback where
+    # POSIX threads are unavailable, so this stays harmless there
+    "-pthread",
+)
 MSVC_FLAGS = ("/O2", "/fp:precise", "/D_USE_MATH_DEFINES", "/nologo")
 # WebAssembly, for Pyodide: a side module keeps every exported symbol
 # reachable through dlopen, which is what ctypes goes through there

@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "internal.h"
+#include "thread.h"
 #include "mech.h"
 
 /* Structure of arrays: column p of every site is contiguous, with the
@@ -634,9 +635,10 @@ static double site_current(RCSDSim* sim, int site, int kind, double v) {
 
 /* nrn_cur of every site: the current and its numerical dI/dV, scaled to the
  * node, which eval_membrane sums at the position of the site's type */
-void rcsd_synapse_currents(RCSDSim* sim) {
+static void synapse_currents_range(void* vctx, int begin, int end) {
+    RCSDSim* sim = (RCSDSim*) vctx;
     size_t s;
-    for (s = 0; s < sim->synapses.n; ++s) {
+    for (s = (size_t) begin; s < (size_t) end; ++s) {
         Synapse* syn = &sim->synapses.data[s];
         int node = syn->node;
         double v = sim->v[node];
@@ -650,10 +652,15 @@ void rcsd_synapse_currents(RCSDSim* sim) {
     }
 }
 
-void rcsd_synapse_state_step(RCSDSim* sim) {
+void rcsd_synapse_currents(RCSDSim* sim) {
+    rcsd_parallel_for((int) sim->synapses.n, RCSD_PAR_GRAIN, synapse_currents_range, sim);
+}
+
+static void synapse_state_range(void* vctx, int begin, int end) {
+    RCSDSim* sim = (RCSDSim*) vctx;
     const double dt = sim->dt;
     size_t s;
-    for (s = 0; s < sim->synapses.n; ++s) {
+    for (s = (size_t) begin; s < (size_t) end; ++s) {
         int kind = sim->synapses.data[s].kind;
         /* mod2c's `-(0.0)/((-1.0)/tau) - A` is `+0.0 - A` for any positive tau */
         SS(s, RCSD_SS_A) = SS(s, RCSD_SS_A) + (1.0 - SC(s, SC_EXP_RISE)) * (0.0 - SS(s, RCSD_SS_A));
@@ -666,4 +673,8 @@ void rcsd_synapse_state_step(RCSDSim* sim) {
             SS(s, RCSD_SS_LEARN_INT) = SS(s, RCSD_SS_LEARN_INT) - dt * (-(lw));
         }
     }
+}
+
+void rcsd_synapse_state_step(RCSDSim* sim) {
+    rcsd_parallel_for((int) sim->synapses.n, RCSD_PAR_GRAIN, synapse_state_range, sim);
 }

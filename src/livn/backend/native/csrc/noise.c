@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "internal.h"
+#include "thread.h"
 
 static Noise* find_noise(RCSDSim* sim, int cell, int section) {
     size_t i;
@@ -144,9 +145,17 @@ void rcsd_noise_init(RCSDSim* sim) {
 
 /* BEFORE BREAKPOINT at the step midpoint, then the current of the
  * conductances clipped at zero, in the matrix like every other conductance */
-void rcsd_noise_advance(RCSDSim* sim, double t_mid) {
+typedef struct {
+    RCSDSim* sim;
+    double t_mid;
+} NoiseCtx;
+
+static void noise_advance_range(void* vctx, int begin, int end) {
+    const NoiseCtx* c = (const NoiseCtx*) vctx;
+    RCSDSim* sim = c->sim;
+    const double t_mid = c->t_mid;
     size_t i;
-    for (i = 0; i < sim->noise.n; ++i) {
+    for (i = (size_t) begin; i < (size_t) end; ++i) {
         Noise* n = &sim->noise.data[i];
         if ((n->tau_e != 0.0) || (n->tau_i != 0.0)) {
             if (t_mid - n->t_last >= n->h - 1e-9) {
@@ -177,6 +186,13 @@ void rcsd_noise_advance(RCSDSim* sim, double t_mid) {
             }
         }
     }
+}
+
+void rcsd_noise_advance(RCSDSim* sim, double t_mid) {
+    NoiseCtx ctx;
+    ctx.sim = sim;
+    ctx.t_mid = t_mid;
+    rcsd_parallel_for((int) sim->noise.n, RCSD_PAR_GRAIN, noise_advance_range, &ctx);
 }
 
 /* nrn_cur of every site: the current and its numerical dI/dV, scaled to the

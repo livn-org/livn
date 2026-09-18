@@ -40,7 +40,7 @@ run = env.run(60.0, stimulus=Stimulus.from_current(current, dt=0.025, gids=np.ar
 list(run.spike_times)
 ```
 
-Performance is roughly that of the native build divided by the browser's wasm overhead, but everything is single-threaded, so keep in-browser networks small (e.g. a few dozen cells).
+Performance is roughly that of the native build divided by the browser's wasm overhead. Everything is single-threaded, i.e. the native backend's [worker pool](/guide/backends#threads) is compiled out of the WebAssembly build, and `LIVN_NATIVE_THREADS` has no effect. Therefore, it's best to keep in-browser networks small (e.g. a few dozen cells).
 
 ## Usage
 

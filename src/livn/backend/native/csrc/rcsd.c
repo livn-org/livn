@@ -13,6 +13,7 @@
 
 #include "internal.h"
 #include "mech.h"
+#include "thread.h"
 
 #ifdef RCSD_PROFILE
 #include <time.h>
@@ -670,15 +671,19 @@ static inline void pp_accumulate(RCSDSim* sim, int slot, int node, double* rhs, 
  * 40, Nas 44, RhO3c 45, StdpLinExp2SynInh 47, StdpLinExp2Syn 48,
  * StdpLinExp2SynNMDA 49), so that the sums round as
  * NEURON's do. The ion currents accumulate in the same order. */
-static void eval_membrane(RCSDSim* sim) {
-    const double celsius = sim->celsius;
-    const double fN = can_f(celsius);
-    const double fL = cal_f(celsius);
+typedef struct {
+    RCSDSim* sim;
+    double celsius, fN, fL;
+} MembraneCtx;
+
+static void eval_membrane_range(void* vctx, int begin, int end) {
+    const MembraneCtx* c = (const MembraneCtx*) vctx;
+    RCSDSim* sim = c->sim;
+    const double celsius = c->celsius;
+    const double fN = c->fN;
+    const double fL = c->fL;
     int i;
-    if (sim->pp_dirty || sim->pp_nodes != sim->n_nodes) {
-        rcsd_pp_index(sim);
-    }
-    for (i = 0; i < sim->n_nodes; ++i) {
+    for (i = begin; i < end; ++i) {
         unsigned mech = sim->mech[i];
         double v = sim->v[i];
         double vp = v + 0.001;
@@ -812,11 +817,30 @@ static void eval_membrane(RCSDSim* sim) {
     }
 }
 
+static void eval_membrane(RCSDSim* sim) {
+    MembraneCtx ctx;
+    if (sim->pp_dirty || sim->pp_nodes != sim->n_nodes) {
+        rcsd_pp_index(sim);
+    }
+    ctx.sim = sim;
+    ctx.celsius = sim->celsius;
+    ctx.fN = can_f(sim->celsius);
+    ctx.fL = cal_f(sim->celsius);
+    rcsd_parallel_for(sim->n_nodes, RCSD_PAR_GRAIN, eval_membrane_range, &ctx);
+}
+
 /* the cnexp state updates (nrn_state) at the new voltage */
-static void membrane_states(RCSDSim* sim) {
-    const double dt = sim->dt;
+typedef struct {
+    RCSDSim* sim;
+    double dt;
+} StatesCtx;
+
+static void membrane_states_range(void* vctx, int begin, int end) {
+    const StatesCtx* c = (const StatesCtx*) vctx;
+    RCSDSim* sim = c->sim;
+    const double dt = c->dt;
     int i;
-    for (i = 0; i < sim->n_nodes; ++i) {
+    for (i = begin; i < end; ++i) {
         unsigned mech = sim->mech[i];
         double v = sim->v[i];
         if (!sim->is_centre[i]) {
@@ -862,6 +886,13 @@ static void membrane_states(RCSDSim* sim) {
                                              PR(i, RCSD_P_KCA_CA), dt);
         }
     }
+}
+
+static void membrane_states(RCSDSim* sim) {
+    StatesCtx ctx;
+    ctx.sim = sim;
+    ctx.dt = sim->dt;
+    rcsd_parallel_for(sim->n_nodes, RCSD_PAR_GRAIN, membrane_states_range, &ctx);
 }
 
 /* finitialize: every state at its steady value for v0 */
@@ -1275,6 +1306,41 @@ static int play_inputs(RCSDSim* sim, double horizon) {
     return RCSD_OK;
 }
 
+typedef struct {
+    RCSDSim* sim;
+    double cfac;
+} CapCtx;
+
+/* the capacitance term on the diagonal, and the copy the solve needs */
+static void cap_range(void* vctx, int begin, int end) {
+    const CapCtx* c = (const CapCtx*) vctx;
+    RCSDSim* sim = c->sim;
+    const double cfac = c->cfac;
+    int i;
+    for (i = begin; i < end; ++i) {
+        if (sim->is_centre[i]) {
+            sim->d[i] += cfac * PR(i, RCSD_P_CM);
+        }
+        sim->sav_d[i] = sim->d[i];
+    }
+}
+
+/* the voltage and the ion currents at the midpoint, from the half-step change */
+static void update_range(void* vctx, int begin, int end) {
+    RCSDSim* sim = (RCSDSim*) vctx;
+    int i;
+    for (i = begin; i < end; ++i) {
+        double dvh = sim->rhs[i];
+        if (sim->is_centre[i]) {
+            ST(i, RCSD_S_INA) += sim->dinadv[i] * dvh;
+            ST(i, RCSD_S_IK) += sim->dikdv[i] * dvh;
+            ST(i, RCSD_S_ICA) += sim->dicadv[i] * dvh;
+        }
+        sim->v[i] += 2.0 * dvh;
+        ST(i, RCSD_S_IMEM) = (sim->sav_rhs[i] + sim->sav_d[i] * dvh) * sim->area[i] * 0.01;
+    }
+}
+
 static int advance(RCSDSim* sim) {
     const double dt = sim->dt;
     const long s = sim->step;
@@ -1312,11 +1378,11 @@ static int advance(RCSDSim* sim) {
     PROF_MARK(3);
     eval_membrane(sim);
     PROF_MARK(4);
-    for (i = 0; i < sim->n_nodes; ++i) {
-        if (sim->is_centre[i]) {
-            sim->d[i] += cfac * PR(i, RCSD_P_CM);
-        }
-        sim->sav_d[i] = sim->d[i];
+    {
+        CapCtx cc;
+        cc.sim = sim;
+        cc.cfac = cfac;
+        rcsd_parallel_for(sim->n_nodes, RCSD_PAR_GRAIN, cap_range, &cc);
     }
     for (i = 0; i < sim->n_nodes; ++i) {
         int p = sim->parent[i];
@@ -1335,16 +1401,7 @@ static int advance(RCSDSim* sim) {
      *    midpoint, update the voltage and the fast membrane current */
     solve(sim);
     PROF_MARK(5);
-    for (i = 0; i < sim->n_nodes; ++i) {
-        double dvh = sim->rhs[i];
-        if (sim->is_centre[i]) {
-            ST(i, RCSD_S_INA) += sim->dinadv[i] * dvh;
-            ST(i, RCSD_S_IK) += sim->dikdv[i] * dvh;
-            ST(i, RCSD_S_ICA) += sim->dicadv[i] * dvh;
-        }
-        sim->v[i] += 2.0 * dvh;
-        ST(i, RCSD_S_IMEM) = (sim->sav_rhs[i] + sim->sav_d[i] * dvh) * sim->area[i] * 0.01;
-    }
+    rcsd_parallel_for(sim->n_nodes, RCSD_PAR_GRAIN, update_range, sim);
 
     /* 5. what the per-step callback does: the field for the next step, the
      *    photon flux for this step's kinetics */

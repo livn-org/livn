@@ -7,10 +7,13 @@
 CC ?= cc
 CFLAGS ?= -O2
 CFLAGS += -std=c99 -fno-fast-math -fPIC -Wall -Wextra -D_USE_MATH_DEFINES
+# the worker pool is POSIX threads; thread.c compiles to the serial
+# fallback where they are unavailable, so -pthread is harmless there
+CFLAGS += -pthread
 LDLIBS ?= -lm
 
-SRC := rcsd.c shape.c synapse.c noise.c opsin.c stimulus.c random123.c
-HDR := rcsd.h internal.h mech.h
+SRC := rcsd.c shape.c synapse.c noise.c opsin.c stimulus.c random123.c thread.c
+HDR := rcsd.h internal.h mech.h thread.h
 
 UNAME_S := $(shell uname -s 2>/dev/null)
 ifeq ($(UNAME_S),Darwin)
