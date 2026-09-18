@@ -1,4 +1,10 @@
 /* Cells, geometry, initialisation and the timestep. */
+#ifdef RCSD_PROFILE
+/* clock_gettime and struct timespec are hidden by -std=c99; this has to come
+ * before the first standard header, which is what fixes the namespace. */
+#define _POSIX_C_SOURCE 199309L
+#endif
+
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -11,10 +17,10 @@
 #ifdef RCSD_PROFILE
 #include <time.h>
 static double prof_acc[10];
-static const char* prof_name[10] = {"events", "noise", "membrane", "syn_currents", "noise+opsin+stim", "matrix+solve", "update", "states", "syn_states", "spikes"};
+static const char* prof_name[10] = {"events", "noise", "stim+syn_currents", "noise+opsin_currents", "membrane", "matrix+solve", "update", "states", "syn_states", "spikes"};
 static double prof_now(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return ts.tv_sec + ts.tv_nsec * 1e-9; }
 #define PROF_MARK(i) do { double now_ = prof_now(); prof_acc[i] += now_ - prof_t; prof_t = now_; } while (0)
-void rcsd_profile_dump(void) { int i; double total = 0; for (i = 0; i < 10; ++i) total += prof_acc[i]; for (i = 0; i < 10; ++i) fprintf(stderr, "%-18s %8.2f s %5.1f%%\n", prof_name[i], prof_acc[i], 100 * prof_acc[i] / total); }
+void rcsd_profile_dump(void) { int i; double total = 0; for (i = 0; i < 10; ++i) total += prof_acc[i]; for (i = 0; i < 10; ++i) fprintf(stderr, "%-22s %8.2f s %5.1f%%\n", prof_name[i], prof_acc[i], 100 * prof_acc[i] / total); }
 #else
 #define PROF_MARK(i)
 #endif
