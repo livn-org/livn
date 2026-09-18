@@ -200,7 +200,7 @@ if _USES_JAX:
         def params(self):
             return self.parameterization()
 
-        def default_io(self) -> "IO":
+        def default_io(self) -> IO:
             from livn.io import MEA
 
             if hasattr(self, "uri") and self.uri is not None:
@@ -261,7 +261,7 @@ if _USES_JAX:
             )
 
         @property
-        def gids(self) -> types.Int[types.Array, "n_total_neurons"]:
+        def gids(self) -> types.Int[types.Array, " n_total_neurons"]:
             return np.arange(self.n_populations * self.n_neurons, dtype=np.int32)
 
         @property

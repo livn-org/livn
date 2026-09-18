@@ -4,6 +4,7 @@ import contextlib
 import json
 import logging
 import os
+import pathlib
 import random
 import warnings
 from collections.abc import Callable, Iterator, Sequence
@@ -1181,7 +1182,7 @@ class NeuroH5System:
         return self._neuron_coordinates
 
     @property
-    def gids(self) -> types.Int[types.Array, "n_neurons"]:
+    def gids(self) -> types.Int[types.Array, " n_neurons"]:
         if _USES_JAX:
             return np.asarray(self.neuron_coordinates[:, 0], dtype=int)
 

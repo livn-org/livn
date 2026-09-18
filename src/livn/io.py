@@ -20,6 +20,7 @@ from livn.backend import backend
 from livn.utils import Jsonable
 
 if TYPE_CHECKING:
+    from livn.stimulus import Stimulus
     from livn.types import Array, Float, Int
 
 _USES_JAX = False
@@ -284,7 +285,7 @@ class IO(Jsonable):
         raise NotImplementedError("Please specify an IO")
 
     @property
-    def channel_ids(self) -> Int[Array, "n_channel_ids"]:
+    def channel_ids(self) -> Int[Array, " n_channel_ids"]:
         raise NotImplementedError("Please specify an IO")
 
     def reach(
@@ -314,8 +315,8 @@ class IO(Jsonable):
     def channel_recording(
         self,
         neuron_coordinates: Float[Array, "n_coords ixyz=4"],
-        ii: Float[Array, "i"],
-        *recordings: Float[Array, "_"],
+        ii: Float[Array, " i"],
+        *recordings: Float[Array, " _"],
     ) -> tuple[dict[int, Array], ...]:
         """Transforms neural recordings identified by their gids into per channel recordings"""
         raise NotImplementedError("Please specify an IO")
@@ -402,7 +403,7 @@ class MEA(IO):
         return "uA"
 
     @property
-    def channel_ids(self) -> Int[Array, "n_channel_ids"]:
+    def channel_ids(self) -> Int[Array, " n_channel_ids"]:
         return self.electrode_coordinates[:, 0].astype(np.int32)
 
     def serialize(self) -> dict:
@@ -456,8 +457,8 @@ class MEA(IO):
     def channel_recording(
         self,
         neuron_coordinates: Float[Array, "n_coords ixyz=4"] | None,
-        ii: Float[Array, "i"],
-        *recordings: Float[Array, "_"],
+        ii: Float[Array, " i"],
+        *recordings: Float[Array, " _"],
     ) -> tuple[dict[int, Array], ...]:
         if ii is None:
             ii = np.unique(neuron_coordinates[:, 0])
@@ -655,7 +656,7 @@ class LightArray(IO):
         return "mW"
 
     @property
-    def channel_ids(self) -> Int[Array, "n_channel_ids"]:
+    def channel_ids(self) -> Int[Array, " n_channel_ids"]:
         return self.fiber_coordinates[:, 0].astype(np.int32)
 
     def cell_stimulus(
@@ -695,8 +696,8 @@ class LightArray(IO):
     def channel_recording(
         self,
         neuron_coordinates: Float[Array, "n_coords ixyz=4"] | None,
-        ii: Float[Array, "i"],
-        *recordings: Float[Array, "_"],
+        ii: Float[Array, " i"],
+        *recordings: Float[Array, " _"],
     ) -> tuple[dict[int, Array], ...]:
         raise NotImplementedError("LightArray does not support recording")
 
@@ -773,7 +774,7 @@ class ComposedIO(IO):
         return self.inputs.input_units
 
     @property
-    def channel_ids(self) -> Int[Array, "n_channel_ids"]:
+    def channel_ids(self) -> Int[Array, " n_channel_ids"]:
         return self.outputs.channel_ids
 
     def cell_stimulus(
@@ -790,8 +791,8 @@ class ComposedIO(IO):
     def channel_recording(
         self,
         neuron_coordinates: Float[Array, "n_coords ixyz=4"] | None,
-        ii: Float[Array, "i"],
-        *recordings: Float[Array, "_"],
+        ii: Float[Array, " i"],
+        *recordings: Float[Array, " _"],
     ) -> tuple[dict[int, Array], ...]:
         return self.outputs.channel_recording(neuron_coordinates, ii, *recordings)
 
@@ -840,7 +841,7 @@ def calculate_distances(
 
 
 def channel_recording(
-    ci: Float[Array, "n ci_"], ii: Float[Array, "i"], *recordings: Float[Array, "_"]
+    ci: Float[Array, "n ci_"], ii: Float[Array, " i"], *recordings: Float[Array, " _"]
 ) -> tuple[dict[int, Array], ...]:
     """Given channel-neuron mapping, converts recording into per-channel recording"""
     r = tuple(defaultdict(_empty_array) for _ in range(len(recordings) + 1))
@@ -934,7 +935,7 @@ if _USES_JAX:
         electrode_stimulus: Float[Array, "batch timestep n_channels"],
         c_induction: Float[Array, "n_inductions cip=3"],
         n_gids: int | None = None,
-        keep: Int[Array, "n_keep"] | None = None,
+        keep: Int[Array, " n_keep"] | None = None,
     ) -> Float[Array, "batch timestep n_gids"]:
         """
         Calculate the stimulus strength for each cell gid and each timestep
@@ -1003,7 +1004,7 @@ else:
         cell_induction: Float[Array, "n_inductions cip=3"],
         n_gids: int | None = None,
         *args,
-        keep: Int[Array, "n_keep"] | None = None,
+        keep: Int[Array, " n_keep"] | None = None,
         **kwargs,
     ) -> Float[Array, "batch timestep n_gids"]:
         """

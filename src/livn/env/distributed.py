@@ -267,8 +267,8 @@ class DistributedEnv(EnvProtocol):
 
     def channel_recording(
         self,
-        ii: Float[Array, "i"],
-        *recordings: Float[Array, "_"],
+        ii: Float[Array, " i"],
+        *recordings: Float[Array, " _"],
     ) -> tuple[dict[int, Array], ...]:
         raise NotImplementedError(
             "Please implement the channel recording as part of the decoding in __call__"

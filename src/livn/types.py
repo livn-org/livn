@@ -122,7 +122,7 @@ class System(Protocol):
     populations: list[PopulationName]
     """Population names"""
 
-    gids: Int[Array, "n_neurons"]
+    gids: Int[Array, " n_neurons"]
     """Global cell ids across all populations"""
 
     population_ranges: dict[PopulationName, tuple[int, int]]
@@ -409,8 +409,8 @@ class Env(Protocol):
 
     def channel_recording(
         self,
-        ii: Float[Array, "i"] | None,
-        *recordings: Float[Array, "_"],
+        ii: Float[Array, " i"] | None,
+        *recordings: Float[Array, " _"],
     ) -> tuple[dict[int, Array], ...]:
         """Transforms neural recordings identified by their gids into per channel recordings"""
         return self.io.channel_recording(

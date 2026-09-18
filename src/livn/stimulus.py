@@ -106,10 +106,10 @@ class Stimulus:
         self,
         array: Float[Array, "timestep n_gids"] | None = None,
         dt: float = 1.0,
-        gids: Int[Array, "n_gids"] | None = None,
+        gids: Int[Array, " n_gids"] | None = None,
         input_mode: str = "extracellular",
         units: str | None = None,
-        sections: Int[Array, "n_gids"] | None = None,
+        sections: Int[Array, " n_gids"] | None = None,
         source: Callable[[float, float], Array] | None = None,
         extent: float | None = None,
         **extra,
@@ -315,7 +315,7 @@ class Stimulus:
         cls,
         conductance: Float[Array, "timestep n_gids"],
         dt: float = 0.1,
-        gids: Int[Array, "n_gids"] | None = None,
+        gids: Int[Array, " n_gids"] | None = None,
         **extra,
     ) -> Stimulus:
         """Create stimulus from synaptic conductance values
@@ -340,7 +340,7 @@ class Stimulus:
         cls,
         current: Float[Array, "timestep n_gids"],
         dt: float = 0.1,
-        gids: Int[Array, "n_gids"] | None = None,
+        gids: Int[Array, " n_gids"] | None = None,
         **extra,
     ) -> Stimulus:
         """Create stimulus from direct current injection
@@ -360,7 +360,7 @@ class Stimulus:
         cls,
         current_density: Float[Array, "timestep n_gids"],
         dt: float = 0.1,
-        gids: Int[Array, "n_gids"] | None = None,
+        gids: Int[Array, " n_gids"] | None = None,
         **extra,
     ) -> Stimulus:
         """Create stimulus from current density
@@ -385,7 +385,7 @@ class Stimulus:
         cls,
         voltage: Float[Array, "timestep n_gids"],
         dt: float = 0.1,
-        gids: Int[Array, "n_gids"] | None = None,
+        gids: Int[Array, " n_gids"] | None = None,
         **extra,
     ) -> Stimulus:
         return cls(
@@ -402,7 +402,7 @@ class Stimulus:
         cls,
         irradiance: Float[Array, "timestep n_gids"],
         dt: float = 0.1,
-        gids: Int[Array, "n_gids"] | None = None,
+        gids: Int[Array, " n_gids"] | None = None,
         **extra,
     ) -> Stimulus:
         """Optical stimulus as irradiance at each neuron (mW/mm^2).
@@ -457,7 +457,7 @@ class Stimulus:
     @staticmethod
     def align_gids(
         stimulus: Stimulus,
-        all_gids: Int[Array, "n_total_gids"],
+        all_gids: Int[Array, " n_total_gids"],
     ) -> Stimulus:
         """Expand stimulus array to cover all_gids, zero-padding missing neurons"""
         if stimulus.gids is None:

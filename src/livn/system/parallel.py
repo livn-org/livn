@@ -197,7 +197,7 @@ class ParallelSystem:
         return self._neuron_coordinates
 
     @property
-    def gids(self) -> types.Int[types.Array, "n_neurons"]:
+    def gids(self) -> types.Int[types.Array, " n_neurons"]:
         if _USES_JAX:
             return np.asarray(self._neuron_coordinates[:, 0], dtype=int)
 
