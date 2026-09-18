@@ -22,6 +22,78 @@ tests/cli verify --slow             # including the long reference comparisons
 tests/cli verify --backend brian2 --skip-tier concurrency
 ```
 
+## Nothing downloads a system
+
+Every tier runs on `./testing/culture.json`, a 40-cell `Monolayer` drawn at
+init, so a checkout is enough to run the suite. `LIVN_TEST_SYSTEM` points at
+that spec, and `--system` replaces it with any graph directory or JSON spec.
+
+What a spec cannot be is an h5 file, and a handful of tests are about the h5
+readers themselves -- the pyfive/neuroh5 differential is what lets the native
+backend read a graph with no HDF5 library. Those ask for a *graph directory*
+through `livn_test_h5_system()` (`LIVN_TEST_H5_SYSTEM`, default
+`./systems/graphs/test`) and **skip when there is none**, rather than reading
+`LIVN_TEST_SYSTEM` and failing on a spec where they wanted a directory.
+
+Build the fixture instead of fetching one:
+
+```bash
+tests/cli generate-system           # ./testing/culture.json -> ./systems/graphs/test
+```
+
+Two seconds, 372 KB, and at the current graph format by construction. It needs
+`neuroh5` and `mpi4py` (they are what writes it, and what the readers are
+checked against), plus what `systems/generate_2d.py` imports. The spec carries
+a seed, so the rebuild is deterministic; `--force` replaces an older copy, which
+is worth doing after a graph format bump because a stale one still reads, with
+only a warning.
+
+`tests/cli download-system` still fetches a published system when you want the
+real thing; nothing in the test suite requires it.
+
+## Reproducing a CI failure
+
+The backend suites and the long reference comparisons run weekly, not on every
+push, so the first sight of a breakage is usually a red job in a run nobody
+watched. `tests/cli ci` is that run, here:
+
+```bash
+tests/cli ci                      # every job, hours
+tests/cli ci --job test-neuron    # the one that went red
+tests/cli ci --list-jobs          # what each job stands for
+```
+
+It differs from CI in the two ways that matter for finding things out.
+
+**It does not stop at the first failure.** CI fails a job and abandons the rest
+of it; one pass here reports every job, and every step within a job, so a
+morning of fixing starts from the whole list rather than from the first item on
+it. `--fail-fast` restores the CI behaviour when you already know what you are
+looking for.
+
+**Every job's output is kept.** Each goes to `tests/tmp/ci/<timestamp>/<job>.log`
+with the CI command it stands for in its first line, alongside an
+`environment.txt` -- commit, interpreter, package versions, MPI flavour,
+uncommitted files -- and a `summary.txt`. `tests/tmp/ci/latest` points at the
+newest run. The summary repeats each failing job's `FAILED`/`ERROR` lines, which
+is normally enough to pick the one test to iterate on. `--quiet` keeps the
+output in the logs only.
+
+What cannot be reproduced is reported rather than failed. A job whose dependency
+this venv does not have is `SKIP`, naming the `uv sync` that would install it,
+because a missing `brian2` is not a broken `brian2`. The three-OS matrix of
+`test-native` becomes this OS alone. And `--oversubscribe` stays opt-in: CI runs
+Open MPI, where the flag is correct, and a local MPICH rejects it and fails every
+mpiexec test (`environment.txt` records which one you have).
+
+Only one may run at a time -- a second is refused rather than queued. Two suites
+at once produce false timeouts, a 137s test exceeding a 300s limit, and a
+contention artefact reads exactly like a bug. Ctrl-C prints the summary of what
+had run by then and names the job it stopped in the middle of.
+
+The job list mirrors `.github/workflows/ci.yml`; a job added there needs one
+here.
+
 ## The fast tier is enforced, not merely intended
 
 `tests/unit/conftest.py` makes the expensive things fail there: constructing an

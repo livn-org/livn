@@ -8,7 +8,11 @@ Commands:
   fast             The fast tier: tests/unit, no Env, no MPI, no simulation
   verify           The pre-commit tiers: unit + contract + concurrency + gradients
   test             Alias for 'verify' (kept for CI)
-  download-system  Download the test system (default: EI)
+  ci               Every job of the weekly CI run, locally, to completion,
+                   with each job's output captured to a log file
+  generate-system  Build a graph directory from a spec, for the tests that are
+                   about NeuroH5 itself (needs neuroh5 and mpi4py)
+  download-system  Download a published system (default: EI)
 
 Options for 'fast':
   --args <pytest-args>    Extra arguments passed to pytest
@@ -26,6 +30,24 @@ Options for 'verify' / 'test':
                           rejects it and every mpiexec test then fails)
   --args <pytest-args>    Extra arguments passed to pytest
 
+Options for 'ci':
+  --log-dir <path>        Where the logs go (default: tests/tmp/ci/<timestamp>,
+                          with tests/tmp/ci/latest pointing at the newest run)
+  --job <name>            Only these jobs; repeatable
+  --skip-job <name>       Every job but these; repeatable
+  --list-jobs             Print the job names and exit
+  --no-slow               Leave out the long reference comparisons
+  --fail-fast             Stop at the first failing job (default: run them all)
+  --quiet                 Log only; do not echo each job's output
+  --oversubscribe         Pass --oversubscribe to mpiexec (Open MPI only)
+  --args <pytest-args>    Extra arguments passed to pytest
+
+Options for 'generate-system':
+  --system    <path>  Spec to build from (default: ./testing/culture.json)
+  --directory <path>  Where to write it (default: ./systems/graphs/test, which
+                      is where LIVN_TEST_H5_SYSTEM looks by default)
+  --force             Overwrite the directory if it is already there
+
 Options for 'download-system':
   --name      <name>  System to download (default: EI)
   --directory <path>  Download directory (default: .)
@@ -35,6 +57,10 @@ Examples:
   tests/cli verify --backend diffrax
   tests/cli verify --tier concurrency --backend neuron
   tests/cli verify --slow
+  tests/cli ci                            # hours; see tests/README.md first
+  tests/cli ci --job test-neuron
+  tests/cli ci --skip-job test-brian2 --no-slow
+  tests/cli generate-system         # the h5 fixture, ~2s, no download
 "
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -202,6 +228,466 @@ case "$cmd" in
       fi
     done
     exit $status
+    ;;
+
+  ci)
+    # Every job of .github/workflows/ci.yml's weekly run, here, in one process
+    # tree, serialized. Unlike CI it does not stop at the first failure: the
+    # point is one pass that collects every issue, with each job's output kept
+    # in a log file you can read afterwards or attach to a report.
+    log_dir=""
+    only_jobs=()
+    skip_jobs=()
+    list_jobs=false
+    slow=true
+    fail_fast=false
+    quiet=false
+    oversubscribe=false
+    pytest_args=""
+
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --log-dir) log_dir="$2"; shift 2 ;;
+        --job) only_jobs+=("$2"); shift 2 ;;
+        --job=*) only_jobs+=("${1#*=}"); shift ;;
+        --skip-job) skip_jobs+=("$2"); shift 2 ;;
+        --skip-job=*) skip_jobs+=("${1#*=}"); shift ;;
+        --list-jobs) list_jobs=true; shift ;;
+        --slow) slow=true; shift ;;
+        --no-slow) slow=false; shift ;;
+        --fail-fast) fail_fast=true; shift ;;
+        --quiet) quiet=true; shift ;;
+        --oversubscribe) oversubscribe=true; shift ;;
+        --args) pytest_args="$2"; shift 2 ;;
+        *) echo "Unknown option: $1"; echo "$USAGE"; exit 1 ;;
+      esac
+    done
+
+    # the ci.yml jobs, ordered by their `needs:` chain, cheap gates first: a
+    # formatting slip should not surface an hour into the backend suites
+    CI_JOBS=(lint types fast h5-system test-default test-diffrax \
+             test-neuron test-native test-brian2)
+
+    ci_job_command() {
+      case "$1" in
+        lint)            echo "ruff format --check; ruff check" ;;
+        types)           echo "ty check optimization" ;;
+        fast)            echo "tests/cli fast" ;;
+        h5-system)       echo "tests/cli generate-system (a step of the neuron jobs)" ;;
+        test-default)    echo "tests/cli verify --backend none" ;;
+        test-diffrax)    echo "tests/cli verify --backend diffrax" ;;
+        test-neuron)     echo "tests/cli verify --backend neuron" ;;
+        test-native)     echo "build librcsd; tests/unit/test_native_build.py; a graphless run; tests/cli verify --tier contract --backend native" ;;
+        test-brian2)     echo "tests/cli verify --backend brian2 --skip-tier concurrency" ;;
+        *) echo "Unknown job: $1" >&2; return 1 ;;
+      esac
+    }
+
+    if $list_jobs; then
+      for job in "${CI_JOBS[@]}"; do
+        printf '  %-16s %s\n' "$job" "$(ci_job_command "$job")"
+      done
+      exit 0
+    fi
+
+    ci_known_job() {
+      for known in "${CI_JOBS[@]}"; do
+        [[ "$1" == "$known" ]] && return 0
+      done
+      return 1
+    }
+
+    for name in ${only_jobs[@]+"${only_jobs[@]}"} ${skip_jobs[@]+"${skip_jobs[@]}"}; do
+      if ! ci_known_job "$name"; then
+        echo "Unknown job: $name" >&2
+        echo "Known jobs: ${CI_JOBS[*]}" >&2
+        exit 1
+      fi
+    done
+
+    selected=()
+    for job in "${CI_JOBS[@]}"; do
+      if [[ ${#only_jobs[@]} -gt 0 ]]; then
+        wanted=false
+        for name in "${only_jobs[@]}"; do
+          [[ "$job" == "$name" ]] && wanted=true
+        done
+        $wanted || continue
+      fi
+      for name in ${skip_jobs[@]+"${skip_jobs[@]}"}; do
+        [[ "$job" == "$name" ]] && continue 2
+      done
+      selected+=("$job")
+    done
+    if [[ ${#selected[@]} -eq 0 ]]; then
+      echo "No jobs selected."
+      exit 0
+    fi
+
+    # two suites at once produce false timeouts -- a 137s test exceeding a 300s
+    # limit -- and a contention artefact reads exactly like a bug
+    ci_lock="$PROJECT_DIR/tests/tmp/ci/.lock"
+    mkdir -p "$(dirname "$ci_lock")"
+    if ! mkdir "$ci_lock" 2> /dev/null; then
+      holder="$(cat "$ci_lock/pid" 2> /dev/null || true)"
+      if [[ -n "$holder" ]] && kill -0 "$holder" 2> /dev/null; then
+        echo "another 'tests/cli ci' is running (pid $holder)." >&2
+        echo "Running two at once makes every timing meaningless. Wait for it," >&2
+        echo "or remove $ci_lock if you know it is stale." >&2
+        exit 1
+      fi
+      echo "(clearing a stale lock left by pid ${holder:-unknown})"
+      rm -rf "$ci_lock"
+      mkdir "$ci_lock"
+    fi
+    echo $$ > "$ci_lock/pid"
+    trap 'rm -rf "$ci_lock"' EXIT
+
+    log_dir_default=false
+    if [[ -z "$log_dir" ]]; then
+      log_dir="$PROJECT_DIR/tests/tmp/ci/$(date -u +%Y%m%d-%H%M%S)"
+      log_dir_default=true
+    fi
+    mkdir -p "$log_dir"
+    log_dir="$(cd "$log_dir" && pwd)"
+    if $log_dir_default; then
+      ln -sfn "$log_dir" "$(dirname "$log_dir")/latest" 2> /dev/null || true
+    fi
+
+    # a job that cannot run here, rather than one that failed: the dependency
+    # CI installs in its own runner is not installed in this venv
+    CI_SKIP=77
+
+    ci_step() {
+      echo
+      echo "\$ $*"
+      "$@"
+    }
+
+    ci_missing() {
+      # $1 importable module, $2 how to get it
+      if python -c "import $1" > /dev/null 2>&1; then
+        return 1
+      fi
+      echo "$1 is not installed here; CI installs it in this job's runner ($2)"
+      return 0
+    }
+
+    verify_flags=()
+    $slow && verify_flags+=(--slow)
+    [[ -n "$pytest_args" ]] && verify_flags+=(--args "$pytest_args")
+    neuron_flags=(${verify_flags[@]+"${verify_flags[@]}"})
+    $oversubscribe && neuron_flags+=(--oversubscribe)
+    fast_flags=()
+    [[ -n "$pytest_args" ]] && fast_flags+=(--args "$pytest_args")
+
+    # CI runs ruff over the whole tree with no path arguments, which is not
+    # what `tests/cli lint` does (it passes tracked files); reproduce CI
+    job_lint() {
+      local code=0
+      ci_step ruff format --check || code=$?
+      ci_step ruff check || code=$?
+      return $code
+    }
+
+    job_types() {
+      if ! command -v ty > /dev/null 2>&1; then
+        echo "ty is not installed here (uv sync --group dev)"
+        return $CI_SKIP
+      fi
+      # CI gates `optimization` only; src is not at zero yet
+      ci_step ty check optimization
+    }
+
+    job_fast() {
+      ci_step "$0" fast ${fast_flags[@]+"${fast_flags[@]}"}
+    }
+
+    job_h5_system() {
+      if ci_missing neuroh5 "uv sync --group neuron"; then return $CI_SKIP; fi
+      # CI builds this fresh on every run, and the spec carries a seed, so the
+      # rebuild is deterministic. An older copy left here would be a different
+      # fixture to chase a CI failure against -- and one from before the v1
+      # graph format still reads, with a warning, which is the quiet kind of
+      # difference this command exists to remove.
+      ci_step "$0" generate-system --force
+    }
+
+    job_test_default() {
+      ci_step "$0" verify --backend none ${verify_flags[@]+"${verify_flags[@]}"}
+    }
+
+    job_test_diffrax() {
+      if ci_missing diffrax "uv sync --extra diffrax"; then return $CI_SKIP; fi
+      ci_step "$0" verify --backend diffrax ${verify_flags[@]+"${verify_flags[@]}"}
+    }
+
+    job_test_neuron() {
+      if ci_missing neuron "uv sync --group neuron"; then return $CI_SKIP; fi
+      ci_step "$0" verify --backend neuron ${neuron_flags[@]+"${neuron_flags[@]}"}
+    }
+
+    job_test_native() {
+      local code=0
+      # nothing downstream means anything if the library did not build
+      ci_step python -c "from livn.backend.native.build import compile_library; print(compile_library(force=True))" || return $?
+      ci_step pytest tests/unit/test_native_build.py -q || code=$?
+      # CI's runner has no other backend installed, so `backend()` resolves to
+      # native on its own; here it would not, hence the explicit LIVN_BACKEND
+      ci_step env LIVN_BACKEND=native python -c '
+from livn.backend import backend
+assert backend() == "native", backend()
+from livn.env import Env
+env = Env(64).init()
+env.record_spikes()
+run = env.run(100)
+assert run.duration == 100
+print("64 cells x 100 ms on", backend())
+env.close()
+' || code=$?
+      ci_step "$0" verify --tier contract --backend native ${verify_flags[@]+"${verify_flags[@]}"} || code=$?
+      return $code
+    }
+
+    job_test_brian2() {
+      if ci_missing brian2 "uv sync --extra brian2"; then return $CI_SKIP; fi
+      # the concurrency tier tests nothing brian2-specific and costs ~45 min,
+      # so CI skips it here too
+      ci_step env LIVN_USE_LIBGSL="${LIVN_USE_LIBGSL:-1}" \
+        "$0" verify --backend brian2 --skip-tier concurrency \
+        ${verify_flags[@]+"${verify_flags[@]}"}
+    }
+
+    mpi_flavor() {
+      # which MPI this is decides whether --oversubscribe is a valid flag, so
+      # a log that does not say is a log you cannot reproduce a failure from
+      local out
+      command -v mpiexec > /dev/null 2>&1 || { echo "(absent)"; return 0; }
+      out="$(mpiexec --version 2>&1)" || true
+      if grep -qai 'open mpi' <<< "$out"; then
+        echo "Open MPI $(grep -aoE '[0-9]+\.[0-9]+(\.[0-9]+)?' <<< "$out" | head -1) (--oversubscribe applies)"
+      elif grep -qaiE 'hydra|mpich' <<< "$out"; then
+        echo "MPICH/Hydra $(grep -aoE '[0-9]+\.[0-9]+(\.[0-9]+)?' <<< "$out" | head -1) (--oversubscribe would fail every mpiexec test)"
+      else
+        head -1 <<< "$out"
+      fi
+    }
+
+    tool_version() {
+      if command -v "$1" > /dev/null 2>&1; then
+        "$@" 2>&1 | head -1
+      else
+        echo "(absent)"
+      fi
+    }
+
+    ci_environment() {
+      echo "date:     $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+      echo "host:     $(uname -srm) $(hostname)"
+      echo "commit:   $(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null || echo '(no git)')"
+      echo "branch:   $(git -C "$PROJECT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '-')"
+      echo "python:   $(python --version 2>&1) at $(command -v python)"
+      echo "pytest:   $(tool_version pytest --version)"
+      echo "ruff:     $(tool_version ruff --version)"
+      echo "ty:       $(tool_version ty --version)"
+      echo "mpiexec:  $(mpi_flavor)"
+      echo "slow:     $slow"
+      echo
+      echo "packages:"
+      python -c '
+from importlib.metadata import version, PackageNotFoundError
+for name in ("livn", "numpy", "jax", "diffrax", "brian2", "neuron", "neuroh5", "mpi4py", "h5py"):
+    try:
+        print(f"  {name}=={version(name)}")
+    except PackageNotFoundError:
+        print(f"  {name} (absent)")
+' 2>&1
+      echo
+      echo "uncommitted:"
+      git -C "$PROJECT_DIR" status --short 2>/dev/null | sed 's/^/  /' || true
+    }
+
+    fmt_duration() {
+      local s=$1
+      if (( s < 60 )); then printf '%ds' "$s"
+      elif (( s < 3600 )); then printf '%dm%02ds' $((s / 60)) $((s % 60))
+      else printf '%dh%02dm' $((s / 3600)) $(((s % 3600) / 60)); fi
+    }
+
+    ci_names=()
+    ci_states=()
+    ci_codes=()
+    ci_times=()
+    ci_notes=()
+
+    ci_summary() {
+      local passed=0 failed=0 skipped=0 interrupted=0 i
+      echo
+      echo "=== ci summary ==="
+      for i in "${!ci_names[@]}"; do
+        printf '  %-6s %-16s %8s  %s\n' \
+          "${ci_states[$i]}" "${ci_names[$i]}" \
+          "$(fmt_duration "${ci_times[$i]}")" "${ci_notes[$i]}"
+        case "${ci_states[$i]}" in
+          PASS) passed=$((passed + 1)) ;;
+          FAIL) failed=$((failed + 1)) ;;
+          SKIP) skipped=$((skipped + 1)) ;;
+          INT)  interrupted=$((interrupted + 1)) ;;
+        esac
+      done
+      echo
+      for i in "${!ci_names[@]}"; do
+        [[ "${ci_states[$i]}" == "FAIL" ]] || continue
+        local log="$log_dir/${ci_names[$i]}.log"
+        local fails
+        fails="$(grep -aE '^(FAILED|ERROR) ' "$log" 2>/dev/null | sort -u || true)"
+        if [[ -n "$fails" ]]; then
+          echo "${ci_names[$i]}:"
+          printf '%s\n' "$fails" | sed 's/^/  /'
+          echo
+        fi
+      done
+      local tally="$passed passed, $failed failed, $skipped skipped"
+      (( interrupted )) && tally="$tally, $interrupted interrupted"
+      echo "$tally in $(fmt_duration $(( $(date +%s) - ci_started )))"
+      echo "logs: $log_dir"
+    }
+
+    ci_report() {
+      # the summary goes to the terminal and to the log directory both
+      ci_summary | tee "$log_dir/summary.txt"
+    }
+
+    ci_interrupted() {
+      if [[ -n "${ci_current:-}" ]]; then
+        ci_names+=("$ci_current")
+        ci_states+=("INT")
+        ci_codes+=(130)
+        ci_times+=("$(( $(date +%s) - ci_current_started ))")
+        ci_notes+=("$log_dir/$ci_current.log (stopped part way)")
+      fi
+      echo
+      echo "interrupted; what had run by then:"
+      ci_report
+      echo "note: an abandoned mpiexec test can leave ranks behind -- check" >&2
+      echo "      with 'pgrep -a mpiexec' before timing anything else." >&2
+      exit 130
+    }
+    trap ci_interrupted INT
+
+    ci_started=$(date +%s)
+    ci_environment > "$log_dir/environment.txt" 2>&1
+    echo "=== ci: ${#selected[@]} job(s), logs in $log_dir ==="
+    if [[ ${#selected[@]} -eq ${#CI_JOBS[@]} ]]; then
+      echo "  this is the whole weekly run; expect hours. Every job runs even"
+      echo "  after one fails, and Ctrl-C prints the summary of what did run."
+    fi
+    sed 's/^/  /' "$log_dir/environment.txt"
+
+    ci_index=0
+    ci_status=0
+    for job in "${selected[@]}"; do
+      ci_index=$((ci_index + 1))
+      log="$log_dir/$job.log"
+      {
+        echo "=== $job ==="
+        echo "# CI equivalent: $(ci_job_command "$job")"
+        echo
+      } > "$log"
+      printf '\n=== [%d/%d] %s ===\n' "$ci_index" "${#selected[@]}" "$job"
+
+      started=$(date +%s)
+      ci_current="$job"
+      ci_current_started=$started
+      code=0
+      set +e
+      if $quiet; then
+        "job_${job//-/_}" >> "$log" 2>&1
+        code=$?
+      else
+        "job_${job//-/_}" 2>&1 | tee -a "$log"
+        code=${PIPESTATUS[0]}
+      fi
+      set -e
+      elapsed=$(( $(date +%s) - started ))
+      ci_current=""
+
+      ci_names+=("$job")
+      ci_times+=("$elapsed")
+      ci_codes+=("$code")
+      if [[ $code -eq 0 ]]; then
+        ci_states+=("PASS")
+        ci_notes+=("$log")
+      elif [[ $code -eq $CI_SKIP ]]; then
+        ci_states+=("SKIP")
+        ci_notes+=("$(tail -1 "$log")")
+      else
+        ci_states+=("FAIL")
+        ci_notes+=("$log (exit $code)")
+        ci_status=1
+      fi
+      printf -- '--- %s: %s in %s ---\n' "$job" "${ci_states[-1]}" "$(fmt_duration "$elapsed")"
+
+      if $fail_fast && [[ $code -ne 0 && $code -ne $CI_SKIP ]]; then
+        echo "--fail-fast: stopping at $job"
+        break
+      fi
+    done
+
+    trap - INT
+    ci_report
+    exit $ci_status
+    ;;
+
+  generate-system)
+    # The h5 tests are about the readers, not about scale, so the fixture they
+    # read is built from the same 40-cell spec the other tiers run on rather
+    # than downloaded. It is a v1 graph by construction, which is one less
+    # thing to keep in step than a cached copy of a published system.
+    system="./testing/culture.json"
+    directory="./systems/graphs/test"
+    force=false
+
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --system)    system="$2";    shift 2 ;;
+        --directory) directory="$2"; shift 2 ;;
+        --force)     force=true;     shift ;;
+        *) echo "Unknown option: $1"; echo "$USAGE"; exit 1 ;;
+      esac
+    done
+
+    if [[ -d "$directory" ]] && ! $force; then
+      echo "$directory is already there; --force to rebuild it."
+      exit 0
+    fi
+
+    LIVN_GEN_SYSTEM="$system" LIVN_GEN_DIRECTORY="$directory" \
+      LIVN_GEN_ROOT="$PROJECT_DIR" exec python -c '
+import os
+import sys
+
+root = os.environ["LIVN_GEN_ROOT"]
+# systems/ is where the neuroh5 writer lives; it is not part of the package
+sys.path[:0] = [root, os.path.join(root, "systems")]
+
+try:
+    from export import write_neuroh5
+except ImportError as e:
+    raise SystemExit(
+        f"cannot build a graph directory: {e}. It needs neuroh5 and mpi4py, "
+        "plus what systems/generate_2d.py imports (machinable, matplotlib, "
+        "pydantic)."
+    ) from e
+
+from livn.system import resolve
+
+spec = os.environ["LIVN_GEN_SYSTEM"]
+directory = os.environ["LIVN_GEN_DIRECTORY"]
+system = resolve(spec)
+write_neuroh5(system, directory)
+print(f"{spec} -> {directory}: {system.summary()}")
+'
     ;;
 
   download-system)
