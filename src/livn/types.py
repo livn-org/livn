@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
     from livn.cells import CellRegistry
     from livn.io import IO
+    from livn.parallel import Parallelism
     from livn.run import Run
     from livn.stimulus import Stimulus
     from livn.system import Projection
@@ -303,6 +304,18 @@ class Capability(StrEnum):
     EXTRACELLULAR_STIMULUS = "extracellular_stimulus"
     """Delivers an ``extracellular`` (mV) stimulus."""
 
+    THREADS = "threads"
+    """``set_threads()`` can put more than one core of a rank on one run."""
+
+    PARALLEL_RUNS = "parallel_runs"
+    """``run_many()`` solves its replicates together rather than one by one."""
+
+
+def supports(env_or_class, *capabilities) -> bool:
+    """Whether an env (or env class) declares every one of `capabilities`."""
+    declared = getattr(env_or_class, "capabilities", frozenset())
+    return all(Capability(c) in declared for c in capabilities)
+
 
 def _describe(obj) -> dict | None:
     """``{"cls", "kwargs"}`` for a system, model or io."""
@@ -382,8 +395,128 @@ class Env(Protocol):
         io: IO,
         seed: int | None = 123,
         comm: MPI.Intracomm | None = None,
-        subworld_size: int | None = None,
     ): ...
+
+    @classmethod
+    def partition(cls, ranks_per_env: int = 1, comm: MPI.Intracomm | None = None):
+        if int(ranks_per_env) > 1:
+            n = int(ranks_per_env)
+            raise ValueError(
+                f"{cls.__module__} runs one Env per rank, so ranks_per_env={n} "
+                f"would leave {n - 1} of every {n} ranks idle and cut the number "
+                f"of Envs running side by side by {n}x. Use ranks_per_env=1, and "
+                f"run_many() or set_threads() for parallelism instead."
+            )
+
+    @classmethod
+    def finalize(cls) -> None:
+        """Release whatever :meth:`partition` set up. A no-op by default."""
+
+    def set_threads(self, n: int | str) -> Self:
+        """Use `n` cores of this rank for one run, or ``"auto"`` for its share."""
+        raise NotImplementedError(
+            f"{type(self).__name__} runs one core per rank. "
+            f"Use run_many() to overlap whole runs instead."
+        )
+
+    def num_threads(self) -> int:
+        """Cores in use within one rank."""
+        return 1
+
+    def parallelism(self) -> Parallelism:
+        """Active parallelism of the env"""
+        from livn.parallel import Parallelism
+        from livn.utils import P
+
+        return Parallelism(
+            ranks=P.size(comm=self.comm), threads=self.num_threads(), batch=1
+        )
+
+    def run_many(
+        self,
+        duration,
+        stimuli: Sequence[Stimulus | None] | None = None,
+        dt: float = 0.025,
+        *,
+        n: int | None = None,
+        workers: int | str | None = None,
+        **kwargs,
+    ) -> list[Run]:
+        """Run independent replicates of this network and return one Run each.
+
+        Every replicate sees the same system, model and weights and evolves its
+        own state; ``stimuli`` gives one stimulus per replicate, or ``n`` asks
+        for that many differing only in their noise.
+        """
+        cases = self._run_many_cases(stimuli, n)
+        del workers  # a serial loop keeps exactly one replicate in flight
+
+        # Restoring weights is only needed where they are free to move, and it
+        # is not cheap at scale.
+        weights = self.get_weights() if self.plasticity_enabled else None
+        base_stream = self.noise_stream
+
+        runs = []
+        for index, stimulus in enumerate(cases):
+            self._reset_for_replicate(base_stream, index, vary_noise=stimuli is None)
+            if weights is not None:
+                self.set_weights(weights)
+            runs.append(self.run(duration, stimulus, dt=dt, **kwargs))
+        return runs
+
+    def _reset_for_replicate(
+        self, base_stream: int, index: int, vary_noise: bool
+    ) -> None:
+        self.clear(reseed=False)
+        self.reseed_noise(stream=base_stream + index if vary_noise else base_stream)
+
+    @property
+    def noise_stream(self) -> int:
+        return int(getattr(self, "_noise_stream", 0))
+
+    @property
+    def plasticity_enabled(self) -> bool:
+        return bool(getattr(self, "_plasticity_enabled", False))
+
+    @staticmethod
+    def _run_many_cases(
+        stimuli: Sequence[Stimulus | None] | None, n: int | None
+    ) -> list[Stimulus | None]:
+        if stimuli is None and n is None:
+            raise TypeError("run_many needs either `stimuli` or `n`")
+        if stimuli is None:
+            if int(n) < 1:
+                raise ValueError(f"n is a replicate count, so it must be >= 1, not {n}")
+            return [None] * int(n)
+        cases = list(stimuli)
+        if n is not None and len(cases) != int(n):
+            raise ValueError(
+                f"run_many was given {len(cases)} stimuli but n={n}; pass one or "
+                f"the other"
+            )
+        if not cases:
+            raise ValueError("run_many was given no stimuli to run")
+        return cases
+
+    @property
+    def rank(self) -> int:
+        """This process's index in :attr:`comm`; 0 when it is alone."""
+        from livn.utils import P
+
+        return P.rank(comm=self.comm)
+
+    @property
+    def size(self) -> int:
+        """Processes in :attr:`comm`; 1 when this one is alone."""
+        from livn.utils import P
+
+        return P.size(comm=self.comm)
+
+    def is_root(self) -> bool:
+        """Whether this process is the one that collects results."""
+        from livn.utils import P
+
+        return P.is_root(comm=self.comm)
 
     def apply_model_defaults(self, weights: bool = True, noise: bool = True) -> Self:
         self.model.apply_defaults(self, weights=weights, noise=noise)

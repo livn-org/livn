@@ -339,14 +339,25 @@ The random seed controls noise generation and is set during construction:
 env = Env(system, seed=42).init()
 ```
 
-## MPI parallelism
-
-For the NEURON backend, MPI communicators can be passed for distributed simulation:
+## Parallelism
 
 ```python
 from mpi4py import MPI
 
-env = Env(system, comm=MPI.COMM_WORLD, subworld_size=4).init()
+env = Env(system, comm=MPI.COMM_WORLD).init()
+```
+
+```python
+from livn.parallel import partition
+
+partition(4)  # each env's solve spans 4 ranks
+env = Env(system, comm=sub_comm).init()
+```
+
+`env.set_threads(n)` puts several cores on one run where the backend supports it, and `env.run_many(...)` runs independent replicates.
+
+```python
+env.parallelism()     # Parallelism(ranks=4, threads=2, batch=1)
 ```
 
 ::: tip 

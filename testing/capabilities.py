@@ -1,8 +1,7 @@
 def supports(env_or_class, *capabilities) -> bool:
-    from livn.types import Capability
+    from livn.types import supports as _supports
 
-    declared = getattr(env_or_class, "capabilities", frozenset())
-    return all(Capability(c) in declared for c in capabilities)
+    return _supports(env_or_class, *capabilities)
 
 
 def backend_supports(*capabilities) -> bool:

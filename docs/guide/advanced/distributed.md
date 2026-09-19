@@ -5,17 +5,16 @@ The `DistributedEnv` fans out simulation calls to MPI worker processes, allowing
 - Controller (highest MPI rank): submits tasks, collects results, and runs user code.
 - Workers (all other ranks): each initialises an independent `Env` and executes simulation calls on demand.
 
-Workers can themselves be split into *subworlds* of multiple MPI processes to exploit NEURON's parallelization of the each simulation. The `subworld_size` parameter controls how many MPI ranks each worker uses internally. 
-Thus, the total number of MPI processes required is `N = subworld_size x num_workers + 1` where the `+1` accounts for the controller process.
 
 ## Creating a distributed environment
 
 ```python
 from livn.env.distributed import DistributedEnv
+from livn.parallel import Layout
 
 env = DistributedEnv(
     "./systems/graphs/EI",
-    subworld_size=3,  # MPI ranks per worker
+    layout=Layout(ranks_per_env=3),  # MPI ranks one worker's solve spans
 )
 
 env.init()
@@ -53,7 +52,7 @@ if env.is_root():
 Only the controller process (`env.is_root() is True`) should issue simulation calls and process results.
 
 ::: tip Threads inside a worker
-Under the [native backend](/guide/backends#native) a worker can use several cores itself, which is worth doing only when there are more cores on the node than workers to fill them. `LIVN_NATIVE_THREADS=auto` divides the node's cores by the ranks on it, so workers do not each claim the whole machine; a `subworld_size` above 1 is NEURON's parallelism and is unrelated. With one worker per core, leave it off.
+`ranks_per_env` above 1 is NEURON's parallelism. Under the [native backend](/guide/backends#native) the equivalent is threads: a worker can use several cores of its own rank, which is worth doing only when the node has more cores than workers to fill them. `LIVN_NATIVE_THREADS=auto` divides the node's cores by the ranks on it, so workers do not each claim the whole machine. With one worker per core, leave it off.
 :::
 
 ## Async submission

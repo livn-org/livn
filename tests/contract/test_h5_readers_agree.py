@@ -3,9 +3,14 @@ import os
 import numpy as np
 import pytest
 
+from testing import livn_test_h5_system
+
 pytestmark = pytest.mark.slow
 
-SYSTEM_DIR = os.environ.get("LIVN_TEST_SYSTEM", "./systems/graphs/EI")
+
+@pytest.fixture
+def system_dir():
+    return livn_test_h5_system()
 
 
 def _has_neuroh5():
@@ -30,10 +35,10 @@ def _namespace_arrays(namespace):
 
 
 @pytest.fixture
-def cells_filepath():
-    cells = os.path.join(SYSTEM_DIR, "cells.h5")
+def cells_filepath(system_dir):
+    cells = os.path.join(system_dir, "cells.h5")
     if not os.path.isfile(cells):
-        graph = os.path.join(SYSTEM_DIR, "graph.h5")
+        graph = os.path.join(system_dir, "graph.h5")
         if os.path.isfile(graph):
             return graph
         pytest.skip("No test system H5 files found")
@@ -41,10 +46,10 @@ def cells_filepath():
 
 
 @pytest.fixture
-def connections_filepath():
-    connections = os.path.join(SYSTEM_DIR, "connections.h5")
+def connections_filepath(system_dir):
+    connections = os.path.join(system_dir, "connections.h5")
     if not os.path.isfile(connections):
-        graph = os.path.join(SYSTEM_DIR, "graph.h5")
+        graph = os.path.join(system_dir, "graph.h5")
         if os.path.isfile(graph):
             return graph
         pytest.skip("No test system H5 files found")
@@ -277,7 +282,7 @@ class TestPyfiveVsNeuroh5:
 
 @neuroh5_required
 class TestSystemPyfiveVsNeuroh5:
-    def test_coordinate_array_equivalence(self):
+    def test_coordinate_array_equivalence(self, system_dir):
         from livn.system import NeuroH5System
         from livn.system.neuroh5 import (
             _h5_read_cell_attributes_tuple,
@@ -286,7 +291,7 @@ class TestSystemPyfiveVsNeuroh5:
             _pyfive_open,
         )
 
-        system = NeuroH5System(SYSTEM_DIR)
+        system = NeuroH5System(system_dir)
         f = _pyfive_open(system._graph.cells_filepath)
         pop_names = _h5_read_population_names(f)
         pop_ranges = _h5_read_population_ranges(f)
@@ -309,7 +314,7 @@ class TestSystemPyfiveVsNeuroh5:
 
             np.testing.assert_array_almost_equal(coords_n, coords_p)
 
-    def test_cells_meta_data_equivalence(self):
+    def test_cells_meta_data_equivalence(self, system_dir):
         from livn.system import NeuroH5System
         from livn.system.neuroh5 import (
             _h5_read_cell_attribute_info,
@@ -318,7 +323,7 @@ class TestSystemPyfiveVsNeuroh5:
             _pyfive_open,
         )
 
-        system = NeuroH5System(SYSTEM_DIR)
+        system = NeuroH5System(system_dir)
         f = _pyfive_open(system._graph.cells_filepath)
 
         pop_names = _h5_read_population_names(f)
@@ -330,7 +335,7 @@ class TestSystemPyfiveVsNeuroh5:
         assert meta_n.population_ranges == pop_ranges
         assert meta_n.cell_attribute_info == attr_info
 
-    def test_projection_array_equivalence(self):
+    def test_projection_array_equivalence(self, system_dir):
         from livn.system import NeuroH5System
         from livn.system.neuroh5 import (
             _h5_read_graph,
@@ -338,7 +343,7 @@ class TestSystemPyfiveVsNeuroh5:
             _pyfive_open,
         )
 
-        system = NeuroH5System(SYSTEM_DIR)
+        system = NeuroH5System(system_dir)
         f_cells = _pyfive_open(system._graph.cells_filepath)
         pop_ranges = _h5_read_population_ranges(f_cells)
 

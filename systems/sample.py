@@ -17,6 +17,7 @@ import livn
 from livn.decoding import GatherAndMerge, Slice
 from livn.env import Env
 from livn.env.distributed import DistributedEnv
+from livn.parallel import Layout
 from livn.run import Run
 from livn.types import Encoding
 from livn.utils import ObjSpec, P, import_instance
@@ -86,7 +87,7 @@ class Sample(Interface):
             },
             cls=DistributedEnv,
             method=self.config.selection_method,
-            subworld_size=self.config.nprocs_per_worker,
+            layout=Layout(ranks_per_env=self.config.nprocs_per_worker),
         )
 
         env.apply_model_defaults(noise=self.config.noise)

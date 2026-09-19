@@ -5,31 +5,56 @@ import signal
 import time
 import traceback
 from collections.abc import Callable
+from dataclasses import dataclass
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Self
 
 import numpy as np
-from mpi4py import MPI
-from mpi4py.MPI import Intracomm
 
 from livn.env import Env
 from livn.io import IO
+from livn.parallel import Layout
 from livn.types import Env as EnvProtocol
 
 if TYPE_CHECKING:
+    from mpi4py import MPI
+    from mpi4py.MPI import Intracomm
+
     from livn.run import Run
     from livn.stimulus import Stimulus
     from livn.types import Array, Float, Model
 
-world_comm = MPI.COMM_WORLD
-size = world_comm.size
-rank = world_comm.rank
-# NEURON subworlds start from 0 so make controller remainder rank
-controller_rank = size - 1
 
-is_controller = rank == controller_rank
-is_worker = not is_controller
-n_workers = size - 1
+@dataclass(frozen=True)
+class _Job:
+    comm: Intracomm
+    rank: int
+    size: int
+
+    @property
+    def controller_rank(self) -> int:
+        return self.size - 1
+
+    @property
+    def is_controller(self) -> bool:
+        return self.rank == self.controller_rank
+
+    @property
+    def is_worker(self) -> bool:
+        return not self.is_controller
+
+    @property
+    def n_workers(self) -> int:
+        return self.size - 1
+
+
+def _job() -> _Job:
+    from mpi4py import MPI
+
+    comm = MPI.COMM_WORLD
+    return _Job(comm=comm, rank=comm.rank, size=comm.size)
+
+
 start_time = time.time()
 
 _state: dict = {}
@@ -69,8 +94,14 @@ class DistributedEnv(EnvProtocol):
         io: IO | None = None,
         seed: int | None = 123,
         comm: MPI.Intracomm | None = None,
-        subworld_size: int | None = None,
+        *,
+        layout: Layout | None = None,
+        **kwargs,
     ):
+        if kwargs:
+            raise TypeError(
+                f"unexpected keyword argument(s): {', '.join(sorted(kwargs))}"
+            )
         self.controller: MPIController | None = None
         self._result_buffer: dict[int, object] = {}
         self._last_probe_time: float = 0.0
@@ -100,7 +131,7 @@ class DistributedEnv(EnvProtocol):
 
         self.seed = seed
         self.comm = comm
-        self.subworld_size = subworld_size
+        self.layout = layout if layout is not None else Layout()
         self._select: tuple | None = None
 
     def selection(self, select, method: str = "first", bounds=None) -> DistributedEnv:
@@ -150,7 +181,7 @@ class DistributedEnv(EnvProtocol):
         return self._local_io
 
     def is_root(self):
-        return is_controller
+        return _job().is_controller
 
     def init(self):
         args = (self,)
@@ -158,7 +189,7 @@ class DistributedEnv(EnvProtocol):
         _mpi_run(
             controller_fn=_controller_init,
             worker_fn=_worker_init,
-            nprocs_per_worker=self.subworld_size,
+            nprocs_per_worker=self.layout.ranks_per_env,
             args=args,
             auto_exit=False,
         )
@@ -494,6 +525,8 @@ class MPIController:
         self._task_worker: dict[int, int] = {}
 
     def process(self, limit: int = 1000, block: bool = False) -> list[int]:
+        from mpi4py import MPI
+
         if not self.workers_available:
             return []
 
@@ -611,6 +644,8 @@ class MPIController:
         return out
 
     def exit(self) -> None:
+        from mpi4py import MPI
+
         if not self.workers_available:
             return
         while self.get_next_result() is not None:
@@ -665,6 +700,8 @@ class MPIController:
         self._cost[worker] += est
 
     def _flush_pending(self) -> list[int]:
+        from mpi4py import MPI
+
         sent: list[int] = []
         reqs: list[MPI.Request] = []
         while self._queued_ids and self._idle:
@@ -719,6 +756,8 @@ class MPICollectiveBroker:
         self.total_time[gr] = 0.0
 
     def serve(self) -> None:
+        from mpi4py import MPI
+
         my_rank = self.merged_comm.Get_rank()
 
         while True:
@@ -767,6 +806,8 @@ class MPICollectiveBroker:
             self.comm.Isend([done_buf, MPI.BYTE], dest=0, tag=MessageTag.DONE).Wait()
 
     def _recv_from_controller(self) -> tuple[int, Any]:
+        from mpi4py import MPI
+
         status = MPI.Status()
         self.comm.Probe(source=0, tag=MPI.ANY_TAG, status=status)
         tag = status.Get_tag()
@@ -847,14 +888,28 @@ def _mpi_run(
     time_limit: int | None = None,
     auto_exit: bool = True,
 ) -> Any:
-    assert nprocs_per_worker > 0
+    from mpi4py import MPI
 
+    if nprocs_per_worker is None or int(nprocs_per_worker) < 1:
+        raise ValueError(
+            f"nprocs_per_worker is a rank count, so it must be >= 1, "
+            f"not {nprocs_per_worker!r}"
+        )
+
+    from livn.parallel import partition
+
+    partition(int(nprocs_per_worker))
+
+    job = _job()
+    world_comm = job.comm
     if world_comm.size <= 1:
         worker_group = world_comm
     else:
-        worker_group = world_comm.Split(2 if is_controller else 1, key=world_comm.rank)
+        worker_group = world_comm.Split(
+            2 if job.is_controller else 1, key=world_comm.rank
+        )
 
-    if is_controller:
+    if job.is_controller:
         ctrl_comm = world_comm.Split(1, key=0)
         ctl = MPIController(ctrl_comm, time_limit=time_limit)
         signal.signal(signal.SIGINT, lambda *_: ctl.abort())
@@ -875,7 +930,7 @@ def _mpi_run(
 
     ctrl_comm = world_comm.Split(
         1 if am_broker else 2,
-        key=0 if is_controller else 1,
+        key=0 if job.is_controller else 1,
     )
 
     first = (worker_id - 1) * nprocs_per_worker
@@ -918,6 +973,8 @@ class _ControllerSystem:
     _UNCACHED = frozenset({"neuron_coordinates", "gids"})
 
     def __init__(self, uri: str):
+        from mpi4py import MPI
+
         from livn.system import resolve
 
         #  a graph directory, a spec file, or a cell count
@@ -984,6 +1041,8 @@ def _env_query(attribute: str):
 
 
 def _worker_init(worker, distributed_env: DistributedEnv):
+    from mpi4py import MPI
+
     if distributed_env._system_uri is not None:
         worker_comm = getattr(worker, "merged_comm", worker.comm)
 
@@ -993,7 +1052,6 @@ def _worker_init(worker, distributed_env: DistributedEnv):
             distributed_env._io_arg,
             distributed_env.seed,
             comm=worker_comm,
-            subworld_size=distributed_env.subworld_size,
         )
         if distributed_env._select is not None:
             select, method, bounds = distributed_env._select
@@ -1005,18 +1063,8 @@ def _worker_init(worker, distributed_env: DistributedEnv):
 
 
 def _controller_init(controller: MPIController, distributed_env: DistributedEnv):
-    if distributed_env._system_uri is not None:
-        # throw-away env to participate in NEURON's collective h.pc.subworlds
-        Env(
-            distributed_env._system_uri,
-            distributed_env._model_arg,
-            distributed_env._io_arg,
-            distributed_env.seed,
-            comm=MPI.COMM_SELF,
-            subworld_size=distributed_env.subworld_size,
-        )
-        _state["env"] = None
+    _state["env"] = None
 
-    MPI.COMM_WORLD.Barrier()
+    _job().comm.Barrier()
 
     distributed_env.controller = controller

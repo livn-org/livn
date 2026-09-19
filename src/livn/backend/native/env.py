@@ -212,8 +212,17 @@ class Env(EnvProtocol):
             Capability.PLASTICITY,
             Capability.PER_GID_VOLTAGE,
             Capability.EXTRACELLULAR_STIMULUS,
+            Capability.THREADS,
         }
     )
+
+    def set_threads(self, n: int | str) -> Self:
+        """Use `n` cores for the per-node and per-site loops, or ``"auto"``."""
+        L.set_num_threads(n)
+        return self
+
+    def num_threads(self) -> int:
+        return L.num_threads()
 
     def __init__(
         self,
@@ -222,7 +231,6 @@ class Env(EnvProtocol):
         io: IO | None = None,
         seed: int | None = 123,
         comm: MPI.Intracomm | None = None,
-        subworld_size: int | None = None,
     ):
         from livn.system import resolve
 
@@ -230,7 +238,6 @@ class Env(EnvProtocol):
         self._sim = None
         self.seed = seed
         self.comm = comm
-        self.subworld_size = subworld_size
         self.system = resolve(system, comm=P.self_comm())
         self.model = (
             model if model is not None else self.system.default_model(comm=comm)

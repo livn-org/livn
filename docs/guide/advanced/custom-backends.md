@@ -30,7 +30,7 @@ from livn.run import Run
 from livn.stimulus import Stimulus
 
 class Env(EnvProtocol):
-    def __init__(self, system, model=None, io=None, seed=123, comm=None, subworld_size=None):
+    def __init__(self, system, model=None, io=None, seed=123, comm=None):
         ...
 
     def init(self):
@@ -141,7 +141,7 @@ The `system` argument is not necessarily a `livn.system.System`: users may pass 
 from livn.system import resolve
 
 class Env(EnvProtocol):
-    def __init__(self, system, model=None, io=None, seed=123, comm=None, subworld_size=None):
+    def __init__(self, system, model=None, io=None, seed=123, comm=None):
         self.system = resolve(system, comm=comm)
         self.model = model if model is not None else self.system.default_model()
         self.io = io if io is not None else self.system.default_io()

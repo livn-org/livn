@@ -110,7 +110,6 @@ class Env(EnvProtocol):
         io: Union["IO"] = None,
         seed: int | None = 123,
         comm: Optional["MPI.Intracomm"] = None,
-        subworld_size: int | None = None,
     ):
         from livn.system import resolve
 
@@ -123,7 +122,6 @@ class Env(EnvProtocol):
         self.io = io
 
         self.comm = comm
-        self.subworld_size = subworld_size
 
         self.encoding = None
         self.decoding = None
@@ -150,6 +148,7 @@ class Env(EnvProtocol):
         self._membrane_monitors_dt = {}
         self._noise_ops = set()
         self._network = b2.Network()
+        self._initial_state: dict = {}
         self._weight_monitors = {}
         self._plasticity_enabled = False
 
@@ -222,6 +221,22 @@ class Env(EnvProtocol):
         self.set_noise({})  # force noise op init
 
         return self
+
+    def _remember_initial_state(self) -> None:
+        if self._initial_state:
+            return
+        self._initial_state = {
+            name: {
+                var: np.asarray(getattr(group, var)[:]).copy()
+                for var in group.equations.diff_eq_names
+            }
+            for name, group in self._populations.items()
+        }
+
+    def _restore_initial_state(self) -> None:
+        for name, group in self._populations.items():
+            for var, values in self._initial_state.get(name, {}).items():
+                getattr(group, var)[:] = values
 
     def _load_cells(self):
         ignored = set()
@@ -607,7 +622,7 @@ class Env(EnvProtocol):
         dt: float = 0.025,
         **kwargs,
     ):
-        if kwargs.get("root_only", True) and not P.is_root():
+        if kwargs.get("root_only", True) and not P.is_root(comm=self.comm):
             raise RuntimeError(
                 "The brian2 backend does not support MPI parallelization on multiple ranks."
             )
@@ -673,7 +688,10 @@ class Env(EnvProtocol):
                 units=stimulus.units,
             )
 
+        self._remember_initial_state()
         t_start = self.t
+
+        monitor_origin = float(self._network.t / b2.ms)
         self._network.run(
             duration * b2.ms,
             namespace=stimulus_namespace(stimulus, stimulus.array.shape[-1], duration),
@@ -685,7 +703,9 @@ class Env(EnvProtocol):
         for population, monitor in self._voltage_monitors.items():
             gids.append(np.asarray(monitor.source.gids)[np.asarray(monitor.record)])
             vv.append(
-                monitor.v[:, int(t_start / self._voltage_monitors_dt[population]) :]
+                monitor.v[
+                    :, int(monitor_origin / self._voltage_monitors_dt[population]) :
+                ]
                 / b2.mV
             )
 
@@ -702,8 +722,8 @@ class Env(EnvProtocol):
         tt = []
         for monitor in self._spike_monitors.values():
             ts = monitor.t / b2.ms
-            ii.append(np.asarray(monitor.source.gids)[monitor.i[ts >= t_start]])
-            tt.append(ts[ts >= t_start] - t_start)
+            ii.append(np.asarray(monitor.source.gids)[monitor.i[ts >= monitor_origin]])
+            tt.append(ts[ts >= monitor_origin] - monitor_origin)
 
         run = (
             Run(t0=t_start, duration=duration)
@@ -734,7 +754,8 @@ class Env(EnvProtocol):
         per_pop_data = {}
         for population, monitor in self._membrane_monitors.items():
             start_idx = int(
-                t_start / max(self._membrane_monitors_dt.get(population, 0.1), 1e-9)
+                monitor_origin
+                / max(self._membrane_monitors_dt.get(population, 0.1), 1e-9)
             )
             if isinstance(monitor, tuple):
                 # Two-compartment: (monitor_soma, monitor_dend)
@@ -923,6 +944,7 @@ class Env(EnvProtocol):
 
         self.t = 0
         self.clear_monitors()
+        self._restore_initial_state()
 
         if hasattr(self, "_stimulus_dt"):
             del self._stimulus_dt

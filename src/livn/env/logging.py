@@ -45,7 +45,7 @@ class _NeuronTimingLogger:
         self._h = h
         self.env = env
 
-        self.rank = int(getattr(env, "rank", P.rank()))
+        self.rank = int(env.rank)
         self.world_rank = P.rank()
         comm = getattr(env, "comm", None)
         self._sole_domain = comm is None or P.size(comm=comm) == P.size()

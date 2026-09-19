@@ -8,7 +8,7 @@
 # ]
 # ///
 """
-mpirun -n {subworld_size * num_workers + 1} python examples/distributed_workers.py
+mpirun -n {ranks_per_env * num_workers + 1} python examples/distributed_workers.py
 """
 
 import numpy as np
@@ -16,6 +16,7 @@ import numpy as np
 from livn.decoding import ChannelRecording
 from livn.env.distributed import DistributedEnv
 from livn.io import MEA, electrode_array_coordinates_for_area
+from livn.parallel import Layout
 from livn.system import NeuroH5System
 from livn.types import Encoding
 
@@ -40,7 +41,7 @@ class Constant(Encoding):
 env = DistributedEnv(
     SYSTEM,
     io=mea,
-    subworld_size=3,  # processors per workers
+    layout=Layout(ranks_per_env=3),  # MPI ranks each worker's solve spans
 )
 
 env.init()

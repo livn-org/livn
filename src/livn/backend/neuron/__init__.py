@@ -105,6 +105,10 @@ def _partition_subworlds(pc, subworld_size: int) -> None:
     _SUBWORLD_SIZE = wanted
 
 
+def _parallel_context():
+    return mechanisms.configure(None).pc
+
+
 class Env(EnvProtocol):
     capabilities = frozenset(
         {
@@ -118,6 +122,19 @@ class Env(EnvProtocol):
         }
     )
 
+    @classmethod
+    def partition(cls, ranks_per_env: int = 1, comm: MPI.Intracomm | None = None):
+        del comm  # pc.subworlds is over MPI_COMM_WORLD, whatever we were handed
+        _partition_subworlds(_parallel_context(), int(ranks_per_env))
+
+    @classmethod
+    def finalize(cls) -> None:
+        _parallel_context().done()
+
+    @property
+    def rank(self) -> int:
+        return int(self.pc.id())
+
     def __init__(
         self,
         system: System | str | int,
@@ -125,7 +142,6 @@ class Env(EnvProtocol):
         io: IO | None = None,
         seed: int | None = 123,
         comm: MPI.Intracomm | None = None,
-        subworld_size: int | None = None,
     ):
         from mpi4py import MPI
 
@@ -143,7 +159,6 @@ class Env(EnvProtocol):
             model if model is not None else self.system.default_model(comm=comm)
         )
         self.io = io if io is not None else self.system.default_io(comm=comm)
-        self.subworld_size = subworld_size
         self.store_kind = "auto"
 
         self.encoding = None
@@ -155,9 +170,6 @@ class Env(EnvProtocol):
             self._compile_mechanisms(mech_dir)
         self._h = mechanisms.configure(mech_dir)
         self.pc = self._h.pc
-        if subworld_size is not None:
-            _partition_subworlds(self.pc, subworld_size)
-        self.rank = int(self.pc.id())
         self._require_comm_spans_solve_domain()
 
         # graph state
@@ -733,8 +745,8 @@ class Env(EnvProtocol):
             f"ParallelContext solves over {solve_size} ranks. finitialize and "
             "psolve are collective over the ParallelContext, so the two must "
             "match or the simulation deadlocks. Pass the communicator the whole "
-            "solve runs on, or partition NEURON to match it with "
-            "subworld_size=<ranks per Env>."
+            "solve runs on, or carve the job to match it by calling "
+            "livn.parallel.partition(<ranks per Env>) before building any Env."
         )
 
     def apply_init_ic(self) -> None:

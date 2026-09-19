@@ -21,10 +21,13 @@ if not backend_supports("mpi"):
 
 
 def _create_env(comm, subworld):
+    if subworld:
+        from livn.parallel import partition
+
+        partition(2)
     env = livn_test_env(
         io=livn_test_mea(),
         comm=comm,
-        subworld_size=2 if subworld else None,
     )
 
     env.init()

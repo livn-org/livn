@@ -22,7 +22,6 @@ class Env(EnvProtocol):
         io: IO = None,
         seed: int | None = 123,
         comm: MPI.Intracomm | None = None,
-        subworld_size: int | None = None,
     ):
         from livn.system import resolve
 
@@ -35,11 +34,10 @@ class Env(EnvProtocol):
         self.io = io
 
         self.comm = comm
-        self.subworld_size = subworld_size
 
         self.encoding = None
         self.decoding = None
-        self.cells = CellRegistry(self)
+        self.cells = CellRegistry(self, comm=comm)
 
         self.t = 0
 

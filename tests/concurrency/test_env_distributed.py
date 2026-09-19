@@ -23,6 +23,7 @@ if backend() == "neuron":
     from livn.decoding import GatherAndMerge
     from livn.env import Env
     from livn.env.distributed import DistributedEnv
+    from livn.parallel import Layout
     from livn.types import Encoding
 
     class ConstantChannelInput(Encoding):
@@ -85,7 +86,7 @@ def test_distributed_env_matches_standard(mpiexec_n, standalone_reference):
 
     assert MPI.COMM_WORLD.size == mpiexec_n
 
-    env = _distributed_env(seed=123, subworld_size=1)
+    env = _distributed_env(seed=123, layout=Layout(ranks_per_env=1))
 
     assert env.system is not None
     assert env.model is not None
@@ -131,7 +132,7 @@ def test_distributed_env_attribute_access(mpiexec_n):
     assert MPI.COMM_WORLD.size == mpiexec_n
 
     system = livn_test_system()
-    env = _distributed_env(seed=42, subworld_size=1)
+    env = _distributed_env(seed=42, layout=Layout(ranks_per_env=1))
 
     assert env.system is not None, "system should resolve lazily"
     assert env.system.uri == system
@@ -163,7 +164,7 @@ def test_distributed_env_multiple_inputs(mpiexec_n):
 
     assert MPI.COMM_WORLD.size == mpiexec_n
 
-    env = _distributed_env(seed=123, subworld_size=1)
+    env = _distributed_env(seed=123, layout=Layout(ranks_per_env=1))
     env.init()
     env.record_spikes()
 
@@ -191,12 +192,12 @@ def test_distributed_env_multiple_inputs(mpiexec_n):
 )
 @pytest.mark.mpiexec(timeout=120)
 @pytest.mark.parametrize("mpiexec_n", [3])
-def test_distributed_env_subworld_size_gt_one(mpiexec_n):
+def test_distributed_env_ranks_per_env_gt_one(mpiexec_n):
     from mpi4py import MPI
 
     assert MPI.COMM_WORLD.size == mpiexec_n
 
-    env = _distributed_env(seed=123, subworld_size=2)
+    env = _distributed_env(seed=123, layout=Layout(ranks_per_env=2))
 
     assert env.system is not None
     assert env.model is not None
@@ -227,7 +228,7 @@ def test_distributed_env_subworld_size_gt_one(mpiexec_n):
 @pytest.mark.parametrize("mpiexec_n", [3])
 def test_property_access_before_init_no_deadlock(mpiexec_n):
     system = livn_test_system()
-    env = _distributed_env(seed=42, subworld_size=1)
+    env = _distributed_env(seed=42, layout=Layout(ranks_per_env=1))
 
     assert env.system is not None
     assert env.io is not None
@@ -244,7 +245,7 @@ def test_property_access_before_init_no_deadlock(mpiexec_n):
 @pytest.mark.mpiexec(timeout=30)
 @pytest.mark.parametrize("mpiexec_n", [3])
 def test_property_access_after_init_no_deadlock(mpiexec_n):
-    env = _distributed_env(seed=42, subworld_size=1)
+    env = _distributed_env(seed=42, layout=Layout(ranks_per_env=1))
     env.init()
 
     assert env.io is not None

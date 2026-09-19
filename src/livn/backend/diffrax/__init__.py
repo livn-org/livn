@@ -167,7 +167,6 @@ class Env(EnvProtocol):
         io: Union["IO"] = None,
         seed: int | None = 123,
         comm: Optional["MPI.Intracomm"] = None,
-        subworld_size: int | None = None,
     ):
         from livn.system import resolve
 
@@ -179,7 +178,6 @@ class Env(EnvProtocol):
             io = self.system.default_io()
         self.io = io
         self.comm = comm
-        self.subworld_size = subworld_size
 
         self.encoding = None
         self.decoding = None
@@ -532,7 +530,6 @@ def _env_tree_flatten(env):
         None if io_is_pytree else env.io,
         io_is_pytree,
         env.comm,
-        env.subworld_size,
         env.seed,
         env.init_key,
         env.run_key,
@@ -568,7 +565,6 @@ def _env_tree_unflatten(aux, children):
         io_aux,
         io_is_pytree,
         comm,
-        subworld_size,
         seed,
         init_key,
         run_key,
@@ -588,7 +584,7 @@ def _env_tree_unflatten(aux, children):
     else:
         module = None
 
-    env = Env(system, model, io, seed, comm, subworld_size)
+    env = Env(system, model, io, seed, comm)
     env._selected_gids = None if selected_gids is None else set(selected_gids)
     env._selected_rows = (
         None

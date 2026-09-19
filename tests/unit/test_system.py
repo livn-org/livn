@@ -3,21 +3,20 @@ import os
 import numpy as np
 import pytest
 
-SYSTEM_DIR = os.environ.get("LIVN_TEST_SYSTEM", "./systems/graphs/EI")
+from testing import livn_test_h5_system
 
 
 @pytest.fixture
 def system_dir():
-    if not os.path.isfile(os.path.join(SYSTEM_DIR, "graph.json")):
-        pytest.skip("No test system found")
-    return SYSTEM_DIR
+    """A graph directory. LIVN_TEST_SYSTEM may be a spec, which has no h5."""
+    return livn_test_h5_system()
 
 
 @pytest.fixture
-def cells_filepath():
-    cells = os.path.join(SYSTEM_DIR, "cells.h5")
+def cells_filepath(system_dir):
+    cells = os.path.join(system_dir, "cells.h5")
     if not os.path.isfile(cells):
-        graph = os.path.join(SYSTEM_DIR, "graph.h5")
+        graph = os.path.join(system_dir, "graph.h5")
         if os.path.isfile(graph):
             return graph
         pytest.skip("No test system H5 files found")
@@ -25,10 +24,10 @@ def cells_filepath():
 
 
 @pytest.fixture
-def connections_filepath():
-    conns = os.path.join(SYSTEM_DIR, "connections.h5")
+def connections_filepath(system_dir):
+    conns = os.path.join(system_dir, "connections.h5")
     if not os.path.isfile(conns):
-        graph = os.path.join(SYSTEM_DIR, "graph.h5")
+        graph = os.path.join(system_dir, "graph.h5")
         if os.path.isfile(graph):
             return graph
         pytest.skip("No test system H5 files found")
@@ -234,13 +233,12 @@ class TestSystemWithPyfive:
 
 
 class TestParallelSystem:
-    def test_satisfies_the_system_protocol(self):
+    def test_satisfies_the_system_protocol(self, system_dir):
         from livn.system import NeuroH5System, ParallelSystem
         from livn.types import System as SystemProtocol
 
         assert isinstance(ParallelSystem(3), SystemProtocol)
-        if os.path.isdir(SYSTEM_DIR):
-            assert isinstance(NeuroH5System(SYSTEM_DIR), SystemProtocol)
+        assert isinstance(NeuroH5System(system_dir), SystemProtocol)
 
     def test_has_no_synapse_sites_or_edges(self):
         from livn.system import ParallelSystem
