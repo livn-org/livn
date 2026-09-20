@@ -37,5 +37,6 @@ packages = [
     "systems.interface.remotes",
     "systems.targets",
     "systems.targets.cells",
+    "systems.tune",
 ]
 package-dir = { systems = "." }

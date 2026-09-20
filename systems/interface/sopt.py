@@ -8,13 +8,13 @@ import numpy as np
 from dmosopt import config
 from machinable import Project
 from machinable.config import Field as ConfigField
-from machinable.config import to_dict
+from machinable.config import import_ref, to_dict
 from mpi4py import MPI
 from pydantic import Field
 
 import livn
-from livn.env import Env
-from livn.utils import import_instance, sentinel
+from livn.parallel import finalize, partition
+from livn.utils import sentinel
 
 # NEURON compatible rank order
 os.environ.setdefault("DISTWQ_CONTROLLER_RANK", "-1")
@@ -115,7 +115,9 @@ def declared_names(target) -> dict:
 
 
 def _target_for(target, system):
-    target = import_instance(target)
+    from systems.tune import resolve_target
+
+    target = resolve_target(target)
     if system is not None and getattr(target, "system", sentinel) is None:
         target.system = system
     return target
@@ -138,8 +140,8 @@ def feature_dtypes(c):
     return [(f, np.float32) for f in _declared(c)["features"]]
 
 
-def _build_env(target, system, model, comm, subworld_size, selection=None):
-    model = import_instance(model)
+def _build_env(target, system, model, comm, selection=None):
+    model = import_ref(model)
     if hasattr(target, "build_env"):
         if selection is not None:
             raise ValueError(
@@ -147,7 +149,7 @@ def _build_env(target, system, model, comm, subworld_size, selection=None):
                 "cells exist; set the selection through the target instead of "
                 "overriding it here"
             )
-        return target.build_env(system, model, comm=comm, subworld_size=subworld_size)
+        return target.build_env(system, model, comm=comm)
     env = livn.make(
         {
             "system": system,
@@ -156,7 +158,6 @@ def _build_env(target, system, model, comm, subworld_size, selection=None):
             "selection": selection,
         },
         comm=comm,
-        subworld_size=subworld_size,
     )
     return target.init(env)
 
@@ -166,18 +167,18 @@ def obj_fun_init(
     model,
     target,
     trials,
-    subworld_size,
+    ranks_per_env,
     selection=None,
     worker=None,
     local_directory=None,
 ):
     target = _target_for(target, system)
+    partition(int(ranks_per_env))
     build = partial(
         _build_env,
         target,
         model=model,
         comm=worker.merged_comm,
-        subworld_size=subworld_size,
         selection=selection,
     )
     return partial(
@@ -188,16 +189,9 @@ def obj_fun_init(
     )
 
 
-def controller_init(system, model, target, subworld_size):
-    target = _target_for(target, system)
-    env = Env(
-        system,
-        model=import_instance(model),
-        io=target.io() if hasattr(target, "io") else None,
-        comm=MPI.COMM_SELF,
-        subworld_size=subworld_size,
-    )
-    live_envs.append(env)
+def controller_init(system, model, target, ranks_per_env):
+    del model, target, system
+    partition(int(ranks_per_env))
 
 
 class _Worker:
@@ -208,6 +202,7 @@ class _Worker:
         self.system = system
         self._build = build
         self._env = None
+        self._hold(self._build(self.system))
 
     @property
     def env(self):
@@ -313,7 +308,7 @@ class Sopt(Dmosopt):
                     # system: injected at dispatch
                     "model": "???",
                     "target": "???",
-                    "subworld_size": "${...nprocs_per_worker}",
+                    "ranks_per_env": "${...nprocs_per_worker}",
                 },
                 # "objective_names": "${oc.dict.keys: .obj_fun_init_args.target_rates}",
                 "objective_names": "interface.sopt.objective_names",
@@ -321,7 +316,7 @@ class Sopt(Dmosopt):
                 "feature_dtypes": "interface.sopt.feature_dtypes",
                 "controller_init_fun_name": "interface.sopt.controller_init",
                 "controller_init_fun_args": {
-                    "subworld_size": "${...nprocs_per_worker}",
+                    "ranks_per_env": "${...nprocs_per_worker}",
                     "model": "${..obj_fun_init_args.model}",
                     "target": "${..obj_fun_init_args.target}",
                 },
@@ -371,7 +366,7 @@ class Sopt(Dmosopt):
         try:
             spec = self.config.dopt_params.obj_fun_init_args.target
             # "???" until dispatch injects the real one
-            target = import_instance(spec) if spec and spec != "???" else None
+            target = _target_for(spec, None) if spec and spec != "???" else None
         except Exception:
             target = None
         if target is None:
@@ -426,7 +421,7 @@ class Sopt(Dmosopt):
         if "obj_fun_init_name" in self.config.dopt_params:
             kwargs = dict(self.config.dopt_params.obj_fun_init_args)
             kwargs["worker"] = worker
-            kwargs["subworld_size"] = size
+            kwargs["ranks_per_env"] = size
             obj_fun = config.import_object_by_path(
                 self.config.dopt_params.obj_fun_init_name
             )(**kwargs)
@@ -452,6 +447,7 @@ class Sopt(Dmosopt):
             if hasattr(env, "pc"):
                 env.pc.done()
             env.close()
+        finalize()
 
     def on_after_dispatch(self, success: bool):
         if success:

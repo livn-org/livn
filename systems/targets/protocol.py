@@ -1,9 +1,13 @@
+import hashlib
 import json
 import math
 from typing import Any
 
-# Memory a wired NetCon costs
-NETCON_BYTES = 1686
+from machinable import Interface
+from machinable.config import Field, to_dict
+from pydantic import BaseModel, ConfigDict
+
+SYNAPSE_UNIT_BYTES = 1686
 RANK_FLOOR_BYTES = 257 * 1024**2
 
 _NETCON_CACHE: dict[tuple[str, str | None], float] = {}
@@ -22,7 +26,6 @@ def _active_mechanisms(projection: dict) -> int:
 
 
 def wiring_profile(system) -> dict[str, tuple[float, int]]:
-    """`{post: (netcons per cell, cells)}` for each postsynaptic population."""
     from livn.system import resolve
 
     resolved = resolve(system)
@@ -66,7 +69,7 @@ def wiring_profile(system) -> dict[str, tuple[float, int]]:
     return profile
 
 
-def estimated_netcons(system, selection: str | None = None) -> float:
+def estimated_synapse_units(system, selection: str | None = None) -> float:
     from livn.system import resolve
 
     key = (
@@ -91,17 +94,84 @@ def estimated_netcons(system, selection: str | None = None) -> float:
     return _NETCON_CACHE[key]
 
 
-class TuningTargets:
-    MIN_RANKS_PER_WORKER = 1
-    NETCON_BYTES = NETCON_BYTES
+class Sizing(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    min_ranks_per_worker: int = Field(1, identifying=False)
+    nprocs_per_worker: int = Field(1, identifying=False)
+    n_initial: int = 100
+    n_epochs: int = 10
+
+
+_SAID: set[str] = set()
+
+
+def note(message: str) -> None:
+    from livn.utils import P
+
+    if message in _SAID:
+        return
+    _SAID.add(message)
+    if P.is_root():
+        print(f"NOTE: {message}", flush=True)
+
+
+def digest(payload) -> str:
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, default=str).encode()
+    ).hexdigest()[:8]
+
+
+def resolved(config) -> dict:
+    return {
+        k: v
+        for k, v in to_dict(config).items()
+        if k not in ("_default_", "_version_", "_update_")
+    }
+
+
+class Target(Interface):
+    SYNAPSE_UNIT_BYTES = SYNAPSE_UNIT_BYTES
+
+    class Config(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        sizing: Sizing = Sizing()
+
+    def __init__(self, version=None, **kwargs):
+        super().__init__(version=version, **kwargs)
+        self.system = self.system_spec()
+        self.selection_name: str | None = None
+        self._configure()
+
+    @staticmethod
+    def _note(message: str) -> None:
+        note(message)
+
+    def _configure(self) -> None:
+        """Bind the resolved configuration onto the instance."""
+
+    @property
+    def settings(self) -> dict:
+        return resolved(self.config)
+
+    @property
+    def sizing(self) -> Sizing:
+        return Sizing(**to_dict(self.config.sizing))
+
+    def on_compute_predicate(self):
+        return {"problem": digest(self.settings)}
+
+    def system_spec(self):
+        return
 
     def worker_memory(
         self, system, ranks: int = 1, selection: str | None = None
     ) -> float:
         if selection is None:
             selection = getattr(self, "selection_name", None)
-        return ranks * RANK_FLOOR_BYTES + self.NETCON_BYTES * estimated_netcons(
-            system, selection
+        return ranks * RANK_FLOOR_BYTES + self.SYNAPSE_UNIT_BYTES * (
+            estimated_synapse_units(system, selection)
         )
 
     def _space_metadata(self, model=None) -> tuple:
@@ -113,6 +183,7 @@ class TuningTargets:
 
         transforms = {}
         search_space = {}
+        natural = {}
 
         for name, bounds in raw_space.items():
             if len(bounds) == 2:
@@ -131,8 +202,9 @@ class TuningTargets:
 
             transforms[name] = transform_fn
             search_space[name] = [transform_fn(low), transform_fn(high)]
+            natural[name] = (low, high)
 
-        return transforms, search_space
+        return transforms, search_space, natural
 
     @staticmethod
     def transform_identity(x: float, inverse: bool = False) -> float:
@@ -224,28 +296,44 @@ class TuningTargets:
         Returns:
             Dictionary mapping parameter names to [transformed_min, transformed_max].
         """
-        _, search_space = self._space_metadata(model)
+        _, search_space, _natural = self._space_metadata(model)
         return search_space
 
-    def decode_params(self, params: dict[str, Any], model=None) -> dict[str, Any]:
-        """Decode parameters from optimization space to the natural domain.
+    def decode_params(
+        self, params: dict[str, Any], model=None, strict: bool = False
+    ) -> dict[str, Any]:
+        """Decode parameters from optimization space to the natural domain."""
+        transforms, space, natural = self._space_metadata(model)
 
-        Args:
-            params: Dictionary of parameter values in optimization space.
-
-        Returns:
-            Dictionary of decoded parameters in the natural domain.
-        """
-        transforms, _ = self._space_metadata(model)
+        if strict:
+            unknown = sorted(set(params) - set(space))
+            if unknown:
+                raise ValueError(
+                    f"{unknown} are not in this target's search space, so they "
+                    "have no inverse transform and would be emitted at their "
+                    "encoded value. The target is probably built differently "
+                    f"from the run that produced them as this offers "
+                    f"{sorted(space)}."
+                )
 
         decoded = {}
         for name, value in params.items():
             if name in transforms:
-                decoded[name] = transforms[name](float(value), inverse=True)
+                decoded[name] = self._within_box(
+                    transforms[name](float(value), inverse=True), natural.get(name)
+                )
             else:
                 decoded[name] = value
 
         return decoded
+
+    @staticmethod
+    def _within_box(value: float, bounds: tuple | None) -> float:
+        """A decoded coordinate, held inside the box it was searched in."""
+        if bounds is None:
+            return value
+        low, high = bounds
+        return min(max(value, low), high)
 
     def transform_params(self, params: dict[str, Any], model=None) -> dict[str, Any]:
         """Transform parameters from optimization space and apply set_params.
@@ -261,6 +349,15 @@ class TuningTargets:
         """
         # Pass through set_params to consume protocol-specific parameters
         return self.set_params(self.decode_params(params, model=model))
+
+    def bands(self) -> dict[str, tuple[float, float]]:
+        """Measured bands a solution is read against; empty when there are none."""
+        declared = getattr(self, "feature_bands", None)
+        if callable(declared):
+            declared = declared()
+        return {
+            name: (float(lo), float(hi)) for name, (lo, hi) in (declared or {}).items()
+        }
 
     def observed_feature_names(self) -> list[str]:
         """Names of features recorded beside the objectives. Empty by default."""
