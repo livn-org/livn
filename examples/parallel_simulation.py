@@ -17,10 +17,10 @@ os.environ["LIVN_BACKEND"] = "neuron"
 from livn.env import Env
 from livn.env.logging import with_progress_logging
 from livn.io import MEA, electrode_array_coordinates_for_area
-from livn.system import NeuroH5System, predefined
+from livn.system import NeuroH5System, fetch
 from livn.utils import P
 
-system = NeuroH5System(predefined("EI"))
+system = NeuroH5System(fetch("EI"))  # downloads once, then reuses
 (xmin, ymin, _), (xmax, ymax, _) = system.bounding_box
 mea = MEA(electrode_array_coordinates_for_area(400, ((xmin, ymin), (xmax, ymax))))
 
@@ -33,8 +33,8 @@ env.record_membrane_current()
 
 
 warmup = 0
-trial_length = 30_000
-t_stim = 500
+trial_length = 100
+t_stim = 20
 t_end = warmup + trial_length
 
 

@@ -14,14 +14,15 @@ import numpy as np
 from livn.env import Env
 from livn.models.glif import GLIF
 from livn.stimulus import Stimulus
-from livn.system import predefined
+from livn.system import Monolayer
 from optimization.fit import fit
 from optimization.losses import voltage_mse
 
 DURATION, DT = 40.0, 0.5
 
 env = Env(
-    predefined("EI"), model=GLIF.leaky_integrate_and_fire(mechanism="hard")
+    Monolayer(total_cells=40),
+    model=GLIF.leaky_integrate_and_fire(mechanism="hard"),
 ).init()
 env.record_voltage(dt=DT)
 

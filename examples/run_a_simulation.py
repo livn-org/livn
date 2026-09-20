@@ -18,7 +18,7 @@ env = Env(Monolayer(total_cells=650)).init().apply_model_defaults()
 env.record_spikes()
 
 policy = PulseSweepPolicy(
-    amplitudes=(200.0, 800.0),
+    amplitudes=(50.0, 200.0),
     repeats=1,
     trial_ms=20.0,
     onset_ms=10.0,

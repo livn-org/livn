@@ -8,7 +8,7 @@ import numpy as _onp
 from livn import types
 from livn.backend import backend
 from livn.types import Model
-from livn.utils import P
+from livn.utils import P, is_traced
 
 _USES_JAX = False
 
@@ -163,8 +163,11 @@ class ReducedCalciumSomaDendrite(Model):
             dx = self.dendrite_offset * _onp.cos(angles)
             dy = self.dendrite_offset * _onp.sin(angles)
 
+        immutable = is_traced(neuron_coordinates)
+        xp = np if immutable else _onp
+
         dend_coords = neuron_coordinates.copy()
-        if _USES_JAX:
+        if immutable:
             dend_coords = dend_coords.at[:, 1].add(dx)
             dend_coords = dend_coords.at[:, 2].add(dy)
         else:
@@ -174,11 +177,11 @@ class ReducedCalciumSomaDendrite(Model):
         rows = [neuron_coordinates]
         if self._has_dendrite(population):
             rows.append(dend_coords)
-        unit = np.stack([dx, dy], axis=1) / self.dendrite_offset
+        unit = _onp.stack([dx, dy], axis=1) / self.dendrite_offset
         for offset in self._axon_offsets(population):
             link = neuron_coordinates.copy()
             step = unit * offset
-            if _USES_JAX:
+            if immutable:
                 link = link.at[:, 1].add(-step[:, 0]).at[:, 2].add(-step[:, 1])
             else:
                 link[:, 1] -= step[:, 0]
@@ -186,7 +189,7 @@ class ReducedCalciumSomaDendrite(Model):
             rows.append(link)
 
         width = len(rows)
-        stacked = np.stack(rows, axis=1)  # [n, width, 4]
+        stacked = xp.stack(rows, axis=1)  # [n, width, 4]
         return stacked.reshape(width * n_neurons, 4)
 
     def _has_dendrite(self, population: str | None) -> bool:
@@ -203,14 +206,15 @@ class ReducedCalciumSomaDendrite(Model):
         neuron_coordinates: types.Float[types.Array, "n_coords ixyz=4"],
         population: str | None = None,
     ) -> types.Float[types.Array, "n_stim_coords ixyz=4"]:
-        coordinates = np.asarray(neuron_coordinates)
+        coordinates = neuron_coordinates
+        xp = np if is_traced(coordinates) else _onp
         n = coordinates.shape[0]
         rows = self.stimulus_coordinates(coordinates, population=population)
         width = len(rows) // max(n, 1)
         keep = min(2, width)
-        rows = np.asarray(rows).reshape(n, width, 4)[:, :keep]
+        rows = rows.reshape(n, width, 4)[:, :keep]
         if keep < 2:
-            rows = np.concatenate([rows, rows[:, -1:]], axis=1)
+            rows = xp.concatenate([rows, rows[:, -1:]], axis=1)
         return rows.reshape(n * 2, 4)
 
     def expand_stimulus_currents(

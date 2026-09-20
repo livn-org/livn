@@ -14,6 +14,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def stack_coordinates(rows: Sequence[Any]) -> Any:
+    import numpy
+
+    from livn.utils import is_traced
+
+    if is_traced(*rows):
+        import jax.numpy
+
+        return jax.numpy.vstack(rows)
+    return numpy.vstack(rows)
+
+
 class CellsMetaData(BaseModel):
     """Cells metadata"""
 

@@ -18,7 +18,7 @@ import optax
 
 from livn.env import Env
 from livn.stimulus import Stimulus
-from livn.system import predefined
+from livn.system import Monolayer
 
 
 @eqx.filter_jit
@@ -47,7 +47,7 @@ def make_step(
     return loss, opt_state, new_inputs
 
 
-env = Env(predefined("S1")).init()
+env = Env(Monolayer(total_cells=200)).init()
 
 env.apply_model_defaults()
 env.record_spikes()
@@ -57,7 +57,7 @@ env.record_voltage()
 step_key = env.run_key
 
 t_end = 30
-inputs = jnp.zeros([t_end, 16])
+inputs = jnp.zeros([t_end, env.io.num_channels])
 
 optim = optax.adam(1)
 opt_state = optim.init(eqx.filter(inputs, eqx.is_inexact_array))

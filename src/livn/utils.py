@@ -86,6 +86,13 @@ def lnp() -> np:
     return np
 
 
+def is_traced(*arrays) -> bool:
+    jax = sys.modules.get("jax")
+    if jax is None:
+        return False
+    return any(isinstance(array, jax.core.Tracer) for array in arrays)
+
+
 def merge_array(data):
     if data is None:
         return None

@@ -15,9 +15,10 @@ from collections import defaultdict
 from typing import TYPE_CHECKING
 
 import gymnasium
+import numpy as _np
 
 from livn.backend import backend
-from livn.utils import Jsonable
+from livn.utils import Jsonable, is_traced
 
 if TYPE_CHECKING:
     from livn.stimulus import Stimulus
@@ -33,6 +34,7 @@ if "ax" in backend():
     _USES_JAX = True
 else:
     import numpy as np
+
 
 MIN_DISTANCE_UM = 5.0
 ELECTRODE_RADIUS_UM = 15.0
@@ -119,8 +121,9 @@ def coupled_sections(neuron_coordinates, cell_induction, dense: bool = False):
 
 def _induction_shape(distances_um, electrode_radius_um, culture_height_um):
     """1 at the electrode surface, falling as 1/sqrt(r^2 + h^2)."""
+    xp = _np if not is_traced(distances_um) else np
     h_eff = (electrode_radius_um**2 + culture_height_um**2) ** 0.5
-    return h_eff / np.sqrt(distances_um**2 + h_eff**2)
+    return h_eff / xp.sqrt(distances_um**2 + h_eff**2)
 
 
 def _source_shape(distances_um, min_distance_um):
@@ -822,22 +825,23 @@ def calculate_distances(
     """
     Calculate the Euclidean distances between each electrode and each coordinate.
     """
-    source = np.asarray(source)
-    coords = np.asarray(coords)
+    xp = _np if not is_traced(source, coords) else np
+    source = xp.asarray(source)
+    coords = xp.asarray(coords)
 
     ex, ey, ez = source[:, 1], source[:, 2], source[:, 3]
     cx, cy, cz = coords[:, 1], coords[:, 2], coords[:, 3]
 
-    ex = ex[:, np.newaxis]
-    ey = ey[:, np.newaxis]
-    ez = ez[:, np.newaxis]
+    ex = ex[:, xp.newaxis]
+    ey = ey[:, xp.newaxis]
+    ez = ez[:, xp.newaxis]
 
-    distances = np.sqrt((ex - cx) ** 2 + (ey - cy) ** 2 + (ez - cz) ** 2)
+    distances = xp.sqrt((ex - cx) ** 2 + (ey - cy) ** 2 + (ez - cz) ** 2)
 
-    channel_ids = np.repeat(source[:, 0], len(coords))
-    gids = np.tile(coords[:, 0], len(source))
+    channel_ids = xp.repeat(source[:, 0], len(coords))
+    gids = xp.tile(coords[:, 0], len(source))
 
-    return np.column_stack((channel_ids, gids, distances.flatten()))
+    return xp.column_stack((channel_ids, gids, distances.flatten()))
 
 
 def channel_recording(
@@ -915,7 +919,11 @@ if _USES_JAX:
 
     def with_amplitude(distances, amplitudes):
         """`distances` with its last column replaced."""
-        return distances.at[:, -1].set(amplitudes)
+        if not is_traced(distances, amplitudes):
+            out = _np.array(distances, copy=True)
+            out[:, -1] = amplitudes
+            return out
+        return np.asarray(distances).at[:, -1].set(amplitudes)
 
     def relative_distance(
         distances: Float[Array, "n_distances cip=3"],
@@ -926,6 +934,12 @@ if _USES_JAX:
         Normalizes the distances within a boundary radius to [0, 1]
         and optionally discards out-of-bounds distances.
         """
+        if not is_traced(distances):
+            distances = _np.array(distances, copy=True)
+            if filter_out_of_bounds:
+                distances = distances[distances[:, -1] <= boundary]
+            distances[:, -1] = distances[:, -1] / boundary
+            return distances
         distances = np.array(distances)
         if filter_out_of_bounds:
             distances = distances[distances[:, -1] <= boundary]
@@ -942,7 +956,6 @@ if _USES_JAX:
         by multiplying cell induction and electrode stimulus.
         """
         stimulus = np.asarray(electrode_stimulus)
-        c_induction = np.asarray(c_induction)
 
         _batch_size, n_timesteps, n_channels = electrode_stimulus.shape
         per_coordinate = n_gids is not None
@@ -950,22 +963,22 @@ if _USES_JAX:
             # no-jit
             n_gids = len(np.unique(c_induction[:, 1]))
 
-        # sparse matrix for cell induction
-        channel_ids = c_induction[:, 0].astype(int)
+        induction_rows = _np.asarray(c_induction)
+        channel_ids = induction_rows[:, 0].astype(int)
         amplitudes = c_induction[:, 2]
 
-        gids = c_induction[:, 1].astype(int)
+        gids = induction_rows[:, 1].astype(int)
         _check_stimulus_size(
             n_timesteps,
             n_gids if keep is None else len(keep),
             np.promote_types(stimulus.dtype, np.float32).itemsize,
-            n_reached=int(np.count_nonzero(c_induction[:, 2])) or None,
+            n_reached=int(_np.count_nonzero(induction_rows[:, 2])) or None,
         )
         induction_matrix = np.zeros(
             (n_channels, n_gids), dtype=np.promote_types(stimulus.dtype, np.float32)
         )
         if per_coordinate:
-            columns = np.arange(c_induction.shape[0]) % n_gids
+            columns = _np.arange(c_induction.shape[0]) % n_gids
         else:
             _unique, columns = np.unique(gids, return_inverse=True, size=n_gids)
         induction = induction_matrix.at[channel_ids, columns].set(amplitudes)

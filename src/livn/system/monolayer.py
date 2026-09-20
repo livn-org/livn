@@ -16,6 +16,7 @@ from livn.system._common import (
     CellsMetaData,
     Projection,
     resolve_selection,
+    stack_coordinates,
 )
 from livn.utils import Jsonable, import_object_by_path, sentinel
 
@@ -995,12 +996,17 @@ class Monolayer(Jsonable):
             yield int(row[0]), (float(row[1]), float(row[2]), float(row[3]))
 
     def coordinate_array(self, population: types.PopulationName):
-        return np.asarray(self._neuron_coordinates[self._population_slice(population)])
+        # numpy, not the backend's array module, as `NeuroH5System` and
+        # `ParallelSystem` also return: the geometry is static, and staging it
+        # through `jnp.asarray` inside a `jit` makes it a tracer that a model's
+        # `stimulus_coordinates` cannot read -- it indexes gids on the host to
+        # draw each cell's dendrite angle
+        return self._neuron_coordinates[self._population_slice(population)].copy()
 
     def transform_coordinates(self, transform, populations=None):
         if populations is None:
             populations = self.populations
-        return np.vstack(
+        return stack_coordinates(
             [transform(self.coordinate_array(p), population=p) for p in populations]
         )
 

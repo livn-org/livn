@@ -14,7 +14,6 @@ from livn.run import Run
 from livn.stimulus import Stimulus
 from livn.types import Capability, Cell
 from livn.types import Env as EnvProtocol
-from livn.utils import lnp
 
 if TYPE_CHECKING:
     from mpi4py import MPI
@@ -299,11 +298,13 @@ class Env(EnvProtocol):
         return np.asarray(index, dtype=np.int32), np.asarray(mask, dtype=np.float64)
 
     def stimulus_coordinates(self):
+        from livn.system._common import stack_coordinates
+
         rows = [
             self.model.stimulus_coordinates(coordinates, population=population)
             for population, coordinates in self._selected_coordinates()
         ]
-        return lnp().vstack(rows) if rows else np.zeros((0, 4))
+        return stack_coordinates(rows) if rows else np.zeros((0, 4))
 
     def init(self):
         if self._select_spec is not None or self._select_bounds is not None:

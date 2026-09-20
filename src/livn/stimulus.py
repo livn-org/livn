@@ -92,13 +92,15 @@ def check_bounds(values, bounds, input_mode: str, units: str | None = None) -> N
 
 
 def section_positions(gids):
+    import numpy as _np
+
     seen: dict[int, int] = {}
     out = []
     for gid in gids:
         gid = int(gid)
         out.append(seen.get(gid, 0))
         seen[gid] = out[-1] + 1
-    return np.asarray(out)
+    return _np.asarray(out)
 
 
 class Stimulus:
@@ -521,29 +523,32 @@ class Stimulus:
 
     def expand(self, gids, sections=None) -> Stimulus:
         """Widen to the full column ordering `gids`/`sections` describe."""
-        target_gids = np.asarray(gids)
+        import numpy as _np
+
+        target_gids = _np.asarray(gids)
         if self.gids is None:
             raise ValueError(
                 "a stimulus with no `gids` does not say which columns it holds, "
                 "so it cannot be widened; it is already assumed to be full width"
             )
 
+        own_gids = _np.asarray(self.gids)
         target_sections = (
-            np.asarray(sections)
+            _np.asarray(sections)
             if sections is not None
             else section_positions(target_gids)
         )
         own_sections = (
-            self.sections
+            _np.asarray(self.sections)
             if self.sections is not None
-            else section_positions(np.asarray(self.gids))
+            else section_positions(own_gids)
         )
 
         width = len(target_gids)
         if (
             width == self.array.shape[-1]
-            and np.array_equal(np.asarray(self.gids), target_gids)
-            and np.array_equal(np.asarray(own_sections), target_sections)
+            and _np.array_equal(own_gids, target_gids)
+            and _np.array_equal(own_sections, target_sections)
         ):
             return self
 
@@ -553,9 +558,7 @@ class Stimulus:
         }
         take = []
         into = []
-        for own, (g, s) in enumerate(
-            zip(np.asarray(self.gids), own_sections, strict=False)
-        ):
+        for own, (g, s) in enumerate(zip(own_gids, own_sections, strict=False)):
             found = column.get((int(g), int(s)))
             if found is not None:
                 take.append(own)
@@ -565,9 +568,11 @@ class Stimulus:
         full = np.zeros((*array.shape[:-1], width), dtype=array.dtype)
         if take:
             if _USES_JAX:
-                full = full.at[..., np.asarray(into)].set(array[..., np.asarray(take)])
+                full = full.at[..., _np.asarray(into)].set(
+                    array[..., _np.asarray(take)]
+                )
             else:
-                full[..., np.asarray(into)] = array[..., np.asarray(take)]
+                full[..., _np.asarray(into)] = array[..., _np.asarray(take)]
 
         return Stimulus(
             full,

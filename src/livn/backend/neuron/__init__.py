@@ -39,11 +39,16 @@ logger.setLevel(os.getenv("LIVN_NEURON_LOGGING", "WARNING"))
 
 
 class _EnvCallback:
-    __slots__ = ("_env", "_method")
+    __slots__ = ("_env", "_flag", "_method")
 
-    def __init__(self, env: Env, method: str):
+    def __init__(self, env: Env, method: str, flag: str):
         self._env = weakref.ref(env)
         self._method = method
+        self._flag = flag
+
+    @property
+    def env(self) -> Env | None:
+        return self._env()
 
     @property
     def alive(self) -> bool:
@@ -75,6 +80,24 @@ def _unregister_callback(cvode, callback: _EnvCallback) -> None:
 def _sweep_dead_callbacks(cvode) -> None:
     for callback in [c for c in _REGISTERED_CALLBACKS if not c.alive]:
         _unregister_callback(cvode, callback)
+
+
+def _claim_callbacks(cvode, env: Env) -> None:
+    """Take the process's cvode callbacks away from every other `Env`.
+
+    There is one NEURON interpreter per process and `init()` claims it: it
+    calls `pc.gid_clear()` and rebuilds every section. A previous `Env` that
+    was never closed -- a test that raised mid-run still holds one alive
+    through its traceback -- otherwise keeps its callbacks on the shared
+    cvode, where they fire inside *this* env's `psolve` and report the dead
+    env's stimulus as this one's error.
+    """
+    # a snapshot: _unregister_callback mutates _REGISTERED_CALLBACKS
+    for callback in [c for c in _REGISTERED_CALLBACKS if c.env is not env]:
+        other = callback.env
+        _unregister_callback(cvode, callback)
+        if other is not None:
+            setattr(other, callback._flag, False)
 
 
 def _overrides_init_ic(cell) -> bool:
@@ -261,8 +284,8 @@ class Env(EnvProtocol):
         self._stim_step = 0
         self._stim_last_key: int | None = None
         self._stim_registered = False
-        self._stim_cb = _EnvCallback(self, "_update_extracellular")
-        self._opsin_cb = _EnvCallback(self, "_update_opsin_phi")
+        self._stim_cb = _EnvCallback(self, "_update_extracellular", "_stim_registered")
+        self._opsin_cb = _EnvCallback(self, "_update_opsin_phi", "_opsin_registered")
 
         # opsin (irradiance) stimulus block
         self._opsin_refs: dict[tuple[int, int], object] = {}  # (gid, sec_id) -> pp
@@ -294,7 +317,7 @@ class Env(EnvProtocol):
         return spec if isinstance(spec, str) else None
 
     def init(self) -> Self:
-        _sweep_dead_callbacks(self._h.cvode)
+        _claim_callbacks(self._h.cvode, self)
         self.pc.gid_clear()
         self._detector_gid_base = self._detector_gid_base_for(self.system)
         builder = CellBuilder(self.system, self.model, self.pc, self.comm)

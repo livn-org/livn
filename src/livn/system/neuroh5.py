@@ -23,6 +23,7 @@ from livn.system._common import (
     Tree,
     _placement_rows,
     resolve_selection,
+    stack_coordinates,
 )
 from livn.utils import (
     P,
@@ -1214,7 +1215,7 @@ class NeuroH5System:
     ) -> types.Float[types.Array, "n_coords ixyz=4"]:
         if populations is None:
             populations = self.populations
-        return np.vstack(
+        return stack_coordinates(
             [transform(self.coordinate_array(p), population=p) for p in populations]
         )
 

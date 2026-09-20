@@ -17,11 +17,11 @@ from neuron import h
 
 from livn.decoding import ChannelRecording
 from livn.env import Env
-from livn.system import predefined
+from livn.system import NeuroH5System, fetch
 from livn.utils import P
 
 # CA1 debug system containing a single PYR cell
-env = Env(predefined("CA1d")).init()
+env = Env(NeuroH5System(fetch("CA1d"))).init()
 
 t_end = 500  # ms
 

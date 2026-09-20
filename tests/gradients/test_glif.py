@@ -976,7 +976,7 @@ def test_a_run_through_env_on_a_connected_system(mechanism):
         model=GLIF(
             level=1,
             mechanism=mechanism,
-            config=SolverConfig(max_rate=6.0),
+            config=SolverConfig(max_rate=20.0),
         ),
     )
     env = env.set_weights({"EXC_EXC": 400.0, "EXC_INH": 400.0, "INH_EXC": 400.0}).init()
