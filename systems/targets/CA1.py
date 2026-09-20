@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 
 import numpy as np
+from pydantic import ConfigDict, field_validator
 
 from livn.decoding import (
     PopulationActiveFraction,
@@ -12,7 +14,7 @@ from livn.decoding import (
     Slice,
 )
 from livn.utils import P
-from systems.targets.protocol import TuningTargets
+from systems.targets.protocol import Sizing, Target
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +22,7 @@ logger = logging.getLogger(__name__)
 GROUP = "|"
 SOURCES = {
     "mean_rate": "density",
+    "mean_rate_population": "density",
     "fraction_active": "density",
     "mean_fraction_active_per_bin": "density",
     "std_fraction_active_per_bin": "density",
@@ -32,6 +35,10 @@ SOURCES = {
 
 OBJECTIVES = {
     "target_rate": ("mean_rate", lambda x, target: (x - target) ** 2),
+    "target_population_rate": (
+        "mean_rate_population",
+        lambda x, target: (x - target) ** 2,
+    ),
     "target_fraction_active": ("fraction_active", lambda x, target: (x - target) ** 2),
     "target_mean_fraction_active": (
         "mean_fraction_active_per_bin",
@@ -50,7 +57,51 @@ OBJECTIVES = {
     ),
 }
 
+
+def signed_band(x: float, min: float, max: float, normalize: bool = True) -> float:
+    """A band score that can be read back as a rate.
+
+    ``rate_bound`` stores ``min(x - lo, hi - x)``, which has two inverses: a
+    stored -3 is a population 3 below the floor or 3 above the ceiling, and the
+    front cannot say which. This lays the two violations end to end instead --
+    below the band occupies ``(-1, 0)``, above it ``(-inf, -1]`` -- so every
+    violation names one rate:
+
+        -1 <= g < 0  ->  x = min * (1 + g)   -- and g == -1 is x == 0, silence
+        g < -1       ->  x = -max * g
+
+    Normalized, so a violation is in units of the band edge and violations of
+    different populations are comparable; ``normalize=False`` keeps the raw
+    units, with the branches meeting at ``-min`` rather than at -1.
+    """
+    if x < min:
+        return (x - min) / min if normalize else x - min
+    if x > max:
+        return (-1.0 - (x - max) / max) if normalize else -min - (x - max)
+    margin = np.minimum(x - min, max - x)
+    return float(margin / (max - min)) if normalize else float(margin)
+
+
+def invert_band(
+    g: float, min: float, max: float, normalize: bool = True
+) -> float | None:
+    """The rate a `signed_band` value came from, or None if it is in band.
+
+    The two violation branches meet at -1 (normalized) or at -min: a value of
+    exactly that is the lower branch at x == 0, so the boundary belongs to the
+    lower branch and nothing is two-valued. In band the score is a margin and
+    says only that, so this returns None -- read the recorded feature instead.
+    """
+    if g >= 0:
+        return None
+    if normalize:
+        return min * (1.0 + g) if g >= -1.0 else -max * g
+    return g + min if g >= -min else max - min - g
+
+
 CONSTRAINTS = {
+    "rate_band": ("mean_rate_population", signed_band),
+    "active_fraction_bound": ("mean_fraction_active_per_bin", signed_band),
     "rate_bound": (
         "mean_rate",
         lambda x, min=0.0, max=float("inf"): np.minimum(x - min, max - x),
@@ -72,12 +123,34 @@ CONSTRAINTS = {
     ),
 }
 
-INACTIVE = -1.0
+OBSERVED = {
+    "rate": "mean_rate",
+    "population rate": "mean_rate_population",
+    "fraction active": "fraction_active",
+    "active per bin": "mean_fraction_active_per_bin",
+    "rate cv": "rate_cv",
+}
 
 FACTOR_BANDS = {
     "mean_rate": lambda reference, k: {"min": reference / k, "max": reference * k},
+    "mean_rate_population": lambda reference, k: {
+        "min": reference / k,
+        "max": reference * k,
+    },
+    "mean_fraction_active_per_bin": lambda reference, k: {
+        "min": reference / k,
+        "max": np.minimum(reference * k, 1.0),
+    },
     "rate_hz": lambda reference, k: {"min": reference / k, "max": reference * k},
     "rate_cv": lambda reference, k: {"max": reference * k},
+}
+
+TARGET_BASIS = {
+    "mean_rate": "firing_rate",
+    "mean_rate_population": "firing_rate",
+    "rate_hz": "firing_rate",
+    "mean_fraction_active_per_bin": "mean_fraction_active",
+    "mean_active_fraction": "mean_fraction_active",
 }
 
 TRANSFORMS = {
@@ -104,18 +177,25 @@ class Scorer:
         self.guard = guard[0] if guard else None
         self.name = entry.get("name") or f"{self.population}_{name}"
         self.binding = entry.get("binding")  # None -> decided by `tune`
+        self.basis = entry.get("basis", "reference")
+        if self.basis not in ("reference", "target"):
+            raise ValueError(
+                f"{self.name}: basis={self.basis!r} is neither 'reference' (what "
+                "the graph's stored spike trains do) nor 'target' (what the "
+                "problem asks the network to do)"
+            )
         self.kwargs = {
             k: v
             for k, v in entry.items()
-            if k not in ("name", "kind", "population", "binding")
+            if k not in ("name", "kind", "population", "binding", "basis")
         }
 
     def __call__(self, measured: float, active: float | None = None) -> float:
         if self.guard is not None and not active:
-            return INACTIVE
+            return -1.0  # nothing fired, so the feature says nothing: infeasible
         return float(self.fn(measured, **self.kwargs))
 
-    def resolve(self, reference: dict) -> Scorer:
+    def resolve(self, reference: dict, targets: dict | None = None) -> Scorer:
         if "factor" not in self.kwargs:
             return self
         build = FACTOR_BANDS.get(self.feature)
@@ -124,14 +204,30 @@ class Scorer:
                 f"{self.name}: 'factor' has no meaning for {self.feature}; it is "
                 f"defined for {sorted(FACTOR_BANDS)}"
             )
-        measured = (reference.get(self.population) or {}).get(self.feature)
-        if measured is None:
-            raise ValueError(
-                f"{self.name} is stated as a factor of the reference activity, but "
-                f"none is recorded for {self.population}.{self.feature}. Measure it "
-                "with `livn systems tune ~ca1 reference --write`, or state the "
-                "bounds outright."
-            )
+        if self.basis == "target":
+            key = TARGET_BASIS.get(self.feature)
+            if key is None:
+                raise ValueError(
+                    f"{self.name}: basis='target' has no meaning for "
+                    f"{self.feature}, which no target states; it is defined for "
+                    f"{sorted(TARGET_BASIS)}"
+                )
+            measured = ((targets or {}).get(self.population) or {}).get(key)
+            if measured is None:
+                raise ValueError(
+                    f"{self.name} is stated as a factor of the target activity, "
+                    f"but {self.population} states no {key!r}"
+                )
+        else:
+            measured = (reference.get(self.population) or {}).get(self.feature)
+            if measured is None:
+                raise ValueError(
+                    f"{self.name} is stated as a factor of the reference activity, "
+                    f"but none is recorded for {self.population}.{self.feature}. "
+                    "Measure it with `livn systems tune ~ca1 "
+                    "'--reference(write=True)'`, "
+                    "or state the bounds outright."
+                )
         rest = {k: v for k, v in self.kwargs.items() if k != "factor"}
         self.kwargs = {**build(float(measured), float(self.kwargs["factor"])), **rest}
         return self
@@ -151,30 +247,40 @@ def expand_grouped(params: dict) -> dict:
     return expanded
 
 
-class CA1(TuningTargets):
-    NETCON_BYTES = 283
+class CA1(Target):
+    SYNAPSE_UNIT_BYTES = 283
 
-    def __init__(
-        self,
-        config: str = "./systems/graphs/CA1/tuning.json",
-        problem: str = "miv",
-        populations: list[str] | None = None,
-        tune: list[str] | None = None,
-        size: int | float | dict[str, int | float] | None = None,
-        selection: str | None = None,
-        inputs: str | None = None,
-        warmup: float | None = None,
-        duration: float | None = None,
-        activity_fraction: float | None = None,
-    ):
-        self.config_path = config
-        with open(config) as fh:
+    class Config(Target.Config):
+        model_config = ConfigDict(extra="forbid")
+
+        sizing: Sizing = Sizing(n_initial=2, n_epochs=5)
+
+        document: str = "./systems/graphs/CA1/tuning.json"
+        _normalise = field_validator("document")(
+            lambda path: os.path.normpath(path) if path else path
+        )
+        problem: str = "uniform"
+        size: int | float | dict[str, int | float] | None = None
+        selection: str | None = None
+
+    def version_problem(self, name: str):
+        return {"problem": name}
+
+    def _configure(self):
+        config = self.settings
+        problem = config["problem"]
+        selection = config["selection"]
+        size = config["size"]
+
+        self.config_path = config["document"]
+        with open(self.config_path) as fh:
             document = json.load(fh)
 
         problems = document.get("problems") or {}
         if problem not in problems:
             raise ValueError(
-                f"{config} states no {problem!r} problem; it holds {sorted(problems)}"
+                f"{self.config_path} states no {problem!r} problem; it holds "
+                f"{sorted(problems)}"
             )
         self.problem = problem
         block = problems[problem]
@@ -188,11 +294,7 @@ class CA1(TuningTargets):
         self.stability_resolution = float(density.get("stability_resolution", 2.0))
         self.baks_alpha = float(density.get("baks_alpha", 4.77))
         self.baks_beta = density.get("baks_beta")
-        self.activity_fraction = float(
-            density.get("activity_fraction", 0.5)
-            if activity_fraction is None
-            else activity_fraction
-        )
+        self.activity_fraction = float(density.get("activity_fraction", 0.5))
         self.bin_size = float(density.get("bin_size", 50.0))
         self.tail_window = float(density.get("tail_window", 1000.0))
 
@@ -200,29 +302,34 @@ class CA1(TuningTargets):
             Scorer(e, OBJECTIVES, "objective") for e in block.get("objectives") or []
         ]
         if not self.objectives:
-            raise ValueError(f"{config}: problem {problem!r} declares no objectives")
+            raise ValueError(
+                f"{self.config_path}: problem {problem!r} declares no objectives"
+            )
         constraints = [
             Scorer(e, CONSTRAINTS, "constraint") for e in block.get("constraints") or []
         ]
+        self.population_targets = self._overlay_problem_targets()
 
         self.scored = sorted({s.population for s in self.objectives + constraints})
-        self.tuned = sorted(tune if tune is not None else block.get("tune") or [])
+        self.tuned = sorted(block.get("tune") or [])
         unscored = [p for p in self.tuned if p not in self.scored]
         if unscored:
             raise ValueError(
                 f"{unscored} would be tuned but nothing scores them, so their "
                 f"weights would move without consequence; give them an objective "
-                f"or a constraint in {config}, or drop them from 'tune'"
+                f"or a constraint in {self.config_path}, or drop them from 'tune'"
             )
         untunable = [p for p in self.tuned if p not in self.weights]
         if untunable:
             raise ValueError(
-                f"{untunable} would be tuned but {config} states no weight ranges "
-                "for them, so there is nothing to move"
+                f"{untunable} would be tuned but {self.config_path} states no weight "
+                "ranges for them, so there is nothing to move"
             )
 
         self.reference = self._read_reference()
-        constraints = [c.resolve(self.reference) for c in constraints]
+        constraints = [
+            c.resolve(self.reference, self.population_targets) for c in constraints
+        ]
         self.constraints = [
             c
             for c in constraints
@@ -240,20 +347,28 @@ class CA1(TuningTargets):
                 return None
             return c(float(recorded[c.feature]), float(recorded[c.guard]))
 
-        unmeetable = [
-            c.name
-            for c in self.constraints
-            if (score := scored_against_reference(c)) is not None and score <= 0
-        ]
-        if unmeetable:
+        for c in self.constraints:
+            score = scored_against_reference(c)
+            if score is None or score > 0:
+                continue
+            recorded = float((self.reference.get(c.population) or {})[c.feature])
+            band = ", ".join(
+                f"{k} {float(v):g}" for k, v in sorted(c.kwargs.items()) if k != "guard"
+            )
             logger.warning(
-                "%s would be violated by the graph's own recorded activity",
-                unmeetable,
+                "%s: the graph's own spike trains measure %s = %g, outside the "
+                "%s this problem states%s. The two specifications of %s "
+                "disagree; keep the band if the target is the claim being "
+                "tested, or state basis='reference' to centre it on the trains.",
+                c.name,
+                c.feature,
+                recorded,
+                band,
+                " as a factor of the target" if c.basis == "target" else "",
+                c.population,
             )
 
-        self.populations = sorted(
-            populations if populations is not None else network.get("populations") or []
-        )
+        self.populations = sorted(network.get("populations") or [])
         unsimulated = [p for p in self.scored if p not in self.populations]
         if unsimulated:
             raise ValueError(
@@ -266,12 +381,13 @@ class CA1(TuningTargets):
         transform = block.get("transform", "identity")
         if transform not in TRANSFORMS:
             raise ValueError(
-                f"{config}: problem {problem!r} names transform {transform!r}; "
+                f"{self.config_path}: problem {problem!r} names transform "
+                f"{transform!r}; "
                 f"livn has {sorted(TRANSFORMS)}"
             )
         self.transform = getattr(self, TRANSFORMS[transform])
 
-        self.inputs = inputs or network["inputs"]
+        self.inputs = network["inputs"]
         self.input_namespace = network["input_namespace"]
         self.input_attribute = network.get("input_attribute", "Spike Train")
         self.dt = network.get("dt")
@@ -289,13 +405,9 @@ class CA1(TuningTargets):
             raise ValueError(f"selection={selection!r} is not a name")
 
         self._durations: tuple[float, float] | None = None
-        self._warmup_duration = float(
-            network.get("warmup_ms", 250.0) if warmup is None else warmup
-        )
+        self._warmup_duration = float(network.get("warmup_ms", 250.0))
         stop = network.get("stop_ms")
-        if duration is not None:
-            self._recording_duration = float(duration)
-        elif stop is not None:
+        if stop is not None:
             self._recording_duration = float(stop) - self.warmup_duration
             if self._recording_duration <= 0:
                 raise ValueError(
@@ -329,8 +441,8 @@ class CA1(TuningTargets):
                     space[key] = [lo, hi, self.transform]
         return space
 
-    def decode_params(self, params: dict, model=None) -> dict:
-        return expand_grouped(super().decode_params(params, model=model))
+    def decode_params(self, params: dict, model=None, strict: bool = False) -> dict:
+        return expand_grouped(super().decode_params(params, model=model, strict=strict))
 
     def describe_params(self, decoded) -> dict:
         groups: dict[str, dict] = {p: {} for p in self.tuned}
@@ -344,6 +456,17 @@ class CA1(TuningTargets):
     def constraint_names(self) -> list[str]:
         return [s.name for s in self.constraints]
 
+    def observed_feature_names(self) -> list[str]:
+        return [f"{pop} {label}" for pop in self.scored for label in OBSERVED]
+
+    def observed_features(self) -> dict[str, float]:
+        measured = {f: self.metrics.get(f) or {} for f in OBSERVED.values()}
+        return {
+            f"{pop} {label}": float(measured[feature].get(pop, 0.0))
+            for pop in self.scored
+            for label, feature in OBSERVED.items()
+        }
+
     def advisory_constraint_names(self) -> list[str]:
         return [s.name for s in self.advisory]
 
@@ -352,6 +475,17 @@ class CA1(TuningTargets):
 
     def scored_populations(self) -> list[str]:
         return list(self.scored)
+
+    def _overlay_problem_targets(self) -> dict[str, dict]:
+        merged = {pop: dict(block) for pop, block in self.population_targets.items()}
+        for objective in self.objectives:
+            key = TARGET_BASIS.get(objective.feature)
+            if key is None or "target" not in objective.kwargs:
+                continue
+            merged.setdefault(objective.population, {})[key] = float(
+                objective.kwargs["target"]
+            )
+        return merged
 
     def target_rates(self) -> dict[str, float]:
         return {
@@ -489,10 +623,10 @@ class CA1(TuningTargets):
 
         return {p: available[p][: min(counts[p], len(available[p]))] for p in pops}
 
-    def build_env(self, system, model, comm=None, subworld_size=None):
+    def build_env(self, system, model, comm=None):
         from livn.env import Env
 
-        env = Env(system, model=model, comm=comm, subworld_size=subworld_size)
+        env = Env(system, model=model, comm=comm)
         env.selection(
             self.selection_name
             if self.selection_name is not None

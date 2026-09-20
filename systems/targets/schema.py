@@ -64,6 +64,7 @@ class Summary(BaseModel):
     window_ms: float
     onsets_ms: list[float] | None = None
     n_windows: int = 0
+    recordings: list[str] = Field(default_factory=list)
     features: dict[str, Stat | None] = Field(default_factory=dict)
     by_amplitude: dict[str, AmplitudeRow] | None = None
 

@@ -12,11 +12,11 @@ from livn.env import Env
 from livn.models.rcsd import ReducedCalciumSomaDendrite
 from livn.stimulus import Stimulus
 from livn.utils import import_object_by_path
+from systems.targets.protocol import Target
 
 from . import ephys
 
 ENA_MV = 60.6
-DEFAULT_CONFIG_FILE = os.path.join(os.path.dirname(__file__), "motoneuron.yaml")
 
 
 class StepTarget(BaseModel):
@@ -196,40 +196,27 @@ def range_distance(x, lb, ub):
     return 0.0
 
 
-class SingleCell:
-    """Generic single-cell current-clamp tuning target."""
-
-    def __init__(
-        self,
-        config: SingleCellOptConfig | dict | str = DEFAULT_CONFIG_FILE,
-        population: str | None = None,
-        sim_dt: float | None = None,
-        record_dt: float | None = None,
-    ):
-        self.cfg = self._resolve_config(config)
-        self.population = population or self.cfg.Population
-        # the config decides unless the caller says otherwise
-        self.sim_dt = float(self.cfg.Numerics.dt if sim_dt is None else sim_dt)
-        self.record_dt = float(
-            self.cfg.Numerics.record_dt if record_dt is None else record_dt
-        )
-        self._decoded: dict | None = None
-        self._parse()
+class SingleCell(Target):
+    class Config(SingleCellOptConfig, Target.Config):
+        model_config = ConfigDict(extra="forbid")
 
     @staticmethod
-    def _resolve_config(config) -> SingleCellOptConfig:
-        if isinstance(config, SingleCellOptConfig):
-            return config
-        if isinstance(config, str):
-            return SingleCellOptConfig.from_yaml(config)
-        try:
-            from omegaconf import DictConfig, OmegaConf
+    def version_yaml(path: str = "systems/targets/cells/motoneuron.yaml"):
+        return SingleCellOptConfig.from_yaml(path).model_dump()
 
-            if isinstance(config, DictConfig):
-                config = OmegaConf.to_container(config, resolve=True)
-        except ImportError:
-            pass
-        return SingleCellOptConfig(**dict(config))
+    def _configure(self) -> None:
+        self.cfg = SingleCellOptConfig(
+            **{
+                name: value
+                for name, value in self.settings.items()
+                if name in SingleCellOptConfig.model_fields
+            }
+        )
+        self.population = self.cfg.Population
+        self.sim_dt = float(self.cfg.Numerics.dt)
+        self.record_dt = float(self.cfg.Numerics.record_dt)
+        self._decoded: dict | None = None
+        self._parse()
 
     def _parse(self) -> None:
         cfg = self.cfg
@@ -306,10 +293,8 @@ class SingleCell:
     def _log_scaled(self) -> set:
         return {k for k, (lo, hi) in self.space.items() if lo > 0 and hi / lo >= 10.0}
 
-    STRUCTURAL = ("axon_segments",)
-
     def search_space(self, model=None) -> dict:
-        searched_structure = [k for k in self.STRUCTURAL if k in self.space]
+        searched_structure = [k for k in ("axon_segments",) if k in self.space]
         if searched_structure:
             raise ValueError(
                 f"{searched_structure} decide how many sections the cell has, "
@@ -524,13 +509,20 @@ class SingleCell:
             ]
         )
 
-    def transform_params(self, x) -> dict:
+    def transform_params(self, x, model=None) -> dict:
         # x: {param: value} from the optimizer. Merge with fixed parameters and
         # stash for __call__ (applied to the cell via env.cells, not set_params).
         self._decoded = self._resolve(x)
         return {}
 
-    def decode_params(self, x, model=None) -> dict:
+    def decode_params(self, x, model=None, strict: bool = False) -> dict:
+        if strict:
+            unknown = sorted(set(x) - set(self.space))
+            if unknown:
+                raise ValueError(
+                    f"{unknown} are not in this cell's search space, which "
+                    f"offers {sorted(self.space)}"
+                )
         return self._resolve(x)
 
     def _resolve(self, x) -> dict:
@@ -603,7 +595,7 @@ class SingleCell:
             for k, v in best.items()
         }
 
-    def build_env(self, system, model=None, comm=None, subworld_size=None):
+    def build_env(self, system, model=None, comm=None):
         cell_model = SingleCellModel(
             template=self.template_path,
             threshold=self.target_threshold,
@@ -614,7 +606,7 @@ class SingleCell:
         )
         if isinstance(system, int):
             system = {self.population: system}
-        env = Env(system, model=cell_model, comm=comm, subworld_size=subworld_size)
+        env = Env(system, model=cell_model, comm=comm)
         if isinstance(system, (str, os.PathLike)):
             env.selection(1)
         env.init()

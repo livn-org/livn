@@ -31,33 +31,36 @@ livn uses **surrogate-assisted multi-objective optimization** via the [dmosopt](
 4. **Simulation evaluation**: Promising candidates are simulated to validate predictions
 5. **Iteration**: Steps 2-4 repeat for multiple epochs
 
-The `target` config option specifies a **tuning target** that defines the parameter search space, the optimization objectives, and the constraints. livn ships with `systems.targets.EI.Culture` as the default target for the cultures. It takes the values it fits as arguments, so tuning against your own recordings does not require writing one from scratch.
+The `target` config option specifies a **tuning target**, i.e. the search problem. The target owns the parameter search space, the objectives, the constraints, the network the fit runs on and what one evaluation costs the scheduler; `tune` only states how to search it. livn ships with `targets.EI` (`Culture`) as the default target for the cultures, configured by the measurements it fits, so tuning against your own recordings does not require writing one from scratch.
 
 ## Tuning Targets
 
-::: tip
-Fitting a culture to your own measurements usually needs no code at all since the built-in [`Culture`](#systems-targets-ei-culture) target takes the measured values as arguments; see [tuning against your own
-measurements](#tuning-against-your-own-measurements). Read on when you need a protocol it does not cover.
-:::
+A tuning target is a [machinable interface](https://machinable.org/guide/interface) that subclasses `Target` and defines four things:
 
-A tuning target is a class that subclasses `TuningTargets` and defines three things:
+1. **Configuration** - a typed `Config` holding everything the problem states, with defaults
+2. **Search space** - which parameters to optimize and their bounds
+3. **Objectives** - what metrics to minimize (returned as `(objective_value, feature_value)` tuples)
+4. **Constraints** - hard constraints that valid solutions must satisfy
 
-1. **Search space** - which parameters to optimize and their bounds
-2. **Objectives** - what metrics to minimize (returned as `(objective_value, feature_value)` tuples)
-3. **Constraints** - hard constraints that valid solutions must satisfy
+Because the configuration is a `Config`, it is validated, composable through `~versions` and override dicts, and recorded with the run.
 
 ### Minimal example
 
 ```python
-from systems.targets.protocol import TuningTargets
+from pydantic import BaseModel
+from systems.targets.protocol import Target
 from livn.decoding import MeanFiringRate, Slice
 
-class MyTarget(TuningTargets):
-    def __init__(self):
-        super().__init__()
-        self.target_mfr = 3.0
-        self.duration = 10000.0
-        self.warmup = 2000.0
+class MyTarget(Target):
+    class Config(Target.Config):
+        target_mfr: float = 3.0
+        duration: float = 10000.0
+        warmup: float = 2000.0
+
+    def _configure(self):
+        self.target_mfr = self.config.target_mfr
+        self.duration = self.config.duration
+        self.warmup = self.config.warmup
 
     # --- Search space ---
 
@@ -199,22 +202,13 @@ This is unaffected by the prefixes above as whatever the target does not consume
 
 ## Built-in targets
 
-### `systems.targets.EI.Culture`
+### `targets.EI` (`Culture`)
 
 The default target for cultures measures a free-running network and scores it against a handful of values you can set. Give it a `stimulus` and it also delivers a pulse train after the measured window and fits the network's recruitment curve, read with `livn.decoding.RecruitmentCurve`.
 
-**Objectives** — what the optimizer minimizes. Each is the squared distance between the measured value and its target (`mfr` in log space):
+**Objectives** — squared distance between the measured value and its target. `mfr`, `isi_cv` and `active_fraction` are always scored; the burst family is scored wherever the culture bursts, and where it does not, `fano_factor`, `mean_channel_correlation` and `max_synchronous_peak` are scored in its place.
 
-| Name | Default | Description |
-|------|---------|-------------|
-| `mfr` | 1.0 Hz | Mean firing rate |
-| `isi_cv` | 1.2 | Coefficient of variation of the inter-spike intervals — how irregular the spiking is |
-| `active_fraction` | 1.0 | Fraction of units that fire at all |
-| `mean_channel_correlation` | *unset* | Mean pairwise correlation. Only becomes an objective when you give it a value |
-
-To fit fewer, pass `skip_objectives`.
-
-**Constraints** — hard gates a solution has to satisfy. Each is a class constant you can override:
+**Constraints**
 
 | Constraint | Constants |
 |------------|-----------|
@@ -225,92 +219,22 @@ To fit fewer, pass `skip_objectives`.
 | liveness | `MIN_ACTIVE_FRACTION`, `MIN_POPULATION_ACTIVE` |
 | timescale and criticality | `POP_TAU_BAND_MS`, `BRANCHING_RATIO_BAND`, `MIN_AVALANCHE_R2` |
 
-**Search space** — derived from the graph rather than declared, so it follows whatever projections the system actually has (a model built with `short_term_depression=True` adds that mechanism's `tau_rec` and `U` to it). The recurrent excitatory weight is searched on its own scale and every other weight as a ratio to it (`...-weight_ratio`), which keeps the E/I balance separable from the overall drive; the OU background (`noise-g_e0`, `noise-g_i0`, `noise-std_e`, `noise-std_i`, `noise-tau_e`, `noise-tau_i`) is searched alongside it. Two optional coordinates: `adaptation=True` frees the cell's calcium-dependent potassium current and calcium removal rate, and `ignition=True` searches the recurrent weight along the measured `weight × g_e0` ignition boundary instead of on its own axis.
-
-**Options:**
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `targets` | see above | The values being fitted |
-| `overrides` | `{}` | Constraint constants, by name; `{"targets": {...}}` also works. An unknown name raises |
-| `feature_bands` | `{}` | `{feature: (lo, hi)}` used to *rank* the front, not to gate it. Matched against the recorded feature columns, which are the objective names |
-| `duration` / `warmup` | 30 000 / 1 000 ms | Measured window, and the settling time before it |
-| `readout` | `"neurons"` | `"channels"` measures through an array instead of per neuron |
-| `mea` | `None` | Array geometry (`electrode_coordinates`, `input_radius`, `output_radius`), required for `readout="channels"` |
-| `skip_objectives` / `skip_constraints` | `()` | Names to leave out |
-| `adaptation` / `ignition` | `False` | The optional search coordinates above |
-| `stimulus` | `None` | A `Protocol` (a `livn.policy.PulseSweepPolicy` plus the baseline, the recovery time and the driving electrode) to deliver after the measured window. Requires `readout='channels'`. Adds the `stimulus_threshold` objective and the `io-volume_conductor-stimulation_gain` coordinate. The sweep is `len(amplitudes) * repeats * trial_ms` of extra simulation, and `trial_ms` has to leave `recovery_ms` of quiet between one response and the next pulse's baseline &mdash; spend the budget on spacing before repeats |
-| `stimulus_threshold` | `{}` | The bracket the culture's own recruitment crossed in, as `livn.decoding.recruitment_threshold` reports it |
-| `gate_stimulus` | `True` | Deliver the sweep only to candidates the measured window leaves feasible. |
+**Search space** - the recurrent excitatory weight is searched on its own scale and every other weight as a ratio to it (`...-weight_ratio`), which keeps the E/I balance separable from the overall drive; the OU background is searched as a total conductance and an I:E ratio (`noise-g_total`, `noise-g_ratio`) with the two correlation times, the vesicle pool as `U` and `tau_rec`, and the cell's calcium-dependent adaptation half a decade each side of the culture-like cell. With an evoked block it also searches the stimulation gain.
 
 ## Tuning against your own measurements
+
+Extract your recording as a target document (see `systems/targets/schema.py`)
 
 ```python
 from machinable import get
 
-tuner = get("tune", {
-    "system": "./systems/graphs/EI",
-    "target": ["systems.targets.EI.Culture", {
-        # what the recording says the network does
-        "targets": {
-            "mfr": 0.51,                        # Hz
-            "isi_cv": 0.78,
-            "active_fraction": 0.48,
-            "mean_channel_correlation": 0.29,   # only if you measured one
-        },
-        # the bands a solution has to stay inside
-        "overrides": {
-            "MIN_MEAN_RATE_HZ": 0.45,
-            "MAX_MEAN_RATE_HZ": 0.89,
-            "MAX_NEURON_RATE_HZ": 7.4,
-            "MAX_SYNC_PEAK": 0.05,
-            "MAX_BURST_RATE_HZ": 0.47,
-            "BRANCHING_RATIO_BAND": [1.25, 1.37],
-        },
-        # ranking rather than gating: a solution inside every band comes out
-        # above one that merely scores well. Names are the objective features
-        "feature_bands": {
-            "mfr": [0.45, 0.89],
-            "isi_cv": [0.70, 0.95],
-        },
-        "duration": 30000.0,
-    }],
-})
+tuner = get("tune", ["~fit(observation='…/my-target.json')"])
 tuner.launch()
 ```
 
-The same on the command line, where the target is a `[path, options]` pair:
-
-```sh
-livn systems mpi tune \
-    system=./systems/graphs/EI \
-    target='["systems.targets.EI.Culture", {"targets": {"mfr": 0.51, "isi_cv": 0.78}}]' \
-    **resources='{"-n": 2}' \
-    --launch
-```
-
-Which numbers you need depends on what you can measure reliably. Only `targets` is really required since every constraint has a default.
-
-::: warning
-Measure the simulation the way you measured the culture. With `readout="neurons"` the metrics are computed per cell; with `readout="channels"` they are computed on spikes pooled per electrode, which is what an MEA recording gives you. The two do not produce the same `mfr` for the same network, so a target measured on channels has to be fitted on channels:
-
-```python
-"target": ["systems.targets.EI.Culture", {
-    "readout": "channels",
-    "mea": {
-        "electrode_coordinates": [[0, 200.0, 200.0, 5.0], [1, 400.0, 200.0, 5.0]],
-        "input_radius": 50.0,
-        "output_radius": 50.0,
-    },
-    "targets": {"mfr": 0.51},
-}],
-```
-:::
-
-
 ## Writing custom tuning targets
 
-You can write your own `TuningTargets` subclass to tune a system against your own experimental data or a different activity regime. Place your target module anywhere importable (e.g., inside `systems/targets/` for project-level targets, or any Python package on your path).
+You can write your own `Target` subclass to tune a system against your own experimental data or a different activity regime. Place your target module anywhere importable (e.g., inside `systems/targets/` for project-level targets).
 
 ### Tuning against experimental recordings
 
@@ -319,24 +243,23 @@ A common use case is matching simulation output to experimental MEA recordings. 
 ```python
 # systems/targets/my_organoid.py
 import numpy as np
-from systems.targets.protocol import TuningTargets
+from systems.targets.protocol import Target
 from livn.decoding import MeanFiringRate, Slice, LFP
 
-class OrganoidMatch(TuningTargets):
+class OrganoidMatch(Target):
     """Tune to match experimental organoid recordings."""
 
-    def __init__(
-        self,
-        recording_mfr: float = 2.3,       # measured mean firing rate (Hz)
-        recording_burst_rate: float = 0.05, # measured burst rate (Hz)
-        duration: float = 20000.0,
-        warmup: float = 2000.0,
-    ):
-        self.recording_mfr = recording_mfr
-        self.recording_burst_rate = recording_burst_rate
-        self.duration = duration
-        self.warmup = warmup
-        super().__init__()
+    class Config(Target.Config):
+        recording_mfr: float = 2.3          # measured mean firing rate (Hz)
+        recording_burst_rate: float = 0.05  # measured burst rate (Hz)
+        duration: float = 20000.0
+        warmup: float = 2000.0
+
+    def _configure(self):
+        self.recording_mfr = self.config.recording_mfr
+        self.recording_burst_rate = self.config.recording_burst_rate
+        self.duration = self.config.duration
+        self.warmup = self.config.warmup
 
     def _weight_space(self, model):
         return {
@@ -388,61 +311,37 @@ Then run:
 ```sh
 livn systems mpi tune \
     system=./systems/graphs/EI \
-    target=systems.targets.my_organoid.OrganoidMatch \
+    target=targets.my_organoid \
     **resources='{"-n": 2}' \
     --launch
 ```
-
-### Extending the built-in Culture target
-
-```python
-# systems/targets/my_culture.py
-from systems.targets.EI import Culture
-
-class MyCulture(Culture):
-    """The values measured on our own preparation."""
-
-    # constraint constants are ordinary class attributes
-    MIN_MEAN_RATE_HZ = 2.0
-    MAX_MEAN_RATE_HZ = 8.0
-
-    def __init__(self, **kwargs):
-        kwargs.setdefault("targets", {"mfr": 5.0, "isi_cv": 1.6})
-        super().__init__(**kwargs)
-```
-
 ## Running the tuner
 
 ### Via the CLI
 
 ```sh
-livn systems mpi tune \
-    system=./systems/graphs/EI \
-    target=systems.targets.EI.Culture \
-    **resources='{"-n": 2}' \
+livn systems mpi tune '~fit(observation="…/E_E-sample2_15.json")' \
+    **resources='{"-n": 3}' \
     --launch
 ```
 
-The `mpi` execution module handles `mpirun` automatically. `-n` specifies the total number of MPI ranks; at least 2 are required (one controller + one or more workers). Each worker uses `nprocs_per_worker` ranks, so the total should be `1 + num_workers * nprocs_per_worker`.
+The `mpi` execution module handles `mpirun` automatically. `-n` specifies the total number of MPI ranks; at least 2 are required (one controller + one or more workers). Each worker uses the target's `sizing.nprocs_per_worker` ranks unless `autosize` works out a layout, so the total is `1 + num_workers * nprocs_per_worker` — 3 for one worker of the two ranks `targets.EI` asks for.
 
 To fit a [rung](/guide/concepts/system#subselections) rather than the whole culture, name it as selection:
 
 ```sh
-livn systems mpi tune \
-    system=./systems/graphs/EI \
+livn systems mpi tune '~fit(observation="…")' \
     selection=e1 \
-    **resources='{"-n": 2}' \
+    **resources='{"-n": 3}' \
     --launch
 ```
 
-The result is written to `env-e1.json` beside the graph.
-
-To use a custom target, specify its dotted import path:
+To use a custom target, name its module:
 
 ```sh
 livn systems mpi tune \
     system=./systems/graphs/EI \
-    target=systems.targets.my_organoid.OrganoidMatch \
+    target=targets.my_organoid \
     **resources='{"-n": 2}' \
     --launch
 ```
@@ -460,10 +359,11 @@ livn systems mpi tune \
 On Slurm clusters, use the `slurm` execution module instead:
 
 ```sh
-livn systems slurm tune \
+livn systems slurm \
+    **resources='{"--nodes": 2, "--ntasks-per-node": 56, "-p": "normal", "-t": "4:00:00"}' \
+    tune \
     system=./systems/graphs/EI \
     nprocs_per_worker=4 \
-    **resources='{"--nodes": 2, "--ntasks-per-node": 56, "-p": "normal", "-t": "4:00:00"}' \
     --launch
 ```
 
@@ -471,7 +371,7 @@ The execution module handles MPI launch commands, job submission, and resource a
 
 ### Sizing the run automatically
 
-Picking `nprocs_per_worker`, `--nodes` and `--ntasks-per-node` by hand means knowing how much memory a worker needs, which depends on how many synapses the selection wires. `autosize` works it out for `~ca1`, `~EI` and `~E_only` automatically and you can set `autosize=True` to use it elsewhere.
+Picking `nprocs_per_worker`, `--nodes` and `--ntasks-per-node` by hand means knowing how much memory a worker needs, which depends on how many synapses the selection wires. `autosize` is on by default and works it out from the target's own memory model; a target that cannot price its own network falls back to `nprocs_per_worker`.
 
 To preview it before committing to a job:
 
@@ -493,24 +393,23 @@ To override the defaults, use:
 
 ```sh
 LIVN_WORKER_MEMORY_MAX=128 LIVN_CORES_PER_NODE=56 livn systems slurm tune ~ca1 --launch
+LIVN_MIN_RANKS_PER_WORKER=8 livn systems slurm tune '~fit(observation="…")' --launch
 ```
-
-or `worker_memory_max` and `cores_per_node`, and `max_nodes` in code, as well as:
 
 ```python
-class MyCulture(Culture):
-    MIN_RANKS_PER_WORKER = 2  # sizing may add ranks, not go below this
-```
+from systems.targets.protocol import Sizing
 
-- Ranks per worker — the fewest that bring a rank's share of the network under the node's per-core memory.
-- Nodes — enough that the worker count reaches the samples an epoch draws. Workers past that would idle.
-- Ranks per node — as dense as the node's memory and cores allow, subject to `(total ranks − 1)` dividing by ranks per worker, which is what the controller-plus-workers layout requires.
+class MyCulture(Culture):
+    class Config(Culture.Config):
+        # sizing may add ranks, not go below this
+        sizing: Sizing = Sizing(min_ranks_per_worker=2, n_initial=25, n_epochs=10)
+```
 
 ::: warning
 `ranks` means total ranks to the `mpi` module (`-n`) and ranks per node to `slurm` (`--ntasks-per-node`). The two agree on a single node, so for a local `mpi` run pass `max_nodes=1` and the printed `-n` is correct:
 
 ```sh
-livn systems tune '~ca1(selection="e1", max_nodes=1)' --sizing
+livn systems tune '~ca1(selection="e1")' max_nodes=1 --sizing
 ```
 :::
 
@@ -520,10 +419,8 @@ livn systems tune '~ca1(selection="e1", max_nodes=1)' --sizing
 from machinable import get
 
 tuner = get("tune", {
-    "system": "./systems/graphs/EI",
-    "target": "systems.targets.EI.Culture",
+    "target": ["targets.EI", {"observation": "…/E_E-sample2_15.json"}],
     "trials": 1,
-    "nprocs_per_worker": 1,
 })
 tuner.launch()
 ```
@@ -532,20 +429,21 @@ tuner.launch()
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `system` | `./systems/graphs/EI` | Path to the generated system, or an `int` for that many unconnected cells |
+| `target` | `targets.EI` | The problem: a module, then `~versions` and override dicts |
+| `system` | `None` | Override the network the target states |
 | `selection` | `None` | Stored subselection to build instead of the whole system |
-| `model` | `None` | Model class (None = system default) |
-| `target` | `systems.targets.EI.Culture` | Dotted path to a `TuningTargets` subclass, or `[path, options]` |
+| `model` | `None` | Override the model the target states |
 | `trials` | `1` | Simulation trials per evaluation |
-| `nprocs_per_worker` | `1` | MPI ranks per simulation worker (ignored when `autosize` is on) |
-| `autosize` | `False` | Size ranks and nodes from the selection; see [above](#sizing-the-run-automatically) |
+| `nprocs_per_worker` | `None` | MPI ranks per worker when `autosize` is off; `None` takes the target's |
+| `autosize` | `True` | Size ranks and nodes from the target's memory model; see [above](#sizing-the-run-automatically) |
 | `worker_memory_max` | `None` | GiB per node, else `LIVN_WORKER_MEMORY_MAX`, else this machine |
 | `cores_per_node` | `None` | Ranks a node can run, else `LIVN_CORES_PER_NODE` / `SLURM_CPUS_ON_NODE` / this machine |
 | `max_nodes` | `None` | Cap on the node count; `1` for a local `mpi` run |
-| `n_initial` | `100` | Initial samples **per search dimension** |
+| `n_initial` | `None` | Initial samples **per search dimension**; `None` takes the target's |
 | `population_size` | `100` | Evolutionary population |
 | `num_generations` | `10` | Generations per epoch |
-| `n_epochs` | `10` | Optimizer epochs (epoch 0 is the initial sampling) |
+| `n_epochs` | `None` | Optimizer epochs (epoch 0 is the initial sampling); `None` takes the target's |
+| `optimizer` | `nsga2` | Which dmosopt optimizer runs the search |
 | `surrogate` | `{}` | Extra surrogate settings, passed through as `surrogate_*` |
 
 ::: warning
