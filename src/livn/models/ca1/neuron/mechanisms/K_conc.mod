@@ -41,7 +41,7 @@ INITIAL {
 }
 
 BREAKPOINT {
-       SOLVE conc METHOD derivimplicit
+       SOLVE conc METHOD cnexp
 }
 
 DERIVATIVE conc {

@@ -39,7 +39,7 @@ ASSIGNED {
 STATE { s r }
 
 BREAKPOINT {
-    SOLVE state METHOD derivimplicit
+    SOLVE state METHOD cnexp
     g = gmax*(s^2)*r
     ica = g*ghk(v, cai, cao)
 }

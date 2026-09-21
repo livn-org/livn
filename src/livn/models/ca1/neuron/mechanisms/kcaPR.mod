@@ -41,7 +41,7 @@ INITIAL {
 }
     
 BREAKPOINT {
-    SOLVE states METHOD derivimplicit
+    SOLVE states METHOD cnexp
     g = gmax * c * chid
     ik = g*(v-ek)
 } 
