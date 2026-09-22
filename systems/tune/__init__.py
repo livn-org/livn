@@ -86,6 +86,10 @@ def _described(spec, built=None) -> dict:
     return _describe(built if built is not None else spec)
 
 
+def _or_default(value, default):
+    return default if value is None else value
+
+
 def _parse_overrides(params) -> dict:
     """`"a=1,b=2"` or a mapping -> `{"a": 1.0, "b": 2.0}`."""
     if not params:
@@ -286,8 +290,8 @@ class Tune(Interface):
                     "selection": self.config.selection,
                 },
                 "optimizer_name": self.config.optimizer,
-                "n_epochs": self.config.n_epochs or sizing.n_epochs,
-                "n_initial": self.config.n_initial or sizing.n_initial,
+                "n_epochs": _or_default(self.config.n_epochs, sizing.n_epochs),
+                "n_initial": _or_default(self.config.n_initial, sizing.n_initial),
                 "population_size": self.config.population_size,
                 "num_generations": self.config.num_generations,
                 **surrogate_config,
@@ -332,8 +336,8 @@ class Tune(Interface):
         plan["total_evals"] = sopt.num_evals_total
         plan["floor"] = floor
         plan["floor_asked"] = asked
-        plan["n_initial"] = self.config.n_initial or target.sizing.n_initial
-        plan["n_epochs"] = self.config.n_epochs or target.sizing.n_epochs
+        plan["n_initial"] = _or_default(self.config.n_initial, target.sizing.n_initial)
+        plan["n_epochs"] = _or_default(self.config.n_epochs, target.sizing.n_epochs)
         return plan
 
     def sizing(self):
