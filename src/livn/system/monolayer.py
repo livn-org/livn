@@ -240,6 +240,12 @@ class ConnectivitySpec(BaseModel):
     )
     cutoff: float | None = Field(default=None, ge=0.0, le=1.0)
     allow_self_connections: bool = False
+    velocity: float | None = Field(default=None, gt=0.0)
+    degree_rule: Literal["fixed_probability", "fixed_degree"] | None = None
+    degree_reference: dict[str, float] = Field(
+        default_factory=dict,
+        description=("Per projection, presynaptic share its calibrated `mean_degree`"),
+    )
     floor: dict[str, int] = Field(
         default_factory=dict,
         description=(
@@ -579,6 +585,10 @@ class Monolayer(Jsonable):
         return (x1 - x0, y1 - y0)
 
     # -- projections ---------------------------------------------------------
+
+    @property
+    def conduction_velocity(self) -> float | None:
+        return self.connectivity.velocity
 
     def _target_degree(self, pre: str, post: str) -> float:
         configured = self.connectivity.mean_degree

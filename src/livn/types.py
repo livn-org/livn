@@ -19,6 +19,14 @@ from pydantic import BaseModel, field_validator
 
 from livn.utils import Jsonable
 
+DEFAULT_CONDUCTION_VELOCITY = 250.0
+
+
+def conduction_velocity(system) -> float:
+    stated = getattr(system, "conduction_velocity", None)
+    return float(stated) if stated else DEFAULT_CONDUCTION_VELOCITY
+
+
 if TYPE_CHECKING:
     import gymnasium
     from jaxtyping import Array as JaxArray

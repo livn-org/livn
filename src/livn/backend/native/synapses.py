@@ -6,10 +6,11 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from livn.backend.native import _lib as L
+from livn.types import DEFAULT_CONDUCTION_VELOCITY, conduction_velocity
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_VELOCITY = 250.0  # um/ms
+DEFAULT_VELOCITY = DEFAULT_CONDUCTION_VELOCITY
 
 SWC_SOMA = 1
 SWC_AXON = 2
@@ -243,7 +244,7 @@ class SynapseBuilder:
         )
         selected = self._selected_gids
 
-        VEL = DEFAULT_VELOCITY
+        VEL = conduction_velocity(self.system)
         for post in cells_by_pop:
             if post in self._ignored:
                 continue

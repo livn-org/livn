@@ -7,12 +7,11 @@ from typing import Protocol
 
 import numpy as np
 
+from livn.types import DEFAULT_CONDUCTION_VELOCITY, conduction_velocity
+
 logger = logging.getLogger(__name__)
 
-DEFAULT_VELOCITY = 250.0  # um/ms
-# NetCon delays are floored to 2*dt per NEURON fixed-step requirement but since dt
-# is a run-time choice, ``ConnectionTable.delay`` stores the dt-independent
-# physical delay and Env re-applies the 2*dt floor per run
+DEFAULT_VELOCITY = DEFAULT_CONDUCTION_VELOCITY
 DEFAULT_DT = 0.025
 
 
@@ -517,7 +516,7 @@ class SynapseBuilder:
         # `active` dict) rather than per synapse. Bind hot attributes to locals.
         plan_cache: dict[int, dict] = {}
         gid_connect = self.pc.gid_connect
-        VEL = DEFAULT_VELOCITY
+        VEL = conduction_velocity(self.system)
         BUILD_FLOOR = 2 * DEFAULT_DT
         for (
             post_gid,
