@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import pickle
 import signal
 import time
@@ -23,6 +24,18 @@ if TYPE_CHECKING:
     from livn.run import Run
     from livn.stimulus import Stimulus
     from livn.types import Array, Float, Model
+
+
+def _reconstructible(system) -> None:
+    from collections.abc import Mapping
+
+    if isinstance(system, (str, int, Mapping)):
+        return
+    raise ValueError(
+        f"a {type(system).__name__} cannot be rebuilt on a worker; pass a graph "
+        "directory, a spec file, a cell count, or a described spec "
+        "({'cls': ..., 'kwargs': ...})"
+    )
 
 
 @dataclass(frozen=True)
@@ -116,11 +129,7 @@ class DistributedEnv(EnvProtocol):
         self._task_decoding: dict[int, object] = {}
         self._next_pipeline_id: int = 0
 
-        if not isinstance(system, str):
-            raise ValueError(
-                "System must be a directory path to allow re-initialization on workers"
-            )
-
+        _reconstructible(system)
         self._system_uri = system
         self._model_arg = model
         self._io_arg = io
@@ -206,18 +215,10 @@ class DistributedEnv(EnvProtocol):
                 time.sleep(0.2)
             self.controller.exit()
 
-    def _broadcast_to_workers(
-        self, method_name: str, args: tuple, kwargs: dict | None = None
-    ) -> None:
+    def _broadcast_call(self, fn, args_list: list) -> None:
         if self.controller is None:
             return
-        n_workers = self.controller.comm.size - 1
-        expected = set(
-            self.controller.submit_multiple(
-                _env_config_call,
-                args_list=[(method_name, a, kwargs) for a in [args] * n_workers],
-            )
-        )
+        expected = set(self.controller.submit_multiple(fn, args_list=args_list))
 
         while expected:
             _task_id, response = self.controller.get_next_result()
@@ -225,6 +226,30 @@ class DistributedEnv(EnvProtocol):
                 expected.remove(_task_id)
             else:
                 self._result_buffer[_task_id] = response
+
+    def _broadcast_to_workers(
+        self, method_name: str, args: tuple, kwargs: dict | None = None
+    ) -> None:
+        if self.controller is None:
+            return
+        n_workers = self.controller.comm.size - 1
+        self._broadcast_call(
+            _env_config_call, [(method_name, args, kwargs)] * n_workers
+        )
+
+    def restructure(self, system) -> Self:
+        _reconstructible(system)
+        self._system_uri = system
+        self._local_system = None
+        if self.controller is None:
+            return self
+        n_workers = self.controller.comm.size - 1
+        self._broadcast_call(
+            _env_rebuild,
+            [(system, self._model_arg, self._io_arg, self.seed, self._select)]
+            * n_workers,
+        )
+        return self
 
     def _query_workers(self, attribute: str) -> list:
         if self.controller is None:
@@ -1012,6 +1037,26 @@ def _envcall(decoding, inputs, encoding, kwargs):
     return _state["env"](decoding, inputs, encoding, **kwargs)
 
 
+def _env_rebuild(system, model, io, seed, select):
+    """Replace this worker's Env with one built on `system`."""
+    import gc
+
+    old = _state.get("env")
+    if old is not None:
+        _state["env"] = None
+        with contextlib.suppress(Exception):
+            old.close()
+        del old
+        gc.collect()
+
+    env = Env(system, model, io, seed, comm=_state.get("worker_comm"))
+    if select is not None:
+        chosen, method, bounds = select
+        env.selection(chosen, method=method, bounds=bounds)
+    env.init()
+    _state["env"] = env
+
+
 def _env_config_call(method_name: str, args: tuple, kwargs: dict | None = None):
     env = _state.get("env")
     if env is None:
@@ -1045,6 +1090,8 @@ def _worker_init(worker, distributed_env: DistributedEnv):
 
     if distributed_env._system_uri is not None:
         worker_comm = getattr(worker, "merged_comm", worker.comm)
+        # kept so `restructure` can build the replacement on the same ranks
+        _state["worker_comm"] = worker_comm
 
         env = Env(
             distributed_env._system_uri,

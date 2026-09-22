@@ -253,3 +253,76 @@ def test_property_access_after_init_no_deadlock(mpiexec_n):
     assert env.model is not None
 
     env.shutdown()
+
+
+def _spec_with(cells: int, sigma: float) -> dict:
+    import json
+
+    with open("./testing/culture.json") as f:
+        spec = json.load(f)["system"]
+    kwargs = spec.setdefault("kwargs", {})
+    kwargs["total_cells"] = cells
+    kwargs.setdefault("connectivity", {})["sigma"] = sigma
+    return spec
+
+
+class _GentleDrive(Encoding):
+    def __call__(self, env, t_end, inputs):
+        channel_inputs = np.zeros([t_end, env.io.num_channels])
+        channel_inputs[50:70, :] = 20.0
+        return env.cell_stimulus(channel_inputs)
+
+
+@pytest.mark.mpiexec(timeout=300)
+@pytest.mark.parametrize("mpiexec_n", [3])
+def test_a_described_spec_serves_as_well_as_a_path(mpiexec_n):
+    from livn.env.distributed import DistributedEnv
+    from livn.parallel import Layout
+
+    env = DistributedEnv(_spec_with(40, 200.0), layout=Layout(ranks_per_env=1))
+    env.init()
+    assert sum(env.system.population_counts.values()) == 40
+    env.shutdown()
+
+
+@pytest.mark.mpiexec(timeout=300)
+@pytest.mark.parametrize("mpiexec_n", [3])
+def test_restructuring_swaps_the_network_on_every_worker(mpiexec_n):
+    from livn.env.distributed import DistributedEnv
+    from livn.parallel import Layout
+
+    env = DistributedEnv(_spec_with(40, 200.0), layout=Layout(ranks_per_env=1))
+    env.init()
+
+    seen = {}
+    for label, spec in (("before", None), ("after", _spec_with(24, 300.0))):
+        if spec is not None:
+            env.restructure(spec)
+        responses = env(
+            GatherAndMerge(
+                duration=T_END, spikes=True, voltages=False, membrane_currents=False
+            ),
+            inputs=[None],
+            encoding=_GentleDrive(),
+        )
+        if responses is not None:  # workers return from init() too
+            _it, t, *_ = responses[0]
+            seen[label] = (sum(env.system.population_counts.values()), len(t))
+
+    if seen:
+        assert seen["before"][0] == 40, seen
+        assert seen["after"][0] == 24, "the controller's view follows the workers"
+        assert seen["after"][1] != seen["before"][1], (
+            f"the workers kept simulating the old network: {seen}"
+        )
+    env.shutdown()
+
+
+def test_a_live_system_is_refused_because_a_worker_cannot_rebuild_it():
+    from livn.env.distributed import _reconstructible
+
+    for allowed in ("./testing/culture.json", 40, {"cls": "x", "kwargs": {}}):
+        _reconstructible(allowed)
+
+    with pytest.raises(ValueError, match="cannot be rebuilt on a worker"):
+        _reconstructible(object())
