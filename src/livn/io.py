@@ -272,6 +272,7 @@ class IO(Jsonable):
     def invalidate(self) -> None:
         if getattr(self, "_cell_induction", None) is not None:
             self._cell_induction = None
+        self._induction_cache = None
         if getattr(self, "cell_measurement", None) is not None:
             self.cell_measurement = None
         for child in self.parameter_children().values():
@@ -393,6 +394,7 @@ class MEA(IO):
 
         self.cell_measurement = None
         self._cell_induction = None
+        self._induction_cache = None
 
     def parameter_children(self) -> dict:
         return {"volume_conductor": self.volume_conductor}
@@ -438,14 +440,28 @@ class MEA(IO):
 
             self._cell_induction = self.cell_induction(distances)
 
-        gids, sections, keep = coupled_sections(
-            neuron_coordinates, self._cell_induction
-        )
+        dtype = np.promote_types(channel_inputs.dtype, np.float32)
+        key = (len(neuron_coordinates), int(channel_inputs.shape[-1]), dtype.str)
+        cached = getattr(self, "_induction_cache", None)
+        if cached is None or cached[0] != key:
+            gids, sections, keep = coupled_sections(
+                neuron_coordinates, self._cell_induction
+            )
+            matrix, n_reached = induction_matrix(
+                self._cell_induction,
+                n_gids=len(neuron_coordinates),
+                n_channels=int(channel_inputs.shape[-1]),
+                keep=keep,
+                dtype=dtype,
+            )
+            cached = (key, gids, sections, keep, matrix, n_reached)
+            self._induction_cache = cached
+        _key, gids, sections, keep, matrix, n_reached = cached
+
         stimulus = calculate_cell_stimulus(
             channel_inputs,
-            self._cell_induction,
-            n_gids=len(neuron_coordinates),
-            keep=keep,
+            matrix=matrix,
+            n_reached=n_reached,
         )
 
         return Stimulus(
@@ -614,6 +630,7 @@ if _USES_JAX:
         mea.volume_conductor = vc
         mea.cell_measurement = aux["cell_measurement"]
         mea._cell_induction = aux["_cell_induction"]
+        mea._induction_cache = None
         return mea
 
     jax.tree_util.register_pytree_node(MEA, _mea_tree_flatten, _mea_tree_unflatten)
@@ -945,49 +962,63 @@ if _USES_JAX:
             distances = distances[distances[:, -1] <= boundary]
         return distances.at[:, -1].set(distances[:, -1] / boundary)
 
-    def calculate_cell_stimulus(
-        electrode_stimulus: Float[Array, "batch timestep n_channels"],
-        c_induction: Float[Array, "n_inductions cip=3"],
+    def induction_matrix(
+        cell_induction: Float[Array, "n_inductions cip=3"],
         n_gids: int | None = None,
+        *,
+        n_channels: int | None = None,
         keep: Int[Array, " n_keep"] | None = None,
-    ) -> Float[Array, "batch timestep n_gids"]:
-        """
-        Calculate the stimulus strength for each cell gid and each timestep
-        by multiplying cell induction and electrode stimulus.
-        """
-        stimulus = np.asarray(electrode_stimulus)
-
-        _batch_size, n_timesteps, n_channels = electrode_stimulus.shape
+        dtype=None,
+    ):
         per_coordinate = n_gids is not None
+        induction_rows = _np.asarray(cell_induction)
         if n_gids is None:
-            # no-jit
-            n_gids = len(np.unique(c_induction[:, 1]))
+            n_gids = len(np.unique(cell_induction[:, 1]))
+        if n_channels is None:
+            n_channels = len(_np.unique(induction_rows[:, 0]))
 
-        induction_rows = _np.asarray(c_induction)
         channel_ids = induction_rows[:, 0].astype(int)
-        amplitudes = c_induction[:, 2]
-
+        amplitudes = cell_induction[:, 2]
         gids = induction_rows[:, 1].astype(int)
-        _check_stimulus_size(
-            n_timesteps,
-            n_gids if keep is None else len(keep),
-            np.promote_types(stimulus.dtype, np.float32).itemsize,
-            n_reached=int(_np.count_nonzero(induction_rows[:, 2])) or None,
-        )
-        induction_matrix = np.zeros(
-            (n_channels, n_gids), dtype=np.promote_types(stimulus.dtype, np.float32)
+
+        matrix = np.zeros(
+            (n_channels, n_gids), dtype=np.float32 if dtype is None else dtype
         )
         if per_coordinate:
-            columns = _np.arange(c_induction.shape[0]) % n_gids
+            columns = _np.arange(induction_rows.shape[0]) % n_gids
         else:
             _unique, columns = np.unique(gids, return_inverse=True, size=n_gids)
-        induction = induction_matrix.at[channel_ids, columns].set(amplitudes)
+        matrix = matrix.at[channel_ids, columns].set(amplitudes)
+        n_reached = int(_np.count_nonzero(induction_rows[:, 2])) or None
         if keep is not None:
-            induction = induction[:, keep]
+            matrix = matrix[:, keep]
+        return matrix, n_reached
 
-        # reduce over gids
-        # Result shape: [batch, timestep, n_gids]
-        return np.einsum("btn,ng->btg", stimulus, induction)
+    def calculate_cell_stimulus(
+        electrode_stimulus: Float[Array, "batch timestep n_channels"],
+        c_induction: Float[Array, "n_inductions cip=3"] | None = None,
+        n_gids: int | None = None,
+        keep: Int[Array, " n_keep"] | None = None,
+        matrix=None,
+        n_reached: int | None = None,
+    ) -> Float[Array, "batch timestep n_gids"]:
+        stimulus = np.asarray(electrode_stimulus)
+        _batch_size, n_timesteps, n_channels = electrode_stimulus.shape
+        dtype = np.promote_types(stimulus.dtype, np.float32)
+
+        if matrix is None:
+            matrix, n_reached = induction_matrix(
+                c_induction, n_gids, n_channels=n_channels, keep=keep, dtype=dtype
+            )
+        _check_stimulus_size(
+            n_timesteps,
+            matrix.shape[1],
+            dtype.itemsize,
+            n_reached=n_reached,
+        )
+
+        # reduce over gids -> [batch, timestep, n_gids]
+        return np.einsum("btn,ng->btg", stimulus, matrix)
 
 
 else:
@@ -1012,24 +1043,17 @@ else:
         distances[:, -1] = distances[:, -1] / boundary
         return distances
 
-    def calculate_cell_stimulus(
-        electrode_stimulus: Float[Array, "batch timestep n_channels"],
+    def induction_matrix(
         cell_induction: Float[Array, "n_inductions cip=3"],
         n_gids: int | None = None,
-        *args,
+        *,
+        n_channels: int | None = None,
         keep: Int[Array, " n_keep"] | None = None,
-        **kwargs,
-    ) -> Float[Array, "batch timestep n_gids"]:
-        """
-        Calculate the stimulus strength for each cell gid and each timestep
-        by multiplying cell induction and electrode stimulus.
-        """
-        electrode_stimulus = np.asarray(electrode_stimulus)
+        dtype=None,
+    ):
         cell_induction = np.asarray(cell_induction)
+        dtype = np.float32 if dtype is None else dtype
 
-        _batch_size, n_timesteps, n_channels = electrode_stimulus.shape
-
-        # sparse matrix for cell induction
         channel_ids = cell_induction[:, 0].astype(int)
         gids = cell_induction[:, 1].astype(int)
         amplitudes = cell_induction[:, 2]
@@ -1045,21 +1069,45 @@ else:
                 )
             columns = np.arange(len(cell_induction)) % n_gids
 
+        if n_channels is None:
+            n_channels = len(np.unique(channel_ids))
+        matrix = np.zeros((n_channels, n_gids), dtype=dtype)
+
+        _, channel_indices = np.unique(channel_ids, return_inverse=True)
+        matrix[channel_indices, columns] = amplitudes
+        n_reached = int(np.count_nonzero(amplitudes)) or None
+        if keep is not None:
+            matrix = matrix[:, keep]
+        return matrix, n_reached
+
+    def calculate_cell_stimulus(
+        electrode_stimulus: Float[Array, "batch timestep n_channels"],
+        cell_induction: Float[Array, "n_inductions cip=3"] | None = None,
+        n_gids: int | None = None,
+        *args,
+        keep: Int[Array, " n_keep"] | None = None,
+        matrix=None,
+        n_reached: int | None = None,
+        **kwargs,
+    ) -> Float[Array, "batch timestep n_gids"]:
+        electrode_stimulus = np.asarray(electrode_stimulus)
+        _batch_size, n_timesteps, _n_channels = electrode_stimulus.shape
         dtype = np.promote_types(electrode_stimulus.dtype, np.float32)
+
+        if matrix is None:
+            matrix, n_reached = induction_matrix(
+                cell_induction,
+                n_gids,
+                n_channels=electrode_stimulus.shape[-1],
+                keep=keep,
+                dtype=dtype,
+            )
         _check_stimulus_size(
             n_timesteps,
-            n_gids if keep is None else len(keep),
+            matrix.shape[1],
             dtype.itemsize,
-            n_reached=int(np.count_nonzero(cell_induction[:, 2])) or None,
+            n_reached=n_reached,
         )
 
-        induction_matrix = np.zeros((n_channels, n_gids), dtype=dtype)
-        # handle case where channel ids do not start at 0
-        _, channel_indices = np.unique(channel_ids, return_inverse=True)
-        induction_matrix[channel_indices, columns] = amplitudes
-        if keep is not None:
-            induction_matrix = induction_matrix[:, keep]
-
-        # reduce over gids
-        # Result shape: [batch, timestep, n_gids]
-        return np.matmul(electrode_stimulus, induction_matrix)
+        # reduce over gids -> [batch, timestep, n_gids]
+        return np.matmul(electrode_stimulus, matrix)

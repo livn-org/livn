@@ -164,3 +164,86 @@ def test_potential_recording():
     expected_masked = factor * (1.0 / r0)
     v_masked = mea_masked.potential_recording(d, i2d[:, :1])
     assert np.allclose(v_masked[0], np.array([expected_masked]), rtol=1e-6)
+
+
+def _induction(n_channels=8, n_gids=40, seed=0):
+    rng = np.random.default_rng(seed)
+    rows = [
+        np.stack(
+            [
+                np.full(n_gids, c, float),
+                np.arange(n_gids, dtype=float),
+                rng.random(n_gids) * (rng.random(n_gids) < 0.4),
+            ],
+            axis=1,
+        )
+        for c in range(n_channels)
+    ]
+    return np.concatenate(rows), rng
+
+
+def test_a_prebuilt_induction_matrix_gives_the_same_stimulus():
+    from livn.io import calculate_cell_stimulus, induction_matrix
+
+    induction, rng = _induction()
+    command = rng.random((1, 12, 8))
+
+    for keep in (None, np.array([1, 5, 9, 30])):
+        direct = calculate_cell_stimulus(command, induction, n_gids=40, keep=keep)
+        matrix, reached = induction_matrix(
+            induction,
+            40,
+            n_channels=8,
+            keep=keep,
+            dtype=np.promote_types(command.dtype, np.float32),
+        )
+        cached = calculate_cell_stimulus(command, matrix=matrix, n_reached=reached)
+        assert np.array_equal(direct, cached), keep
+
+
+def test_the_matrix_rows_follow_the_stimulus_not_the_inducing_channels():
+    from livn.io import induction_matrix
+
+    induction, _ = _induction(n_channels=8)
+    silent = induction[induction[:, 0] < 5]
+    matrix, _ = induction_matrix(silent, 40, n_channels=8)
+    assert matrix.shape == (8, 40)
+    assert not matrix[5:].any(), "channels that induce nothing stay zero"
+
+
+def test_the_scatter_is_built_once_per_geometry():
+    from livn.io import MEA
+
+    rng = np.random.default_rng(3)
+    electrodes = np.stack(
+        [
+            np.arange(6, dtype=float),
+            rng.random(6) * 100,
+            rng.random(6) * 100,
+            np.zeros(6),
+        ],
+        axis=1,
+    )
+    coords = np.stack(
+        [
+            np.arange(20, dtype=float),
+            rng.random(20) * 100,
+            rng.random(20) * 100,
+            np.zeros(20),
+        ],
+        axis=1,
+    )
+    command = rng.random((10, 6))
+
+    mea = MEA(electrode_coordinates=electrodes)
+    first = mea.cell_stimulus(coords, command)
+    built = mea._induction_cache
+    assert built is not None
+
+    again = mea.cell_stimulus(coords, command)
+    assert mea._induction_cache is built, "the geometry did not change"
+    assert np.array_equal(np.asarray(first._array), np.asarray(again._array))
+
+    # invalidating the geometry drops it
+    mea.invalidate()
+    assert mea._induction_cache is None
