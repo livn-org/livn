@@ -39,6 +39,19 @@ def make(source="EI", *, cls=None, **kwargs):
         if isinstance(source, str):
             if not source.endswith(".json"):
                 source = predefined_document(source)
+
+            import json as _json
+
+            try:
+                with open(source) as _f:
+                    loaded = _json.load(_f)
+            except (OSError, ValueError):
+                return {"system": source}
+            if isinstance(loaded, Mapping) and "system" in loaded:
+                return {
+                    **{k: v for k, v in loaded.items() if k != "system"},
+                    "system": source,
+                }
             return {"system": source}
 
         if isinstance(source, Mapping):

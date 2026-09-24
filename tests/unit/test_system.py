@@ -473,3 +473,52 @@ class TestParallelSystem:
     def test_selection_none_still_means_everything(self):
         system = self._grid()
         assert system.selection(None, method="patch") is None
+
+
+def test_make_from_a_document_keeps_its_parameters(tmp_path):
+    import json
+
+    import livn
+
+    doc = {
+        "system": {"cls": "livn.system.Monolayer", "kwargs": {"total_cells": 8}},
+        "model": ["livn.models.rcsd.ReducedCalciumSomaDendrite", {"size_cv": 0.2}],
+        "selection": None,
+        "params": {"noise-g_e0": 0.075},
+        "meta": {"observation": "x"},
+    }
+    path = tmp_path / "env.json"
+    path.write_text(json.dumps(doc))
+
+    captured = {}
+
+    class _Env:
+        @classmethod
+        def from_json(cls, serialized, **kwargs):
+            captured.update(serialized)
+            return cls()
+
+    livn.make(str(path), cls=_Env)
+    assert captured.get("params") == {"noise-g_e0": 0.075}
+    assert captured.get("model") == doc["model"]
+    assert captured.get("system") == str(path)
+
+
+def test_make_from_a_bare_system_spec_still_works(tmp_path):
+    import json
+
+    import livn
+
+    path = tmp_path / "spec.json"
+    path.write_text(json.dumps({"cls": "livn.system.Monolayer", "kwargs": {}}))
+
+    captured = {}
+
+    class _Env:
+        @classmethod
+        def from_json(cls, serialized, **kwargs):
+            captured.update(serialized)
+            return cls()
+
+    livn.make(str(path), cls=_Env)
+    assert captured == {"system": str(path)}
