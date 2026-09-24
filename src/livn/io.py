@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 from collections import defaultdict
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 import gymnasium
@@ -366,6 +367,10 @@ class MEA(IO):
     output_radius
         Radius within which an electrode can record from neurons, in micrometers.
         Default is 250.
+    detection_threshold
+        Smallest detectable signal, in the same relative units as the
+        `amplitude` passed to `channel_recording`. Default is 0, which
+        records every unit inside `output_radius`.
 
     # Computed attributes
 
@@ -380,12 +385,14 @@ class MEA(IO):
         input_radius=250,
         output_radius=250,
         volume_conductor=None,
+        detection_threshold: float = 0.0,
     ):
         if electrode_coordinates is None:
             electrode_coordinates = self.default_electrode_coordinates()
         self.electrode_coordinates = np.array(electrode_coordinates)
         self.input_radius = input_radius
         self.output_radius = output_radius
+        self.detection_threshold = float(detection_threshold)
         if volume_conductor is None:
             volume_conductor = PointSourceModel()
         elif isinstance(volume_conductor, dict):
@@ -416,6 +423,7 @@ class MEA(IO):
             "electrode_coordinates": self.electrode_coordinates,
             "input_radius": self.input_radius,
             "output_radius": self.output_radius,
+            "detection_threshold": self.detection_threshold,
             "volume_conductor": self.volume_conductor.serialize()
             if hasattr(self.volume_conductor, "serialize")
             else None,
@@ -478,7 +486,9 @@ class MEA(IO):
         neuron_coordinates: Float[Array, "n_coords ixyz=4"] | None,
         ii: Float[Array, " i"],
         *recordings: Float[Array, " _"],
+        amplitude: Mapping | Float[Array, " n_gids"] | None = None,
     ) -> tuple[dict[int, Array], ...]:
+        """Per-channel recordings, keeping only the units an electrode detects."""
         if ii is None:
             ii = np.unique(neuron_coordinates[:, 0])
 
@@ -489,7 +499,32 @@ class MEA(IO):
                 filter_out_of_bounds=True,
             )
 
-        return channel_recording(self.cell_measurement, ii, *recordings)
+        return channel_recording(
+            self.detected(self.cell_measurement, amplitude), ii, *recordings
+        )
+
+    def detected(
+        self,
+        cell_measurement: Float[Array, "n cip=3"],
+        amplitude: Mapping | Float[Array, " n_gids"] | None = None,
+    ) -> Float[Array, "n cip=3"]:
+        """The measurement rows whose signal reaches `detection_threshold`."""
+        if self.detection_threshold <= 0.0 and amplitude is None:
+            return cell_measurement
+
+        rows = _np.asarray(cell_measurement)
+        reach = 1.0 - rows[:, -1]
+        if amplitude is None:
+            scale = _np.ones(rows.shape[0])
+        elif isinstance(amplitude, Mapping):
+            scale = _np.array([float(amplitude.get(int(g), 1.0)) for g in rows[:, 1]])
+        else:
+            values = _np.asarray(amplitude)
+            gids = rows[:, 1].astype(int)
+            scale = (
+                values[gids] if values.ndim else _np.full(rows.shape[0], float(values))
+            )
+        return rows[(scale * reach) >= self.detection_threshold]
 
     def source_gain(
         self,

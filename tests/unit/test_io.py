@@ -247,3 +247,49 @@ def test_the_scatter_is_built_once_per_geometry():
     # invalidating the geometry drops it
     mea.invalidate()
     assert mea._induction_cache is None
+
+
+def test_a_unit_is_detected_by_how_much_membrane_it_has_not_only_where_it_is():
+    import numpy as np
+
+    from livn.io import MEA
+
+    mea = MEA(
+        electrode_coordinates=np.array([[0.0, 0.0, 0.0, 0.0]]),
+        output_radius=100.0,
+        detection_threshold=0.5,
+    )
+
+    # (channel, gid, distance/radius): gid 0 nearer the electrode than gid 1
+    measurement = np.array([[0.0, 0.0, 0.2], [0.0, 1.0, 0.4]])
+
+    # distance alone: reaches of 0.8 and 0.6 both clear 0.5, so both are units
+    kept = mea.detected(measurement)
+    assert sorted(kept[:, 1].astype(int)) == [0, 1]
+
+    # give gid 0 a fifth of the membrane and the ordering inverts: the nearer
+    # cell drops below the noise floor while the farther, larger one survives
+    kept = mea.detected(measurement, amplitude={0: 0.5, 1: 1.0})
+    assert sorted(kept[:, 1].astype(int)) == [1], (
+        "amplitude has to decide detectability, not merely scale it"
+    )
+
+    # threshold 0 is the old behaviour, whatever the amplitudes
+    permissive = MEA(
+        electrode_coordinates=np.array([[0.0, 0.0, 0.0, 0.0]]),
+        output_radius=100.0,
+    )
+    assert len(permissive.detected(measurement)) == 2
+    assert len(permissive.detected(measurement, amplitude={0: 0.0, 1: 0.0})) == 2
+
+
+def test_detection_threshold_survives_a_json_round_trip():
+    import numpy as np
+
+    from livn.io import MEA
+
+    mea = MEA(
+        electrode_coordinates=np.array([[0.0, 0.0, 0.0, 0.0]]),
+        detection_threshold=0.25,
+    )
+    assert MEA.from_json(mea.as_json()).detection_threshold == 0.25

@@ -555,8 +555,37 @@ class Env(Protocol):
     ) -> tuple[dict[int, Array], ...]:
         """Transforms neural recordings identified by their gids into per channel recordings"""
         return self.io.channel_recording(
-            self.active_neuron_coordinates(), ii, *recordings
+            self.active_neuron_coordinates(),
+            ii,
+            *recordings,
+            amplitude=self.recording_amplitudes(),
         )
+
+    def recording_amplitudes(self) -> dict[int, float] | None:
+        """Per-gid signal strength, from the model's per-population amplitude.
+
+        `None` when every population is equally visible.
+        """
+        model = getattr(self, "model", None)
+        system = getattr(self, "system", None)
+        if model is None or system is None:
+            return None
+        ranges = getattr(system, "population_ranges", None)
+        if not ranges:
+            return None
+
+        by_population = {
+            name: float(model.recording_amplitude(name)) for name in ranges
+        }
+        if all(a == 1.0 for a in by_population.values()):
+            return None
+
+        # `population_ranges` is (start, count)
+        return {
+            gid: by_population[name]
+            for name, (start, count) in ranges.items()
+            for gid in range(int(start), int(start) + int(count))
+        }
 
     def init(self) -> Self:
         """Initialize the environment."""
@@ -1216,6 +1245,15 @@ class Model(Protocol):
         gain: Float[Array, "n_channels n_recording_coords"],
     ) -> Float[Array, "n_channels n_neurons"]:
         return gain
+
+    def recording_amplitude(self, population: str | None = None) -> float:
+        """How strong this population's extracellular signature is, relative
+        to the largest in the model.
+
+        Defaults to 1, which makes every population equally visible and leaves
+        detectability to distance alone.
+        """
+        return 1.0
 
     def expand_stimulus_currents(
         self,

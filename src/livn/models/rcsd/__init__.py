@@ -417,6 +417,22 @@ class ReducedCalciumSomaDendrite(Model):
             "INH": ("V1In", self._inh_params_name()),
         }
 
+    def recording_extent(self, population: str | None = None) -> float:
+        """Spatial separation of a cell's current sink and source."""
+        types = self.cell_types()
+        if population is None:
+            return max(self.recording_extent(p) for p in types)
+        _cls, name = types[population]
+        params = self.params(name)
+        return float(params.get("Ltotal") or params["global_diam"])
+
+    def recording_amplitude(self, population: str | None = None) -> float:
+        """Extent relative to the largest population's."""
+        if population is None:
+            return 1.0
+        widest = self.recording_extent(None)
+        return self.recording_extent(population) / widest if widest else 1.0
+
     def neuron_cells(self):
         from livn.backend.neuron.cells import ReducedCell
         from livn.models.rcsd.neuron.templates.BRK import BRK
