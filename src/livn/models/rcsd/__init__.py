@@ -25,6 +25,8 @@ def hold_potential(params: dict) -> float:
 
 
 class ReducedCalciumSomaDendrite(Model):
+    SPIKE_DETECTOR_THRESHOLD = 0.0
+
     def __init__(
         self,
         input_mode: str | None = None,
@@ -34,6 +36,7 @@ class ReducedCalciumSomaDendrite(Model):
         dendrite_orientation_seed: int = 20260824,
         size_cv: float | dict[str, float] = 0.0,
         size_seed: int = 20260827,
+        celsius: float = 23.0,
     ):
         if input_mode is not None and input_mode not in {
             "current_density",
@@ -60,6 +63,7 @@ class ReducedCalciumSomaDendrite(Model):
         self.dendrite_orientation_seed = int(dendrite_orientation_seed)
         self.size_cv = size_cv
         self.size_seed = int(size_seed)
+        self.celsius = float(celsius)
         for population, cv in self._size_cv_map().items():
             if cv < 0.0:
                 raise ValueError(f"size_cv for {population!r} must be >= 0, got {cv}")
@@ -86,6 +90,9 @@ class ReducedCalciumSomaDendrite(Model):
         z = _onp.array([normal.inv_cdf(float(u)) for u in unit])
         sigma = math.sqrt(math.log1p(cv * cv))
         return _onp.exp(sigma * z - 0.5 * sigma * sigma)
+
+    def _exc_params_name(self) -> str:
+        return "BoothRinzelKiehn-MN-Miles2004"
 
     def _inh_params_name(self) -> str:
         return "V1In-Renshaw-InVitro"
@@ -198,7 +205,9 @@ class ReducedCalciumSomaDendrite(Model):
     def _axon_offsets(self, population: str | None) -> list[float]:
         from livn.models.rcsd.neuron.templates import axon as _axon
 
-        name = self._inh_params_name() if population == "INH" else "BoothRinzelKiehn-MN"
+        name = (
+            self._inh_params_name() if population == "INH" else self._exc_params_name()
+        )
         return _axon.sampling_offsets(self.params(name))
 
     def recording_coordinates(
@@ -303,6 +312,45 @@ class ReducedCalciumSomaDendrite(Model):
                 "V_rest": -53.0,
                 "V_threshold": -37.0,
             },
+            "BoothRinzelKiehn-MN-Miles2004": {
+                "Ltotal": 120.0,
+                "e_pas": -62.0,
+                "pp": 0.1,
+                "Ra": 190.0,
+                "gc": 4.637599126947166,
+                "cm_ratio": 8.19297553505838,
+                "global_cm": 1.169988751411438,
+                "global_diam": 4.567849636077881,
+                "Nas_s_floor": 0.5514906048774719,
+                "Nas_s_on": 1.0,
+                "Nas_s_speed": 4.898720591106814,
+                "V_hold": -60.0,
+                "V_rest": -53.0,
+                "V_threshold": -37.0,
+                "axon_Ra": 70.0,
+                "axon_cm": 0.07586215027306738,
+                "axon_diam": 3.031427343475014,
+                "axon_g_pas": 1.1356747827642139e-06,
+                "axon_gmax_K": 0.3,
+                "axon_gmax_Na_ratio": 0.47127913493042084,
+                "axon_segment_um": 30.0,
+                "axon_segments": 5.0,
+                "dend_alpha_Caconc": 0.7256314617735905,
+                "dend_f_Caconc": 0.013908888545727159,
+                "dend_g_pas": 0.00010914364106422381,
+                "dend_gmax_CaL": 1.2057488779728905e-05,
+                "dend_gmax_CaN": 0.001,
+                "dend_gmax_KCa": 0.00037917528102836403,
+                "dend_kCa_Caconc": 4.875892081486292,
+                "soma_alpha_Caconc": 1.880340758062224,
+                "soma_f_Caconc": 0.014054795335360627,
+                "soma_g_pas": 1e-05,
+                "soma_gmax_CaN": 0.029999998564600408,
+                "soma_gmax_K": 0.1077550770434866,
+                "soma_gmax_KCa": 0.0015344227680871788,
+                "soma_gmax_Na": 0.2980661988258362,
+                "soma_kCa_Caconc": 1.6267324258733167,
+            },
             "BoothRinzelKiehn-MN-v1": {
                 "Ltotal": 120.0,
                 "e_pas": -62.0,
@@ -406,6 +454,9 @@ class ReducedCalciumSomaDendrite(Model):
     def neuron_refractory_period(self) -> float:
         return self.refractory_period
 
+    def neuron_celsius(self) -> float:
+        return self.celsius
+
     def section_name(self, population: str, section: str) -> str:
         if section in ("soma", "axon"):
             return section
@@ -413,7 +464,7 @@ class ReducedCalciumSomaDendrite(Model):
 
     def cell_types(self) -> dict[str, tuple[str, str]]:
         return {
-            "EXC": ("BoothRinzelKiehn", "BoothRinzelKiehn-MN"),
+            "EXC": ("BoothRinzelKiehn", self._exc_params_name()),
             "INH": ("V1In", self._inh_params_name()),
         }
 
@@ -438,7 +489,7 @@ class ReducedCalciumSomaDendrite(Model):
         from livn.models.rcsd.neuron.templates.BRK import BRK
         from livn.models.rcsd.neuron.templates.V1In import V1In
 
-        brk_params = self.params("BoothRinzelKiehn-MN")
+        brk_params = self.params(self._exc_params_name())
         inh_params = self.params(self._inh_params_name())
 
         def scaled(params, population, gid):
@@ -457,10 +508,11 @@ class ReducedCalciumSomaDendrite(Model):
             cell = BRK({"BoothRinzelKiehn": params})
             return ReducedCell(
                 cell,
-                threshold=params["V_threshold"],
+                threshold=self.SPIKE_DETECTOR_THRESHOLD,
                 v_rest=hold_potential(params),
                 soma_type=self.section_name("EXC", "soma"),
                 dend_type=self.section_name("EXC", "dend"),
+                spike_section=cell.axon[-1] if cell.axon else None,
             )
 
         def make_inh(morphology=None, gid=None):
@@ -468,10 +520,11 @@ class ReducedCalciumSomaDendrite(Model):
             cell = V1In(params)
             return ReducedCell(
                 cell,
-                threshold=params["V_threshold"],
+                threshold=self.SPIKE_DETECTOR_THRESHOLD,
                 v_rest=hold_potential(params),
                 soma_type=self.section_name("INH", "soma"),
                 dend_type=self.section_name("INH", "dend"),
+                spike_section=cell.axon[-1] if cell.axon else None,
             )
 
         return {"EXC": make_exc, "INH": make_inh}
@@ -483,7 +536,7 @@ class ReducedCalciumSomaDendrite(Model):
             )
             celltypes["EXC"]["template"] = "@" + celltypes["EXC"]["template class"]
             celltypes["EXC"]["mechanism"] = {
-                "BoothRinzelKiehn": self.params("BoothRinzelKiehn-MN")
+                "BoothRinzelKiehn": self.params(self._exc_params_name())
             }
 
         if "INH" in celltypes:
@@ -637,6 +690,40 @@ class ReducedCalciumSomaDendrite(Model):
             )
         return fluct, None
 
+    NOISE_DENSITY_SCALING = False
+    NOISE_REFERENCE_POPULATION = "EXC"
+    """Whose compartments define the reference density."""
+
+    def noise_compartment_area(self, population: str, role: str) -> float:
+        """Membrane area of the compartment a background channel lands on."""
+        import math
+
+        _cls, name = self.cell_types()[population]
+        params = self.params(name)
+        diam = float(params["global_diam"])
+        total = params.get("Ltotal")
+        if not total:
+            # V1In geometry: one segment with L = diam
+            return math.pi * diam * diam
+        pp = float(params.get("pp", 0.1))
+        length = pp * float(total) if role == "soma" else (1.0 - pp) * float(total)
+        return math.pi * diam * length
+
+    def noise_cell_area(self, population: str) -> float:
+        """Whole-cell membrane area"""
+        roles = ("soma", "dend")
+        areas = {self.noise_compartment_area(population, r) for r in roles}
+        return float(sum(areas))
+
+    def noise_conductance_scale(self, population: str, role: str) -> float:
+        """What to multiply a background conductance by, for either channel."""
+        if not self.NOISE_DENSITY_SCALING:
+            return 1.0
+        reference = self.noise_cell_area(self.NOISE_REFERENCE_POPULATION)
+        if not reference:
+            return 1.0
+        return self.noise_cell_area(population) / reference
+
     def neuron_noise_configure(
         self,
         population,
@@ -668,24 +755,21 @@ class ReducedCalciumSomaDendrite(Model):
             mechanism.std_i = 0
             mechanism.g_i0 = 0
         elif is_soma and population == "INH":
-            # The V1In Renshaw INH cell is single-compartment: its soma is the only
-            # site, so it must carry BOTH the excitatory and inhibitory background.
-            # With the soma-only inhibitory split below it would be pinned near E_i
-            # (-75 mV) and never fire.
+            # The V1In Renshaw INH cell is single-compartment, so it carries both
             mechanism.std_e = std_e
-            mechanism.g_e0 = g_e0
+            mechanism.g_e0 = g_e0 * self.noise_conductance_scale(population, "dend")
             mechanism.std_i = std_i
-            mechanism.g_i0 = g_i0
+            mechanism.g_i0 = g_i0 * self.noise_conductance_scale(population, "soma")
         elif is_soma:
             # two-compartment EXC: inhibition on the soma
             mechanism.std_e = 0
             mechanism.g_e0 = 0
             mechanism.std_i = std_i
-            mechanism.g_i0 = g_i0
+            mechanism.g_i0 = g_i0 * self.noise_conductance_scale(population, "soma")
         else:
             # two-compartment EXC: excitation on the dendrite
             mechanism.std_e = std_e
-            mechanism.g_e0 = g_e0
+            mechanism.g_e0 = g_e0 * self.noise_conductance_scale(population, "dend")
             mechanism.std_i = 0
             mechanism.g_i0 = 0
 
@@ -774,7 +858,7 @@ class ReducedCalciumSomaDendrite(Model):
 
         return MotoneuronCulture(
             num_neurons=len(env.simulated_gids(everywhere=True)),
-            params=self.params("BoothRinzelKiehn-MN"),
+            params=self.params(self._exc_params_name()),
             key=key,
         )
 
@@ -1146,7 +1230,7 @@ class ReducedCalciumSomaDendrite(Model):
         import brian2 as b2
 
         if population_name == "EXC":
-            p = self.params("BoothRinzelKiehn-MN")
+            p = self.params(self._exc_params_name())
 
             # Compute ic_constant dynamically from equilibrium condition
             v_rest = hold_potential(p)
