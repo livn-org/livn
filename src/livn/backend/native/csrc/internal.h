@@ -73,7 +73,7 @@ typedef struct {
     int node0, nnode;
     int root_node;
     int soma_section;
-    int soma_node; /* where spikes are detected */
+    int soma_node; /* where spikes are detected: the soma unless a detector is set */
     double v_threshold, v_hold, tref;
     double t_last_spike; /* SpikeFilter.t_last */
     int above;           /* PreSyn.flag_ */

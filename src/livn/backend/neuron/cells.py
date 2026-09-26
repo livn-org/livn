@@ -89,9 +89,11 @@ class ReducedCell:
         soma_type: str = "soma",
         dend_type: str = "dend",
         sec_types: dict[int, str] | None = None,
+        spike_section=None,
     ):
         self._template = template
         self.threshold = float(threshold)
+        self._spike_section = spike_section
         self._v_rest = v_rest
         self._soma_type = soma_type
         self._dend_type = dend_type
@@ -144,6 +146,8 @@ class ReducedCell:
         return self._sec_types.get(swc_type, default)
 
     def spike_source(self):
+        if self._spike_section is not None:
+            return self._spike_section(0.5)
         return self._soma(0.5)
 
     def position(self, x: float, y: float, z: float) -> None:
@@ -285,6 +289,8 @@ class MorphologyCell:
         return _MORPH_SECTYPE_NAMES.get(swc_type, "apical")
 
     def spike_source(self):
+        if self._spike_section is not None:
+            return self._spike_section(0.5)
         return self._soma(0.5)
 
     def position(self, x: float, y: float, z: float) -> None:

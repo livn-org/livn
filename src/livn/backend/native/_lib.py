@@ -184,6 +184,7 @@ _SIGNATURES = {
     "rcsd_cell_section": (c_int, [c_void_p, c_int, c_int]),
     "rcsd_section_node": (c_int, [c_void_p, c_int, c_double]),
     "rcsd_cell_set": (c_int, [c_void_p, c_int, c_double, c_double, c_double]),
+    "rcsd_cell_set_detector": (c_int, [c_void_p, c_int, c_int, c_double]),
     "rcsd_node_state": (c_double, [c_void_p, c_int, c_int]),
     "rcsd_node_area": (c_double, [c_void_p, c_int]),
     "rcsd_node_rinv": (c_double, [c_void_p, c_int]),

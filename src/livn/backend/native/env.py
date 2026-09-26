@@ -234,6 +234,17 @@ class Env(EnvProtocol):
     ):
         from livn.system import resolve
 
+        if comm is not None and P.size(comm=comm) > 1:
+            raise ValueError(
+                f"the native backend runs the whole network in one process, so "
+                f"an Env on a communicator of {P.size(comm=comm)} ranks would "
+                f"simulate it {P.size(comm=comm)} times and gather every spike "
+                f"that many times over. Pass comm=MPI.COMM_SELF (or none) and "
+                f"use set_threads() for cores within a run, run_many() or "
+                f"DistributedEnv for runs side by side, or LIVN_BACKEND=neuron "
+                f"to split one network across ranks."
+            )
+
         self._lib = L.load()
         self._sim = None
         self.seed = seed
@@ -450,11 +461,28 @@ class Env(EnvProtocol):
         for gid in gids:
             params = self._scaled(base, population, gid)
             template = template_cls(params)
-            threshold = float(params["V_threshold"])
+            # the model's detector, as the NEURON backend reads it
+            threshold = float(
+                getattr(self.model, "SPIKE_DETECTOR_THRESHOLD", params["V_threshold"])
+            )
             v_hold = hold_potential(params)
             index, sections = build_cell(
                 self._lib, self._sim, gid, pop_code, template, threshold, v_hold, tref
             )
+            if hasattr(self.model, "SPIKE_DETECTOR_THRESHOLD"):
+                axon = [
+                    section
+                    for section, spec in zip(sections, template.sections, strict=True)
+                    if spec.kind == L.SEC_AXON
+                ]
+                if axon:
+                    # the distal end, `cell.axon[-1](0.5)` on the NEURON side
+                    L.check(
+                        self._lib.rcsd_cell_set_detector(
+                            self._sim, index, axon[-1], 0.5
+                        ),
+                        self._lib,
+                    )
             self._cell_index[gid] = index
             self._index_gid.append(gid)
             self._thresholds.append(threshold)

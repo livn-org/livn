@@ -471,20 +471,21 @@ class Env(EnvProtocol):
         """Register the gid with a spike detector.
 
         When the model requests a refractory period and the ``SpikeFilter``
-        mechanism is available, the somatic threshold detector is routed through
-        it, otherwise a plain threshold NetCon is used.
+        mechanism is available, the threshold detector on the cell's spike source
+        (the distal axon where the model names it, else the soma) is routed
+        through it, otherwise a plain threshold NetCon is used.
         """
         h = self._h
         self.pc.set_gid2node(gid, self.rank)
 
-        soma_seg = cell.spike_source()
-        soma_sec = soma_seg.sec
+        source = cell.spike_source()
+        source_sec = source.sec
 
         use_filter = self._refractory_period > 0 and hasattr(h, "SpikeFilter")
         if use_filter:
             spike_filter = h.SpikeFilter()
             spike_filter.tref = float(self._refractory_period)
-            in_nc = h.NetCon(soma_sec(0.5)._ref_v, spike_filter, sec=soma_sec)
+            in_nc = h.NetCon(source._ref_v, spike_filter, sec=source_sec)
             in_nc.threshold = float(cell.threshold)
             in_nc.delay = 0.0
             in_nc.weight[0] = 1.0
@@ -501,7 +502,7 @@ class Env(EnvProtocol):
                 "out_nc": out_nc,
             }
         else:
-            det = h.NetCon(soma_sec(0.5)._ref_v, None, sec=soma_sec)
+            det = h.NetCon(source._ref_v, None, sec=source_sec)
             det.threshold = float(cell.threshold)
             self.pc.cell(gid, det)
             self._detectors[gid] = {"out_nc": det}

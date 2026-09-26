@@ -214,6 +214,9 @@ RCSD_API int rcsd_cell_section(RCSDSim* sim, int cell, int index);
 RCSD_API int rcsd_section_node(RCSDSim* sim, int section, double x);
 RCSD_API int rcsd_cell_set(RCSDSim* sim, int cell, double v_threshold, double v_hold,
                            double tref);
+/* detect spikes at a position on one of the cell's own sections instead of the
+   soma, as NEURON does with a NetCon on that segment */
+RCSD_API int rcsd_cell_set_detector(RCSDSim* sim, int cell, int section, double x);
 RCSD_API double rcsd_node_state(RCSDSim* sim, int node, int state);
 RCSD_API double rcsd_node_area(RCSDSim* sim, int node);
 /* 1 / (axial resistance from the node to its parent node), uS */

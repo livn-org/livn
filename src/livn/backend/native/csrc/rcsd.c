@@ -336,6 +336,26 @@ int rcsd_section_node(RCSDSim* sim, int section, double x) {
     return sec->node0 + j;
 }
 
+int rcsd_cell_set_detector(RCSDSim* sim, int cell, int section, double x) {
+    Cell* c;
+    int node;
+    if (cell < 0 || (size_t) cell >= sim->cells.n) {
+        rcsd_set_error("no cell %d", cell);
+        return RCSD_ERROR;
+    }
+    c = &sim->cells.data[cell];
+    if (section < c->sec0 || section >= c->sec0 + c->nsec) {
+        rcsd_set_error("section %d does not belong to cell %d", section, cell);
+        return RCSD_ERROR;
+    }
+    node = rcsd_section_node(sim, section, x);
+    if (node < 0) {
+        return RCSD_ERROR;
+    }
+    c->soma_node = node;
+    return RCSD_OK;
+}
+
 int rcsd_add_section(RCSDSim* sim, int cell, int kind, int nseg, double L, double diam,
                      double Ra, double cm, unsigned mechanisms, int parent_section,
                      double parent_x) {
