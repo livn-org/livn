@@ -44,6 +44,7 @@ class BRK:
         for sec in self.axon:
             self.all.append(sec)
         self.sections = list(self.all)
+        self.configure_slow_inactivation()
 
     def set_default_parameters(self):
         self.pp = 0.5  # proportion of area taken up by soma
@@ -58,6 +59,9 @@ class BRK:
         self.soma_gmax_K = 0.00010
         self.soma_gmax_KCa = 0.0005
         self.soma_gmax_CaN = 0.00010
+        self.Nas_s_on = 0.0
+        self.Nas_s_floor = 0.4
+        self.Nas_s_speed = 1.0
 
         self.soma_f_Caconc = 0.004
         self.soma_alpha_Caconc = 1
@@ -95,6 +99,9 @@ class BRK:
         self.soma_gmax_K = params.get("soma_gmax_K", self.soma_gmax_K)
         self.soma_gmax_KCa = params.get("soma_gmax_KCa", self.soma_gmax_KCa)
         self.soma_gmax_CaN = params.get("soma_gmax_CaN", self.soma_gmax_CaN)
+        self.Nas_s_on = params.get("Nas_s_on", self.Nas_s_on)
+        self.Nas_s_floor = params.get("Nas_s_floor", self.Nas_s_floor)
+        self.Nas_s_speed = params.get("Nas_s_speed", self.Nas_s_speed)
 
         self.soma_f_Caconc = params.get("soma_f_Caconc", self.soma_f_Caconc)
         self.soma_alpha_Caconc = params.get("soma_alpha_Caconc", self.soma_alpha_Caconc)
@@ -214,9 +221,16 @@ class BRK:
         self.dend.gmax_KCa = self.dend_gmax_KCa
 
         self.configure_axon()
+        self.configure_slow_inactivation()
         _resting.insert_constant(
             [self.soma, self.dend, *(getattr(self, "axon", None) or [])]
         )
+
+    def configure_slow_inactivation(self):
+        for sec in [self.soma, *(getattr(self, "axon", None) or [])]:
+            sec.s_on_Nas = float(self.Nas_s_on)
+            sec.s_floor_Nas = float(self.Nas_s_floor)
+            sec.s_speed_Nas = float(self.Nas_s_speed)
 
     def configure_axon(self):
         if getattr(self, "axon", None):

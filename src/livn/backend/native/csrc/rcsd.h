@@ -72,6 +72,9 @@ enum {
     RCSD_P_KI0,
     RCSD_P_KO0,
     RCSD_P_CAO,
+    RCSD_P_S_ON_NAS,    /* Nas slow inactivation: 0 off (default), 1 on */
+    RCSD_P_S_FLOOR_NAS, /* non-inactivating fraction, default 0.4 */
+    RCSD_P_S_SPEED_NAS, /* scales both slow rates, default 1 */
     RCSD_NPARAM
 };
 
@@ -98,6 +101,7 @@ enum {
     RCSD_S_IPAS,
     RCSD_S_IREST,
     RCSD_S_IMEM,
+    RCSD_S_S, /* Nas slow inactivation gate */
     RCSD_NSTATE
 };
 

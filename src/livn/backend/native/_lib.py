@@ -61,8 +61,11 @@ SEC_SOMA, SEC_DEND, SEC_AXON = 0, 1, 2
     P_KI0,
     P_KO0,
     P_CAO,
+    P_S_ON_NAS,
+    P_S_FLOOR_NAS,
+    P_S_SPEED_NAS,
     NPARAM,
-) = range(27)
+) = range(30)
 
 (
     S_V,
@@ -86,8 +89,9 @@ SEC_SOMA, SEC_DEND, SEC_AXON = 0, 1, 2
     S_IPAS,
     S_IREST,
     S_IMEM,
+    S_S,
     NSTATE,
-) = range(22)
+) = range(23)
 
 SYN_LINEXP2, SYN_NMDA, SYN_STDP, SYN_STDP_NMDA, SYN_STDP_INH = range(5)
 

@@ -65,6 +65,9 @@ PARAMETER_NAMES: dict[str, tuple[int, int]] = {
     "gmax_Nas": (L.P_GMAX_NAS, L.M_NAS),
     "vhalf_Nas": (L.P_VHALF_NAS, L.M_NAS),
     "slope_Nas": (L.P_SLOPE_NAS, L.M_NAS),
+    "s_on_Nas": (L.P_S_ON_NAS, L.M_NAS),
+    "s_floor_Nas": (L.P_S_FLOOR_NAS, L.M_NAS),
+    "s_speed_Nas": (L.P_S_SPEED_NAS, L.M_NAS),
     "gmax_Kdr": (L.P_GMAX_KDR, L.M_KDR),
     "gmax_CaN": (L.P_GMAX_CAN, L.M_CAN),
     "gmax_CaL": (L.P_GMAX_CAL, L.M_CAL),
@@ -143,6 +146,14 @@ class _Template:
         else:
             raise KeyError(name)
 
+    def _slow_inactivation(self) -> dict:
+        """Nas slow-inactivation parameters; off unless the template sets them."""
+        return {
+            L.P_S_ON_NAS: float(getattr(self, "Nas_s_on", 0.0)),
+            L.P_S_FLOOR_NAS: float(getattr(self, "Nas_s_floor", 0.4)),
+            L.P_S_SPEED_NAS: float(getattr(self, "Nas_s_speed", 1.0)),
+        }
+
     def _axon_sections(self, soma_index: int, e_pas: float, soma_gmax_na: float):
         n = int(self.axon_params.get("axon_segments", 0) or 0)
         if n <= 0:
@@ -173,6 +184,8 @@ class _Template:
                         L.P_GMAX_NAS: gmax_na,
                         L.P_VHALF_NAS: NAS_VHALF,
                         L.P_SLOPE_NAS: NAS_SLOPE,
+                        # BRK.configure_slow_inactivation: soma and axon alike
+                        **self._slow_inactivation(),
                         L.P_GMAX_KDR: float(params["axon_gmax_K"]),
                         L.P_G_PAS: float(params["axon_g_pas"]),
                         L.P_E_PAS: axon_e_pas,
@@ -213,6 +226,9 @@ class BRKTemplate(_Template):
         "dend_f_Caconc",
         "dend_alpha_Caconc",
         "dend_kCa_Caconc",
+        "Nas_s_on",
+        "Nas_s_floor",
+        "Nas_s_speed",
     )
 
     def __init__(self, params: dict | None = None):
@@ -255,6 +271,7 @@ class BRKTemplate(_Template):
         self.global_diam = 10
         self.cm_ratio = 1
         self.axon_params = _axon.axon_parameters(None)
+        self.Nas_s_on, self.Nas_s_floor, self.Nas_s_speed = 0.0, 0.4, 1.0
 
     def set_parameters(self, params):
         self.axon_params = _axon.axon_parameters(params)
@@ -282,6 +299,9 @@ class BRKTemplate(_Template):
         self.dend_f_Caconc = params.get("dend_f_Caconc", self.dend_f_Caconc)
         self.dend_alpha_Caconc = params.get("dend_alpha_Caconc", self.dend_alpha_Caconc)
         self.dend_kCa_Caconc = params.get("dend_kCa_Caconc", self.dend_kCa_Caconc)
+        self.Nas_s_on = params.get("Nas_s_on", self.Nas_s_on)
+        self.Nas_s_floor = params.get("Nas_s_floor", self.Nas_s_floor)
+        self.Nas_s_speed = params.get("Nas_s_speed", self.Nas_s_speed)
 
     def geometry(self):
         self._L = {"soma": self.pp * self.Ltotal, "dend": (1 - self.pp) * self.Ltotal}
@@ -321,6 +341,7 @@ class BRKTemplate(_Template):
                 L.P_GMAX_NAS: self.soma_gmax_Na,
                 L.P_VHALF_NAS: self.soma_vhalf_Na,
                 L.P_SLOPE_NAS: self.soma_slope_Na,
+                **self._slow_inactivation(),
                 L.P_GMAX_KDR: self.soma_gmax_K,
                 L.P_GMAX_CAN: self.soma_gmax_CaN,
                 L.P_GMAX_KCA: self.soma_gmax_KCa,

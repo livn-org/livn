@@ -30,6 +30,28 @@ static inline double nas_current(double v, double gmax, double m3, double h, dou
     double g = gmax * m3 * h;
     return g * (v - ena);
 }
+/* optional slow inactivation, Nas.mod's s_on branch: g = gmax * minf^3 * h * s,
+ * multiplied in the same order mod2c evaluates it */
+static inline double nas_current_s(double v, double gmax, double m3, double h, double s,
+                                   double ena) {
+    double g = gmax * m3 * h * s;
+    return g * (v - ena);
+}
+/* Nas.mod rates(): alpha_s recovery, beta_s entry (reconstructed sigmoid) */
+static inline double nas_s_alpha(double v, double speed) {
+    return speed * 0.001 * exp(-(v + 85.0) / 30.0);
+}
+static inline double nas_s_beta(double v, double speed) {
+    return speed * 0.0034 / (1.0 + exp(-(v + 17.0) / 10.0));
+}
+static inline double nas_stau(double v, double speed) {
+    return 1.0 / (nas_s_alpha(v, speed) + nas_s_beta(v, speed));
+}
+static inline double nas_sinf(double v, double floor, double speed) {
+    double as = nas_s_alpha(v, speed);
+    double bs = nas_s_beta(v, speed);
+    return floor + (1.0 - floor) * as / (as + bs);
+}
 
 /* --- Kdr.mod ---------------------------------------------------------------- */
 static inline double kdr_ntau(double v) {

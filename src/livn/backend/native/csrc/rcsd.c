@@ -243,6 +243,9 @@ static int new_node(RCSDSim* sim, int parent, int section, int centre) {
     sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_ALPHA_CA] = 1.0;
     sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_VHALF_NAS] = -35.0;
     sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_SLOPE_NAS] = 7.8;
+    sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_S_ON_NAS] = 0.0;
+    sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_S_FLOOR_NAS] = 0.4;
+    sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_S_SPEED_NAS] = 1.0;
     sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_E_PAS] = -70.0;
     sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_CM] = 1.0;
     return i;
@@ -811,8 +814,15 @@ static void eval_membrane_range(void* vctx, int begin, int end) {
             double gmax = PR(i, RCSD_P_GMAX_NAS);
             double m3 = nas_m3(nas_minf(v, PR(i, RCSD_P_VHALF_NAS), PR(i, RCSD_P_SLOPE_NAS)));
             double h = ST(i, RCSD_S_H);
-            double i1 = nas_current(vp, gmax, m3, h, ena);
-            double i0 = nas_current(v, gmax, m3, h, ena);
+            double i1, i0;
+            if (PR(i, RCSD_P_S_ON_NAS) > 0.5) {
+                double s = ST(i, RCSD_S_S);
+                i1 = nas_current_s(vp, gmax, m3, h, s, ena);
+                i0 = nas_current_s(v, gmax, m3, h, s, ena);
+            } else {
+                i1 = nas_current(vp, gmax, m3, h, ena);
+                i0 = nas_current(v, gmax, m3, h, ena);
+            }
             double g = (i1 - i0) / 0.001;
             ina += i0;
             dina += g;
@@ -868,6 +878,12 @@ static void membrane_states_range(void* vctx, int begin, int end) {
         }
         if (mech & RCSD_M_NAS) {
             ST(i, RCSD_S_H) = cnexp_relax(ST(i, RCSD_S_H), nas_hinf(v), nas_htau(v), dt);
+            if (PR(i, RCSD_P_S_ON_NAS) > 0.5) {
+                double speed = PR(i, RCSD_P_S_SPEED_NAS);
+                ST(i, RCSD_S_S) = cnexp_relax(ST(i, RCSD_S_S),
+                                              nas_sinf(v, PR(i, RCSD_P_S_FLOOR_NAS), speed),
+                                              nas_stau(v, speed), dt);
+            }
         }
         if (mech & RCSD_M_KDR) {
             ST(i, RCSD_S_N) = cnexp_relax(ST(i, RCSD_S_N), kdr_ninf(v), kdr_ntau(v), dt);
@@ -926,6 +942,7 @@ static void init_states(RCSDSim* sim, int cell_index, double v0) {
             continue;
         }
         ST(i, RCSD_S_H) = nas_hinf(v0);
+        ST(i, RCSD_S_S) = nas_sinf(v0, PR(i, RCSD_P_S_FLOOR_NAS), PR(i, RCSD_P_S_SPEED_NAS));
         ST(i, RCSD_S_N) = kdr_ninf(v0);
         ST(i, RCSD_S_MN) = can_minf(v0);
         ST(i, RCSD_S_HN) = can_hinf(v0);
