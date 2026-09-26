@@ -666,11 +666,13 @@ class Run:
         if not P.is_root(comm=comm, root=root):
             return None
 
-        merged = runs[0]
-        for run in runs[1:]:
-            merged = merged.merge(run)
+        while len(runs) > 1:
+            runs = [
+                runs[i].merge(runs[i + 1]) if i + 1 < len(runs) else runs[i]
+                for i in range(0, len(runs), 2)
+            ]
 
-        return merged
+        return runs[0]
 
     def slice(self, start: float = 0.0, stop: float | None = None) -> Run:
         """Window into ``[start, stop)``, both relative to this run's start."""
