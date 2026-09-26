@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from livn.backend import backend
+from livn.types import Encoding
 from testing import (
     livn_test_mea,
     livn_test_selection,
@@ -24,7 +25,6 @@ if backend() == "neuron":
     from livn.env import Env
     from livn.env.distributed import DistributedEnv
     from livn.parallel import Layout
-    from livn.types import Encoding
 
     class ConstantChannelInput(Encoding):
         def __call__(self, env, t_end, inputs):

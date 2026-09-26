@@ -238,3 +238,16 @@ def test_cell_params_are_global_across_ranks():
     np.testing.assert_allclose(env.cells.get_params()[name], [1.0, 2.0, 3.0, 4.0])
 
     env.close()
+
+
+@pytest.mark.skipif(backend() != "native", reason="the native backend's own guard")
+@pytest.mark.mpiexec(n=2, timeout=TIMEOUT)
+def test_native_refuses_a_communicator_it_would_replicate_over():
+    from mpi4py import MPI
+
+    from livn.env import Env
+
+    with pytest.raises(ValueError, match="simulate it 2 times"):
+        Env(4, comm=MPI.COMM_WORLD)
+
+    Env(4, comm=MPI.COMM_SELF).close()
