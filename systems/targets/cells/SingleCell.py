@@ -51,7 +51,7 @@ class SingleCellTargets(BaseModel):
     V_rest: HoldTarget
     f_I: StepTarget
     spike_amp: StepTarget | None = None
-    spike_adaptation: StepTarget
+    spike_adaptation: StepTarget | None = None
     rheobase: StepTarget | None = None
     shunted_rheobase: StepTarget | None = None
 
@@ -98,6 +98,7 @@ class DriveTarget(BaseModel):
     std_fraction: float = 0.33
     tau_e: float = 33.0
     tau_i: float = 28.5
+    g_i0: float | None = None
     repeats: int = Field(1, ge=1)
     mean: list[float | None] | None = None
     lower: list[float | None] | None = None
@@ -117,6 +118,8 @@ class SingleCellOptConfig(BaseModel):
     Recruitment: RecruitmentTarget = RecruitmentTarget()
     Parameters: dict[str, float] = {}
     Space: dict[str, list[float]] = {}
+    # constraints this config does not impose, by name
+    DroppedConstraints: list[str] = []
 
     @classmethod
     def from_yaml(cls, path: str) -> SingleCellOptConfig:
@@ -261,9 +264,10 @@ class SingleCell(Target):
         self.spk_amp_lb = np.asarray((sa.lower if sa else None) or [], dtype=float)
         self.spk_amp_ub = np.asarray((sa.upper if sa else None) or [], dtype=float)
 
+        # optional: a config without it scores no adaptation at all
         sad = tc.spike_adaptation
-        self.spk_adapt_lb = np.asarray(sad.lower or [], dtype=float)
-        self.spk_adapt_ub = np.asarray(sad.upper or [], dtype=float)
+        self.spk_adapt_lb = np.asarray((sad.lower if sad else None) or [], dtype=float)
+        self.spk_adapt_ub = np.asarray((sad.upper if sad else None) or [], dtype=float)
 
         rb = tc.rheobase
         if rb is not None and (rb.mean or rb.lower):
@@ -286,6 +290,13 @@ class SingleCell(Target):
 
         self.drive = cfg.Drive
         self.recruitment = cfg.Recruitment
+        self.dropped_constraints = set(cfg.DroppedConstraints)
+        unknown = self.dropped_constraints - set(self._all_constraint_names())
+        if unknown:
+            raise ValueError(
+                f"DroppedConstraints names {sorted(unknown)}, which this cell "
+                f"does not impose; it has {self._all_constraint_names()}"
+            )
 
         self.fixed = dict(cfg.Parameters)
         self.space = {k: [float(v[0]), float(v[1])] for k, v in cfg.Space.items()}
@@ -326,9 +337,8 @@ class SingleCell(Target):
                 "fI_error",
             ]
             + (["spike_amplitude_error"] if self.spk_amp_lb.size else [])
-            + [
-                "ISI_adaptation_error",
-            ]
+            + []
+            + (["ISI_adaptation_error"] if self.spk_adapt_lb.size else [])
             + (["recruitment_error"] if self.recruitment.enabled else [])
             + (["spike_threshold_error"] if self.spike_threshold_lb.size else [])
             + (["rheobase_error"] if self.rheobase_lb.size else [])
@@ -482,6 +492,13 @@ class SingleCell(Target):
         return _finite(float(np.mean(scored))), float(np.mean(rates)) if n else 0.0
 
     def constraint_names(self) -> list[str]:
+        return [
+            name
+            for name in self._all_constraint_names()
+            if name not in self.dropped_constraints
+        ]
+
+    def _all_constraint_names(self) -> list[str]:
         return (
             (
                 []
@@ -499,7 +516,9 @@ class SingleCell(Target):
             + (["spike_amplitude_constr"] if self.spk_amp_lb.size else [])
             + [
                 "first_ISI_constr",
-                "ISI_adaptation_constr",
+            ]
+            + (["ISI_adaptation_constr"] if self.spk_adapt_lb.size else [])
+            + [
                 "pre_spk_count",
                 "regenerative_constr",
                 "recruitment_constr",
@@ -1042,6 +1061,15 @@ class SingleCell(Target):
                             "noise-std_e": float(level) * self.drive.std_fraction,
                             "noise-tau_e": self.drive.tau_e,
                             "noise-tau_i": self.drive.tau_i,
+                            **(
+                                {
+                                    "noise-g_i0": float(self.drive.g_i0),
+                                    "noise-std_i": float(self.drive.g_i0)
+                                    * self.drive.std_fraction,
+                                }
+                                if self.drive.g_i0 is not None
+                                else {}
+                            ),
                         }
                     )
                     # repeat 0 keeps the seed a single-realisation run used
@@ -1226,9 +1254,15 @@ class SingleCell(Target):
                 if self.spk_amp_lb.size
                 else {}
             ),
-            "ISI_adaptation_error": (
-                _finite(ISI_adaptation_obj),
-                float(np.nanmean(ISI["ratio"])) if len(ISI) else 0.0,
+            **(
+                {
+                    "ISI_adaptation_error": (
+                        _finite(ISI_adaptation_obj),
+                        float(np.nanmean(ISI["ratio"])) if len(ISI) else 0.0,
+                    )
+                }
+                if self.spk_adapt_lb.size
+                else {}
             ),
         }
         if recruitment_obj is not None:
@@ -1292,7 +1326,11 @@ class SingleCell(Target):
                 else {}
             ),
             "first_ISI_constr": (first_ISI_constr, 0.0),
-            "ISI_adaptation_constr": (ISI_adapt_constr, 0.0),
+            **(
+                {"ISI_adaptation_constr": (ISI_adapt_constr, 0.0)}
+                if self.spk_adapt_lb.size
+                else {}
+            ),
             "pre_spk_count": (pre_spk_constr, float(np.sum(pre_spk_cnt))),
             "regenerative_constr": (regenerative_constr, 0.0),
             "recruitment_constr": (
@@ -1304,6 +1342,9 @@ class SingleCell(Target):
             "initial_v_constr": (initial_v_constr, float(initial_v_error)),
         }
 
+        constraints = {
+            k: v for k, v in constraints.items() if k not in self.dropped_constraints
+        }
         self._check_schema(objectives, constraints)
         return objectives, constraints
 
