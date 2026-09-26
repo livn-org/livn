@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["normalize_weights"]
+__all__ = ["connection_scales", "normalize_weights"]
 
 
 def normalize_weights(
@@ -86,3 +86,28 @@ def _normalize_group(
         if next_free.size == free.size:
             break
         free = next_free
+
+
+def connection_scales(model, conn, syn, pop_code: dict) -> np.ndarray:
+    """Per-connection weight multipliers.
+
+    Ones unless ``model`` exposes ``weight_scales(projection, pre_gid, post_gid,
+    syn_id)``. A connection is keyed by (pre gid, post gid, synapse id), so the
+    receptors of one contact (AMPA and NMDA) share a multiplier.
+    """
+    n = 0 if conn is None else int(conn.size)
+    scales = np.ones(n, dtype=np.float64)
+    hook = getattr(model, "weight_scales", None)
+    if n == 0 or not callable(hook):
+        return scales
+    names = {int(code): name for name, code in pop_code.items()}
+    rows = np.asarray(conn.syn_row, dtype=np.int64)
+    post_gid = np.asarray(syn.post_gid, dtype=np.int64)[rows]
+    syn_id = np.asarray(syn.syn_id, dtype=np.int64)[rows]
+    pre_gid = np.asarray(conn.pre_gid, dtype=np.int64)
+    pairs = np.stack([conn.pre_pop, conn.post_pop], axis=1)
+    for pre_code, post_code in np.unique(pairs, axis=0):
+        mask = (conn.pre_pop == pre_code) & (conn.post_pop == post_code)
+        projection = f"{names[int(pre_code)]}->{names[int(post_code)]}"
+        scales[mask] = hook(projection, pre_gid[mask], post_gid[mask], syn_id[mask])
+    return scales

@@ -37,6 +37,8 @@ class ReducedCalciumSomaDendrite(Model):
         size_cv: float | dict[str, float] = 0.0,
         size_seed: int = 20260827,
         celsius: float = 23.0,
+        weight_cv: float | dict[str, float] = 0.0,
+        weight_seed: int = 20260926,
     ):
         if input_mode is not None and input_mode not in {
             "current_density",
@@ -64,6 +66,16 @@ class ReducedCalciumSomaDendrite(Model):
         self.size_cv = size_cv
         self.size_seed = int(size_seed)
         self.celsius = float(celsius)
+        # Lognormal spread of unitary connection strength, mean 1, per
+        # projection ("EXC->EXC") or one value for all; see `weight_scales`
+        self.weight_cv = weight_cv
+        self.weight_seed = int(weight_seed)
+        if isinstance(weight_cv, dict):
+            bad = {k: v for k, v in weight_cv.items() if float(v) < 0}
+        else:
+            bad = {} if float(weight_cv) >= 0 else {"*": weight_cv}
+        if bad:
+            raise ValueError(f"weight_cv must be >= 0, got {bad}")
         for population, cv in self._size_cv_map().items():
             if cv < 0.0:
                 raise ValueError(f"size_cv for {population!r} must be >= 0, got {cv}")
@@ -90,6 +102,44 @@ class ReducedCalciumSomaDendrite(Model):
         z = _onp.array([normal.inv_cdf(float(u)) for u in unit])
         sigma = math.sqrt(math.log1p(cv * cv))
         return _onp.exp(sigma * z - 0.5 * sigma * sigma)
+
+    def weight_cv_for(self, projection: str) -> float:
+        if isinstance(self.weight_cv, dict):
+            return float(self.weight_cv.get(projection, 0.0))
+        return float(self.weight_cv)
+
+    def weight_scales(self, projection: str, pre_gid, post_gid, syn_id):
+        """Lognormal multipliers with mean 1 and CV `weight_cv_for(projection)`.
+
+        Drawn from a stable hash of (pre, post, synapse id).
+        """
+        import math
+
+        import numpy as _np
+        from scipy.special import ndtri
+
+        cv = self.weight_cv_for(projection)
+        n = len(pre_gid)
+        if cv <= 0.0 or n == 0:
+            return _np.ones(n, dtype=_np.float64)
+        u64 = _np.uint64
+        seed = self.weight_seed + sum(map(ord, projection))
+        with _np.errstate(over="ignore"):
+            key = (
+                P.stable_hash(_np.asarray(pre_gid, dtype=_np.int64), seed)
+                ^ (
+                    P.stable_hash(_np.asarray(post_gid, dtype=_np.int64), seed + 1)
+                    * u64(3)
+                )
+                ^ (
+                    P.stable_hash(_np.asarray(syn_id, dtype=_np.int64), seed + 2)
+                    * u64(5)
+                )
+            )
+        unit = P.stable_hash(key, seed + 3).astype(_np.float64) / float(1 << 64)
+        unit = _np.clip(unit, 1e-12, 1.0 - 1e-12)
+        sigma = math.sqrt(math.log1p(cv * cv))
+        return _np.exp(sigma * ndtri(unit) - 0.5 * sigma * sigma)
 
     def _exc_params_name(self) -> str:
         return "BoothRinzelKiehn-MN-Miles2004"

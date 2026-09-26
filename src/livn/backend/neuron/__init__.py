@@ -378,6 +378,12 @@ class Env(EnvProtocol):
             self._receptor_code,
         ) = sb.build(self.cells)
         self.store_kind = sb.store_kind  # resolved value when store="auto"
+        from livn.weights import connection_scales
+
+        # per-connection strength spread, applied wherever a weight is set
+        self._wscale = connection_scales(
+            self.model, self.conn, self.syn, self._pop_code
+        )
         self._index_plastic_synapses()
         self._insert_opsins()
 
@@ -1520,11 +1526,18 @@ class Env(EnvProtocol):
                     # has no synapses on -> selects nothing
                     mask &= False
             idx = np.flatnonzero(mask)
-            self.conn.weight[idx] = val
-            for i in idx:
+            scaled = float(val) * self._connection_scales()[idx]
+            self.conn.weight[idx] = scaled
+            for i, w in zip(idx, scaled, strict=True):
                 nc = self.conn.netcon(int(i))
-                nc.weight[int(self.conn.wslot[i])] = val
+                nc.weight[int(self.conn.wslot[i])] = float(w)
         return self
+
+    def _connection_scales(self) -> np.ndarray:
+        scales = getattr(self, "_wscale", None)
+        if scales is None or len(scales) != self.conn.size:
+            return np.ones(self.conn.size, dtype=np.float64)
+        return scales
 
     def get_weights(self) -> dict:
         weights: dict[tuple, float] = {}

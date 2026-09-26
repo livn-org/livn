@@ -423,6 +423,12 @@ class Env(EnvProtocol):
             self._input_indices,
             self._receptor_code,
         ) = builder.build(cells_by_pop)
+        from livn.weights import connection_scales
+
+        # per-connection strength spread, applied wherever a weight is set
+        self._wscale = connection_scales(
+            self.model, self.conn, self.syn, self._pop_code
+        )
         self._refresh_views()
         self._index_plastic_synapses()
         self._insert_opsins()
@@ -1255,9 +1261,16 @@ class Env(EnvProtocol):
                 else:
                     mask &= False
             idx = np.flatnonzero(mask)
-            self.conn.weight[idx] = val
-            self._w[idx, self.conn.wslot[idx].astype(np.int64)] = float(val)
+            scaled = float(val) * self._connection_scales()[idx]
+            self.conn.weight[idx] = scaled
+            self._w[idx, self.conn.wslot[idx].astype(np.int64)] = scaled
         return self
+
+    def _connection_scales(self) -> np.ndarray:
+        scales = getattr(self, "_wscale", None)
+        if scales is None or len(scales) != self.conn.size:
+            return np.ones(self.conn.size, dtype=np.float64)
+        return scales
 
     def _iter_stdp_point_processes(self):
         if self.syn is None:
