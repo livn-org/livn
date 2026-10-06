@@ -124,6 +124,7 @@ void rcsd_destroy(RCSDSim* sim) {
     free(sim->stim_amp);
     free(sim->stim_dens);
     free(sim->stim_rhs);
+    free(sim->hold_amp);
     for (m = 0; m < PP_N; ++m) {
         free(sim->pp_start[m]);
         free(sim->pp_list[m]);
@@ -212,6 +213,7 @@ int rcsd_alloc_nodes(RCSDSim* sim, int n) {
     GROW(sim->stim_amp, double, sim->cap_nodes, cap);
     GROW(sim->stim_dens, double, sim->cap_nodes, cap);
     GROW(sim->stim_rhs, double, sim->cap_nodes, cap);
+    GROW(sim->hold_amp, double, sim->cap_nodes, cap);
     sim->cap_nodes = cap;
     return RCSD_OK;
 }
@@ -320,6 +322,15 @@ static int node_exact(RCSDSim* sim, const Section* sec, double x) {
         j = sec->nseg - 1;
     }
     return sec->node0 + j;
+}
+
+int rcsd_set_holding_current(RCSDSim* sim, int node, double amp) {
+    if (node < 0 || node >= sim->n_nodes) {
+        rcsd_set_error("no node %d for a holding current", node);
+        return RCSD_ERROR;
+    }
+    sim->hold_amp[node] = amp;
+    return RCSD_OK;
 }
 
 int rcsd_section_node(RCSDSim* sim, int section, double x) {
@@ -710,7 +721,7 @@ static void eval_membrane_range(void* vctx, int begin, int end) {
         unsigned mech = sim->mech[i];
         double v = sim->v[i];
         double vp = v + 0.001;
-        double rhs = 0.0, dd = 0.0;
+        double rhs = 0.0, dd = 0.0, hold;
         double ina = 0.0, ik = 0.0, ica = 0.0, ipas = 0.0;
         double dina = 0.0, dik = 0.0, dica = 0.0;
         double ena = 0.0, ek = 0.0;
@@ -746,7 +757,13 @@ static void eval_membrane_range(void* vctx, int begin, int end) {
             rhs -= i0;
             dd += (i1 - i0) / 0.001;
         }
-        /* IClamp: an ELECTRODE_CURRENT adds to rhs and has no Jacobian */
+        /* IClamp: an ELECTRODE_CURRENT adds to rhs and has no Jacobian; a
+         * holding clamp exists before any stimulus's, so it is added first */
+        hold = 0.0;
+        if (sim->hold_amp[i] != 0.0) {
+            hold = sim->hold_amp[i] * 1e2 / sim->area[i];
+            rhs += hold;
+        }
         if (sim->stim_rhs[i] != 0.0) {
             rhs += sim->stim_rhs[i];
         }
@@ -834,7 +851,7 @@ static void eval_membrane_range(void* vctx, int begin, int end) {
         pp_accumulate(sim, PP_STDP, i, &rhs, &dd);
         pp_accumulate(sim, PP_STDP_NMDA, i, &rhs, &dd);
         /* nrn_rhs: sav_rhs holds the electrode current, less everything */
-        sim->sav_rhs[i] = sim->stim_rhs[i] - rhs;
+        sim->sav_rhs[i] = (hold + sim->stim_rhs[i]) - rhs;
         ST(i, RCSD_S_INA) = ina;
         ST(i, RCSD_S_IK) = ik;
         ST(i, RCSD_S_ICA) = ica;

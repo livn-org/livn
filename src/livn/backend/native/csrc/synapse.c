@@ -380,6 +380,47 @@ double* rcsd_connection_weights(RCSDSim* sim) {
     return sim->w;
 }
 
+int rcsd_set_connection_delays(RCSDSim* sim, int n, const double* delay) {
+    size_t i;
+    int s, pending = 0;
+    double floor_delay, max_delay = 0.0;
+    if (n != (int) sim->connections.n) {
+        rcsd_set_error("%d delays for %d connections", n, (int) sim->connections.n);
+        return RCSD_ERROR;
+    }
+    for (i = 0; i < sim->connections.n; ++i) {
+        sim->connections.data[i].delay = delay[i];
+    }
+    if (!sim->wired) {
+        return RCSD_OK; /* rcsd_wire floors them and sizes the ring */
+    }
+    /* wired: new delays apply to spikes from now on, as a NetCon's do */
+    floor_delay = 2.0 * sim->dt;
+    for (i = 0; i < sim->connections.n; ++i) {
+        Connection* c = &sim->connections.data[i];
+        c->eff_delay = c->delay > floor_delay ? c->delay : floor_delay;
+        if (c->eff_delay > max_delay) {
+            max_delay = c->eff_delay;
+        }
+    }
+    sim->max_delay = max_delay;
+    if ((int) ceil(max_delay / sim->dt) + 4 <= sim->n_slots) {
+        return RCSD_OK;
+    }
+    /* the ring is too short for the longest delay: rebuilt, which is only
+     * safe while it holds no events */
+    for (s = 0; s < sim->n_slots; ++s) {
+        pending += (int) sim->buckets[s].n;
+    }
+    if (pending) {
+        rcsd_set_error("a delay of %g ms needs a longer event ring while %d events "
+                       "are queued; set it before the run or after clear()",
+                       max_delay, pending);
+        return RCSD_ERROR;
+    }
+    return rcsd_wire(sim);
+}
+
 /* outgoing lists per cell and per input, delays floored at 2 dt, ring size */
 int rcsd_wire(RCSDSim* sim) {
     size_t n_cells = sim->cells.n, n_inputs = sim->inputs.n, i;

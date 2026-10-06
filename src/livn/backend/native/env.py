@@ -10,6 +10,12 @@ from typing import TYPE_CHECKING, Self
 
 import numpy as np
 
+from livn.backend._primitives import (
+    checked,
+    connection_table,
+    noise_scale_state,
+    scaled_noise,
+)
 from livn.backend.native import _lib as L
 from livn.backend.native.cells import TEMPLATES, NativeCell, build_cell
 from livn.backend.native.synapses import SynapseBuilder
@@ -1269,8 +1275,80 @@ class Env(EnvProtocol):
     def _connection_scales(self) -> np.ndarray:
         scales = getattr(self, "_wscale", None)
         if scales is None or len(scales) != self.conn.size:
-            return np.ones(self.conn.size, dtype=np.float64)
+            scales = np.ones(self.conn.size, dtype=np.float64)
+        factor = getattr(self, "_conn_factor", None)
+        if factor is not None and len(factor) == self.conn.size:
+            scales = scales * factor
         return scales
+
+    def connections(self) -> dict[str, np.ndarray]:
+        return connection_table(self)
+
+    def set_connection_factors(self, factors) -> Self:
+        if self.conn is None or not self.conn.size:
+            return self
+        factor = checked(factors, self.conn.size, "factors")
+        old = getattr(self, "_conn_factor", None)
+        if old is None or len(old) != self.conn.size:
+            old = np.ones(self.conn.size)
+        # rescale the weights already set by the ratio of factors
+        ratio = factor / old
+        rows = np.flatnonzero(ratio != 1.0)
+        slots = self.conn.wslot[rows].astype(np.int64)
+        self.conn.weight[rows] = self.conn.weight[rows] * ratio[rows]
+        self._w[rows, slots] = self._w[rows, slots] * ratio[rows]
+        self._conn_factor = factor
+        return self
+
+    def set_delay_offsets(self, offsets) -> Self:
+        if self.conn is None or not self.conn.size:
+            return self
+        if self._sim is None:
+            raise RuntimeError("call init() before set_delay_offsets()")
+        offset = checked(offsets, self.conn.size, "offsets")
+        base = getattr(self, "_base_delay", None)
+        if base is None:
+            # the precision NEURON's connection table holds a delay at
+            base = np.asarray(self.conn.delay, dtype=np.float32).astype(np.float64)
+            self._base_delay = base
+        self.conn.delay[:] = (base + offset).astype(np.float32).astype(np.float64)
+        delays = L.as_double_array(self.conn.delay)
+        if len(delays) != int(self._lib.rcsd_connection_count(self._sim)):
+            raise RuntimeError("the connection table and the sim disagree on size")
+        L.check(
+            self._lib.rcsd_set_connection_delays(
+                self._sim, len(delays), L.double_ptr(delays)
+            ),
+            self._lib,
+        )
+        return self
+
+    def set_holding_current(self, currents) -> Self:
+        if self._sim is None:
+            raise RuntimeError("call init() before set_holding_current()")
+        wanted = {int(g): float(a) for g, a in dict(currents).items()}
+        held = getattr(self, "_holding", None)
+        if held is None:
+            held = self._holding = {}
+        lib, sim = self._lib, self._sim
+        for cells in self.cells.values():
+            for gid, cell in cells.items():
+                gid = int(gid)
+                amp = wanted.get(gid, 0.0)
+                if amp == 0.0 and gid not in held:
+                    continue
+                # the centre of the soma, where NEURON's IClamp sits
+                section = cell.sections[cell.section_names.index("soma")]
+                node = L.check(lib.rcsd_section_node(sim, section, 0.5), lib)
+                L.check(lib.rcsd_set_holding_current(sim, node, amp), lib)
+                held[gid] = amp
+        return self
+
+    def set_noise_scale(self, scales, keys: tuple[str, ...] = ()) -> Self:
+        self._noise_scale = noise_scale_state(scales, keys)
+        if hasattr(self.model, "neuron_noise_configure") and self._flucts:
+            self.set_noise({})
+        return self
 
     def _iter_stdp_point_processes(self):
         if self.syn is None:
@@ -1407,7 +1485,10 @@ class Env(EnvProtocol):
                         site = found[2]
                         fresh = False
                     self.model.neuron_noise_configure(
-                        population, site, None, **merged[population]
+                        population,
+                        site,
+                        None,
+                        **scaled_noise(self, gid, merged[population]),
                     )
                     L.check(
                         lib.rcsd_set_noise(

@@ -238,6 +238,11 @@ RCSD_API int rcsd_add_connections(RCSDSim* sim, int n, const int* source, const 
                                   const double* delay, const double* weights);
 RCSD_API int rcsd_synapse_count(RCSDSim* sim);
 RCSD_API int rcsd_connection_count(RCSDSim* sim);
+/* the physical delay of every connection, in the order they were added; takes
+ * effect for spikes from now on (floored at 2 dt like any other) */
+RCSD_API int rcsd_set_connection_delays(RCSDSim* sim, int n, const double* delay);
+/* a steady current (nA) into one node, held until set again; 0 removes it */
+RCSD_API int rcsd_set_holding_current(RCSDSim* sim, int node, double amp);
 /* Column-major: parameter p of site i is at [p * stride + i], with the
  * stride from rcsd_synapse_stride() (it changes while sites are added). */
 RCSD_API double* rcsd_synapse_params(RCSDSim* sim);   /* [RCSD_SP_N][stride] */

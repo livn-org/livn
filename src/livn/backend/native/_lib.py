@@ -202,6 +202,8 @@ _SIGNATURES = {
     ),
     "rcsd_synapse_count": (c_int, [c_void_p]),
     "rcsd_connection_count": (c_int, [c_void_p]),
+    "rcsd_set_connection_delays": (c_int, [c_void_p, c_int, _c_double_p]),
+    "rcsd_set_holding_current": (c_int, [c_void_p, c_int, c_double]),
     "rcsd_synapse_params": (_c_double_p, [c_void_p]),
     "rcsd_synapse_states": (_c_double_p, [c_void_p]),
     "rcsd_synapse_stride": (c_int, [c_void_p]),

@@ -228,6 +228,8 @@ struct RCSDSim {
     double* stim_amp;  /* nA, current-mode injection for this step */
     double* stim_dens; /* mA/cm2, current-density injection for this step */
     double* stim_rhs;  /* what the current stimuli add to rhs this step (the IClamp slot) */
+    double* hold_amp;  /* nA, a steady holding current per node: an IClamp held on,
+                        * created before any stimulus's, so summed ahead of them */
 
     /* point-process instances per node and slot, in NEURON's order */
     int* pp_start[PP_N]; /* [n_nodes + 1] */
