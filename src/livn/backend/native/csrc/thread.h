@@ -29,18 +29,19 @@
 /* A slice of a parallel loop: [begin, end) of the iteration space. */
 typedef void (*RCSDKernel)(void* ctx, int begin, int end);
 
-/* Grow or shrink the pool. `n` is the total number of threads that run a
- * parallel loop, counting the calling thread, so 1 means "no workers, run
- * inline". Values below 1 clamp to 1. Returns the count actually in effect
- * (always 1 where threads are unavailable), or -1 if the workers could not be
- * started, in which case the pool is left serial and rcsd_last_error is set.
+/* rcsd_set_num_threads and rcsd_num_threads are the pool's public face and are
+ * declared once, in rcsd.h, with the library's export attribute. Declaring them
+ * again here without it is a different linkage under MSVC (C2375), so this
+ * header takes the public declarations instead of repeating them.
  *
- * Not safe to call while a parallel loop is running. Each process has one pool.
+ * rcsd_set_num_threads: `n` is the total number of threads that run a parallel
+ * loop, counting the calling thread, so 1 means "no workers, run inline".
+ * Values below 1 clamp to 1. Returns the count actually in effect (always 1
+ * where threads are unavailable), or -1 if the workers could not be started,
+ * in which case the pool is left serial and rcsd_last_error is set. Not safe
+ * to call while a parallel loop is running. Each process has one pool.
  */
-int rcsd_set_num_threads(int n);
-
-/* The count currently in effect. */
-int rcsd_num_threads(void);
+#include "rcsd.h"
 
 /* Run `fn` over [0, n) split across the pool, and return once every slice is
  * done. Runs inline when the pool is serial, when `n < grain`, or when called
