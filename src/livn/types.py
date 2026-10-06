@@ -325,6 +325,12 @@ def supports(env_or_class, *capabilities) -> bool:
     return all(Capability(c) in declared for c in capabilities)
 
 
+def _parameter_groups(env) -> dict:
+    """`{prefix: apply(env, values)}` the env's model defines (`Model.parameter_groups`)."""
+    declared = getattr(getattr(env, "model", None), "parameter_groups", None)
+    return dict(declared()) if callable(declared) else {}
+
+
 def _describe(obj) -> dict | None:
     """``{"cls", "kwargs"}`` for a system, model or io."""
     if obj is None:
@@ -562,10 +568,7 @@ class Env(Protocol):
         )
 
     def recording_amplitudes(self) -> dict[int, float] | None:
-        """Per-gid signal strength, from the model's per-population amplitude.
-
-        `None` when every population is equally visible.
-        """
+        """Per-gid signal strength, from the model's per-population amplitude."""
         model = getattr(self, "model", None)
         system = getattr(self, "system", None)
         if model is None or system is None:
@@ -574,9 +577,10 @@ class Env(Protocol):
         if not ranges:
             return None
 
-        by_population = {
-            name: float(model.recording_amplitude(name)) for name in ranges
-        }
+        amplitude = model.recording_amplitude
+        if getattr(getattr(self, "io", None), "physical_detection", False):
+            amplitude = getattr(model, "extracellular_amplitude", amplitude)
+        by_population = {name: float(amplitude(name)) for name in ranges}
         if all(a == 1.0 for a in by_population.values()):
             return None
 
@@ -678,9 +682,10 @@ class Env(Protocol):
         sections = {row[2] for row in declared}
         mechanisms = {row[3] for row in declared}
 
+        groups = tuple(f"{name}-" for name in _parameter_groups(self))
         unmatched: dict[str, str] = {}
         for key in params:
-            if key.startswith(("noise-", "cells-", "io-", "weight-")):
+            if key.startswith(("noise-", "cells-", "io-", "weight-", *groups)):
                 continue
             try:
                 p = SynapticParam.from_string(key)
@@ -723,10 +728,15 @@ class Env(Protocol):
         noise = {}
         cells = {}
         io = {}
+        handlers = _parameter_groups(self)
+        grouped: dict[str, dict] = {}
 
         for k, v in params.items():
+            prefix, _, rest = k.partition("-")
             if k.startswith("noise-"):
                 noise[k.replace("noise-", "")] = v
+            elif rest and prefix in handlers:
+                grouped.setdefault(prefix, {})[rest] = v
             elif k.startswith("weight-"):
                 weights[k.replace("weight-", "")] = v
             elif k.startswith("cells-"):
@@ -753,6 +763,13 @@ class Env(Protocol):
                 )
             self.io.set_params(io)
 
+        for prefix, values in grouped.items():
+            stated = dict(getattr(env, "_group_params", {}))
+            merged = {**stated.get(prefix, {}), **values}
+            env._group_params = {**stated, prefix: merged}
+            reported = handlers[prefix](env, dict(merged))
+            env._group_state = {**getattr(env, "_group_state", {}), prefix: reported}
+
         # remember what was applied
         applied = {**getattr(self, "_applied_params", {}), **params}
         self._applied_params = applied
@@ -764,6 +781,47 @@ class Env(Protocol):
     @property
     def applied_params(self) -> dict:
         return dict(getattr(self, "_applied_params", {}))
+
+    def parameter_groups(self) -> dict:
+        """`{prefix: apply(env, values)}`: parameter groups the model defines."""
+        return _parameter_groups(self)
+
+    @property
+    def group_state(self) -> dict[str, dict]:
+        """What each model parameter group reported when it was last applied."""
+        return dict(getattr(self, "_group_state", {}))
+
+    def connections(self) -> dict[str, ndarray]:
+        """This rank's connections, one row each, in the order the setters below take."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not expose its connections"
+        )
+
+    def set_holding_current(self, currents: Mapping[int, float]) -> Self:
+        """A steady current (nA) into the soma of each cell named; the others none."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement holding currents"
+        )
+
+    def set_noise_scale(
+        self, scales: Mapping[int, float], keys: tuple[str, ...] = ()
+    ) -> Self:
+        """Scale the background-noise parameters `keys` of each cell named."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement per-cell noise scales"
+        )
+
+    def set_connection_factors(self, factors) -> Self:
+        """A factor on every connection's weight, rows as `connections()`."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement connection factors"
+        )
+
+    def set_delay_offsets(self, offsets) -> Self:
+        """An extra delay (ms) on every connection, rows as `connections()`."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement delay offsets"
+        )
 
     def serialize(self) -> dict:
         system = self.system
@@ -1272,6 +1330,10 @@ class Model(Protocol):
 
     def stimulus_bounds(self, input_mode: str) -> tuple[float, float] | None:
         return None
+
+    def parameter_groups(self) -> dict:
+        """`{prefix: apply(env, values)}` for model-specific `prefix-*` parameters."""
+        return {}
 
     def recordable_states(self) -> tuple[str, ...]:
         return ()

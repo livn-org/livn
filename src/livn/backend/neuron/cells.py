@@ -216,7 +216,13 @@ class MorphologyCell:
     """
 
     @classmethod
-    def from_template(cls, template, threshold: float, v_rest: float | None = None):
+    def from_template(
+        cls,
+        template,
+        threshold: float,
+        v_rest: float | None = None,
+        spike_section=None,
+    ):
         def collect(*attrs) -> list:
             out: list = []
             for attr in attrs:
@@ -232,11 +238,14 @@ class MorphologyCell:
             SWC_AXON: collect("axon_list", "hillock_list", "ais_list"),
         }
         swc_sections = {k: v for k, v in swc_sections.items() if v}
-        return cls(template, threshold, v_rest, swc_sections)
+        return cls(
+            template, threshold, v_rest, swc_sections, spike_section=spike_section
+        )
 
-    def __init__(self, template, threshold, v_rest, swc_sections):
+    def __init__(self, template, threshold, v_rest, swc_sections, spike_section=None):
         self._template = template
         self.threshold = float(threshold)
+        self._spike_section = spike_section
         self._v_rest = v_rest
         self.sections = list(template.sections)
 

@@ -10,6 +10,12 @@ from typing import TYPE_CHECKING, Self
 
 import numpy as np
 
+from livn.backend._primitives import (
+    checked,
+    connection_table,
+    noise_scale_state,
+    scaled_noise,
+)
 from livn.backend.neuron import mechanisms
 from livn.backend.neuron.cells import CellBuilder, CellHandle
 from livn.backend.neuron.synapses import SynapseBuilder
@@ -1536,7 +1542,10 @@ class Env(EnvProtocol):
     def _connection_scales(self) -> np.ndarray:
         scales = getattr(self, "_wscale", None)
         if scales is None or len(scales) != self.conn.size:
-            return np.ones(self.conn.size, dtype=np.float64)
+            scales = np.ones(self.conn.size, dtype=np.float64)
+        factor = getattr(self, "_conn_factor", None)
+        if factor is not None and len(factor) == self.conn.size:
+            scales = scales * factor
         return scales
 
     def get_weights(self) -> dict:
@@ -1669,9 +1678,79 @@ class Env(EnvProtocol):
                         )
                         self._flucts[key] = (fluct, state)
                     self.model.neuron_noise_configure(
-                        population, fluct, state, **merged[population]
+                        population,
+                        fluct,
+                        state,
+                        **self._cell_noise(population, gid, merged[population]),
                     )
                     self._h.pop_section()
+        return self
+
+    def _cell_noise(self, population, gid, params: dict) -> dict:
+        """`params`, with this cell's `set_noise_scale` factor on the scaled keys."""
+        return scaled_noise(self, gid, params)
+
+    def connections(self) -> dict[str, np.ndarray]:
+        return connection_table(self)
+
+    def set_holding_current(self, currents) -> Self:
+        wanted = {int(g): float(a) for g, a in dict(currents).items()}
+        clamps = getattr(self, "_holding_clamps", None)
+        if clamps is None:
+            clamps = self._holding_clamps = {}
+        for cells in self.cells.values():
+            for gid, cell in cells.items():
+                gid = int(gid)
+                amp = wanted.get(gid, 0.0)
+                if amp != 0.0 and gid not in clamps:
+                    template = getattr(cell, "_template", None)
+                    soma = getattr(template, "soma", None) or cell._soma
+                    ic = self._h.IClamp(soma(0.5))
+                    ic.delay, ic.dur = 0.0, 1e9
+                    clamps[gid] = ic
+                if gid in clamps:
+                    clamps[gid].amp = amp
+        return self
+
+    def set_noise_scale(self, scales, keys: tuple[str, ...] = ()) -> Self:
+        self._noise_scale = noise_scale_state(scales, keys)
+        if hasattr(self.model, "neuron_noise_mechanism") and self._flucts:
+            self.set_noise({})
+        return self
+
+    def set_connection_factors(self, factors) -> Self:
+        if self.conn is None or not self.conn.size:
+            return self
+        factor = checked(factors, self.conn.size, "factors")
+        old = getattr(self, "_conn_factor", None)
+        if old is None or len(old) != self.conn.size:
+            old = np.ones(self.conn.size)
+        ratio = factor / old
+        done = set()
+        for i in np.flatnonzero(ratio != 1.0):
+            self.conn.weight[i] = self.conn.weight[i] * ratio[i]
+            index = int(i if self.conn.nc_row is None else self.conn.nc_row[i])
+            slot = int(self.conn.wslot[i])
+            if (index, slot) in done:
+                continue
+            done.add((index, slot))
+            nc = self.conn.netcon(int(i))
+            nc.weight[slot] = nc.weight[slot] * float(ratio[i])
+        self._conn_factor = factor
+        return self
+
+    def set_delay_offsets(self, offsets) -> Self:
+        if self.conn is None or not self.conn.size:
+            return self
+        offset = checked(offsets, self.conn.size, "offsets")
+        base = getattr(self, "_base_delay", None)
+        if base is None:
+            base = self._base_delay = np.array(self.conn.delay, dtype=np.float64)
+        self.conn.delay[:] = (base + offset).astype(self.conn.delay.dtype)
+        floor = 2.0 * self._delay_floor_dt
+        for index, row in zip(*(a.tolist() for a in self.conn.netcons()), strict=True):
+            d = float(self.conn.delay[row])
+            self.conn.store.get(index).delay = d if d > floor else floor
         return self
 
     def _noise_by_population(self, state: dict) -> dict[str, dict]:
