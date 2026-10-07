@@ -304,16 +304,7 @@ class ReducedCalciumSomaDendrite(Model):
         neuron_coordinates: types.Float[types.Array, "n_coords ixyz=4"],
         population: str | None = None,
     ) -> types.Float[types.Array, "n_stim_coords ixyz=4"]:
-        coordinates = neuron_coordinates
-        xp = np if is_traced(coordinates) else _onp
-        n = coordinates.shape[0]
-        rows = self.stimulus_coordinates(coordinates, population=population)
-        width = len(rows) // max(n, 1)
-        keep = min(2, width)
-        rows = rows.reshape(n, width, 4)[:, :keep]
-        if keep < 2:
-            rows = xp.concatenate([rows, rows[:, -1:]], axis=1)
-        return rows.reshape(n * 2, 4)
+        return self.stimulus_coordinates(neuron_coordinates, population=population)
 
     def expand_stimulus_currents(
         self,

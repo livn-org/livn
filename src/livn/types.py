@@ -1227,10 +1227,25 @@ class Env(Protocol):
         import numpy as _np
 
         coordinates = self.recording_coordinates()
-        if gids is not None:
-            gids = _np.asarray(gids).ravel()
-            if len(gids) != len(coordinates):
-                coordinates = self._at_gids(coordinates, gids)
+        if gids is None:
+            return self.io.distances(coordinates)
+        coordinates = _np.asarray(coordinates)
+        gids = _np.asarray(gids).ravel().astype(_np.int64)
+        owners = coordinates[:, 0].astype(_np.int64)
+        if len(gids) != len(coordinates) or not _np.array_equal(gids, owners):
+            sections: dict[int, list[int]] = {}
+            for row, gid in enumerate(owners):
+                sections.setdefault(int(gid), []).append(row)
+            taken: dict[int, int] = {}
+            picked = []
+            for gid in gids:
+                own = sections.get(int(gid))
+                if not own:
+                    raise ValueError(f"no recording coordinate for gid {int(gid)}")
+                k = taken.get(int(gid), 0)
+                picked.append(own[min(k, len(own) - 1)])
+                taken[int(gid)] = k + 1
+            coordinates = coordinates[_np.asarray(picked, dtype=_np.int64)]
         return self.io.distances(coordinates)
 
     def source_gain(
