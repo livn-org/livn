@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+from typing import ClassVar
 
 import numpy as _onp
 
@@ -141,6 +142,39 @@ class ReducedCalciumSomaDendrite(Model):
         sigma = math.sqrt(math.log1p(cv * cv))
         return _np.exp(sigma * ndtri(unit) - 0.5 * sigma * sigma)
 
+    LEADER_SEED = 20260929
+
+    def leader_units(self, gids):
+        import numpy as _np
+
+        u = P.stable_hash(
+            _np.asarray(gids, dtype=_np.int64), self.weight_seed + self.LEADER_SEED
+        )
+        return u.astype(_np.float64) / float(1 << 64)
+
+    def delay_jitter(self, pre_gid, post_gid, syn_id, sd: float):
+        import numpy as _np
+
+        n = len(pre_gid)
+        if sd <= 0.0 or n == 0:
+            return _np.zeros(n, dtype=_np.float64)
+        u64 = _np.uint64
+        seed = self.weight_seed + self.LEADER_SEED + 7
+        with _np.errstate(over="ignore"):
+            key = (
+                P.stable_hash(_np.asarray(pre_gid, dtype=_np.int64), seed)
+                ^ (
+                    P.stable_hash(_np.asarray(post_gid, dtype=_np.int64), seed + 1)
+                    * u64(3)
+                )
+                ^ (
+                    P.stable_hash(_np.asarray(syn_id, dtype=_np.int64), seed + 2)
+                    * u64(5)
+                )
+            )
+        unit = P.stable_hash(key, seed + 3).astype(_np.float64) / float(1 << 64)
+        return unit * float(sd) * math.sqrt(12.0)
+
     def _exc_params_name(self) -> str:
         return "BoothRinzelKiehn-MN-Miles2004"
 
@@ -170,6 +204,11 @@ class ReducedCalciumSomaDendrite(Model):
                 stimulus.units,
             )
         return stimulus
+
+    def parameter_groups(self) -> dict:
+        from livn.models.rcsd import leaders
+
+        return {"leaders": leaders.apply}
 
     def stimulus_bounds(self, input_mode: str) -> tuple[float, float] | None:
         if input_mode == "extracellular":
@@ -526,6 +565,146 @@ class ReducedCalciumSomaDendrite(Model):
         _cls, name = types[population]
         params = self.params(name)
         return float(params.get("Ltotal") or params["global_diam"])
+
+    EXTRACELLULAR_PROFILE: ClassVar[dict] = {
+        "distance_um": (
+            0.0,
+            2.5,
+            5.0,
+            7.5,
+            10.0,
+            12.5,
+            15.0,
+            17.5,
+            20.0,
+            22.5,
+            25.0,
+            27.5,
+            30.0,
+            32.5,
+            35.0,
+            37.5,
+            40.0,
+            42.5,
+            45.0,
+            47.5,
+            50.0,
+            52.5,
+            55.0,
+            57.5,
+            60.0,
+            62.5,
+            65.0,
+            67.5,
+            70.0,
+            72.5,
+            75.0,
+            77.5,
+            80.0,
+            82.5,
+            85.0,
+            87.5,
+            90.0,
+            92.5,
+            95.0,
+            97.5,
+            100.0,
+            102.5,
+            105.0,
+            107.5,
+            110.0,
+            112.5,
+            115.0,
+            117.5,
+            120.0,
+            122.5,
+            125.0,
+            127.5,
+            130.0,
+            132.5,
+            135.0,
+            137.5,
+            140.0,
+            142.5,
+            145.0,
+            147.5,
+            150.0,
+        ),
+        "trough_uv": (
+            105.4806,
+            104.6938,
+            100.6306,
+            90.2717,
+            77.4668,
+            66.9607,
+            58.2032,
+            49.5911,
+            41.7365,
+            35.3228,
+            30.23,
+            26.175,
+            22.987,
+            20.4965,
+            18.7283,
+            17.6295,
+            16.9636,
+            16.5519,
+            16.06,
+            15.2575,
+            14.3559,
+            13.593,
+            13.0263,
+            12.6491,
+            12.434,
+            12.3448,
+            12.2437,
+            11.9235,
+            11.43,
+            10.938,
+            10.416,
+            9.7817,
+            9.1249,
+            8.5384,
+            8.0388,
+            7.6175,
+            7.2628,
+            6.9666,
+            6.7232,
+            6.5299,
+            6.3809,
+            6.2586,
+            6.1019,
+            5.8455,
+            5.5514,
+            5.2814,
+            5.0456,
+            4.842,
+            4.6673,
+            4.5189,
+            4.3968,
+            4.3005,
+            4.23,
+            4.1761,
+            4.0877,
+            3.9108,
+            3.6984,
+            3.5011,
+            3.3257,
+            3.1689,
+            3.0272,
+        ),
+    }
+    EXTRACELLULAR_AMPLITUDE: ClassVar[dict] = {"EXC": 1.0, "INH": 0.1501821543146104}
+
+    def extracellular_profile(self) -> dict:
+        return {k: list(v) for k, v in self.EXTRACELLULAR_PROFILE.items()}
+
+    def extracellular_amplitude(self, population: str | None = None) -> float:
+        if population is None:
+            return 1.0
+        if population in self.EXTRACELLULAR_AMPLITUDE:
+            return float(self.EXTRACELLULAR_AMPLITUDE[population])
+        return self.recording_amplitude(population)
 
     def recording_amplitude(self, population: str | None = None) -> float:
         """Extent relative to the largest population's."""

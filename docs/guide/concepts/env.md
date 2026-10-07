@@ -331,6 +331,35 @@ A model only exposes what it holds as an array field of shape `[n_cells, ...]`. 
 
 Under MPI the cells are distributed over the ranks. Indexing the registry reaches only the rank's own cells (`env.cells.local_gids`), while `gids` and `get_params()` cover all of them and are collective. Every rank has to reach them. An array passed to `set_params()` is in global gid order, and each rank picks out the entries for the cells it owns.
 
+### Per-cell and per-connection primitives
+
+Some changes act on individual cells or connections rather than on a projection or a population. The env offers them as primitives that hold until they are set again, compose with `set_weights()` / `set_noise()`, and give the network back at neutral values:
+
+```python
+table = env.connections()       # this rank's connections: pre_gid, post_gid, syn_id,
+                                # pre_population, post_population, receptor, strength
+
+env.set_connection_factors(f)   # one weight factor per row of `table`; kept by later weight sets
+env.set_delay_offsets(d)        # one extra delay (ms) per row of `table`
+env.set_holding_current({7: 0.01, 9: 0.01})            # nA into each named cell's soma
+env.set_noise_scale({3: 0.5}, keys=("g_e0", "std_e"))  # scale named cells' background
+```
+
+`strength` is a connection's fixed multiplier (its heterogeneity draw), not its weight, so selections built on it do not move with the projection weights.
+
+### Model parameter groups
+
+A model can bring parameters of its own to `set_params()` without the simulator knowing what they mean. `Model.parameter_groups()` maps a key prefix to a function that receives the group's values (merged over earlier calls) after weights, noise and cells are set, and builds on the primitives above; what it returns is kept as `env.group_state[prefix]`.
+
+The reduced motoneuron model uses this for its leaders mechanism (`livn.models.rcsd.leaders`) where a self-firing minority of excitatory cells, a quiet background for the rest, rescaled efferents and a transmission delay spread, all from `leaders-*` keys:
+
+```python
+env.set_params({"leaders-fraction": 0.05, "leaders-bias": 5.0, "leaders-delay_sd": 10.0})
+
+from livn.models.rcsd.leaders import chosen
+chosen(env)    # the leading gids
+```
+
 ## Seed
 
 The random seed controls noise generation and is set during construction:
