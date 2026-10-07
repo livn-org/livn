@@ -662,7 +662,7 @@ wheels = [
 [[package]]
 name = "dmosopt"
 version = "0.9.3"
-source = { git = "https://github.com/iraikov/dmosopt.git?rev=1de66e1#1de66e10dd2de93f3d1c29955ba5f41ed5d2e2db" }
+source = { git = "https://github.com/iraikov/dmosopt.git?rev=6b3b73d#6b3b73d0ee18e71dd67dabfe9077a0d6c6540a49" }
 dependencies = [
     { name = "distwq" },
     { name = "h5py" },
@@ -1480,9 +1480,11 @@ dev = [
     { name = "ruff" },
     { name = "ty" },
 ]
+neuroh5 = [
+    { name = "neuroh5" },
+]
 neuron = [
     { name = "mpi4py" },
-    { name = "neuroh5" },
     { name = "neuron" },
 ]
 
@@ -1519,9 +1521,9 @@ dev = [
     { name = "ruff", specifier = ">=0.11.5" },
     { name = "ty", specifier = "==0.0.74" },
 ]
+neuroh5 = [{ name = "neuroh5", git = "https://github.com/iraikov/neuroh5.git?rev=ae0c4b3" }]
 neuron = [
     { name = "mpi4py", specifier = ">=4.0.0" },
-    { name = "neuroh5", git = "https://github.com/iraikov/neuroh5.git?rev=ae0c4b3" },
     { name = "neuron", specifier = ">=9.0.0" },
 ]
 
@@ -3544,7 +3546,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "dmosopt", git = "https://github.com/iraikov/dmosopt.git?rev=1de66e1" },
+    { name = "dmosopt", git = "https://github.com/iraikov/dmosopt.git?rev=6b3b73d" },
     { name = "huggingface-hub", specifier = ">=0.3.1" },
     { name = "keras", specifier = "==3.13.0" },
     { name = "livn", editable = "." },

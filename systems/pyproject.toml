@@ -9,7 +9,7 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "dmosopt @ git+https://github.com/iraikov/dmosopt.git@1de66e1",
+    "dmosopt @ git+https://github.com/iraikov/dmosopt.git@6b3b73d",
     "machinable @ git+https://github.com/machinable-org/machinable.git@b399212",
     "sqlean-py>=3.47.0",
     "livn",
