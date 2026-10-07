@@ -52,13 +52,14 @@ else:
 
 _H5_BACKEND = "pyfive"  # default
 
+_NEUROH5_IMPORT_ERROR: str | None = None
 try:
     import neuroh5.io  # noqa: F401
     from mpi4py import MPI as _MPI  # noqa: F401
 
     _H5_BACKEND = "neuroh5"
-except ImportError:
-    pass
+except ImportError as error:
+    _NEUROH5_IMPORT_ERROR = str(error)
 
 _HSDS_CONFIG = None
 if os.environ.get("LIVN_HSDS"):
@@ -242,7 +243,51 @@ def _h5_read_graph(f, pre_start, post_start, pre, post, namespaces=None):
     return results
 
 
+PYFIVE_LIMIT_ENV = "LIVN_PYFIVE_MAX_GIB"
+PYFIVE_DEFAULT_LIMIT_GIB = 1.0
+
+
+def _pyfive_limit_bytes() -> float:
+    raw = os.environ.get(PYFIVE_LIMIT_ENV)
+    if raw is None:
+        return PYFIVE_DEFAULT_LIMIT_GIB * 1024**3
+    text = raw.strip().lower()
+    if text in ("", "0", "off", "no", "none", "inf", "unlimited"):
+        return float("inf")
+    try:
+        return float(text) * 1024**3
+    except ValueError:
+        logger.warning(
+            "%s=%r is not a number of GiB; using the %.3g GiB default",
+            PYFIVE_LIMIT_ENV,
+            raw,
+            PYFIVE_DEFAULT_LIMIT_GIB,
+        )
+        return PYFIVE_DEFAULT_LIMIT_GIB * 1024**3
+
+
 def _pyfive_open(filepath):
+    if _H5_BACKEND == "neuroh5":
+        return pyfive.File(filepath)
+
+    limit = _pyfive_limit_bytes()
+    if limit != float("inf"):
+        try:
+            size = os.path.getsize(filepath)
+        except OSError:
+            size = None  # not a local file; nothing to judge
+        if size is not None and size > limit:
+            why = (
+                f"neuroh5 is not importable here ({_NEUROH5_IMPORT_ERROR})"
+                if _NEUROH5_IMPORT_ERROR
+                else "neuroh5 was not selected"
+            )
+            raise RuntimeError(
+                f"refusing to read {filepath} ({size / 1024**3:.2f} GiB) with "
+                f"pyfive, which is a pure-Python reader. "
+                f"{why}. To read anyway, set "
+                f"{PYFIVE_LIMIT_ENV}=0 (or to a larger number of GiB)."
+            )
     return pyfive.File(filepath)
 
 
@@ -284,6 +329,20 @@ def _to_hsds_domain(filepath):
         if len(parts) >= 2:
             return "/" + "/".join(parts[-2:])
         return "/" + filepath.lstrip("/")
+
+
+@contextlib.contextmanager
+def _open_for_dataset_reads(filepath):
+    if _H5_BACKEND == "h5pyd" or os.environ.get("LIVN_HSDS"):
+        yield _open_h5(filepath)
+        return
+    try:
+        import h5py
+    except ImportError:  # pragma: no cover - h5py is a hard dependency
+        yield _open_h5(filepath)
+        return
+    with h5py.File(filepath, "r") as handle:
+        yield handle
 
 
 def _open_h5(filepath):
@@ -460,8 +519,6 @@ if _H5_BACKEND == "neuroh5":
 
         if comm is None:
             comm = MPI.COMM_WORLD
-
-        require_projection(_open_h5(filepath), filepath, pre, post)
 
         (graph, _a) = scatter_read_graph(
             filepath,
@@ -1283,15 +1340,17 @@ class NeuroH5System:
 
         import numpy as npn
 
-        f = _open_h5(self._graph.connections_filepath)
-        if pre not in stored_projections(f).get(post, ()):
-            self._destination_indices[key] = None
-            return None
-        group = f[f"Projections/{post}/{pre}/Edges"]
+        with _open_for_dataset_reads(self._graph.connections_filepath) as f:
+            if pre not in stored_projections(f).get(post, ()):
+                self._destination_indices[key] = None
+                return None
+            group = f[f"Projections/{post}/{pre}/Edges"]
 
-        starts = npn.asarray(group["Destination Block Index"][:]).astype(npn.int64)
-        block_ptr = npn.asarray(group["Destination Block Pointer"][:]).astype(npn.int64)
-        n_dst = int(group["Destination Pointer"].shape[0]) - 1
+            starts = npn.asarray(group["Destination Block Index"][:]).astype(npn.int64)
+            block_ptr = npn.asarray(group["Destination Block Pointer"][:]).astype(
+                npn.int64
+            )
+            n_dst = int(group["Destination Pointer"].shape[0]) - 1
 
         counts = npn.diff(block_ptr)
         within = npn.arange(int(counts.sum())) - npn.repeat(block_ptr[:-1], counts)
