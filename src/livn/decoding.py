@@ -637,6 +637,188 @@ class BurstAnatomy(Decoding):
         return P.broadcast(result, comm=comm)
 
 
+class RecruitmentOrder(Decoding):
+    """Position of units in a burst
+
+    - ``unit_participation``: median over units of the share of bursts with a
+      spike within `window_ms` of the peak.
+    - ``unit_between_rate_hz``: median rate further than `quiet_ms` from every
+      peak.
+    - ``order_spread_ms``: the SD across units of their reproducible typical
+      time.
+    - ``order_reliability``: Spearman of the even and odd centroids.
+    - ``unit_spikes_per_burst``: median over units of spikes per joined burst.
+    - ``unit_active_between_fraction``: share of units firing at least
+      `active_hz` between bursts
+    - ``between_time_rho``: Spearman, over units, of the rate between bursts
+      against the typical time in the burst.
+    """
+
+    bin_size: float = 10.0
+    mad_k: float = 5.0
+    floor_fraction: float = 0.05
+    min_floor: float = 3.0
+    merge_ms: float = 100.0
+    window_ms: float = 150.0
+    quiet_ms: float = 300.0
+    min_unit_spikes: int = 5
+    active_hz: float = 0.1
+
+    def burst_peaks(self, tt, n_units: int | None = None) -> np.ndarray:
+        """Burst peak times (ms) of merged spikes from `n_units` units."""
+        tt = np.sort(np.asarray(tt, dtype=np.float64))
+        n_bins = max(1, int(float(self.duration) // self.bin_size))
+        counts, _ = np.histogram(tt, bins=n_bins, range=(0.0, n_bins * self.bin_size))
+        return self._peaks(tt, counts, n_units)
+
+    def _peaks(self, tt, counts, n_units=None) -> np.ndarray:
+        if n_units is None:
+            n_units = 1
+        median = float(np.median(counts))
+        mad = float(np.median(np.abs(counts - median))) or 1.0
+        threshold = max(
+            median + self.mad_k * 1.4826 * mad,
+            self.floor_fraction * n_units,
+            self.min_floor,
+        )
+        hi = counts >= threshold
+        edges = np.diff(np.concatenate([[0], hi.astype(np.int8), [0]]))
+        starts, stops = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
+        spans: list[list[float]] = []
+        for a, b in zip(starts, stops, strict=True):
+            b0, b1 = a * self.bin_size, b * self.bin_size
+            if spans and b0 - spans[-1][1] < self.merge_ms:
+                spans[-1][1] = b1
+            else:
+                spans.append([b0, b1])
+        peaks = []
+        for b0, b1 in spans:
+            m = (tt >= b0 - 50.0) & (tt < b1 + 50.0)
+            lo = b0 - 50.0
+            prof, _ = np.histogram(
+                tt[m], bins=max(1, int((b1 - b0 + 100.0) // 5.0)), range=(lo, b1 + 50.0)
+            )
+            peaks.append(lo + 5.0 * (int(np.argmax(prof)) + 0.5))
+        return np.unique(np.asarray(peaks, dtype=np.float64))
+
+    def _decode(self, it, tt, n_units: int | None = None, peaks=None) -> dict:
+        it = np.asarray(it)
+        tt = np.asarray(tt, dtype=np.float64)
+        nan = float("nan")
+        out = {
+            "n_bursts": 0,
+            "unit_participation": nan,
+            "unit_between_rate_hz": nan,
+            "order_spread_ms": nan,
+            "order_reliability": nan,
+            "unit_spikes_per_burst": nan,
+            "unit_active_between_fraction": nan,
+            "between_time_rho": nan,
+        }
+        units = [np.sort(tt[it == u]) for u in np.unique(it)]
+        units = [s for s in units if len(s) >= self.min_unit_spikes]
+        if not units:
+            return out
+        if peaks is None:
+            n = len(units) if n_units is None else int(n_units)
+            n_bins = max(1, int(float(self.duration) // self.bin_size))
+            allt = np.sort(np.concatenate(units))
+            counts, _ = np.histogram(
+                allt, bins=n_bins, range=(0.0, n_bins * self.bin_size)
+            )
+            peaks = self._peaks(allt, counts, n)
+        else:
+            peaks = np.unique(np.asarray(peaks, dtype=np.float64))
+        out["n_bursts"] = len(peaks)
+        if len(peaks) == 0:
+            return out
+
+        duration = float(self.duration)
+        covered = (
+            (
+                np.minimum(peaks + self.quiet_ms, duration)
+                - np.maximum(peaks - self.quiet_ms, 0.0)
+            )
+            .clip(0)
+            .sum()
+        )
+        free_s = max(duration - covered, 0.0) / 1000.0
+        participation, between, per_burst = [], [], []
+        for s in units:
+            a = np.searchsorted(s, peaks - self.window_ms)
+            b = np.searchsorted(s, peaks + self.window_ms)
+            participation.append(float(np.mean(b > a)))
+            joined = (b - a)[b > a]
+            per_burst.append(float(joined.mean()) if joined.size else nan)
+            j = np.searchsorted(peaks, s)
+            near = np.zeros(len(s), bool)
+            for k in (j - 1, j):
+                ok = (k >= 0) & (k < len(peaks))
+                near[ok] |= np.abs(s[ok] - peaks[k[ok]]) < self.quiet_ms
+            between.append(float((~near).sum()) / free_s if free_s > 0 else nan)
+        out["unit_participation"] = float(np.median(participation))
+        out["unit_spikes_per_burst"] = float(np.nanmedian(per_burst))
+        if free_s > 0:
+            out["unit_between_rate_hz"] = float(np.nanmedian(between))
+            out["unit_active_between_fraction"] = float(
+                np.mean(np.asarray(between) >= self.active_hz)
+            )
+        if len(peaks) < 4:
+            return out
+
+        edges = np.arange(-self.window_ms, self.window_ms + 5.0, 5.0)
+        mids = 0.5 * (edges[1:] + edges[:-1])
+
+        def centroid(s, rate_hz, chosen):
+            a = np.searchsorted(s, chosen - self.window_ms)
+            b = np.searchsorted(s, chosen + self.window_ms)
+            rel = np.concatenate(
+                [s[x:y] - p for x, y, p in zip(a, b, chosen, strict=True)]
+            )
+            h = np.histogram(rel, edges)[0] - rate_hz * 0.005 * len(chosen)
+            h = h.clip(0)
+            return float((h * mids).sum() / h.sum()) if h.sum() >= 2 else nan
+
+        even, odd = peaks[0::2], peaks[1::2]
+        c1 = np.array(
+            [
+                centroid(s, 0.0 if np.isnan(r) else r, even)
+                for s, r in zip(units, between, strict=True)
+            ]
+        )
+        c2 = np.array(
+            [
+                centroid(s, 0.0 if np.isnan(r) else r, odd)
+                for s, r in zip(units, between, strict=True)
+            ]
+        )
+        ok = ~np.isnan(c1) & ~np.isnan(c2)
+        from scipy.stats import spearmanr
+
+        if ok.sum() >= 5:
+            cov = float(np.cov(c1[ok], c2[ok])[0, 1])
+            out["order_spread_ms"] = float(np.sqrt(max(cov, 0.0)))
+            out["order_reliability"] = float(spearmanr(c1[ok], c2[ok])[0])
+        if free_s > 0:
+            # all spikes, background included: when a unit fires around a burst
+            rate = np.asarray(between, dtype=float)
+            typical = np.array([centroid(s, 0.0, peaks) for s in units])
+            usable = ~np.isnan(typical) & ~np.isnan(rate)
+            if usable.sum() >= 5 and (rate[usable] >= self.active_hz).sum() >= 3:
+                out["between_time_rho"] = float(
+                    spearmanr(rate[usable], typical[usable])[0]
+                )
+        return out
+
+    def __call__(self, signal: Run, env=None):
+        comm = getattr(env, "comm", None)
+        merged_it, merged_tt = merged_spikes(signal, env)
+        result = None
+        if P.is_root(comm=comm):
+            result = self._decode(merged_it, merged_tt)
+        return P.broadcast(result, comm=comm)
+
+
 class PeakSynchrony(Decoding):
     """Peak fraction of active units co-firing in a single `bin_size` bin.
 
@@ -861,6 +1043,8 @@ class PopulationActiveFraction(Decoding):
 
         mean: dict[str, float] = {}
         std: dict[str, float] = {}
+        peak: dict[str, float] = {}
+        ratio: dict[str, float] = {}
         for i, p in enumerate(pops):
             count = int(cells[i])
             if count <= 0:
@@ -868,10 +1052,14 @@ class PopulationActiveFraction(Decoding):
             fraction = np.asarray(active[i], dtype=np.float64) / count
             mean[p] = float(fraction.mean())
             std[p] = float(fraction.std())
+            peak[p] = float(fraction.max())
+            ratio[p] = float(peak[p] / mean[p]) if mean[p] > 0 else 0.0
 
         return {
             "mean_active_fraction": mean,
             "std_active_fraction": std,
+            "peak_active_fraction": peak,
+            "participation_ratio": ratio,
             "bin_size": float(self.bin_size),
             "n_bins": int(n_bins),
         }
