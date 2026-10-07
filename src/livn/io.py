@@ -371,6 +371,13 @@ class MEA(IO):
         Smallest detectable signal, in the same relative units as the
         `amplitude` passed to `channel_recording`. Default is 0, which
         records every unit inside `output_radius`.
+    noise_uv, threshold_sigma, spike_profile
+        Physical detection, used instead of `detection_threshold` when
+        `noise_uv > 0` and a `spike_profile` is given.
+    dead_time_ms
+        A detector's refractory period per channel: spikes on one channel
+        closer than this to the previous kept one are dropped
+        (`apply_dead_time`). 0 keeps every spike.
 
     # Computed attributes
 
@@ -386,6 +393,10 @@ class MEA(IO):
         output_radius=250,
         volume_conductor=None,
         detection_threshold: float = 0.0,
+        noise_uv: float = 0.0,
+        threshold_sigma: float = 5.0,
+        dead_time_ms: float = 0.0,
+        spike_profile: Mapping | None = None,
     ):
         if electrode_coordinates is None:
             electrode_coordinates = self.default_electrode_coordinates()
@@ -393,6 +404,26 @@ class MEA(IO):
         self.input_radius = input_radius
         self.output_radius = output_radius
         self.detection_threshold = float(detection_threshold)
+        self.noise_uv = float(noise_uv)
+        self.threshold_sigma = float(threshold_sigma)
+        self.dead_time_ms = float(dead_time_ms)
+        self.spike_profile = None
+        if spike_profile is not None:
+            distance = _np.asarray(spike_profile["distance_um"], dtype=float)
+            trough = _np.asarray(spike_profile["trough_uv"], dtype=float)
+            if (
+                distance.ndim != 1
+                or distance.shape != trough.shape
+                or (_np.diff(distance) <= 0).any()
+            ):
+                raise ValueError(
+                    "spike_profile needs increasing `distance_um` and a `trough_uv` "
+                    "of the same length"
+                )
+            self.spike_profile = {
+                "distance_um": distance.tolist(),
+                "trough_uv": trough.tolist(),
+            }
         if volume_conductor is None:
             volume_conductor = PointSourceModel()
         elif isinstance(volume_conductor, dict):
@@ -420,14 +451,71 @@ class MEA(IO):
 
     def serialize(self) -> dict:
         return {
-            "electrode_coordinates": self.electrode_coordinates,
+            "electrode_coordinates": _np.asarray(self.electrode_coordinates).tolist(),
             "input_radius": self.input_radius,
             "output_radius": self.output_radius,
             "detection_threshold": self.detection_threshold,
+            "noise_uv": self.noise_uv,
+            "threshold_sigma": self.threshold_sigma,
+            "dead_time_ms": self.dead_time_ms,
+            "spike_profile": self.spike_profile,
             "volume_conductor": self.volume_conductor.serialize()
             if hasattr(self.volume_conductor, "serialize")
             else None,
         }
+
+    @property
+    def physical_detection(self) -> bool:
+        """Whether cells are detected against the channel noise (`noise_uv`)."""
+        return self.noise_uv > 0.0 and self.spike_profile is not None
+
+    def signal(
+        self,
+        cell_measurement: Float[Array, "n cip=3"],
+        amplitude: Mapping | Float[Array, " n_gids"] | None = None,
+    ) -> Float[Array, " n"]:
+        """Each measurement row's signal in uV for physical detection, else relative.
+
+        Relative: `amplitude * (1 - distance / output_radius)`. Physical:
+        `amplitude * spike_profile(distance)`.
+        """
+        rows = _np.asarray(cell_measurement)
+        if amplitude is None:
+            scale = _np.ones(rows.shape[0])
+        elif isinstance(amplitude, Mapping):
+            scale = _np.array([float(amplitude.get(int(g), 1.0)) for g in rows[:, 1]])
+        else:
+            values = _np.asarray(amplitude)
+            gids = rows[:, 1].astype(int)
+            scale = (
+                values[gids] if values.ndim else _np.full(rows.shape[0], float(values))
+            )
+        if self.physical_detection:
+            distance = rows[:, -1] * float(self.output_radius)
+            profile = self.spike_profile
+            trough = _np.interp(
+                distance,
+                profile["distance_um"],
+                profile["trough_uv"],
+                right=0.0,
+            )
+            return scale * trough
+        return scale * (1.0 - rows[:, -1])
+
+    def apply_dead_time(self, per_channel: Mapping) -> dict:
+        """Per-channel spike times with the detector's dead time applied."""
+        if self.dead_time_ms <= 0.0:
+            return dict(per_channel)
+        out = {}
+        for channel, times in per_channel.items():
+            times = _np.sort(_np.asarray(times, dtype=float))
+            kept, last = [], -_np.inf
+            for t in times:
+                if t - last >= self.dead_time_ms:
+                    kept.append(t)
+                    last = t
+            out[channel] = _np.asarray(kept, dtype=float)
+        return out
 
     def cell_stimulus(
         self,
@@ -508,23 +596,48 @@ class MEA(IO):
         cell_measurement: Float[Array, "n cip=3"],
         amplitude: Mapping | Float[Array, " n_gids"] | None = None,
     ) -> Float[Array, "n cip=3"]:
-        """The measurement rows whose signal reaches `detection_threshold`."""
+        """The measurement rows whose signal reaches the detection threshold.
+
+        `threshold_sigma * noise_uv` with physical detection, `detection_threshold`
+        otherwise.
+        """
+        if self.physical_detection:
+            rows = _np.asarray(cell_measurement)
+            limit = self.threshold_sigma * self.noise_uv
+            return rows[self.signal(rows, amplitude) >= limit]
         if self.detection_threshold <= 0.0 and amplitude is None:
             return cell_measurement
 
         rows = _np.asarray(cell_measurement)
-        reach = 1.0 - rows[:, -1]
-        if amplitude is None:
-            scale = _np.ones(rows.shape[0])
-        elif isinstance(amplitude, Mapping):
-            scale = _np.array([float(amplitude.get(int(g), 1.0)) for g in rows[:, 1]])
-        else:
-            values = _np.asarray(amplitude)
-            gids = rows[:, 1].astype(int)
-            scale = (
-                values[gids] if values.ndim else _np.full(rows.shape[0], float(values))
+        return rows[self.signal(rows, amplitude) >= self.detection_threshold]
+
+    def strongest_units(
+        self,
+        neuron_coordinates: Float[Array, "n_coords ixyz=4"],
+        amplitude: Mapping | Float[Array, " n_gids"] | None = None,
+    ) -> dict[int, int]:
+        """`{channel: gid}`: the detected cell with the largest signal on each electrode."""
+        rows = _np.asarray(
+            self.detected(
+                relative_distance(
+                    self.distances(neuron_coordinates),
+                    self.output_radius,
+                    filter_out_of_bounds=True,
+                ),
+                amplitude,
             )
-        return rows[(scale * reach) >= self.detection_threshold]
+        )
+        if rows.size == 0:
+            return {}
+        gids = rows[:, 1].astype(int)
+        signal = self.signal(rows, amplitude)
+        best: dict[int, tuple[float, int]] = {}
+        for channel, gid, value in zip(
+            rows[:, 0].astype(int), gids, signal, strict=True
+        ):
+            if channel not in best or value > best[channel][0]:
+                best[int(channel)] = (float(value), int(gid))
+        return {channel: gid for channel, (_v, gid) in sorted(best.items())}
 
     def source_gain(
         self,
