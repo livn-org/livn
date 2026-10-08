@@ -1,5 +1,6 @@
 import contextlib
 import hashlib
+import logging
 import os
 from collections.abc import Mapping
 from functools import partial
@@ -15,6 +16,8 @@ from pydantic import Field
 import livn
 from livn.parallel import finalize, partition
 from livn.utils import sentinel
+
+logger = logging.getLogger(__name__)
 
 # NEURON compatible rank order
 os.environ.setdefault("DISTWQ_CONTROLLER_RANK", "-1")
@@ -88,7 +91,10 @@ class Evaluation:
 
         if len(self.constraints) > 0:
             constraint_names = self._order("constraints", self.constraints)
-            constraints = [np.min(self.constraints[name]) for name in constraint_names]
+            constraints = [
+                float(np.quantile(self.constraints[name], 0.2))
+                for name in constraint_names
+            ]
 
             return {
                 0: (
@@ -138,6 +144,102 @@ def constraint_names(c):
 
 def feature_dtypes(c):
     return [(f, np.float32) for f in _declared(c)["features"]]
+
+
+def surrogate_training(
+    optimizer_cls,
+    Xinit,
+    Yinit,
+    C,
+    xlb,
+    xub,
+    file_path,
+    options,
+    #
+    target=None,
+    system=None,
+    #
+    objectives: bool = False,
+    constraints: bool = True,
+    sensitivity: bool = False,
+    #
+    feasibility_solving: bool = False,
+    feasibility_targets: str = "objective constraint",
+    feasibility_iterations: int = 1000,
+    feasibility_after: int = 10,
+    feasibility_liveness: tuple = (),
+    #
+    max_epochs: int = 500,
+    patience: int = 150,
+    **kwargs,
+):
+    from dmosopt.model_transformer import joint as dmosopt_joint
+
+    from systems.tune.surrogate import (
+        Projecting,
+        feasibility_transformer,
+        resolve_liveness,
+    )
+
+    declared = []
+    if target is not None and target != "???":
+        try:
+            declared = declared_names(_target_for(target, system))["constraints"]
+        except Exception as error:
+            logger.warning("could not read constraint names from the target: %s", error)
+
+    if feasibility_solving and not objectives:
+        logger.warning(
+            "feasibility_solving=True has no effect with objectives=False: the "
+            "projection only reaches dmosopt through the objective slot"
+        )
+
+    wrapper = None
+    if feasibility_solving and objectives:
+        seen = np.asarray(Xinit)
+
+        def wrapper(base_cls, fitted):
+            liveness = resolve_liveness(
+                feasibility_liveness, declared, int(fitted.num_constraints)
+            )
+            logger.info(
+                "feasibility projection on: targets %r, after %d generations, "
+                "liveness columns %s",
+                feasibility_targets,
+                feasibility_after,
+                list(liveness),
+            )
+
+            def build(*args, **kw):
+                return Projecting(
+                    base_cls(*args, **kw),
+                    fitted,
+                    seen,
+                    feasibility_targets,
+                    feasibility_iterations,
+                    feasibility_after,
+                    liveness,
+                )
+
+            return build
+
+    return dmosopt_joint(
+        optimizer_cls,
+        Xinit,
+        Yinit,
+        C,
+        xlb,
+        xub,
+        file_path,
+        options,
+        objectives=objectives,
+        constraints=constraints,
+        sensitivity=sensitivity,
+        model_cls=feasibility_transformer(patience=patience),
+        optimizer_wrapper=wrapper,
+        epochs=max_epochs,
+        **kwargs,
+    )
 
 
 def _build_env(target, system, model, comm, selection=None):
@@ -252,7 +354,7 @@ def obj_fun(x, worker, trials, local_directory=None):
     target = worker.target
 
     for _ in range(trials):
-        params = target.transform_params(x)
+        params = target.transform_params(x, model=getattr(worker.env, "model", None))
 
         env = worker.evaluate_on(x)
         env.set_params(params)
@@ -334,7 +436,7 @@ class Sopt(Dmosopt):
                 "resample_fraction": 1.0,
                 "surrogate_method_name": None,
                 "surrogate_method_kwargs": {},
-                "surrogate_custom_training": "dmosopt.model_transformer.joint",
+                "surrogate_custom_training": "interface.sopt.surrogate_training",
                 "surrogate_custom_training_kwargs": {},
                 "feasibility_method_name": None,
                 "feasibility_method_kwargs": {},
@@ -396,6 +498,11 @@ class Sopt(Dmosopt):
     def __call__(self) -> None:
         args = self.config.dopt_params.setdefault("obj_fun_init_args", {})
         args["local_directory"] = self.local_directory()
+        surrogate_kwargs = self.config.dopt_params.setdefault(
+            "surrogate_custom_training_kwargs", {}
+        )
+        surrogate_kwargs.setdefault("target", args.get("target"))
+        surrogate_kwargs.setdefault("system", self.config.system)
         return super().__call__()
 
     def evaluate_objective_at(self, x, verbose=False, **reduce_kwargs):
