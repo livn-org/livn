@@ -233,7 +233,7 @@ if _USES_JAX:
             return np.concatenate([gids, xyz_flat], axis=1)
 
         def coordinate_array(
-            self, population: str, all: bool = True
+            self, population: str
         ) -> types.Float[types.Array, "n_coords cxyz=4"]:
             pop_idx = self.populations.index(population)
             absolute_coords = (
@@ -249,15 +249,11 @@ if _USES_JAX:
             self,
             transform: Callable,
             populations: list[str] | None = None,
-            all: bool = True,
         ) -> types.Float[types.Array, "n_coords ixyz=4"]:
             if populations is None:
                 populations = self.populations
             return np.vstack(
-                [
-                    transform(self.coordinate_array(p, all=all), population=p)
-                    for p in populations
-                ]
+                [transform(self.coordinate_array(p), population=p) for p in populations]
             )
 
         @property

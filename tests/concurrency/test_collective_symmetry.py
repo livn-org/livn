@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 
 from livn.backend import backend
@@ -106,11 +107,14 @@ def test_the_tracer_sees_livn_s_own_collectives():
     from testing.collectives import tracer
 
     comm = MPI.COMM_WORLD
+    system = resolve(livn_test_h5_system())
+    populations = system.populations
+    assert populations
+
     tracer.watch(("livn",))
     tracer.start_test("sees-livn")
 
-    system = resolve(livn_test_h5_system())
-    assert system.populations
+    assert system.projection_array(populations[0], populations[0], all=True) is not None
 
     trace = tracer.finish_test()
     assert trace, "the tracer recorded nothing at all"
@@ -118,12 +122,8 @@ def test_the_tracer_sees_livn_s_own_collectives():
     everything = [record for records in trace.values() for record in records]
     operations = [record.op for record in everything]
 
-    assert "bcast" in operations, (
-        f"no broadcast was seen, only {sorted(set(operations))}"
-    )
-    assert "Split" in operations, (
-        "the metadata read splits a communicator before broadcasting, and that "
-        f"split is a collective too: {sorted(set(operations))}"
+    assert "allgather" in operations, (
+        f"no allgather was seen, only {sorted(set(operations))}"
     )
 
     from livn.system.neuroh5 import _H5_BACKEND
@@ -144,3 +144,43 @@ def test_the_tracer_sees_livn_s_own_collectives():
         assert set(members) <= set(range(comm.size)), (
             f"communicator key {members} names ranks outside this world of {comm.size}"
         )
+
+
+@pytest.mark.mpiexec(n=2, timeout=TIMEOUT, symmetry=False, isolated=True)
+def test_reading_coordinates_on_one_rank_is_not_a_collective():
+    from mpi4py import MPI
+
+    from livn.system import resolve
+    from testing.collectives import tracer, verify
+    from testing.env import livn_test_h5_system
+
+    path = livn_test_h5_system()
+    comm = MPI.COMM_WORLD
+
+    system = resolve(path, comm=comm)
+    comm.Barrier()
+
+    tracer.start_test("coordinates")
+    if comm.rank == 0:
+        coordinates = np.asarray(system.neuron_coordinates)
+        assert coordinates.shape[1] == 4
+        assert len(coordinates) > 0
+    assert verify("coordinates", tracer.finish_test(), arrival_timeout=TIMEOUT) is None
+
+
+@pytest.mark.mpiexec(n=2, timeout=TIMEOUT, symmetry=False, isolated=True)
+def test_every_rank_sees_the_whole_population():
+    from mpi4py import MPI
+
+    from livn.system import resolve
+    from testing.env import livn_test_h5_system
+
+    comm = MPI.COMM_WORLD
+    system = resolve(livn_test_h5_system(), comm=comm)
+
+    local = np.asarray(system.neuron_coordinates)
+    counts = comm.allgather(len(local))
+    assert len(set(counts)) == 1, f"ranks disagree on the cell count: {counts}"
+
+    digests = comm.allgather(local.tobytes())
+    assert len(set(digests)) == 1
