@@ -191,6 +191,34 @@ second.spike_times.max()   # < 100.0 - the times restart at zero every run
 second.t0                  # 100.0 on backends that track simulation time
 ```
 
+### Storing a run
+
+`livn.rsf` ("recording session format") offers a neutral format to `store(run, path, env)` and `load(path)` a run. It needs `zarr` 3 or later, which livn does not install for you (`pip install 'zarr>=3'`).
+
+To stay compatible with real recordings, a session must hold membrane currents from which the channel signal can be projected.
+
+```python
+from livn.rsf import load, store
+
+env.record_spikes()
+env.record_membrane_current()   # the channel signal is projected from these
+env.record_voltage()
+
+run = env.run(1000)
+store(run, "sessions/spontaneous-1", env, voltage=True, currents=True)
+
+session = load("sessions/spontaneous-1")
+session.run.potential      # the channel signal in uV, one row per electrode
+session.run.spike_times    # on the frame grid of the signal
+session.io                 # the MEA it was recorded through
+session.simulation["seed"] # meta data
+session.record             # and the provenance record
+```
+
+The directory is directly compatible with SpikeInterface via `spikeinterface.read_zarr("sessions/spontaneous-1/traces.zarr")`.
+
+Under MPI, gather first, e.g. `store(run.gather(env.comm), path, env)` writes on the root rank and does nothing on the others.
+
 ### Providing stimulus
 
 To stimulate the system, pass a [`Stimulus`](/guide/concepts/stimulus) object:
