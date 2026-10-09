@@ -176,7 +176,7 @@ def layout_report(plan: dict, config, stated_memory: bool) -> str:
         ),
         f"  evaluations   {plan['initial_evals']} in the first epoch "
         f"({plan['space']} dims x n_initial={plan['n_initial']}), then "
-        f"{plan['workers_wanted']} per epoch x {plan['n_epochs'] - 1} "
+        f"{plan['workers_wanted']} per epoch x {max(plan['n_epochs'] - 1, 0)} "
         f"= {plan['total_evals']} in all",
     ]
     if plan["nodes"] == 1:

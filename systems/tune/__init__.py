@@ -12,6 +12,7 @@ from machinable.errors import ConfigurationError, ExpansionError
 from machinable.interface import extract
 from pydantic import BaseModel, ConfigDict
 
+from livn.types import describe_io
 from livn.utils import P
 from systems.targets.protocol import Target
 from systems.tune.report import (
@@ -121,6 +122,7 @@ class Tune(Interface):
         nprocs_per_worker: int | None = ConfigField(None, identifying=False)
         population_size: int = 100
         num_generations: int = 10
+        resample_fraction: float = 1.0
 
         optimizer: Literal["nsga2", "age", "smpso", "cmaes", "trs"] = "nsga2"
 
@@ -142,7 +144,7 @@ class Tune(Interface):
                 | None
             ) = None
             method_kwargs: dict = {}
-            custom_training: str | None = "dmosopt.model_transformer.joint"
+            custom_training: str | None = "interface.sopt.surrogate_training"
             custom_training_kwargs: dict | None = {}
 
         surrogate: SurrogateConfig = SurrogateConfig()
@@ -186,17 +188,57 @@ class Tune(Interface):
             predicate.update(target.on_compute_predicate() or {})
         return predicate
 
-    def version_fit(self, observation: str, **options):
-        return {"target": ["targets.EI", {"observation": observation, **options}]}
+    def version_fit(self, observation: str, target: str = "targets.EI", **options):
+        return {
+            "target": [target, {"observation": observation, **options}],
+            "surrogate": {
+                "custom_training": "interface.sopt.surrogate_training",
+                "custom_training_kwargs": {
+                    "objectives": True,
+                    "constraints": False,
+                    "feasibility_solving": True,
+                    "feasibility_targets": "objective constraint",
+                    "feasibility_liveness": (
+                        "not_runaway",
+                        "not_quiescent",
+                        "is_stable",
+                    ),
+                },
+            },
+            "num_generations": 10,
+            "min_ranks_per_worker": 8,
+        }
 
-    def version_ca1(self, problem: str = "uniform", selection: str | None = None):
-        options = {"problem": problem}
+    def version_ca1(
+        self,
+        problem: str = "uniform",
+        selection: str | None = None,
+        save_spikes: bool | str = "all",
+        sensitivity: bool = True,
+        sensitivity_samples: int = 1000,
+    ):
+        options = {"problem": problem, "save_spikes": save_spikes}
         if selection is not None:
             options["selection"] = selection
         return {
             "system": "./systems/graphs/CA1",
             "model": "livn.models.ca1.PinskyRinzel",
             "target": ["targets.CA1", options],
+            "surrogate": {
+                "custom_training_kwargs": {
+                    "objectives": True,
+                    "constraints": False,
+                    "feasibility_solving": True,
+                    "feasibility_targets": "objective constraint",
+                    "feasibility_liveness": (
+                        "NGFC synchrony bound",
+                        "AAC synchrony bound",
+                        "IVY synchrony bound",
+                    ),
+                    "sensitivity": sensitivity,
+                    "sensitivity_samples": sensitivity_samples,
+                },
+            },
         }
 
     def version_cell(self, config: str):
@@ -238,18 +280,24 @@ class Tune(Interface):
             if not SingleCellOptConfig.from_yaml(path).Retired
         ]
 
-    OBSERVATIONS = (
-        "./systems/targets/miv/processed/targets",
-        "./systems/targets/miv/processed/recording-sep-2026/targets",
-    )
-
     @staticmethod
-    def axis_cultures(directory: str | None = None, per_arm: int | None = None):
+    def axis_cultures(
+        directory: str | None = None,
+        per_condition: int | None = None,
+        prefer: list[str] | None = None,
+    ):
         from glob import glob
 
-        from systems.targets.observation import composition_of
+        from systems.targets.EI.base import composition_of
 
-        directories = [directory] if directory else list(Tune.OBSERVATIONS)
+        directories = (
+            [directory]
+            if directory
+            else [
+                "./systems/targets/miv/processed/targets",
+                "./systems/targets/miv/processed/recording-sep-2026/targets",
+            ]
+        )
         arms: dict[str, list[str]] = {}
         for path in sorted(
             p for d in directories for p in glob(os.path.join(d, "*.json"))
@@ -262,15 +310,31 @@ class Tune(Interface):
             arms.setdefault(composition_of(document) or "unstated", []).append(path)
 
         if not arms:
-            raise FileNotFoundError(
-                f"no target documents in {directories}; name the directory "
-                "the observations were extracted to"
-            )
+            raise FileNotFoundError(f"no target documents in {directories}")
+
+        if prefer:
+            wanted = [name.removesuffix(".json") + ".json" for name in prefer]
+            known = {os.path.basename(p) for paths in arms.values() for p in paths}
+            if missing := [name for name in wanted if name not in known]:
+                raise FileNotFoundError(
+                    f"preferred observations {missing} not in {directories}"
+                )
+            for arm, paths in arms.items():
+                arms[arm] = sorted(
+                    paths,
+                    key=lambda p: (
+                        wanted.index(os.path.basename(p))
+                        if os.path.basename(p) in wanted
+                        else len(wanted)
+                    ),
+                )
 
         return [
-            {"target": ["targets.EI", {"observation": path}]}
+            {"target": ["targets.EI.base", {"observation": path}]}
             for arm in sorted(arms)
-            for path in (arms[arm] if per_arm is None else arms[arm][:per_arm])
+            for path in (
+                arms[arm] if per_condition is None else arms[arm][:per_condition]
+            )
         ]
 
     def _sopt_config(self, target, model, layout: dict | None = None) -> dict:
@@ -293,6 +357,7 @@ class Tune(Interface):
                 "n_epochs": _or_default(self.config.n_epochs, sizing.n_epochs),
                 "n_initial": _or_default(self.config.n_initial, sizing.n_initial),
                 "population_size": self.config.population_size,
+                "resample_fraction": self.config.resample_fraction,
                 "num_generations": self.config.num_generations,
                 **surrogate_config,
             },
@@ -667,10 +732,11 @@ class Tune(Interface):
                 "force=True to rebind it"
             )
 
+        io = target.io() if callable(getattr(target, "io", None)) else None
         document = {
             "system": _described(spec, system),
             "model": _described(meta.get("model") or self.model_ref()),
-            "io": None,
+            "io": None if io is None else describe_io(system, io),
             "selection": selection or None,
             "params": {k: float(v) for k, v in decoded.items()},
             "meta": meta,
@@ -693,6 +759,7 @@ class Tune(Interface):
         params=None,
         raster: bool = False,
         directory: str | None = None,
+        per_rank: bool = False,
     ):
         """Re-evaluate one front point on `seeds` noise streams and read its bursts.
 
@@ -712,6 +779,9 @@ class Tune(Interface):
             raster: Also draw `systems.plots.BurstRaster` for every repeat.
             directory: Where to write; beside the front document, or the
                 run's own storage, otherwise.
+            per_rank: also writes each rank's own `selected_gids`, which the
+                merge unions into the selection. Write one `...-rank<N>.npz`
+                per rank instead of gathering onto the root.
         """
         self._one_of("check")
 
@@ -737,19 +807,29 @@ class Tune(Interface):
             )
         comm = P.comm()
         root = P.is_root(comm=comm)
-        if root:
+        if root or per_rank:
             os.makedirs(directory, exist_ok=True)
 
-        env = livn.make(
-            {
-                "system": picked["spec"],
-                "model": model,
-                "io": target.io() if hasattr(target, "io") else None,
-                "selection": picked["selection"] or None,
-            },
-            comm=comm,
-        )
-        env = target.init(env)
+        selection = picked["selection"] or None
+        if hasattr(target, "build_env"):
+            if selection is not None:
+                raise ValueError(
+                    f"{type(target).__name__} builds its own env, so it owns "
+                    "which cells exist; this front states a selection "
+                    f"({selection!r}) that cannot be applied on top of it"
+                )
+            env = target.build_env(picked["spec"], model, comm=comm)
+        else:
+            env = livn.make(
+                {
+                    "system": picked["spec"],
+                    "model": model,
+                    "io": target.io() if hasattr(target, "io") else None,
+                    "selection": selection,
+                },
+                comm=comm,
+            )
+            env = target.init(env)
 
         rows = []
         try:
@@ -762,26 +842,67 @@ class Tune(Interface):
                 rows.append(dict(target.metrics))
 
                 data = target.response_data
-                gathered = None if data is None else data.gather(comm=comm, root=0)
+                if per_rank:
+                    gathered = data
+                else:
+                    gathered = None if data is None else data.gather(comm=comm, root=0)
+
                 if root:
+                    simulated = getattr(target, "simulated_ms", None) or (
+                        float(target.warmup_duration) + float(target.recording_duration)
+                    )
                     print(
-                        f"  stream {stream}: {target.simulated_ms:.0f} ms in "
+                        f"  stream {stream}: {simulated:.0f} ms in "
                         f"{time.time() - started:.0f} s",
                         flush=True,
                     )
-                    path = os.path.join(directory, f"loc{loc}-stream{stream}.npz")
+
+                try:
+                    local_gids = np.asarray(env.simulated_gids(), dtype=np.int64)
+                except Exception as _ex:
+                    if root:
+                        print(f"  (no selected_gids: {_ex})", flush=True)
+                    local_gids = np.zeros(0, dtype=np.int64)
+                if per_rank:
+                    selected = local_gids
+                else:
+                    parts = P.gather(local_gids, comm=comm, root=0)
+                    selected = np.unique(np.concatenate(parts)) if root else local_gids
+
+                if gathered is not None and (root or per_rank):
+                    part = f"-rank{P.rank(comm=comm)}" if per_rank else ""
+                    path = os.path.join(directory, f"loc{loc}-stream{stream}{part}.npz")
+                    arrays = {
+                        "spike_ids": np.asarray(gathered.spike_ids, dtype=np.int64),
+                        "spike_times": np.asarray(
+                            gathered.spike_times, dtype=np.float64
+                        ),
+                    }
+                    arrays["selected_gids"] = selected
+                    if root:
+                        arrays["coordinates"] = np.asarray(
+                            env.system.neuron_coordinates
+                        )
                     np.savez_compressed(
                         path,
-                        spike_ids=np.asarray(gathered.spike_ids, dtype=np.int64),
-                        spike_times=np.asarray(gathered.spike_times, dtype=np.float64),
-                        coordinates=np.asarray(env.system.neuron_coordinates),
+                        **arrays,
                         meta=json.dumps(
                             {
                                 "loc": loc,
                                 "stream": stream,
+                                "rank": P.rank(comm=comm) if per_rank else None,
+                                "ranks": P.size(comm=comm) if per_rank else None,
+                                "n_selected": int(selected.size),
                                 "system": str(picked["spec"]),
                                 "warmup_ms": float(target.warmup_duration),
                                 "duration_ms": float(target.recording_duration),
+                                "populations": {
+                                    str(name): [int(start), int(count)]
+                                    for name, (start, count) in (
+                                        getattr(env.system, "population_ranges", None)
+                                        or {}
+                                    ).items()
+                                },
                                 "parameters": {k: float(v) for k, v in decoded.items()},
                                 "metrics": {
                                     k: float(v)
@@ -791,7 +912,7 @@ class Tune(Interface):
                             }
                         ),
                     )
-                    if raster:
+                    if raster and not per_rank:
                         from systems.plots import BurstRaster
 
                         BurstRaster(
@@ -809,11 +930,14 @@ class Tune(Interface):
         if not root:
             return None
 
-        bands = target.bands()
-        print(f"\nloc={loc} over {len(rows)} noise streams, against the culture:\n")
-        table = anatomy_table(rows, target.targets(), bands)
-        print(table)
         print(f"\nwrote {len(rows)} repeats to {directory}")
+        try:
+            table = anatomy_table(rows, target.targets(), target.bands())
+        except Exception as _ex:
+            print(f"\nno anatomy table for {type(target).__name__}: {_ex}.")
+            return None
+        print(f"\nloc={loc} over {len(rows)} noise streams:\n")
+        print(table)
         return table
 
     def _recorded_space(self) -> list[str] | None:
