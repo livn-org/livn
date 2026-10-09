@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import os
+from typing import Literal
 
 import numpy as np
 from pydantic import ConfigDict, field_validator
@@ -27,9 +29,12 @@ SOURCES = {
     "mean_fraction_active_per_bin": "density",
     "std_fraction_active_per_bin": "density",
     "rate_cv": "density",
+    "block_fraction": "block",
     "rate_hz": "rates",
     "mean_active_fraction": "active_fraction",
     "std_active_fraction": "active_fraction",
+    "peak_active_fraction": "active_fraction",
+    "participation_ratio": "active_fraction",
     "tail_rate_hz": "tail_rates",
 }
 
@@ -38,6 +43,12 @@ OBJECTIVES = {
     "target_population_rate": (
         "mean_rate_population",
         lambda x, target: (x - target) ** 2,
+    ),
+    "log_population_rate": (
+        "mean_rate_population",
+        lambda x, target, eps=1e-3: float(
+            np.log((max(x, 0.0) + eps) / (target + eps)) ** 2
+        ),
     ),
     "target_fraction_active": ("fraction_active", lambda x, target: (x - target) ** 2),
     "target_mean_fraction_active": (
@@ -56,6 +67,40 @@ OBJECTIVES = {
         ),
     ),
 }
+
+
+def depolarization_block_ms(
+    voltage,
+    spike_times,
+    dt: float,
+    threshold: float = -45.0,
+    min_ms: float = 15.0,
+) -> float:
+    import numpy as _np
+
+    v = _np.asarray(voltage, dtype=float)
+    if v.size == 0:
+        return 0.0
+    end = v.size * dt
+    marks = _np.asarray(sorted(float(t) for t in spike_times), dtype=float)
+    edges = _np.concatenate(([0.0], marks, [end]))
+    total = 0.0
+    for a, b in itertools.pairwise(edges):
+        i0, i1 = int(a / dt), min(int(b / dt), v.size)
+        if (i1 - i0) * dt < min_ms:
+            continue
+        hot = v[i0:i1] > threshold
+        if not hot.any():
+            continue
+        # longest contiguous True run, via the edges of the mask
+        pad = _np.concatenate(([False], hot, [False]))
+        starts = _np.flatnonzero(~pad[:-1] & pad[1:])
+        stops = _np.flatnonzero(pad[:-1] & ~pad[1:])
+        runs = (stops - starts) * dt
+        longest = float(runs.max()) if runs.size else 0.0
+        if longest >= min_ms:
+            total += longest
+    return total
 
 
 def signed_band(x: float, min: float, max: float, normalize: bool = True) -> float:
@@ -117,6 +162,12 @@ CONSTRAINTS = {
         "mean_active_fraction",
         lambda x, target, tolerance: tolerance - abs(x - target),
     ),
+    "depolarization_block": ("block_fraction", lambda x, max: max - x),
+    "synchrony_bound": (
+        "participation_ratio",
+        lambda x, max: max - x,
+        "mean_active_fraction",
+    ),
     "tail_rate_bound": (
         "tail_rate_hz",
         lambda x, max: 1.0 if x <= max else -1.0 - (x - max) / 10.0,
@@ -143,6 +194,7 @@ FACTOR_BANDS = {
     },
     "rate_hz": lambda reference, k: {"min": reference / k, "max": reference * k},
     "rate_cv": lambda reference, k: {"max": reference * k},
+    "participation_ratio": lambda reference, k: {"max": reference * k},
 }
 
 TARGET_BASIS = {
@@ -253,7 +305,7 @@ class CA1(Target):
     class Config(Target.Config):
         model_config = ConfigDict(extra="forbid")
 
-        sizing: Sizing = Sizing(n_initial=2, n_epochs=5)
+        sizing: Sizing = Sizing(n_initial=3, n_epochs=5)
 
         document: str = "./systems/graphs/CA1/tuning.json"
         _normalise = field_validator("document")(
@@ -263,11 +315,26 @@ class CA1(Target):
         size: int | float | dict[str, int | float] | None = None
         selection: str | None = None
 
+        save_spikes: bool | Literal["all", "feasible"] = False
+        block_cells: int = 20
+        block_dt: float = 0.1
+        block_threshold: float = -45.0
+        block_min_ms: float = 15.0
+
     def version_problem(self, name: str):
         return {"problem": name}
 
     def _configure(self):
         config = self.settings
+        self.save_spikes = config.get("save_spikes", False)
+        if self.save_spikes is True:
+            self.save_spikes = "all"
+        self.block_cells = int(config.get("block_cells", 20))
+        self.block_dt = float(config.get("block_dt", 0.1))
+        self.block_threshold = float(config.get("block_threshold", -45.0))
+        self.block_min_ms = float(config.get("block_min_ms", 15.0))
+        self._selected: dict | None = None
+        self._block_sample: dict = {}
         problem = config["problem"]
         selection = config["selection"]
         size = config["size"]
@@ -627,11 +694,13 @@ class CA1(Target):
         from livn.env import Env
 
         env = Env(system, model=model, comm=comm)
-        env.selection(
+        selected = (
             self.selection_name
             if self.selection_name is not None
             else self.selection(env.system, comm=comm)
         )
+        self._selected = selected if isinstance(selected, dict) else None
+        env.selection(selected)
         self.durations(env.system, comm=comm)
         env.init()
         if self.v_init is not None:
@@ -656,12 +725,67 @@ class CA1(Target):
 
     def __call__(self, env, params=None, directory=None):
         self.record(env)
-        return self.compute_objectives(env), self.compute_constraints(env)
+        objectives = self.compute_objectives(env)
+        constraints = self.compute_constraints(env)
+        self._save_spikes(env, params, directory, objectives, constraints)
+        return objectives, constraints
+
+    def _save_spikes(self, env, params, directory, objectives, constraints) -> None:
+        if not self.save_spikes or directory is None or params is None:
+            return
+        if self.save_spikes == "feasible" and any(
+            v[0] <= 0 for v in constraints.values()
+        ):
+            return
+        data = self.response_data
+        if data is None:
+            return
+
+        import hashlib
+
+        comm = getattr(env, "comm", None)
+        gathered = data.gather(comm=comm, root=0)
+        mine = np.asarray(env.simulated_gids(), dtype=np.int64)
+        parts = P.gather(mine, comm=comm, root=0)
+        if not P.is_root(comm=comm):
+            return
+
+        selected = np.unique(np.concatenate([np.asarray(p) for p in parts]))
+        out = os.path.join(directory, "spikes")
+        os.makedirs(out, exist_ok=True)
+        key = hashlib.md5(
+            json.dumps({k: float(v) for k, v in sorted(params.items())}).encode()
+        ).hexdigest()[:16]
+        ranges = getattr(getattr(env, "system", None), "population_ranges", None) or {}
+        np.savez_compressed(
+            os.path.join(out, f"spikes-{key}.npz"),
+            spike_ids=np.asarray(gathered.spike_ids, dtype=np.int64),
+            spike_times=np.asarray(gathered.spike_times, dtype=np.float64),
+            selected_gids=selected,
+            meta=json.dumps(
+                {
+                    "key": key,
+                    "warmup_ms": float(self.warmup_duration),
+                    "duration_ms": float(self.recording_duration),
+                    "parameters": {k: float(v) for k, v in params.items()},
+                    "objectives": {k: float(v[0]) for k, v in objectives.items()},
+                    "constraints": {k: float(v[0]) for k, v in constraints.items()},
+                    "features": {
+                        k: float(v[1]) for k, v in {**objectives, **constraints}.items()
+                    },
+                    "populations": {
+                        str(name): [int(a), int(b)] for name, (a, b) in ranges.items()
+                    },
+                    "n_selected": int(selected.size),
+                }
+            ),
+        )
 
     def record(self, env):
         self._reset_state()
         self.durations(env.system, comm=getattr(env, "comm", None))
         env.record_spikes()
+        self._record_block_sample(env)
         env.apply_stimulus_from_h5(
             self.inputs,
             self.input_namespace,
@@ -687,6 +811,86 @@ class CA1(Target):
             self.measured.add(source)
             self.metrics.update(getattr(self, f"_measure_{source}")(env))
         return self.metrics.get(feature) or {}
+
+    def block_sample(self) -> dict[str, np.ndarray]:
+        if not self._selected or self.block_cells <= 0:
+            return {}
+        out = {}
+        for population, gids in self._selected.items():
+            gids = np.asarray(gids)
+            if gids.size == 0:
+                continue
+            if gids.size <= self.block_cells:
+                out[population] = gids
+                continue
+            keep = P.stable_uniform(gids, seed=17) < (self.block_cells / gids.size)
+            out[population] = gids[keep] if keep.any() else gids[: self.block_cells]
+        return out
+
+    def _record_block_sample(self, env) -> None:
+        sample = self.block_sample()
+        self._block_sample = sample
+        for population, gids in sample.items():
+            env.record_voltage(
+                population,
+                dt=self.block_dt,
+                gids={int(g) for g in gids},
+                sections=["soma"],
+            )
+
+    def _measure_block(self, env) -> dict:
+        sample = getattr(self, "_block_sample", None) or {}
+        window = self._window(env)
+        voltage = getattr(window, "voltage", None)
+        ids = getattr(window, "voltage_ids", None)
+        blocked = dict.fromkeys(sample, 0.0)
+        seen = dict.fromkeys(sample, 0.0)
+
+        if voltage is not None and ids is not None and len(ids):
+            sections = window.sections("voltage")
+            owner = {}
+            for population, gids in sample.items():
+                for g in gids:
+                    owner[int(g)] = population
+            spikes = {}
+            sid = np.asarray(window.spike_ids)
+            stime = np.asarray(window.spike_times)
+            for gid in np.unique(sid):
+                spikes[int(gid)] = stime[sid == gid]
+            for row, gid in enumerate(np.asarray(ids)):
+                population = owner.get(int(gid))
+                if population is None:
+                    continue
+                if sections is not None and str(sections[row]) != "soma":
+                    continue
+                trace = np.asarray(voltage[row])
+                blocked[population] += depolarization_block_ms(
+                    trace,
+                    spikes.get(int(gid), ()),
+                    self.block_dt,
+                    self.block_threshold,
+                    self.block_min_ms,
+                )
+                seen[population] += trace.size * self.block_dt
+
+        names = sorted(sample)
+        if names:
+            totals = P.reduce_sum(
+                np.array([blocked[k] for k in names], dtype=float),
+                np.array([seen[k] for k in names], dtype=float),
+                comm=getattr(env, "comm", None),
+                all=True,
+            )
+            blocked_t, seen_t = np.asarray(totals[0]), np.asarray(totals[1])
+        else:
+            blocked_t = seen_t = np.zeros(0)
+
+        return {
+            "block_fraction": {
+                k: float(blocked_t[i] / seen_t[i]) if seen_t[i] > 0 else 0.0
+                for i, k in enumerate(names)
+            }
+        }
 
     def _measure_density(self, env) -> dict:
         return PopulationSpikeDensity(
@@ -775,6 +979,38 @@ class CA1(Target):
             fh.write("\n")
         return path
 
+    def _reference_trains(self, fh, pops, ranges, start, stop, count):
+        ids: list[int] = []
+        times: list[float] = []
+        cells: dict[str, dict] = {}
+        for pop in pops:
+            trains = fh["Populations"][pop][self.input_namespace][self.input_attribute]
+            pointer = trains["Attribute Pointer"][:]
+            values = trains["Attribute Value"]
+            index = trains["Cell Index"][:]
+            first = int(ranges[pop][0])
+
+            rng = np.random.default_rng(0)
+            want = max(1, int(count(pop)))
+            picks = (
+                np.sort(rng.choice(len(index), want, replace=False))
+                if len(index) > want
+                else np.arange(len(index))
+            )
+            gids = []
+            for k in picks:
+                lo, hi = int(pointer[k]), int(pointer[k + 1])
+                gid = int(index[k]) + first
+                gids.append(gid)
+                if hi <= lo:
+                    continue
+                train = values[lo:hi]
+                train = train[(train >= start) & (train < stop)]
+                ids.extend([gid] * len(train))
+                times.extend(train - start)
+            cells[pop] = dict.fromkeys(gids)
+        return ids, times, cells
+
     def reference_targets(
         self,
         system,
@@ -791,43 +1027,34 @@ class CA1(Target):
         start, recording = self.durations(system, comm=comm)
         stop = start + recording
 
-        ids: list[int] = []
-        times: list[float] = []
-        cells: dict[str, dict] = {}
-        with h5py.File(self.inputs, "r") as fh:
-            for pop in pops:
-                trains = fh["Populations"][pop][self.input_namespace][
-                    self.input_attribute
-                ]
-                pointer = trains["Attribute Pointer"][:]
-                values = trains["Attribute Value"]
-                index = trains["Cell Index"][:]
-                first = int(ranges[pop][0])
+        try:
+            simulated = {
+                p: len(g) for p, g in self.selection(system, comm=comm).items()
+            }
+        except Exception as error:
+            logger.warning(
+                "cannot size the selection (%s); using sample=%d", error, sample
+            )
+            simulated = {}
 
-                rng = np.random.default_rng(0)
-                picks = (
-                    np.sort(rng.choice(len(index), sample, replace=False))
-                    if len(index) > sample
-                    else np.arange(len(index))
-                )
-                gids = []
-                for k in picks:
-                    lo, hi = int(pointer[k]), int(pointer[k + 1])
-                    gid = int(index[k]) + first
-                    gids.append(gid)
-                    if hi <= lo:
-                        continue
-                    train = values[lo:hi]
-                    train = train[(train >= start) & (train < stop)]
-                    ids.extend([gid] * len(train))
-                    times.extend(train - start)
-                cells[pop] = dict.fromkeys(gids)
+        with h5py.File(self.inputs, "r") as fh:
+            ids, times, cells = self._reference_trains(
+                fh, pops, ranges, start, stop, lambda pop: sample
+            )
+            ids_s, times_s, cells_s = self._reference_trains(
+                fh, pops, ranges, start, stop, lambda pop: simulated.get(pop, sample)
+            )
 
         class Recording:
             def __init__(self, cells, comm):
                 self.cells = cells
                 self.comm = comm
                 self.system = type("system", (), {"population_ranges": ranges})
+
+        def recorded(ids, times):
+            return Run(duration=stop - start).add_spikes(
+                np.asarray(ids, dtype=np.int64), np.asarray(times, dtype=np.float64)
+            )
 
         metrics = PopulationSpikeDensity(
             duration=int(stop - start),
@@ -836,14 +1063,20 @@ class CA1(Target):
             active_threshold=self.active_thresholds(),
             baks_alpha=self.baks_alpha,
             baks_beta=self.baks_beta,
-        )(
-            Run(duration=stop - start).add_spikes(
-                np.asarray(ids, dtype=np.int64), np.asarray(times, dtype=np.float64)
-            ),
-            Recording(cells, comm),
-        )
+        )(recorded(ids, times), Recording(cells, comm))
 
-        return {
+        synchrony = PopulationActiveFraction(
+            duration=int(stop - start), bin_size=self.bin_size
+        )(recorded(ids_s, times_s), Recording(cells_s, comm))
+
+        measured = {
             pop: {feature: values[pop] for feature, values in metrics.items()}
             for pop in pops
         }
+        for pop in pops:
+            for feature in ("peak_active_fraction", "participation_ratio"):
+                value = (synchrony.get(feature) or {}).get(pop)
+                if value is not None:
+                    measured[pop][feature] = value
+            measured[pop]["participation_cells"] = float(len(cells_s.get(pop, ())))
+        return measured
