@@ -378,6 +378,38 @@ def _build(described):
     )
 
 
+def _io_on_system(described, system):
+    if not isinstance(described, Mapping) or "cls" not in described:
+        return _build(described)
+    kwargs = dict(described.get("kwargs") or {})
+    if "electrode_coordinates" in kwargs:
+        return _build(described)
+    base = system.default_io()
+    if _describe(base)["cls"] != described["cls"]:
+        return _build(described)
+    return _build({"cls": described["cls"], "kwargs": {**base.serialize(), **kwargs}})
+
+
+def describe_io(system, io) -> dict | None:
+    described = _describe(io)
+    if described is None:
+        return None
+    kwargs = described["kwargs"]
+    if "electrode_coordinates" not in kwargs:
+        return described
+    import numpy as _np
+
+    with contextlib.suppress(Exception):
+        base = system.default_io()
+        if _describe(base)["cls"] == described["cls"] and _np.array_equal(
+            _np.asarray(base.serialize()["electrode_coordinates"], dtype=float),
+            _np.asarray(kwargs["electrode_coordinates"], dtype=float),
+        ):
+            kwargs = {k: v for k, v in kwargs.items() if k != "electrode_coordinates"}
+            return {"cls": described["cls"], "kwargs": kwargs}
+    return described
+
+
 def _is_the_systems_own_io(system, io) -> bool:
     if io is None:
         return True
@@ -573,6 +605,11 @@ class Env(Protocol):
         """Per-gid signal strength, from the model's per-population amplitude."""
         model = getattr(self, "model", None)
         system = getattr(self, "system", None)
+        io = getattr(self, "io", None)
+        attach = getattr(io, "attach_spike_profile", None)
+        profile = getattr(model, "extracellular_profile", None)
+        if callable(attach) and callable(profile):
+            attach(profile())
         if model is None or system is None:
             return None
         ranges = getattr(system, "population_ranges", None)
@@ -831,7 +868,9 @@ class Env(Protocol):
         return {
             "system": _describe(system),
             "model": _describe(self.model),
-            "io": None if _is_the_systems_own_io(system, io) else _describe(io),
+            "io": None
+            if _is_the_systems_own_io(system, io)
+            else describe_io(system, io),
             "selection": getattr(self, "selection_name", None),
             "params": self.applied_params,
             "meta": dict(getattr(self, "meta", {}) or {}),
@@ -927,7 +966,7 @@ class Env(Protocol):
         env = cls(
             system,
             model=_build(document.get("model")),
-            io=_build(document.get("io")),
+            io=_io_on_system(document.get("io"), system),
             **kwargs,
         )
         env.meta = dict(document.get("meta") or {})
