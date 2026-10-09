@@ -213,6 +213,7 @@ _NO_PLACEMENT = (
     np.empty(0, dtype=np.int64),
     np.empty(0, dtype=np.int64),
     np.empty(0, dtype=np.float64),
+    np.empty(0, dtype=np.int64),
 )
 
 
@@ -260,6 +261,11 @@ class SynapseBuilder:
         share: bool = True,
     ):
         self.system = system
+        # layer id -> name, for templates that place by `{swc}_{layer}_list`
+        layers = (getattr(system, "connections_config", None) or {}).get(
+            "layer_definitions"
+        ) or {}
+        self._layer_names = {int(v): str(k) for k, v in layers.items()}
         self.model = model
         self.pc = pc
         self.comm = comm
@@ -437,8 +443,17 @@ class SynapseBuilder:
                     if post_gid not in cells:
                         continue
                     place = placement.get(post_gid, _NO_PLACEMENT)
+                    if len(place) == 3:  # a system without layers
+                        place = (*place, np.full(len(place[0]), -1, dtype=np.int64))
                     pre_gids = np.asarray(pre_gids)
                     syn_ids, distances = _edge_syn_ids_distances(projection, pre_gids)
+                    order = np.argsort(syn_ids, kind="stable")
+                    if self._layer_names and not np.array_equal(
+                        order, np.arange(order.size)
+                    ):
+                        pre_gids = pre_gids[order]
+                        syn_ids = np.asarray(syn_ids)[order]
+                        distances = np.asarray(distances)[order]
                     cached.append(
                         (
                             post_gid,
@@ -457,12 +472,15 @@ class SynapseBuilder:
                         sources = np.asarray(pre_gids, dtype=np.int64)[
                             np.isin(np.asarray(syn_ids, dtype=np.int64), place[0])
                         ]
-                        if not is_input and selected_sorted is not None:
+                        if not is_input:
                             # a source of a simulated population is external
-                            # only where it is not itself a built cell
-                            sources = sources[
-                                np.isin(sources, selected_sorted, invert=True)
-                            ]
+                            # only where it is not itself a built cell; with
+                            # no selection every cell of it is built somewhere
+                            sources = (
+                                sources[np.isin(sources, selected_sorted, invert=True)]
+                                if selected_sorted is not None
+                                else sources[:0]
+                            )
                         needed.append(np.unique(sources))
 
         # --- Route + create the input sources this rank owns ------------------
@@ -525,7 +543,7 @@ class SynapseBuilder:
             is_input,
             active,
             cell,
-            (place_ids, place_swc, place_loc),
+            (place_ids, place_swc, place_loc, place_layer),
             pre_gids,
             syn_ids,
             distances,
@@ -545,11 +563,14 @@ class SynapseBuilder:
                 found_list = (place_ids[at] == syn_ids).tolist()
                 swc_list = place_swc[at].tolist()
                 loc_list = place_loc[at].tolist()
+                layer_list = place_layer[at].tolist()
             else:
                 found_list = [False] * len(syn_ids)
-                swc_list = loc_list = found_list
+                swc_list = loc_list = layer_list = found_list
 
-            cell_place = cell.place
+            # fresh per (cell, source population): the dealer is stateful
+            placer = cell.placer(self._layer_names)
+            cell_place = placer.place
             dest_code = {}  # swc_type -> dest_sectype code (per-cell tiny cache)
             cell_dest = cell.dest_sec_type
             sel = (
@@ -570,7 +591,7 @@ class SynapseBuilder:
                 plans = plans_by_swc.get(swc_type, default_plans)
                 if plans is None:
                     continue  # no mechanism declared for this destination type
-                seg = cell_place(swc_type, loc_list[k])
+                seg = cell_place(swc_type, loc_list[k], layer_list[k])
                 dsec = dest_code.get(swc_type)
                 if dsec is None:
                     dsec = self._sectype_id(cell_dest(swc_type))

@@ -22,6 +22,7 @@ from livn.system._common import (
     Projection,
     Tree,
     _placement_rows,
+    projection_mechanisms,
     resolve_selection,
     stack_coordinates,
 )
@@ -74,14 +75,46 @@ if os.environ.get("LIVN_HSDS"):
 _HAS_NEUROH5 = _H5_BACKEND == "neuroh5"
 
 
+def _first_soma_point(xs, ys, zs, swc_types):
+    """The first point typed soma (SWC 1), or None when a tree has none."""
+    swc = numpy.asarray(swc_types)
+    soma = numpy.flatnonzero(swc == 1)
+    if soma.size == 0:
+        return None
+    i = int(soma[0])
+    return (float(xs[i]), float(ys[i]), float(zs[i]))
+
+
 def _h5_read_population_names(f):
     """Read population names from an open H5 file object."""
     return list(f["Populations"].keys())
 
 
 def _h5_population_ranges(f, pop_names):
+    """``{name: (start, count)}`` from ``H5Types/Populations``."""
     pops_data = f["H5Types/Populations"][:]
+    fields = getattr(pops_data.dtype, "names", None) or ()
+    enum = None
+    if "Population" in fields:
+        try:
+            labels = f["H5Types/Population labels"]
+            enum = (labels.dtype.metadata or {}).get("enum")
+        except (KeyError, AttributeError, TypeError):
+            enum = None
     ranges = {}
+    if enum:
+        name_of = {int(code): str(name) for name, code in enum.items()}
+        for row in pops_data:
+            name = name_of.get(int(row["Population"]))
+            if name is not None and name in pop_names:
+                ranges[name] = (int(row["Start"]), int(row["Count"]))
+        missing = [n for n in pop_names if n not in ranges]
+        if not missing:
+            return ranges
+        raise ValueError(
+            f"H5Types/Populations has no row labelled {missing}; the Population "
+            "labels enum and the Populations group disagree"
+        )
     for name, row in zip(pop_names, pops_data, strict=False):
         ranges[name] = (int(row[0]), int(row[1]))
     return ranges
@@ -372,25 +405,14 @@ if _H5_BACKEND == "neuroh5":
             read_population_ranges,
         )
 
-        if comm is None:
-            comm = MPI.COMM_WORLD
+        del comm
+        comm0 = MPI.COMM_SELF
 
-        rank = comm.Get_rank()
-        comm0 = comm.Split(int(rank == 0), 0)
-        cell_attribute_info = None
-        population_ranges = None
-        population_names = None
-        if rank == 0:
-            population_names = read_population_names(filepath, comm0)
-            (population_ranges, _) = read_population_ranges(filepath, comm0)
-            cell_attribute_info = read_cell_attribute_info(
-                filepath, population_names, comm=comm0
-            )
-        population_ranges = comm.bcast(population_ranges, root=0)
-        population_names = comm.bcast(population_names, root=0)
-        cell_attribute_info = comm.bcast(cell_attribute_info, root=0)
-
-        comm0.Free()
+        population_names = read_population_names(filepath, comm0)
+        (population_ranges, _) = read_population_ranges(filepath, comm0)
+        cell_attribute_info = read_cell_attribute_info(
+            filepath, population_names, comm=comm0
+        )
 
         return CellsMetaData(
             population_names=population_names,
@@ -434,25 +456,19 @@ if _H5_BACKEND == "neuroh5":
         filepath: str,
         population: types.PopulationName,
         comm: MPI.Intracomm | None = None,
-        all: bool = True,
     ) -> types.Float[types.Array, "n_coords cxyz=4"]:
+        """Every cell's `[gid, x, y, z]`, read on the calling rank alone."""
         from mpi4py import MPI
 
-        if comm is None:
-            comm = MPI.COMM_WORLD
+        del comm
 
         coordinates = []
-        for gid, coordinate in read_coordinates(filepath, population, comm=comm):
+        for gid, coordinate in read_coordinates(
+            filepath, population, comm=MPI.COMM_SELF
+        ):
             coordinates.append([gid, *list(coordinate)])
 
-        if all:
-            all_coordinates = comm.allgather(coordinates)
-            coordinates = np.array(
-                [coord for sublist in all_coordinates for coord in sublist]
-            )
-        else:
-            coordinates = np.array(coordinates)
-
+        coordinates = np.array(coordinates)
         if coordinates.size == 0:
             return np.zeros((0, 4))
 
@@ -555,6 +571,45 @@ if _H5_BACKEND == "neuroh5":
 
         return projections
 
+    def read_soma_coordinates(
+        filepath: str,
+        population: types.PopulationName,
+        gids,
+        comm: MPI.Intracomm | None = None,
+        io_size: int = 1,
+    ) -> dict[int, tuple[float, float, float]]:
+        """``{gid: (x, y, z)}`` of each tree's first soma point."""
+        from mpi4py import MPI
+        from neuroh5.io import scatter_read_cell_attribute_selection
+
+        if comm is None:
+            comm = MPI.COMM_WORLD
+
+        out: dict[int, tuple[float, float, float]] = {}
+        it, info = scatter_read_cell_attribute_selection(
+            filepath,
+            population,
+            sorted(int(g) for g in gids),
+            namespace="Trees",
+            mask={"X Coordinate", "Y Coordinate", "Z Coordinate", "SWC Type"},
+            comm=comm,
+            io_size=max(1, int(io_size)),
+            return_type="tuple",
+        )
+        i_swc = info.get("SWC Type")
+        if i_swc is None:
+            return out
+        i_x, i_y, i_z = (
+            info["X Coordinate"],
+            info["Y Coordinate"],
+            info["Z Coordinate"],
+        )
+        for gid, data in it:
+            xyz = _first_soma_point(data[i_x], data[i_y], data[i_z], data[i_swc])
+            if xyz is not None:
+                out[int(gid)] = xyz
+        return out
+
     def read_placement(
         filepath: str,
         population: types.PopulationName,
@@ -568,29 +623,32 @@ if _H5_BACKEND == "neuroh5":
         if comm is None:
             comm = MPI.COMM_WORLD
 
-        # Collective, so issue the read even for an empty selection: a rank that
-        # owns no cells of this population still has to participate or the ranks
-        # that do will block waiting for it.
         out: dict[int, tuple] = {}
         it, info = scatter_read_cell_attribute_selection(
             filepath,
             population,
             sorted(int(g) for g in gids),
             namespace="Synapse Attributes",
-            mask={"syn_ids", "swc_types", "syn_locs"},
+            mask={"syn_ids", "swc_types", "syn_locs", "syn_layers"},
             comm=comm,
             io_size=max(1, int(io_size)),
             return_type="tuple",
         )
-        i_ids, i_swc, i_loc = (
+        i_ids, i_swc, i_loc, i_lay = (
             info.get("syn_ids"),
             info.get("swc_types"),
             info.get("syn_locs"),
+            info.get("syn_layers"),
         )
         if i_ids is None:
             return out
         for gid, data in it:
-            out[int(gid)] = _placement_rows(data[i_ids], data[i_swc], data[i_loc])
+            out[int(gid)] = _placement_rows(
+                data[i_ids],
+                data[i_swc],
+                data[i_loc],
+                data[i_lay] if i_lay is not None else None,
+            )
         return out
 
     def read_edges(
@@ -610,10 +668,6 @@ if _H5_BACKEND == "neuroh5":
         if comm is None:
             comm = MPI.COMM_WORLD
 
-        # neuroh5 wants only gids the projection actually has a destination for.
-        # `destinations is None` means it stores no edges at all, which is not an
-        # error -- the config may declare a projection the graph left empty -- so
-        # ask for nothing rather than for gids that cannot be there.
         wanted: list[int] = []
         if destinations is not None:
             asked = sorted(int(g) for g in gids)
@@ -623,7 +677,7 @@ if _H5_BACKEND == "neuroh5":
                 index = npn.fromiter(asked, dtype=npn.int64, count=len(asked))
                 wanted = npn.sort(index[npn.isin(index, destinations)]).tolist()
 
-        # Collective in the same way `read_placement` is: the selection may be
+        # Collective in the same way `read_placement` is where the selection may be
         # empty on this rank, but the call may not be skipped.
         graph, _ = scatter_read_graph_selection(
             filepath,
@@ -636,7 +690,7 @@ if _H5_BACKEND == "neuroh5":
         if post in graph and pre in graph[post]:
             yield from graph[post][pre]
 
-else:  # h5pyd or pyfive — both use _open_h5 + generic readers
+else:  # h5pyd or pyfive using _open_h5 + generic readers
 
     def read_cells_meta_data(
         filepath: str, comm: MPI.Intracomm | None = None
@@ -680,8 +734,9 @@ else:  # h5pyd or pyfive — both use _open_h5 + generic readers
         filepath: str,
         population: types.PopulationName,
         comm: MPI.Intracomm | None = None,
-        all: bool = True,
     ) -> types.Float[types.Array, "n_coords cxyz=4"]:
+        """Every cell's `[gid, x, y, z]`."""
+        del comm
         coordinates = []
         for gid, coordinate in read_coordinates(filepath, population):
             coordinates.append([gid, *list(coordinate)])
@@ -762,6 +817,41 @@ else:  # h5pyd or pyfive — both use _open_h5 + generic readers
             projections.append([post_gid, (pre_gids, projection)])
         return projections
 
+    def read_soma_coordinates(
+        filepath: str,
+        population: types.PopulationName,
+        gids,
+        comm: MPI.Intracomm | None = None,
+        io_size: int = 1,
+    ) -> dict[int, tuple[float, float, float]]:
+        """``{gid: (x, y, z)}`` of each tree's first soma point."""
+        del comm, io_size
+        wanted = {int(g) for g in gids}
+        out: dict[int, tuple[float, float, float]] = {}
+        if not wanted:
+            return out
+        f = _open_h5(filepath)
+        pop_start = _h5_read_population_ranges(f)[population][0]
+        attrs = _h5_read_cell_attributes(
+            f,
+            pop_start,
+            population,
+            "Trees",
+            mask={"X Coordinate", "Y Coordinate", "Z Coordinate", "SWC Type"},
+        )
+        for gid, data in attrs.items():
+            if int(gid) not in wanted:
+                continue
+            xyz = _first_soma_point(
+                data["X Coordinate"],
+                data["Y Coordinate"],
+                data["Z Coordinate"],
+                data["SWC Type"],
+            )
+            if xyz is not None:
+                out[int(gid)] = xyz
+        return out
+
     def read_placement(
         filepath: str,
         population: types.PopulationName,
@@ -769,9 +859,6 @@ else:  # h5pyd or pyfive — both use _open_h5 + generic readers
         comm: MPI.Intracomm | None = None,
         io_size: int = 1,
     ) -> dict[int, tuple]:
-        # No scatter read here: every rank opens the file and keeps the rows it
-        # was asked for. Correct, and fine up to the scale at which neuroh5 is
-        # worth installing.
         wanted = {int(g) for g in gids}
         out: dict[int, tuple] = {}
         f = _open_h5(filepath)
@@ -781,13 +868,16 @@ else:  # h5pyd or pyfive — both use _open_h5 + generic readers
             pop_start,
             population,
             "Synapse Attributes",
-            mask={"syn_ids", "swc_types", "syn_locs"},
+            mask={"syn_ids", "swc_types", "syn_locs", "syn_layers"},
         )
         for gid, data in attrs.items():
             if int(gid) not in wanted:
                 continue
             out[int(gid)] = _placement_rows(
-                data["syn_ids"], data["swc_types"], data["syn_locs"]
+                data["syn_ids"],
+                data["swc_types"],
+                data["syn_locs"],
+                data.get("syn_layers"),
             )
         return out
 
@@ -921,6 +1011,10 @@ class NeuroH5Graph:
         return self.elements["connections"]
 
     @property
+    def synapses(self):
+        return self.elements["synapses"]
+
+    @property
     def version(self) -> int:
         return int(self.elements.get("version", 0))
 
@@ -962,6 +1056,10 @@ class NeuroH5System:
         self._bounding_box = None
         self._coordinate_arrays: dict[types.PopulationName, Any] = {}
         self._destination_indices: dict[tuple[str, str], Any] = {}
+
+    @property
+    def cell_types(self) -> dict:
+        return next(iter(self._graph.synapses.values())).config["cell_types"]
 
     def serialize(self) -> dict:
         """The directory to read this system back from.
@@ -1117,7 +1215,7 @@ class NeuroH5System:
         for post, sources in (self.connections_config.get("synapses") or {}).items():
             for pre, spec in (sources or {}).items():
                 syn_type = (spec or {}).get("type", "excitatory")
-                mechanisms = ((spec or {}).get("mechanisms") or {}).get("default") or {}
+                mechanisms = projection_mechanisms(spec)
                 for section in (spec or {}).get("sections") or []:
                     found.extend(
                         (post, pre, section, mechanism, syn_type)
@@ -1249,8 +1347,10 @@ class NeuroH5System:
     def coordinates(
         self, population: types.PopulationName
     ) -> Iterator[tuple[int, tuple[float, float, float]]]:
+        from mpi4py import MPI
+
         yield from read_coordinates(
-            self._graph.cells_filepath, population, comm=self.comm
+            self._graph.cells_filepath, population, comm=MPI.COMM_SELF
         )
 
     def coordinate_array(
@@ -1259,9 +1359,7 @@ class NeuroH5System:
         """Every cell's `[gid, x, y, z]` for a population, read once."""
         cached = self._coordinate_arrays.get(population)
         if cached is None:
-            cached = coordinate_array(
-                self._graph.cells_filepath, population, comm=self.comm, all=True
-            )
+            cached = coordinate_array(self._graph.cells_filepath, population)
             self._coordinate_arrays[population] = cached
         return cached.copy()
 
@@ -1298,9 +1396,20 @@ class NeuroH5System:
             self._graph.cells_filepath, population, self.comm, node_allocation
         )
 
+    def soma_coordinates(
+        self, population: types.PopulationName, gids
+    ) -> dict[int, tuple[float, float, float]]:
+        return read_soma_coordinates(
+            self._graph.cells_filepath,
+            population,
+            gids,
+            comm=self.comm,
+            io_size=self.io_size,
+        )
+
     def placement(
         self, population: types.PopulationName, gids
-    ) -> dict[int, tuple[Any, Any, Any]]:
+    ) -> dict[int, tuple[Any, Any, Any, Any]]:
         placement = read_placement(
             self._graph.cells_filepath,
             population,
@@ -1311,7 +1420,7 @@ class NeuroH5System:
 
         endpoints = sum(
             int(((locs <= 0.0) | (locs >= 1.0)).sum())
-            for _, _, locs in placement.values()
+            for _, _, locs, _ in placement.values()
         )
         if endpoints:
             logger.warning(

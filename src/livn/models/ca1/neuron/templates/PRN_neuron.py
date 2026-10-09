@@ -164,17 +164,26 @@ class PRN:
         self.dend.gmax_KCa_PR = self.dend_gmax_KCa
 
     def position(self, x, y, z):
-        xx = yy = zz = 0
-        for sec in [self.soma, self.dend]:
+        soma = self.soma
+        if soma.n3d() == 0:
+            # a template that states only L and diam has no points until
+            # define_shape lays it out; lay it out now so there is an offset
+            h.define_shape()
+            if soma.n3d() == 0:
+                return
+        dx = x - soma.x3d(0)
+        dy = y - soma.y3d(0)
+        dz = z - soma.z3d(0)
+        for sec in (self.soma, self.dend):
             for i in range(sec.n3d()):
                 h.pt3dchange(
                     i,
-                    x - xx + sec.x3d(i),
-                    y - yy + sec.y3d(i),
-                    z - zz + sec.z3d(i),
+                    sec.x3d(i) + dx,
+                    sec.y3d(i) + dy,
+                    sec.z3d(i) + dz,
                     sec.diam3d(i),
+                    sec=sec,
                 )
-        xx, yy, zz = x, y, z
 
     def is_art(self):
         return False

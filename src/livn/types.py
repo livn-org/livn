@@ -51,7 +51,7 @@ PopulationName = str
 PostSynapticPopulationName = PopulationName
 PreSynapticPopulationName = PopulationName
 
-SECTION_VOCABULARY = ("apical", "axon", "basal", "dend", "soma")
+SECTION_VOCABULARY = ("ais", "apical", "axon", "basal", "dend", "hillock", "soma")
 
 # list | dict | tuple | Stimulus | Float[Array, "batch timestep n_channels"] | None
 StimulusLike = Any
@@ -191,11 +191,13 @@ class System(Protocol):
 
     def placement(
         self, population: PopulationName, gids: Iterable[int]
-    ) -> dict[int, tuple[Array, Array, Array]]:
+    ) -> dict[int, tuple[Array, Array, Array, Array]]:
         """Where each synapse sits on the cell that owns it.
 
-        ``{gid: (syn_ids, swc_types, syn_locs)}`` for ``gids``, each triple sorted
-        by ``syn_id`` with duplicates dropped (a repeated id keeps its last site).
+        ``{gid: (syn_ids, swc_types, syn_locs, syn_layers)}`` for ``gids``, each
+        sorted by ``syn_id`` with duplicates dropped (a repeated id keeps its
+        last site). ``syn_layers`` is -1 where the graph records no layer; a
+        system that has no layers may return three columns.
 
         May be collective, so a caller iterating populations has to call it for
         every population on every rank, including where ``gids`` is empty.

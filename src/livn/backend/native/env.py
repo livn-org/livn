@@ -315,7 +315,7 @@ class Env(EnvProtocol):
         self._refractory_period = (
             float(self.model.neuron_refractory_period())
             if hasattr(self.model, "neuron_refractory_period")
-            else 2.0
+            else 0.0
         )
         self._celsius = (
             float(self.model.neuron_celsius())

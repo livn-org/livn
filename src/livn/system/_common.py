@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
@@ -253,6 +253,16 @@ def selection_from_ranges(
     return out
 
 
+def projection_mechanisms(spec: Mapping | None) -> list[str]:
+    blocks = (spec or {}).get("mechanisms") or {}
+    found: list[str] = []
+    for mechs in blocks.values():
+        if not isinstance(mechs, Mapping):
+            continue
+        found.extend(m for m in mechs if m not in found)
+    return found
+
+
 def projection_attribute(namespace, name: str, index: int = 0, default=None):
     if namespace is None:
         return default
@@ -263,18 +273,22 @@ def projection_attribute(namespace, name: str, index: int = 0, default=None):
     return namespace
 
 
-def _placement_rows(syn_ids, swc_types, syn_locs):
+def _placement_rows(syn_ids, swc_types, syn_locs, syn_layers=None):
     import numpy as npn
 
     syn_ids = npn.asarray(syn_ids).astype(npn.int64, copy=False)
     swc_types = npn.asarray(swc_types).astype(npn.int64, copy=False)
     syn_locs = npn.asarray(syn_locs).astype(npn.float64, copy=False)
+    if syn_layers is None:
+        syn_layers = npn.full(syn_ids.shape, -1, dtype=npn.int64)
+    else:
+        syn_layers = npn.asarray(syn_layers).astype(npn.int64, copy=False)
 
     if syn_ids.size == 0:
-        return syn_ids, swc_types, syn_locs
+        return syn_ids, swc_types, syn_locs, syn_layers
 
     order = npn.argsort(syn_ids, kind="stable")
     ids = syn_ids[order]
     last = npn.append(ids[1:] != ids[:-1], True)
     keep = order[last]
-    return ids[last], swc_types[keep], syn_locs[keep]
+    return ids[last], swc_types[keep], syn_locs[keep], syn_layers[keep]

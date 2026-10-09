@@ -15,6 +15,7 @@ from livn.backend import backend
 from livn.system._common import (
     CellsMetaData,
     Projection,
+    projection_mechanisms,
     resolve_selection,
     stack_coordinates,
 )
@@ -950,7 +951,7 @@ class Monolayer(Jsonable):
         found = []
         for post, sources in self.connections_config["synapses"].items():
             for pre, spec in sources.items():
-                mechanisms = spec["mechanisms"]["default"]
+                mechanisms = projection_mechanisms(spec)
                 for section in spec["sections"]:
                     found.extend(
                         (post, pre, section, mechanism, spec["type"])

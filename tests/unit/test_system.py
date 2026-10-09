@@ -522,3 +522,135 @@ def test_make_from_a_bare_system_spec_still_works(tmp_path):
 
     livn.make(str(path), cls=_Env)
     assert captured == {"system": str(path)}
+
+
+class TestSynapseProjections:
+    @staticmethod
+    def _system(synapses):
+        from livn.system import NeuroH5System
+
+        system = object.__new__(NeuroH5System)
+        system.connections_config = {"synapses": synapses}
+        return system
+
+    def test_helper_takes_every_block(self):
+        from livn.system._common import projection_mechanisms
+
+        per_swc = {"mechanisms": {"3": {"AMPA": {}, "NMDA": {}}, "4": {"AMPA": {}}}}
+        assert projection_mechanisms(per_swc) == ["AMPA", "NMDA"]
+        assert projection_mechanisms({"mechanisms": {"default": {"GABA_A": {}}}}) == [
+            "GABA_A"
+        ]
+        assert projection_mechanisms({"mechanisms": {"4": {"GABA_A": {}}, "x": 3}}) == [
+            "GABA_A"
+        ]
+        assert projection_mechanisms({}) == []
+        assert projection_mechanisms(None) == []
+
+    def test_per_swc_projection_is_enumerated(self):
+        system = self._system(
+            {
+                "PYR": {
+                    "CA3": {
+                        "type": "excitatory",
+                        "sections": ["basal", "apical"],
+                        "mechanisms": {
+                            "3": {"AMPA": {}, "NMDA": {}},
+                            "4": {"AMPA": {}, "NMDA": {}},
+                        },
+                    },
+                    "CA2": {
+                        "type": "excitatory",
+                        "sections": ["basal"],
+                        "mechanisms": {"default": {"AMPA": {}}},
+                    },
+                    "AAC": {
+                        "type": "inhibitory",
+                        "sections": ["ais"],
+                        "mechanisms": {"7": {"GABA_A": {}}},
+                    },
+                }
+            }
+        )
+
+        assert system.synapse_projections() == [
+            ("PYR", "AAC", "ais", "GABA_A", "inhibitory"),
+            ("PYR", "CA2", "basal", "AMPA", "excitatory"),
+            ("PYR", "CA3", "apical", "AMPA", "excitatory"),
+            ("PYR", "CA3", "apical", "NMDA", "excitatory"),
+            ("PYR", "CA3", "basal", "AMPA", "excitatory"),
+            ("PYR", "CA3", "basal", "NMDA", "excitatory"),
+        ]
+        assert "PYR_CA3-basal-AMPA-weight" in system.weight_names
+        assert "PYR_AAC-ais-GABA_A-weight" in system.weight_names
+
+    def test_projection_without_mechanisms_yields_nothing(self):
+        system = self._system({"PYR": {"CA3": {"sections": ["basal"]}, "EC": None}})
+
+        assert system.synapse_projections() == []
+        assert system.weight_names == []
+
+
+class TestPlacementRows:
+    def test_layers_travel_with_the_site_and_default_to_minus_one(self):
+        from livn.system._common import _placement_rows
+
+        ids, swc, loc, lay = _placement_rows(
+            [5, 3, 5], [4, 3, 4], [0.1, 0.2, 0.9], [9, 5, 8]
+        )
+        assert ids.tolist() == [3, 5]
+        assert swc.tolist() == [3, 4]
+        assert loc.tolist() == [0.2, 0.9]  # a repeated id keeps its last site
+        assert lay.tolist() == [5, 8]
+
+        _, _, _, lay = _placement_rows([1], [4], [0.5])
+        assert lay.tolist() == [-1]
+        assert len(_placement_rows([], [], [])) == 4
+
+
+class TestPopulationRanges:
+    class _Dataset:
+        def __init__(self, rows=None, enum=None):
+            self._rows = rows
+            self.dtype = type("dt", (), {})()
+            if rows is not None:
+                self.dtype.names = rows.dtype.names
+                self.dtype.metadata = None
+            else:
+                self.dtype.names = None
+                self.dtype.metadata = {"enum": enum}
+
+        def __getitem__(self, item):
+            return self._rows[item]
+
+    def _file(self, rows, enum, names):
+        rows = np.array(
+            rows, dtype=[("Start", "<u8"), ("Count", "<u4"), ("Population", "<u2")]
+        )
+        return {
+            "H5Types/Populations": self._Dataset(rows=rows),
+            "H5Types/Population labels": self._Dataset(enum=enum),
+            "Populations": dict.fromkeys(names),
+        }
+
+    def test_joins_by_label_when_orders_differ(self):
+        from livn.system.neuroh5 import _h5_read_population_ranges
+
+        # index order PYR, PVBC, AAC; name order AAC, PVBC, PYR
+        f = self._file(
+            [(0, 311500, 100), (311500, 5530, 101), (317030, 1380, 103)],
+            {"PYR": 100, "PVBC": 101, "AAC": 103},
+            ["AAC", "PVBC", "PYR"],
+        )
+        assert _h5_read_population_ranges(f) == {
+            "AAC": (317030, 1380),
+            "PVBC": (311500, 5530),
+            "PYR": (0, 311500),
+        }
+
+    def test_refuses_a_name_without_a_row(self):
+        from livn.system.neuroh5 import _h5_read_population_ranges
+
+        f = self._file([(0, 10, 100)], {"EXC": 100, "INH": 101}, ["EXC", "INH"])
+        with pytest.raises(ValueError, match="INH"):
+            _h5_read_population_ranges(f)

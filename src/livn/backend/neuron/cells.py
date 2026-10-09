@@ -13,6 +13,10 @@ SWC_SOMA = 1
 SWC_AXON = 2
 SWC_BASAL = 3
 SWC_APICAL = 4
+SWC_TRUNK = 5
+SWC_TUFT = 6
+SWC_AIS = 7
+SWC_HILLOCK = 8
 
 
 @runtime_checkable
@@ -24,6 +28,7 @@ class NeuronCell(Protocol):
     threshold: float  # spike-detector threshold (mV)
 
     def place(self, swc_type: int, loc: float): ...  # -> h.Segment
+    def placer(self, layer_names: dict[int, str]): ...  # see `_LayerDealer`
     def dest_sec_type(self, swc_type: int) -> str: ...  # weight-key section name
     def spike_source(self): ...  # -> h.Segment the detector watches
     def position(self, x: float, y: float, z: float) -> None: ...
@@ -136,6 +141,9 @@ class ReducedCell:
             loc = 1.0
         return segment_at(self._dend, loc)
 
+    def placer(self, layer_names: dict[int, str]):
+        return _SwcPlacer(self)
+
     def dest_sec_type(self, swc_type: int) -> str:
         if swc_type == SWC_SOMA:
             default = self._soma_type
@@ -177,12 +185,109 @@ class ReducedCell:
         return self._template
 
 
-# SWC code -> weight-key section-type name for full-morphology cells.
+_SWC_NAMES = {
+    SWC_SOMA: "soma",
+    SWC_AXON: "axon",
+    SWC_BASAL: "basal",
+    SWC_APICAL: "apical",
+    SWC_TRUNK: "trunk",
+    SWC_TUFT: "tuft",
+    SWC_AIS: "ais",
+    SWC_HILLOCK: "hillock",
+}
+
+
+def path_distance(sec, x: float, parent_connection=None) -> float:
+    del parent_connection
+    length = float(x) * float(sec.L)
+    child = sec
+    while True:
+        parent = child.parentseg()
+        if parent is None:
+            return length
+        length += float(child.L)
+        child = parent.sec
+
+
+def axon_spike_site(template, distance: float = 100.0, parent_connection=None):
+    def listed(name):
+        return list(getattr(template, name, None) or [])
+
+    axon = listed("axon_list")
+    for sec in axon:
+        for seg in sec:
+            if path_distance(sec, seg.x, parent_connection) >= distance:
+                return sec, float(seg.x)
+    if axon:
+        return axon[-1], 1.0
+    ais = listed("ais_list")
+    if ais:
+        return ais[0], 0.5
+    soma = listed("soma_list")
+    if soma:
+        return soma[-1], 0.5
+    return None, 0.5
+
+
+class _SwcPlacer:
+    __slots__ = ("_cell",)
+
+    def __init__(self, cell):
+        self._cell = cell
+
+    def place(self, swc_type: int, loc: float, layer: int = -1):
+        return self._cell.place(swc_type, loc)
+
+
+class _LayerDealer:
+    __slots__ = ("_cell", "_dx", "_key", "_list", "_lists", "_pos")
+
+    def __init__(self, cell, lists: dict[tuple[int, int], list]):
+        self._cell = cell
+        self._lists = {key: list(secs) for key, secs in lists.items()}
+        self._key = None
+        self._list = None
+        self._pos = 0.0
+        self._dx = 0.0
+
+    def place(self, swc_type: int, loc: float, layer: int = -1):
+        loc = 0.05 if loc < 0.05 else 0.95 if loc > 0.95 else float(loc)
+        key = (int(swc_type), int(layer))
+        if key != self._key:
+            self._key = key
+            self._list = self._lists.get(key)
+            self._pos = 0.0
+            self._dx = 0.0
+        if self._list is None:
+            return self._cell.place(swc_type, loc)
+        if self._pos >= 1.0:
+            self._list.append(self._list.pop(0))
+            self._pos = 0.0
+            self._dx = 0.0
+        sec = self._list[0]
+        self._dx = loc - self._dx
+        self._pos += self._dx
+
+        return segment_at(sec, loc)
+
+
 _MORPH_SECTYPE_NAMES = {
     SWC_SOMA: "soma",
     SWC_AXON: "axon",
     SWC_BASAL: "basal",
     SWC_APICAL: "apical",
+    SWC_TRUNK: "apical",
+    SWC_TUFT: "apical",
+    SWC_AIS: "ais",
+    SWC_HILLOCK: "hillock",
+}
+
+_MORPH_PLACEMENT_FALLBACK = {
+    SWC_TRUNK: (SWC_APICAL,),
+    SWC_TUFT: (SWC_APICAL,),
+    SWC_AIS: (SWC_HILLOCK, SWC_AXON),
+    SWC_HILLOCK: (SWC_AIS, SWC_AXON),
+    SWC_AXON: (SWC_AIS, SWC_HILLOCK),
 }
 
 _CONFIG_SECTION_SWC = {
@@ -191,6 +296,8 @@ _CONFIG_SECTION_SWC = {
     "basal": SWC_BASAL,
     "apical": SWC_APICAL,
     "dend": SWC_APICAL,
+    "ais": SWC_AIS,
+    "hillock": SWC_HILLOCK,
 }
 
 
@@ -200,21 +307,10 @@ assert frozenset(SECTION_VOCABULARY) == CONFIG_SECTION_NAMES
 
 
 def config_section_swc(name: str) -> int:
-    """The SWC code a graph config's section name places synapses at."""
     return _CONFIG_SECTION_SWC.get(str(name).lower(), SWC_APICAL)
 
 
 class MorphologyCell:
-    """Adapter for a full-morphology template as a ``NeuronCell``.
-
-    Placement is morphology-independent as synapses are routed by ``swc_type``
-    onto the group of sections of that type, and ``loc in [0, 1]`` selects a
-    position along that group's cumulative arc length. This decouples wiring
-    from any generator's exact section indexing so a cell rebuilt with different
-    ``nseg`` or section splits still places synapses at the same relative
-    dendritic position.
-    """
-
     @classmethod
     def from_template(
         cls,
@@ -222,6 +318,7 @@ class MorphologyCell:
         threshold: float,
         v_rest: float | None = None,
         spike_section=None,
+        spike_x: float = 0.5,
     ):
         def collect(*attrs) -> list:
             out: list = []
@@ -235,17 +332,34 @@ class MorphologyCell:
             SWC_SOMA: collect("soma_list"),
             SWC_APICAL: collect("apical_list"),
             SWC_BASAL: collect("basal_list"),
-            SWC_AXON: collect("axon_list", "hillock_list", "ais_list"),
+            SWC_AXON: collect("axon_list"),
+            SWC_AIS: collect("ais_list"),
+            SWC_HILLOCK: collect("hillock_list"),
         }
         swc_sections = {k: v for k, v in swc_sections.items() if v}
         return cls(
-            template, threshold, v_rest, swc_sections, spike_section=spike_section
+            template,
+            threshold,
+            v_rest,
+            swc_sections,
+            spike_section=spike_section,
+            spike_x=spike_x,
         )
 
-    def __init__(self, template, threshold, v_rest, swc_sections, spike_section=None):
+    def __init__(
+        self,
+        template,
+        threshold,
+        v_rest,
+        swc_sections,
+        spike_section=None,
+        spike_x: float = 0.5,
+    ):
         self._template = template
         self.threshold = float(threshold)
         self._spike_section = spike_section
+        self._spike_x = float(spike_x)
+        self._layer_lists: dict[tuple, dict] = {}
         self._v_rest = v_rest
         self.sections = list(template.sections)
 
@@ -271,9 +385,19 @@ class MorphologyCell:
 
         self._soma = getattr(template, "soma", None) or self.sections[0]
 
-    def place(self, swc_type: int, loc: float):
+    def _group(self, swc_type: int):
         grp = self._groups.get(swc_type)
-        if grp is None or grp[3] <= 0.0:
+        if grp is not None and grp[3] > 0.0:
+            return grp
+        for alternative in _MORPH_PLACEMENT_FALLBACK.get(swc_type, ()):
+            grp = self._groups.get(alternative)
+            if grp is not None and grp[3] > 0.0:
+                return grp
+        return None
+
+    def place(self, swc_type: int, loc: float):
+        grp = self._group(swc_type)
+        if grp is None:
             return self._soma(0.5)
         secs, starts, lengths, total = grp
         if loc < 0.0:
@@ -294,12 +418,31 @@ class MorphologyCell:
             x = 1.0
         return segment_at(secs[i], x)
 
+    def placer(self, layer_names: dict[int, str]):
+        """A `_LayerDealer` over this template's ``{swc}_{layer}_list``s."""
+        key = tuple(sorted(layer_names.items()))
+        lists = self._layer_lists.get(key)
+        if lists is None:
+            lists = {}
+            for swc, swc_name in _SWC_NAMES.items():
+                for layer_id, layer_name in layer_names.items():
+                    secs = getattr(
+                        self._template, f"{swc_name}_{layer_name}_list", None
+                    )
+                    if secs is None:
+                        continue
+                    secs = list(secs)
+                    if secs:
+                        lists[(swc, int(layer_id))] = secs
+            self._layer_lists[key] = lists
+        return _LayerDealer(self, lists)
+
     def dest_sec_type(self, swc_type: int) -> str:
         return _MORPH_SECTYPE_NAMES.get(swc_type, "apical")
 
     def spike_source(self):
         if self._spike_section is not None:
-            return self._spike_section(0.5)
+            return self._spike_section(self._spike_x)
         return self._soma(0.5)
 
     def position(self, x: float, y: float, z: float) -> None:
@@ -477,10 +620,7 @@ def _accepts_gid(factory) -> bool:
 
 
 class CellBuilder:
-    """Builds rank-local cells for a population from a ``System``.
-
-    Reduced cells are positioned from ``System.coordinate_array``.
-    """
+    """Builds rank-local cells for a population from a ``System``."""
 
     def __init__(self, system, model, pc, comm):
         self.system = system
@@ -518,10 +658,16 @@ class CellBuilder:
 
         takes_gid = _accepts_gid(factory)
 
+        local = [gid for gid in gids if gid % nhost == rank]
+        if not coord_by_gid:
+            soma_of = getattr(self.system, "soma_coordinates", None)
+            if callable(soma_of):
+                coord_by_gid = {
+                    int(g): xyz for g, xyz in soma_of(population, local).items()
+                }
+
         cells: dict[int, NeuronCell] = {}
-        for gid in gids:
-            if gid % nhost != rank:
-                continue
+        for gid in local:
             cell = (
                 factory(morphology=None, gid=gid)
                 if takes_gid

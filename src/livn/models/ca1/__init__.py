@@ -102,6 +102,12 @@ class PinskyRinzel(Model):
     def recording_coordinates(self, neuron_coordinates, population=None):
         return self.stimulus_coordinates(neuron_coordinates, population=population)
 
+    def neuron_refractory_period(self) -> float:
+        return 0.0
+
+    def neuron_celsius(self) -> float:
+        return 35.0
+
     def neuron_template_directory(self):
         return os.path.join(os.path.dirname(__file__), "neuron", "templates")
 
@@ -143,6 +149,7 @@ class PinskyRinzel(Model):
             SWC_SOMA,
             MorphologyCell,
             ReducedCell,
+            axon_spike_site,
         )
         from livn.models.ca1.neuron.templates.PR_neuron import PR
         from livn.models.ca1.neuron.templates.PRN_neuron import PRN
@@ -151,8 +158,10 @@ class PinskyRinzel(Model):
         )
 
         def make_pyr(morphology=None):
+            template = PyramidalCell()
+            section, x = axon_spike_site(template)
             return MorphologyCell.from_template(
-                PyramidalCell(), threshold=-20.0, v_rest=-65.0
+                template, threshold=-30.0, spike_section=section, spike_x=x
             )
 
         factories = {"PYR": make_pyr}
@@ -168,10 +177,12 @@ class PinskyRinzel(Model):
             template = PR if "dend_gmax_KAHP" in params else PRN
 
             def make_interneuron(morphology=None, template=template, params=params):
+                cell = template({"PinskyRinzel": params})
+                if "ic_constant" in params:
+                    cell.soma.ic_constant = float(params["ic_constant"])
                 return ReducedCell(
-                    template({"PinskyRinzel": params}),
+                    cell,
                     threshold=params["V_threshold"],
-                    v_rest=params["V_rest"],
                     sec_types=sec_types,
                 )
 

@@ -255,7 +255,7 @@ class Env(EnvProtocol):
         self._refractory_period = (
             float(self.model.neuron_refractory_period())
             if hasattr(self.model, "neuron_refractory_period")
-            else 2.0
+            else 0.0
         )
 
         self._celsius = (
@@ -493,7 +493,12 @@ class Env(EnvProtocol):
         source = cell.spike_source()
         source_sec = source.sec
 
-        use_filter = self._refractory_period > 0 and hasattr(h, "SpikeFilter")
+        use_filter = self._refractory_period > 0
+        if use_filter and not hasattr(h, "SpikeFilter"):
+            raise RuntimeError(
+                f"{type(self.model).__name__} sets a {self._refractory_period} ms "
+                "refractory period but its mechanisms do not provide `SpikeFilter`"
+            )
         if use_filter:
             spike_filter = h.SpikeFilter()
             spike_filter.tref = float(self._refractory_period)
@@ -787,12 +792,16 @@ class Env(EnvProtocol):
 
     def apply_init_ic(self) -> None:
         """Pin each cell's resting current, initializing once per potential."""
-        ic_cells = [
-            cell
-            for cells in self.cells.values()
-            for cell in cells.values()
-            if callable(getattr(cell, "init_ic", None))
-        ]
+        ic_cells = []
+        for cells in self.cells.values():
+            for cell in cells.values():
+                if not callable(getattr(cell, "init_ic", None)):
+                    continue
+                resting = getattr(cell, "resting_potential", None)
+                v_rest = resting() if callable(resting) else None
+                if v_rest is None and not _overrides_init_ic(cell):
+                    continue
+                ic_cells.append(cell)
 
         # grouped by potential, not collapsed to one call
         by_potential: dict[float, list] = {}
@@ -1866,8 +1875,15 @@ class Env(EnvProtocol):
                     filepath, namespace, attribute, pop, gids, int(ranges[pop][0])
                 )
             except Exception:
-                logger.debug(
-                    "no spike input for %s in %s", pop, filepath, exc_info=True
+                logger.warning(
+                    "no spike input for %s in %s (namespace %r, attribute %r); its "
+                    "%d input sources stay silent",
+                    pop,
+                    filepath,
+                    namespace,
+                    attribute,
+                    len(gids),
+                    exc_info=True,
                 )
                 continue
             self.play_input_spikes(
