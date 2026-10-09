@@ -819,6 +819,95 @@ class RecruitmentOrder(Decoding):
         return P.broadcast(result, comm=comm)
 
 
+class UnitCoordination(Decoding):
+    """How a population's rate is spread over its units.
+
+    - ``unit_rate_median``, ``unit_rate_cv``: across units.
+    - ``unit_top10_share``: share of all spikes fired by the top `top_fraction`
+      of units.
+    - ``unit_corr_median``: median pairwise correlation of `bin_size` counts,
+      over the units firing at least `min_rate_hz` (NaN under `min_corr_units`).
+    - ``coordination_excess``: multi-unit events (>= `event_units` units within
+      `event_ms`, then `event_dead_ms` dead) against the same spikes each
+      jittered uniformly by +-`jitter_ms`, as (observed + 1) / (jittered + 1).
+    """
+
+    bin_size: float = 50.0
+    min_rate_hz: float = 0.2
+    min_corr_units: int = 3
+    top_fraction: float = 0.1
+    event_units: int = 3
+    event_ms: float = 20.0
+    event_dead_ms: float = 100.0
+    jitter_ms: float = 500.0
+    seed: int = 0
+
+    def _events(self, it, tt) -> int:
+        order = np.argsort(tt, kind="stable")
+        t, u = np.asarray(tt, dtype=float)[order], np.asarray(it)[order]
+        count, i = 0, 0
+        while i < len(t):
+            j = np.searchsorted(t, t[i] + self.event_ms)
+            if len(np.unique(u[i:j])) >= self.event_units:
+                count += 1
+                i = np.searchsorted(t, t[i] + self.event_dead_ms)
+            else:
+                i += 1
+        return count
+
+    def decode(self, it, tt, units) -> dict:
+        it = np.asarray(it, dtype=np.int64)
+        tt = np.asarray(tt, dtype=np.float64)
+        duration = float(self.duration)
+        rates = np.array([np.sum(it == u) for u in units], dtype=float) / (
+            duration / 1000.0
+        )
+        nan = float("nan")
+        out = {
+            "unit_rate_median": nan,
+            "unit_rate_cv": nan,
+            "unit_top10_share": nan,
+            "unit_corr_median": nan,
+            "coordination_excess": nan,
+        }
+        if not len(rates) or rates.sum() <= 0:
+            return out
+        top = np.sort(rates)[::-1]
+        keep = max(1, int(len(top) * self.top_fraction))
+        out["unit_rate_median"] = float(np.median(rates))
+        out["unit_rate_cv"] = float(rates.std() / rates.mean())
+        out["unit_top10_share"] = float(top[:keep].sum() / top.sum())
+        edges = np.arange(0.0, duration + self.bin_size, self.bin_size)
+        active = [u for u, r in zip(units, rates, strict=True) if r >= self.min_rate_hz]
+        if len(active) >= self.min_corr_units:
+            counts = np.array(
+                [np.histogram(tt[it == u], edges)[0] for u in active], float
+            )
+            cc = np.corrcoef(counts)
+            out["unit_corr_median"] = float(
+                np.nanmedian(cc[np.triu_indices(len(active), 1)])
+            )
+        rng = np.random.default_rng(self.seed)
+        jittered = tt + rng.uniform(-self.jitter_ms, self.jitter_ms, len(tt))
+        out["coordination_excess"] = float(
+            (self._events(it, tt) + 1) / (self._events(it, jittered) + 1)
+        )
+        return out
+
+    def __call__(self, signal: Run, env=None):
+        comm = getattr(env, "comm", None)
+        merged_it, merged_tt = merged_spikes(signal, env)
+        result = None
+        if P.is_root(comm=comm):
+            units = [int(g) for g in env.system.gids]
+            result = self.decode(
+                merged_it if merged_it is not None else [],
+                merged_tt if merged_tt is not None else [],
+                units,
+            )
+        return P.broadcast(result, comm=comm)
+
+
 class PeakSynchrony(Decoding):
     """Peak fraction of active units co-firing in a single `bin_size` bin.
 
