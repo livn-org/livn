@@ -361,6 +361,24 @@ class Series:
             values=lnp().concatenate([self.values, other.values], axis=0),
         )
 
+    def add(self, other: Series) -> Series:
+        """Sum with a signal over the same rows and window"""
+        if abs(self.dt - other.dt) > _TOL:
+            raise ValueError(f"Cannot add series with dt={self.dt} and dt={other.dt}")
+        if self.values is None:
+            return other
+        if other.values is None:
+            return self
+        if tuple(self.values.shape) != tuple(
+            other.values.shape
+        ) or not numpy.array_equal(numpy.asarray(self.ids), numpy.asarray(other.ids)):
+            raise ValueError(
+                "Cannot add series over different rows or lengths "
+                f"({tuple(self.values.shape)} vs {tuple(other.values.shape)})"
+            )
+
+        return replace(self, values=self.values + other.values)
+
     def window(self, start: float, stop: float, name: str = "series") -> Series:
         """Keep the samples in ``[start, stop)``, given in absolute time"""
         if self.values is None:
@@ -413,11 +431,13 @@ class Run:
         channels: Mapping of channel name to :class:`Events` or :class:`Series`
         t0: Absolute simulation time at which the window starts
         duration: Length of the window in ms
+        potential: The channel-space signal in µV, one row per channel.
     """
 
     channels: Mapping[str, Any] = field(default_factory=dict)
     t0: float = 0.0
     duration: float | None = None
+    potential: Series | None = None
 
     # -- construction ----------------------------------------------------
 
@@ -612,7 +632,8 @@ class Run:
 
     def __repr__(self) -> str:
         channels = ", ".join(f"{k}={v!r}" for k, v in self.channels.items())
-        return f"Run(t0={self.t0}, duration={self.duration}, {channels})"
+        extra = "" if self.potential is None else f", potential={self.potential!r}"
+        return f"Run(t0={self.t0}, duration={self.duration}, {channels}{extra})"
 
     def concat(self, other: Run) -> Run:
         """Append a subsequent run, re-applying its time offset."""
@@ -640,7 +661,16 @@ class Run:
             else:
                 channels[name] = a.concat(b, shift)
 
-        return Run(channels=channels, t0=self.t0, duration=duration)
+        potential = None
+        if self.potential is not None and other.potential is not None:
+            potential = self.potential.concat(other.potential, shift)
+
+        return Run(
+            channels=channels,
+            t0=self.t0,
+            duration=duration,
+            potential=potential,
+        )
 
     def merge(self, other: Run) -> Run:
         """Union with a run covering the same window over disjoint cells."""
@@ -659,7 +689,16 @@ class Run:
 
         duration = self.duration if self.duration is not None else other.duration
 
-        return Run(channels=channels, t0=self.t0, duration=duration)
+        # the projection is linear in the currents, so the parts of a signal add up
+        a, b = self.potential, other.potential
+        potential = a.add(b) if a is not None and b is not None else (a or b)
+
+        return Run(
+            channels=channels,
+            t0=self.t0,
+            duration=duration,
+            potential=potential,
+        )
 
     def gather(self, comm=None, root: int = 0) -> Run | None:
         """Collect the per-rank runs onto ``root`` and ``merge`` them into one.
@@ -692,7 +731,18 @@ class Run:
             for name, channel in self.channels.items()
         }
 
-        return Run(channels=channels, t0=self.t0 + start, duration=stop - start)
+        potential = None
+        if self.potential is not None:
+            potential = self.potential.window(
+                self.t0 + start, self.t0 + stop, "potential"
+            )
+
+        return Run(
+            channels=channels,
+            t0=self.t0 + start,
+            duration=stop - start,
+            potential=potential,
+        )
 
     def select(
         self,
@@ -794,13 +844,18 @@ def _series_unflatten(aux, children) -> Series:
 
 def _run_flatten(run: Run):
     names = tuple(run.channels)
-    return tuple(run.channels[name] for name in names), (names, run.t0, run.duration)
+    children = (*(run.channels[name] for name in names), run.potential)
+    return children, (names, run.t0, run.duration)
 
 
 def _run_unflatten(aux, children) -> Run:
     names, t0, duration = aux
+    *channels, potential = children
     return Run(
-        channels=dict(zip(names, children, strict=False)), t0=t0, duration=duration
+        channels=dict(zip(names, channels, strict=False)),
+        t0=t0,
+        duration=duration,
+        potential=potential,
     )
 
 

@@ -346,19 +346,21 @@ def test_survives_jit_and_vmap_as_a_return_value():
 
 @pytest.mark.skipif("ax" not in backend(), reason="requires a jax backend")
 @pytest.mark.traces
-def test_section_names_survive_jit():
+def test_section_names_and_the_signal_survive_jit():
     import jax
     import jax.numpy as jnp
 
     sections = np.array(["soma", "dend"])
 
     def simulate(v):
-        return Run(duration=10.0).add_voltage(
-            jnp.zeros(2, dtype=int), v, dt=0.5, sections=sections
-        )
+        return Run(
+            duration=10.0,
+            potential=Series(ids=jnp.arange(1), values=v[:1] * 3.0, dt=0.5),
+        ).add_voltage(jnp.zeros(2, dtype=int), v, dt=0.5, sections=sections)
 
     run = jax.jit(simulate)(jnp.ones((2, 20)))
     np.testing.assert_array_equal(run.voltage_sections, sections)
+    np.testing.assert_allclose(np.asarray(run.potential.values), 3.0)
 
 
 @pytest.mark.skipif("ax" in backend(), reason="jax-free install only")
@@ -498,6 +500,36 @@ def test_declaring_padded_storage_for_a_ragged_list_is_rejected():
 
     with pytest.raises(ValueError, match="one row id per row"):
         run.add_spikes(np.arange(2), np.zeros((3, 4)), padded=True)
+
+
+def _signal(value, n=20, dt=0.5, t0=0.0):
+    return Series(ids=np.arange(2), values=np.full((2, n), float(value)), dt=dt, t0=t0)
+
+
+def test_merge_sums_the_channel_signal():
+    a = Run(duration=10.0, potential=_signal(1.0)).add_spikes(
+        np.array([0]), np.array([1.0])
+    )
+    b = Run(duration=10.0, potential=_signal(2.0)).add_spikes(
+        np.array([1]), np.array([2.0])
+    )
+
+    merged = a.merge(b)
+    np.testing.assert_allclose(merged.potential.values, 3.0)
+    assert a.merge(Run(duration=10.0)).potential is a.potential
+
+
+def test_concat_and_slice_carry_the_channel_signal():
+    a = Run(duration=10.0, potential=_signal(1.0))
+    b = Run(t0=10.0, duration=10.0, potential=_signal(2.0, t0=10.0))
+
+    joined = a.concat(b)
+    assert joined.potential.values.shape == (2, 40)
+
+    window = joined.slice(5.0, 15.0)
+    np.testing.assert_allclose(window.potential.values[:, :10], 1.0)
+    np.testing.assert_allclose(window.potential.values[:, 10:], 2.0)
+    assert window.potential.t0 == 5.0
 
 
 def test_current_carries_its_sections():
