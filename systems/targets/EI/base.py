@@ -3,7 +3,9 @@ import json
 import logging
 import math
 import os
+import re
 import time
+import zlib
 from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import ClassVar, Literal
@@ -13,19 +15,8 @@ from machinable.config import Field as ConfigField
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from livn.decoding import (
-    ISICV,
-    ActiveFraction,
-    AvalancheAnalysis,
-    BurstAnatomy,
-    BurstRate,
     GatherAndMerge,
-    MeanFiringRate,
-    PairwiseChannelCorrelation,
-    PeakSynchrony,
-    PerUnitFiringRate,
     PopulationActiveFraction,
-    PopulationAutocorrTau,
-    PopulationRateMetrics,
     RecruitmentCurve,
     Slice,
     Stability,
@@ -34,9 +25,69 @@ from livn.decoding import (
 from livn.env.logging import with_progress_logging
 from livn.policy import PulseSweepPolicy
 from livn.utils import P, sentinel
-from systems.targets.protocol import Sizing, Target, digest
+from systems.targets.EI import measure
+from systems.targets.EI.features import feature
+from systems.targets.EI.measure import resting_features
+from systems.targets.protocol import Sizing, Target, digest, note
+from systems.targets.schema import FREE_RUNNING, read_target
 
 logger = logging.getLogger(__name__)
+
+
+def logged(document: dict) -> set[tuple[str, str | None]]:
+    experiments = (document.get("metadata") or {}).get("experiments") or {}
+    found = set()
+    for name, recording in (document.get("recordings") or {}).items():
+        channels = [c["channel"] for c in (recording.get("channels") or ())]
+        date = re.match(r"\d{4}-(\d{2}-\d{2})_", name)
+        if not channels or date is None:
+            continue
+        array = f"MEA_{chr(ord('A') + min(channels) // 128)}"
+        entry = ((experiments.get(date.group(1)) or {}).get("samples") or {}).get(
+            array
+        ) or {}
+        if entry.get("sample"):
+            found.add((entry["sample"], entry.get("composition")))
+    return found
+
+
+def composition_of(document: dict) -> str | None:
+    seeded = {composition for _, composition in logged(document) if composition}
+    return seeded.pop() if len(seeded) == 1 else None
+
+
+def geometry(metadata: dict, scale: float = 1.0, guard: float | None = None) -> dict:
+    pos = metadata["geometry"]["pos"]
+    xs = [p[1] for p in pos]
+    ys = [p[2] for p in pos]
+    pitch = float(metadata["geometry"]["pitch"][0])
+
+    recorded = pitch / 2.0
+    margin = recorded if guard is None else float(guard)
+
+    def _box(m, s):
+        a0, a1 = min(xs) - m, max(xs) + m
+        b0, b1 = min(ys) - m, max(ys) + m
+        if s != 1.0:
+            cx, cy = (a0 + a1) / 2.0, (b0 + b1) / 2.0
+            hw, hh = (a1 - a0) * s / 2.0, (b1 - b0) * s / 2.0
+            a0, a1, b0, b1 = cx - hw, cx + hw, cy - hh, cy + hh
+        return (a0, b0), (a1, b1)
+
+    (x0, y0), (x1, y1) = _box(margin, scale)
+    (ix0, iy0), (ix1, iy1) = _box(recorded, scale)
+
+    electrodes = [
+        [int(i), float(x), float(y)]
+        for i, x, y in pos
+        if ix0 <= x <= ix1 and iy0 <= y <= iy1
+    ]
+    return {
+        "area": ((x0, y0), (x1, y1)),
+        "interior": ((ix0, iy0), (ix1, iy1)),
+        "electrodes": electrodes,
+        "margin": float(margin - recorded) * float(scale),
+    }
 
 
 def _max_constraint(value, max_val, scale=None):
@@ -209,7 +260,7 @@ def _past_the_end(
 ) -> float:
     probabilities = [float(p) for p in bracket.get("probabilities") or ()]
     if not probabilities or len(probabilities) != len(amplitudes):
-        return math.log10(step)  # no curve to read; one rung, as it always was
+        return math.log10(step)
 
     criterion = _logit(float(bracket.get("recruited", RECRUITED)))
     shortfall = criterion - _logit(probabilities[-1 if above else 0])
@@ -269,9 +320,9 @@ def threshold_miss(measured: dict, simulated: dict) -> float:
 
     difference = math.log10(point(simulated)) - math.log10(point(measured))
     censored = measured.get("censored")
-    if censored == "above":  # the culture is at least this hard to drive
+    if censored == "above":
         return max(0.0, -difference)
-    if censored == "below":  # and at most this easy
+    if censored == "below":
         return max(0.0, difference)
     return abs(difference)
 
@@ -283,29 +334,17 @@ class Spec(BaseModel):
     sigma: float | None = 300.0
     degree: float = 20.0
     boundary: float | None = None
-    cells: int | None = None
+    cells: int = 2600
     inhibitory_fraction: float | None = None
     size_cv: float = 0.2
+    weight_cv: float = 0.7
 
 
 class Culture(Target):
     RATIO_SUFFIX = "_ratio"
     STRUCTURE_PREFIX = "system-"
     COMPOSITION_KEY = "inhibitory_fraction"
-    ADAPTATION_PARAMS: ClassVar[dict] = {
-        "cells-EXC:soma.gmax_KCa": "soma_gmax_KCa",
-        "cells-EXC:dend.gmax_KCa": "dend_gmax_KCa",
-        "cells-EXC:soma.kCa_Ca_conc": "soma_kCa_Caconc",
-        "cells-EXC:dend.kCa_Ca_conc": "dend_kCa_Caconc",
-        "cells-EXC:dend.gmax_CaN": "dend_gmax_CaN",
-    }
-    ANATOMY_FEATURES: ClassVar[tuple] = (
-        "burst_width_ms",
-        "spikes_per_unit_per_burst",
-        "burst_onset_peak",
-        "burst_interval_cv",
-        "units_recruited_per_burst",
-    )
+    ANATOMY_FEATURES: ClassVar[tuple] = measure.ANATOMY_FEATURES
     RESPONSE_FEATURES: ClassVar[tuple] = (
         "response_gain",
         "evoked_rate_hz",
@@ -318,10 +357,6 @@ class Culture(Target):
         "response_latency_ms",
         "response_duration_ms",
     )
-    RESPONSE_OBJECTIVE_EPS: ClassVar[dict] = {
-        "response_latency_ms": 5.0,
-        "response_duration_ms": 10.0,
-    }
     MEASURED_FEATURES: ClassVar[tuple] = (
         "mfr",
         "isi_cv",
@@ -340,10 +375,36 @@ class Culture(Target):
         *ANATOMY_FEATURES,
         *RESPONSE_FEATURES,
     )
-    READOUT = "channels"
-    MIN_SPIKE_COUNT_FOR_METRICS = 150
-
-    # --- what is scored
+    MIN_SPIKE_COUNT_FOR_METRICS = measure.MIN_SPIKES_FOR_CORRELATION
+    EXCITATORY_CELLS: ClassVar[dict] = {
+        "synapse_type": "excitatory",
+        "transmitter": "cholinergic",
+        "soma_only": False,
+    }
+    INHIBITORY_CELLS: ClassVar[dict] = {
+        "synapse_type": "inhibitory",
+        "transmitter": "glycinergic",
+        "soma_only": True,
+    }
+    INHIBITORY_DEGREE: ClassVar[dict] = {"INH->EXC": 40.0, "EXC->INH": 4.0}
+    DEGREE_REFERENCE: ClassVar[dict] = {
+        "EXC->EXC": 1.0,
+        "INH->EXC": 0.5,
+        "EXC->INH": 0.5,
+    }
+    SYNAPSE_OVERRIDES: ClassVar[dict] = {
+        "EXC->EXC": {
+            "NMDA": {
+                "e": 0,
+                "g_unit": 0.0005,
+                "tau_decay": 80.0,
+                "tau_rise": 0.5,
+                "weight": 0.0,
+            }
+        }
+    }
+    ELECTRODE_RADIUS_UM = 50.0
+    ELECTRODE_HEIGHT_UM = 5.0
     OBJECTIVES: ClassVar[tuple] = (
         "fano_factor",
         "burst_rate",
@@ -367,17 +428,17 @@ class Culture(Target):
         "max_synchronous_peak",
     )
     ANATOMY_MIN_WINDOW_FRACTION = 0.1
-    BURST_OBJECTIVE_EPS: ClassVar[dict] = {
-        "fano_factor": 0.1,
-        "pop_autocorr_tau": 1.0,
-        "burst_rate": 0.05,
-        "max_synchronous_peak": 0.05,
-        "burst_width_ms": 5.0,
-        "spikes_per_unit_per_burst": 0.1,
-        "burst_onset_peak": 0.05,
-        "burst_interval_cv": 0.05,
-        "units_recruited_per_burst": 0.05,
-    }
+    BURST_OBJECTIVES: ClassVar[tuple] = (
+        "fano_factor",
+        "pop_autocorr_tau",
+        "burst_rate",
+        "max_synchronous_peak",
+        "burst_width_ms",
+        "spikes_per_unit_per_burst",
+        "burst_onset_peak",
+        "burst_interval_cv",
+        "units_recruited_per_burst",
+    )
     MEASURED_GATES: ClassVar[tuple] = (
         "MAX_NEURON_RATE_HZ",
         "MIN_MEAN_RATE_HZ",
@@ -409,41 +470,39 @@ class Culture(Target):
     max_pop_rate_per_unit_hz = 20.0
     min_pop_rate_per_unit_hz = 0.05
 
-    # --- the gates no document states
     LIVENESS: ClassVar[tuple] = ("not_runaway", "not_quiescent", "is_stable")
     MIN_POPULATION_ACTIVE = 0.05
     STABILITY_MARGIN = 5.0
     STABILITY_TAIL_MS = 5000.0
-    BURST_MIN_FLOOR_FRACTION = 0.3
+
+    BURST_MIN_FLOOR_FRACTION = measure.BURST_MIN_FLOOR_FRACTION
     NOISE_STD = 0.0003
     NOISE_TOTAL_RANGE: ClassVar[list] = [0.0005, 0.002]
     NOISE_RATIO_RANGE: ClassVar[list] = [8.0, 20.0]
+    NOISE_STD_FRACTION_RANGE: ClassVar[list] = [0.05, 1.0]
+
     NOISE_TAU_RANGES: ClassVar[dict] = {
         "tau_e": [1.0, 100.0],
         "tau_i": [4.0, 100.0],
     }
     EXC_WEIGHT_RANGE: ClassVar[list] = [0.15, 1.0]
     INH_WEIGHT_RANGE: ClassVar[list] = [0.05, 100.0]
-    NMDA_RATIO_RANGE: ClassVar[list] = [4.0, 35.0]
+    NMDA_RATIO_RANGE: ClassVar[list] = [0.2, 1.0]
     RATIO_RANGES: ClassVar[dict] = {
         "excitatory": [0.01, 1000.0],
         "inhibitory": [0.01, 1000.0],
     }
     DEPRESSION_RANGES: ClassVar[dict] = {
         "tau_rec": [300.0, 3000.0],
-        "U": [0.04, 0.5],
+        "U": [0.05, 0.5],
     }
-    ADAPTATION_DECADES = 0.5
-    ADAPTATION_CENTRE: ClassVar[dict] = {
-        "cells-EXC:dend.gmax_CaN": 40.0,
-        "cells-EXC:dend.gmax_KCa": 3.0,
-        "cells-EXC:soma.kCa_Ca_conc": 0.5,
-        "cells-EXC:dend.kCa_Ca_conc": 0.5,
-    }
+    LEADER_RANGES: ClassVar[dict | None] = None
+    UNIT_FEATURES: ClassVar[tuple] = ()
+    LEADER_SELECTION: ClassVar[str] = "hash"
     STRUCTURE_RANGES: ClassVar[dict] = {
-        "EXC->EXC": [5.0, 100.0],
-        "INH->EXC": [12.6, 126.0],
-        "EXC->INH": [1.3, 12.6],
+        "EXC->EXC": [5.0, 200.0],
+        "INH->EXC": [6.3, 252.0],
+        "EXC->INH": [0.65, 25.2],
         "inhibitory_fraction": [0.02, 0.7],
         "sigma": [150.0, 400.0],
     }
@@ -462,6 +521,7 @@ class Culture(Target):
             lambda path: os.path.normpath(path) if path else path
         )
         spec: Spec = Spec()
+        skip_objectives: list[str] = ConfigField(default_factory=list)
         structure: dict[str, tuple[float, float]] | bool = True
         save_spikes: bool | Literal["feasible", "all"] = "all"
 
@@ -494,12 +554,46 @@ class Culture(Target):
             for name, block in sorted((self.document.get("conditions") or {}).items())
         }
 
+    RUNTIME_CONSTANTS: ClassVar[tuple] = (
+        "REBUILD_BUDGET",
+        "REBUILD_LEAK_BYTES_PER_CELL",
+        "RUNTIME_CONSTANTS",
+    )
+
+    def definition(self) -> dict:
+        import dataclasses
+
+        from systems.targets.EI.features import FEATURES
+
+        def plain(value):
+            if value is None or isinstance(value, (bool, int, float, str)):
+                return value
+            if isinstance(value, (list, tuple)):
+                return [plain(v) for v in value]
+            if isinstance(value, Mapping):
+                return {str(k): plain(v) for k, v in value.items()}
+            if callable(value):
+                return f"{getattr(value, '__module__', '')}.{value.__qualname__}"
+            raise TypeError(f"{value!r} is not part of a problem definition")
+
+        cls = type(self)
+        stated = {
+            name: plain(getattr(cls, name))
+            for name in dir(cls)
+            if name.isupper()
+            and name not in self.RUNTIME_CONSTANTS
+            and not isinstance(getattr(cls, name), type)
+        }
+        stated["FEATURES"] = {k: dataclasses.asdict(v) for k, v in FEATURES.items()}
+        return {"target": f"{cls.__module__}.{cls.__qualname__}", **stated}
+
     def on_compute_predicate(self):
         stated = {k: v for k, v in self.settings.items() if k != "observation"}
         return {
             "culture": self.sample,
             "measurement": digest(self.measurement()),
             "problem": digest(stated),
+            "definition": digest(self.definition()),
         }
 
     def version_fit(self, observation: str, **options):
@@ -507,36 +601,109 @@ class Culture(Target):
 
     def system_spec(self):
         spec = self.config.spec
+        metadata = self.document["metadata"]
         fraction = spec.inhibitory_fraction
         composed = (self.config.structure or {}).get(self.COMPOSITION_KEY)
         if composed is not None and fraction is None:
             fraction = math.sqrt(float(composed[0]) * float(composed[1]))
             self._note(
                 f"the composition is searched, so the base spec is drawn at an "
-                f"inhibitory fraction of {fraction:.3f} -- the middle of "
-                f"{list(composed)} -- rather than at the log's label. This "
-                "decides which synapses the weight space has and nothing else: "
-                "every evaluation is run at the fraction its own vector asks "
-                "for, and the label is what the result is checked against."
+                f"inhibitory fraction of {fraction:.3f}"
+            )
+        if fraction is None:
+            fraction = self.plated_inhibitory_fraction
+
+        scale = float(spec.scale)
+        pitch = float(metadata["geometry"]["pitch"][0])
+        boundary = spec.boundary
+        guard = pitch / 2.0 + (0.0 if boundary is None else float(boundary))
+        geo = geometry(metadata, scale=scale, guard=guard)
+        (x0, y0), (x1, y1) = geo["area"]
+        (ix0, iy0), (ix1, iy1) = geo["interior"]
+        widening = ((x1 - x0) * (y1 - y0)) / ((ix1 - ix0) * (iy1 - iy0))
+        total = max(1, round(int(spec.cells) * scale**2 * widening))
+
+        share = {"EXC": 1.0 - float(fraction), "INH": float(fraction)}
+        degrees = {"INH->INH": 0.0, "default": 0.0}
+        for projection, value in (
+            {"EXC->EXC": float(spec.degree)} | self.INHIBITORY_DEGREE
+        ).items():
+            pre, post = projection.split("->")
+            degrees[projection] = (
+                0.0
+                if share[pre] <= 0.0 or share[post] <= 0.0
+                else value * share[pre] / self.DEGREE_REFERENCE[projection]
+            )
+        inhibitory = int(total * share["INH"])
+        if degrees["INH->EXC"] > max(inhibitory, 0) > 0:
+            raise ValueError(
+                f"INH->EXC={degrees['INH->EXC']:.0f} needs at least that many "
+                f"inhibitory cells, but {total} cells at ratio "
+                f"{share['INH']:g} gives {inhibitory}"
             )
 
-        from systems.targets.culture import spec as culture_spec
+        connectivity = {
+            "mean_degree": degrees,
+            "degree_rule": "fixed_probability",
+            "degree_reference": dict(self.DEGREE_REFERENCE),
+        }
+        if spec.sigma is not None:
+            connectivity["sigma"] = float(spec.sigma)
 
-        return culture_spec(
-            self.document["metadata"],
-            self.sample,
-            cells=spec.cells,
-            excitatory_degree=float(spec.degree),
-            scale=float(spec.scale),
-            inhibitory_fraction=fraction,
-            sigma=None if spec.sigma is None else float(spec.sigma),
-            boundary=spec.boundary,
-        )
+        z = float(self.ELECTRODE_HEIGHT_UM)
+        radius = float(self.ELECTRODE_RADIUS_UM)
+        mea = {
+            "electrode_coordinates": [
+                [float(i), float(x), float(y), z]
+                for i, x, y in geometry(metadata, scale=scale)["electrodes"]
+            ],
+            "input_radius": radius,
+            "output_radius": radius,
+        }
+        sample = self.sample
+        return {
+            "cls": "livn.system.Monolayer",
+            "kwargs": {
+                "total_cells": total,
+                "populations": {
+                    "EXC": self.EXCITATORY_CELLS | {"ratio": share["EXC"]},
+                    "INH": self.INHIBITORY_CELLS | {"ratio": share["INH"]},
+                },
+                "connectivity": connectivity,
+                "area": "rectangle",
+                "area_kwargs": {"x_range": [x0, x1], "y_range": [y0, y1]},
+                "boundary": None if boundary is None else geo["margin"],
+                "synapse_overrides": self.SYNAPSE_OVERRIDES,
+                "seed": zlib.crc32(sample.encode()) % 100_000,
+                "name": f"{sample}@{metadata['name']}",
+                "mea": mea,
+            },
+        }
+
+    @property
+    def plated_inhibitory_fraction(self) -> float:
+        composition = composition_of(self.document)
+        if composition is None:
+            raise ValueError(
+                f"{self.config.observation!r} states no composition for {self.sample!r}"
+            )
+        if composition == "E":
+            return 0.0
+        try:
+            excitatory, inhibitory = (float(p) for p in composition.split("/"))
+        except ValueError:
+            raise ValueError(
+                f"composition {composition!r} is neither 'E' nor 'a/b'"
+            ) from None
+        return inhibitory / (excitatory + inhibitory)
 
     def model_spec(self):
         return [
             "livn.models.rcsd.ReducedCalciumSomaDendrite",
-            {"size_cv": float(self.config.spec.size_cv)},
+            {
+                "size_cv": float(self.config.spec.size_cv),
+                "weight_cv": float(self.config.spec.weight_cv),
+            },
         ]
 
     @property
@@ -548,28 +715,32 @@ class Culture(Target):
 
     @property
     def condition(self) -> str:
-        from systems.targets.observation import free_running_block
-
         if "condition" not in self._cache:
-            name = free_running_block(self.document)
+            blocks = self.document.get("conditions") or {}
+            name = next((n for n in FREE_RUNNING if blocks.get(n)), None)
+            if name is None:
+                raise ValueError(
+                    f"{self.config.observation!r} holds no free-running block "
+                    f"({' or '.join(FREE_RUNNING)}) to fit the resting features "
+                    f"to; it has {sorted(blocks)}"
+                )
             if name != "spontaneous":
                 self._note(
                     f"{os.path.basename(self.config.observation)} has no "
-                    f"'spontaneous' block, so the resting features come from "
-                    f"{name!r} -- which mixes quiet and active windows, and "
-                    "whose widened bands admit an asynchronous network."
+                    f"'spontaneous' block, so the resting features come from {name!r}"
                 )
             self._cache["condition"] = name
         return self._cache["condition"]
 
     @property
     def sample(self) -> str:
-        from systems.targets.observation import sample_of
-
-        try:
-            return sample_of(self.document)
-        except ValueError as _ex:
-            raise ValueError(f"{self.config.observation!r}: {_ex}") from _ex
+        named = {sample for sample, _ in logged(self.document)}
+        if len(named) != 1:
+            raise ValueError(
+                f"{self.config.observation!r} reads as {sorted(named) or 'no'} "
+                "sample(s) of the experiment log, so a network cannot be drawn"
+            )
+        return next(iter(named))
 
     def _configure(self):
         self._targets = {"mfr": 1.0, "isi_cv": 1.2, "active_fraction": 1.0}
@@ -579,7 +750,7 @@ class Culture(Target):
         self.stimulus_threshold: dict = {}
         self.response_kwargs: dict = {}
         self.response_blank_ms = (0.0, 0.0)
-        self.skip_objectives: tuple[str, ...] = ()
+        self.skip_objectives: tuple[str, ...] = tuple(self.config.skip_objectives)
         self.recording_duration = 20_000.0
         self.warmup_duration = 1_000.0
         self.skip_constraints = ("avalanche_r2",)
@@ -590,29 +761,28 @@ class Culture(Target):
         self._sigma_ceiling = sentinel
         self._depression_keys: list[str] = []
         self._weight_space_cache: dict[str, list] | None = None
+        self._weight_space_model = False
         self._weight_reference: str | None = None
         self._reset_state()
 
         self._measure(self.config.observation, self.condition)
+        self._gates_from_bands()
 
     def _measure(self, observation: str, condition: str) -> None:
         from livn.system import resolve
-        from systems.targets.observation import measured_options
 
         spec = self.system
         if isinstance(spec, Mapping):
             self.mea = spec.get("kwargs", {}).get("mea")
+        if self.mea is None:
+            raise ValueError(
+                "the spec carries no `mea`, so there are no electrodes to read "
+                "the culture's channel features on"
+            )
 
-        options = measured_options(
-            observation,
-            condition,
-            self.mea,
-            resolve(spec),
-            readout=self.READOUT,
-            skip_constraints=list(self.skip_constraints),
-        )
-
-        for name, value in options.items():
+        block = read_target(observation, condition)
+        measured = block.ei_targets
+        for name, value in measured.items():
             if not name.isupper():
                 continue
             if name not in self.MEASURED_GATES:
@@ -623,13 +793,40 @@ class Culture(Target):
                 )
             setattr(self, name.lower(), value)
 
-        self._targets = {**self._targets, **options["targets"]}
-        self.feature_bands = {
-            name: (float(lo), float(hi))
-            for name, (lo, hi) in options["feature_bands"].items()
-        }
+        targets = dict(measured["targets"])
+        lo, hi = measured.get("SYNCHRONY_BAND") or (0.0, 1.0)
+        if lo > 0.0 and hi >= 0.01:  # a correlation measurably above zero
+            targets["mean_channel_correlation"] = float((lo + hi) / 2.0)
+        self._targets = {**self._targets, **targets}
+
+        blocks = len(block.summary.recordings)
+        if blocks < 2:
+            note(
+                f"{os.path.basename(observation)} pools one recording block, so "
+                "its quantiles never saw the drift between blocks; bands taken "
+                "from the extremes of that block instead"
+            )
+        self.feature_bands = {}
+        for name, stat in block.summary.features.items():
+            if stat is None or name in self.skip_constraints:
+                continue
+            lo, hi = stat.q_lo, stat.q_hi
+            if lo is None or hi is None:
+                continue
+            if blocks < 2 and stat.min is not None and stat.max is not None:
+                lo, hi = min(lo, stat.min), max(hi, stat.max)
+            lo, hi = float(lo), float(hi)
+            if name == "pop_autocorr_tau":
+                # no narrower than the decoder resolves: four 10 ms bins
+                floor = 40.0
+                if hi - lo < floor:
+                    centre = 0.5 * (lo + hi)
+                    lo, hi = centre - floor / 2.0, centre + floor / 2.0
+                lo = max(0.0, lo)
+            self.feature_bands[name] = (lo, hi)
 
         self._score_anatomy(observation, condition)
+        self._score_units(observation)
         self._deliver_evoked(observation)
 
         extracted = (
@@ -652,9 +849,35 @@ class Culture(Target):
         system = resolve(spec)
         self._note(f"{system!r}, {len(electrodes)} electrodes, uuid {system.uuid}")
 
-    def _score_anatomy(self, observation: str, condition: str) -> None:
-        from systems.targets.schema import read_target
+    def _gates_from_bands(self) -> None:
+        bands = self.feature_bands
 
+        def widened(name):
+            lo, hi = bands[name]
+            slack = (hi - lo) / 2.0
+            return max(lo - slack, 0.0), hi + slack
+
+        if "mean_channel_correlation" in bands:
+            self.synchrony_band = widened("mean_channel_correlation")
+        if "max_synchronous_peak" in bands:
+            self.min_sync_peak, self.max_sync_peak = widened("max_synchronous_peak")
+        if "pop_autocorr_tau" in bands:
+            self.pop_tau_band_ms = widened("pop_autocorr_tau")
+        if "burst_rate" in bands:
+            self.min_burst_rate_hz, self.max_burst_rate_hz = widened("burst_rate")
+        if "mfr" in bands:
+            self.min_mean_rate_hz, self.max_mean_rate_hz = widened("mfr")
+            self.min_pop_rate_per_unit_hz, self.max_pop_rate_per_unit_hz = widened(
+                "mfr"
+            )
+        if "max_neuron_firing_rate" in bands:
+            self.max_neuron_rate_hz = widened("max_neuron_firing_rate")[1]
+        if "branching_ratio" in bands:
+            self.branching_ratio_band = widened("branching_ratio")
+        if "active_fraction" in bands:
+            self.min_active_fraction = widened("active_fraction")[0]
+
+    def _score_anatomy(self, observation: str, condition: str) -> None:
         summary = read_target(observation, condition).summary
         features = summary.features
         floor = self.ANATOMY_MIN_WINDOW_FRACTION * max(int(summary.n_windows), 1)
@@ -699,9 +922,31 @@ class Culture(Target):
             dict.fromkeys(self.skip_objectives + tuple(observed))
         )
 
-    def _deliver_evoked(self, observation: str) -> None:
-        from systems.targets.schema import read_target
+    def _score_units(self, observation) -> None:
+        """Targets from a spike sort of the recording; this target scores none."""
 
+    def _unit_metrics(self, network, data, duration: int) -> dict:
+        from livn.decoding import RecruitmentOrder
+
+        units = network.io.strongest_units(
+            network.active_neuron_coordinates(), network.recording_amplitudes()
+        )
+        gids = np.asarray(sorted(set(units.values())), dtype=np.int64)
+        it = np.asarray(
+            data.spike_ids if data.spike_ids is not None else [], dtype=np.int64
+        )
+        tt = np.asarray(
+            data.spike_times if data.spike_times is not None else [], dtype=np.float64
+        )
+        keep = np.isin(it, gids)
+        return (
+            RecruitmentOrder(duration=duration)(
+                data.add_spikes(it[keep], tt[keep]), network
+            )
+            or {}
+        )
+
+    def _deliver_evoked(self, observation: str) -> None:
         why = None
         try:
             block = read_target(observation, "evoked")
@@ -756,22 +1001,20 @@ class Culture(Target):
         self.simulated_ms: int = 0
         self.evoked_recorded: bool = False
 
+    DETECTION_THRESHOLD = 0.2
+
     def io(self):
         if not self.mea:
             return None
         from livn.io import MEA
 
-        return MEA.from_json(self.mea)
+        mea = MEA.from_json(self.mea)
+        mea.detection_threshold = float(self.DETECTION_THRESHOLD)
+        return mea
 
     def init(self, env):
-        if self.READOUT == "channels" and not len(getattr(env.io, "channel_ids", ())):
-            raise RuntimeError("readout='channels' needs an `mea`.")
-        if self.stimulus is not None and self.READOUT != "channels":
-            raise RuntimeError(
-                f"a stimulated target reads out through the array, not "
-                f"{self.READOUT!r}; pass readout='channels' with the recording "
-                "set's `mea`"
-            )
+        if not len(getattr(env.io, "channel_ids", ())):
+            raise RuntimeError("the channel readout needs an `mea`.")
         self._env = env
         return with_progress_logging(env)
 
@@ -870,9 +1113,20 @@ class Culture(Target):
             return section
         return env.destination_sections().get(population, {}).get(section, section)
 
+    def _model_for(self, model):
+        if model is not None:
+            return model
+        return getattr(getattr(self, "_env", None), "model", None)
+
     def _weight_space(self, model) -> dict[str, list]:
-        if self._weight_space_cache is not None:
-            return self._weight_space_cache
+        model = self._model_for(model)
+        cached = self._weight_space_cache
+
+        if cached is not None and (
+            getattr(self, "_weight_space_model", False) or model is None
+        ):
+            return cached
+        self._depression_keys = []
 
         env = self._env_for_naming(model)
 
@@ -970,6 +1224,7 @@ class Culture(Target):
                     weights[key] = bounds
 
         self._weight_space_cache = weights
+        self._weight_space_model = model is not None
         return weights
 
     @staticmethod
@@ -986,9 +1241,10 @@ class Culture(Target):
         )
 
     def _resolve_depression(self, decoded: dict, model) -> dict:
-        self._weight_space(model)  # populates `_depression_keys`
+        model = self._model_for(model)
+        self._weight_space(model)
         if not any(name.endswith("-weight") for name in decoded):
-            return decoded  # a vector with no synapses in it, e.g. a cell fit
+            return decoded
         resolved = dict(decoded)
         mirrors = [r for r in self._depressing_receptors(model) if r != "AMPA"]
         if not mirrors:
@@ -1002,7 +1258,22 @@ class Culture(Target):
         return resolved
 
     def decode_params(self, params: dict, model=None, strict: bool = False) -> dict:
+        model = self._model_for(model)
+        transforms, _, _ = self._space_metadata(model)
+        undecodable = sorted(
+            name
+            for name in params
+            if name.rpartition("-")[2] in self.DEPRESSION_RANGES
+            and name not in transforms
+        )
+        if undecodable:
+            raise ValueError(
+                f"{undecodable} have no transform in this target's space, so they "
+                "would reach the synapses at their encoded value"
+            )
         decoded = super().decode_params(params, model=model, strict=strict)
+        if self.LEADER_RANGES and self.LEADER_SELECTION == "input":
+            decoded["leaders-by_input"] = 1.0
         decoded = self._resolve_noise_drive(decoded)
         decoded = self._resolve_noise_std(decoded)
         decoded = self._resolve_depression(decoded, model)
@@ -1074,32 +1345,13 @@ class Culture(Target):
 
         space.update(self._structure_space())
 
-        if model is None:
-            model = getattr(self._env, "model", None)
-
-        fitted = {}
-        if model is not None and hasattr(model, "params"):
-            try:
-                fitted = model.params("BoothRinzelKiehn-MN") or {}
-            except (KeyError, ValueError, TypeError):
-                fitted = {}
-        if not fitted:
-            raise ValueError(
-                "the model exposes no 'BoothRinzelKiehn-MN' parameters to "
-                "centre the adaptation bounds on; the search would silently "
-                "drop these dimensions"
+        for name, box in (self.LEADER_RANGES or {}).items():
+            lo, hi = float(box[0]), float(box[1])
+            log = len(box) > 2 and box[2] == "log"
+            space[f"leaders-{name}"] = (
+                [lo, hi, self.transform_log10] if log else [lo, hi]
             )
 
-        span = 10.0**self.ADAPTATION_DECADES
-        for key, name in self.ADAPTATION_PARAMS.items():
-            value = fitted.get(name)
-            if value is None or float(value) <= 0.0:
-                raise ValueError(
-                    f"{name!r} is {value!r}; a log-scaled bound needs a "
-                    "positive fitted value to centre on"
-                )
-            value = float(value) * float(self.ADAPTATION_CENTRE.get(key, 1.0))
-            space[key] = [value / span, value * span, self.transform_log10]
         return space
 
     REBUILD_LEAK_BYTES_PER_CELL = 580.0
@@ -1170,10 +1422,7 @@ class Culture(Target):
                 if lo >= ceiling:
                     raise ValueError(
                         f"this culture is periodic and {min(lo, hi):g} um is "
-                        f"already past the {ceiling:g} um its box can carry "
-                        "(a torus must be at least four sigma across or the "
-                        "kernel wraps onto itself). Lower the sigma "
-                        "range, widen the area, or give the spec a guard"
+                        f"already past the {ceiling:g}"
                     )
                 hi = ceiling
             space[f"{self.STRUCTURE_PREFIX}{name}"] = [
@@ -1189,6 +1438,22 @@ class Culture(Target):
             return sigma
         return min(sigma, ceiling * (1.0 - 1e-9))
 
+    @staticmethod
+    def _degree_at(projection: str, value: float, connectivity: dict, fraction):
+        if fraction is None:
+            return value
+        if connectivity.get("degree_rule") == "fixed_degree":
+            return value
+        reference = (connectivity.get("degree_reference") or {}).get(projection)
+        if not reference:
+            return value
+
+        pre = projection.split("->")[0]
+        share = float(fraction) if pre == "INH" else 1.0 - float(fraction)
+        if share <= 0.0:
+            return 0.0
+        return value * share / float(reference)
+
     def restructured(self, structural: dict) -> dict | None:
         if not structural:
             return None
@@ -1197,8 +1462,7 @@ class Culture(Target):
         if not (isinstance(base, Mapping) and "cls" in base):
             raise ValueError(
                 f"{sorted(structural)} ask for a different system, but this "
-                f"target was handed {base!r} rather than a spec, so there is "
-                "nothing to restructure. Fit from a spec, or drop `structure`."
+                f"target was handed {base!r} rather than a spec"
             )
 
         from livn.types import _plain
@@ -1212,11 +1476,15 @@ class Culture(Target):
         if fraction is not None:
             kwargs["populations"] = self._composed(kwargs.get("populations"), fraction)
 
+        share = fraction if fraction is not None else self._spec_fraction(kwargs)
+
         for name, value in structural.items():
             if name == self.COMPOSITION_KEY:
                 continue
             if name == "sigma":
                 connectivity["sigma"] = self._constructible_sigma(float(value))
+            elif name == "velocity":
+                connectivity["velocity"] = float(value)
             elif "->" in name:
                 if name not in degrees:
                     raise ValueError(
@@ -1224,18 +1492,32 @@ class Culture(Target):
                         f"{sorted(degrees)}"
                     )
                 if fraction is not None or degrees[name] > 0.0:
-                    degrees[name] = float(value)
+                    degrees[name] = self._degree_at(
+                        name, float(value), connectivity, share
+                    )
             else:
                 raise ValueError(
                     f"{name!r} is not a structural parameter; expected "
-                    f"{self.COMPOSITION_KEY!r}, 'sigma', or a projection such "
-                    "as 'EXC->EXC'"
+                    f"{self.COMPOSITION_KEY!r}, 'sigma', 'velocity', or a "
+                    "projection such as 'EXC->EXC'"
                 )
         if degrees:
             connectivity["mean_degree"] = self._realisable(
                 degrees, kwargs.get("total_cells"), kwargs.get("populations")
             )
         return spec
+
+    @staticmethod
+    def _spec_fraction(kwargs: dict) -> float | None:
+        """The inhibitory fraction a spec is built at, if it names both."""
+        populations = kwargs.get("populations") or {}
+        if not {"EXC", "INH"} <= set(populations):
+            return None
+        ratios = {
+            p: float((populations[p] or {}).get("ratio") or 0.0) for p in ("EXC", "INH")
+        }
+        total = ratios["EXC"] + ratios["INH"]
+        return ratios["INH"] / total if total > 0.0 else None
 
     def _composed(self, populations, fraction: float) -> dict:
         populations = {p: dict(v) for p, v in (populations or {}).items()}
@@ -1316,6 +1598,10 @@ class Culture(Target):
         drive = {
             "noise-g_total": [*self.NOISE_TOTAL_RANGE, self.transform_log10],
             "noise-g_ratio": [*self.NOISE_RATIO_RANGE, self.transform_log10],
+            "noise-std_fraction": [
+                *self.NOISE_STD_FRACTION_RANGE,
+                self.transform_log10,
+            ],
         }
         tau_e_lo, tau_e_hi = self.NOISE_TAU_RANGES["tau_e"]
         tau_i_lo, tau_i_hi = self.NOISE_TAU_RANGES["tau_i"]
@@ -1355,7 +1641,9 @@ class Culture(Target):
 
     def _resolve_noise_std(self, decoded: dict) -> dict:
         if not any(name.startswith("noise-") for name in decoded):
-            return decoded  # a vector with no background at all, e.g. a cell fit
+            return decoded
+        if "noise-std_e" in decoded and "noise-std_i" in decoded:
+            return decoded
         return {**decoded, "noise-std_e": self.NOISE_STD, "noise-std_i": self.NOISE_STD}
 
     def __call__(self, env, params=None, directory=None):
@@ -1385,11 +1673,11 @@ class Culture(Target):
                 self._log_ratio_objective(
                     float(self.metrics.get(name, float("nan"))),
                     float(targets[name]),
-                    floor,
+                    feature(name).floor,
                 ),
                 float(self.metrics.get(name, float("nan"))),
             )
-            for name, floor in self.RESPONSE_OBJECTIVE_EPS.items()
+            for name in self.RESPONSE_OBJECTIVES
             if name in targets and name not in self.skip_objectives
         }
         self.objectives = {**self.objectives, **scored}
@@ -1553,24 +1841,34 @@ class Culture(Target):
         self.metrics["population_liveness"] = liveness.get("mean_active_fraction", {})
 
         network = env
+        if self.UNIT_FEATURES:
+            units = self._unit_metrics(network, recording_data, d)
+            self.metrics["recruitment_order"] = units
+            for name in self.UNIT_FEATURES:
+                value = float(units.get(name, float("nan")))
+                self.metrics[name] = value
+                if feature(name).scale is not None:
+                    scale = float(feature(name).scale)
+                    measured = 0.0 if np.isnan(value) else value
+                    objective = float(((measured - float(targets[name])) / scale) ** 2)
+                else:
+                    objective = self._log_ratio_objective(
+                        value, float(targets[name]), feature(name).floor
+                    )
+                result[name] = (objective, value)
         env, recording_data = self._readout(env, recording_data)
-        it = recording_data.spike_ids
 
-        local_count = int(len(it) if it is not None else 0)
-        total_spike_count = P.reduce_sum(
-            np.array(local_count, dtype=np.int64), comm=env.comm, all=True
-        )
-        total_spike_count = int(
-            getattr(total_spike_count, "item", lambda: total_spike_count)()
-        )
+        measured = resting_features(recording_data, env, d)
+        total_spike_count = measured.pop("total_spikes")
         self.metrics["total_spikes"] = total_spike_count
-        enough_spikes = total_spike_count >= self.MIN_SPIKE_COUNT_FOR_METRICS
-        self.metrics["enough_spikes_for_network_metrics"] = enough_spikes
+        self.metrics["enough_spikes_for_network_metrics"] = (
+            total_spike_count >= self.MIN_SPIKE_COUNT_FOR_METRICS
+        )
+        self.metrics.update(measured)
+        if np.isnan(self.metrics["pop_autocorr_tau"]):
+            self.metrics["pop_autocorr_tau"] = 10.0
 
-        mfr_result = MeanFiringRate(duration=d)(recording_data, env) or {}
-        mfr = float(mfr_result.get("rate_hz", 0.0))
-        self.metrics["mfr"] = mfr
-
+        mfr = float(self.metrics["mfr"])
         eps = 1e-3
         mfr_target = float(targets["mfr"])
         mfr_obj = float(np.log((max(mfr, 0.0) + eps) / (mfr_target + eps)) ** 2)
@@ -1588,84 +1886,15 @@ class Culture(Target):
         self.metrics["is_stable"] = (
             bool(stability_result["is_stable"]) if stability_result else False
         )
-
         pop_rate = float((stability_result or {}).get("global_mean_hz", 0.0))
         self.metrics["pop_rate_hz"] = pop_rate
         self.metrics["pop_rate_per_unit_hz"] = pop_rate / n_units
 
-        per_unit = PerUnitFiringRate(duration=d)(recording_data, env) or {}
-        self.metrics["per_unit_rates_hz"] = per_unit.get("per_unit_rates_hz", {})
-        self.metrics["max_neuron_firing_rate"] = float(per_unit.get("max_rate_hz", 0.0))
+        isi_cv = float(self.metrics["isi_cv"])
+        result["isi_cv"] = ((isi_cv - float(targets["isi_cv"])) ** 2, isi_cv)
 
-        isi_result = ISICV(duration=d, min_spikes_per_unit=5)(recording_data, env) or {}
-        isi_cv = float(isi_result.get("isi_cv", 0.0))
-        self.metrics["isi_cv"] = isi_cv
-        self.metrics["isi_cv_n_units_used"] = int(isi_result.get("n_units_used", 0))
-
-        isi_target = float(targets["isi_cv"])
-        result["isi_cv"] = ((isi_cv - isi_target) ** 2, isi_cv)
-
-        pop_metrics = (
-            PopulationRateMetrics(duration=d, bin_size=100.0)(recording_data, env) or {}
-        )
-        self.metrics["coefficient_of_variation"] = float(
-            pop_metrics.get("coefficient_of_variation", 0.0)
-        )
-        self.metrics["fano_factor"] = float(pop_metrics.get("fano_factor", 0.0))
-
-        tau_result = (
-            PopulationAutocorrTau(duration=d, bin_size=10.0, max_lag=5000.0)(
-                recording_data, env
-            )
-            or {}
-        )
-        self.metrics["pop_autocorr_tau"] = float(
-            tau_result.get("pop_autocorr_tau", 10.0)
-        )
-
-        if enough_spikes:
-            corr_result = (
-                PairwiseChannelCorrelation(duration=d, bin_size=10.0, min_units=2)(
-                    recording_data, env
-                )
-                or {}
-            )
-            self.metrics["mean_channel_correlation"] = float(
-                corr_result.get("mean_pairwise_correlation", 0.0)
-            )
-        else:
-            self.metrics["mean_channel_correlation"] = float("nan")
-
-        peak_result = PeakSynchrony(duration=d, bin_size=2.0)(recording_data, env) or {}
-        self.metrics["max_synchronous_peak"] = float(
-            peak_result.get("max_synchronous_peak", 0.0)
-        )
-
-        burst_result = (
-            BurstRate(
-                duration=d,
-                bin_size=50.0,
-                mad_k=3.0,
-                min_floor_fraction=float(self.BURST_MIN_FLOOR_FRACTION),
-                min_floor=2.0,
-            )(recording_data, env)
-            or {}
-        )
-        self.metrics["burst_rate"] = float(burst_result.get("burst_rate_hz", 0.0))
-
-        anatomy = BurstAnatomy(duration=d)(recording_data, env)
-        self.metrics["burst_anatomy"] = anatomy or {}
-        for name in self.ANATOMY_FEATURES:
-            self.metrics[name] = float((anatomy or {}).get(name, float("nan")))
-
-        active_result = (
-            ActiveFraction(duration=d, min_spikes=1)(recording_data, env) or {}
-        )
-        active_fraction = float(active_result.get("active_fraction", 0.0))
-        self.metrics["active_fraction"] = active_fraction
-
-        af_target = float(targets["active_fraction"])
-        af_obj = (af_target - active_fraction) ** 2
+        active_fraction = float(self.metrics["active_fraction"])
+        af_obj = (float(targets["active_fraction"]) - active_fraction) ** 2
         result["active_fraction"] = (af_obj, active_fraction)
 
         if "mean_channel_correlation" in targets:
@@ -1679,32 +1908,20 @@ class Culture(Target):
         if self.stimulus is not None:
             result["stimulus_threshold"] = self._threshold_objective(network)
 
-        for table, unmeasured in (
-            (self.BURST_OBJECTIVE_EPS, 0.0),
-            (self.RESPONSE_OBJECTIVE_EPS, float("nan")),
+        for names, unmeasured in (
+            (self.BURST_OBJECTIVES, 0.0),
+            (self.RESPONSE_OBJECTIVES, float("nan")),
         ):
-            for name, floor in table.items():
+            for name in names:
                 if name not in targets:
                     continue
                 value = float(self.metrics.get(name, unmeasured))
                 result[name] = (
-                    self._log_ratio_objective(value, float(targets[name]), floor),
+                    self._log_ratio_objective(
+                        value, float(targets[name]), feature(name).floor
+                    ),
                     value,
                 )
-
-        avalanche_result = None
-        if total_spike_count > 0:
-            n_bins_target = max(50, total_spike_count // 15)
-            adaptive_bin_width = max(4.0, min(d / n_bins_target, 50.0))
-            avalanche_result = AvalancheAnalysis(
-                duration=d, bin_width=adaptive_bin_width
-            )(recording_data, env)
-
-        sigma = float((avalanche_result or {}).get("branching_ratio", 0.0) or 0.0)
-        r2 = float((avalanche_result or {}).get("size_power_law_r2", 0.0) or 0.0)
-        self.metrics["branching_ratio"] = sigma
-        self.metrics["avalanche_r2"] = r2
-        self.metrics["avalanche_result"] = avalanche_result
 
         result = {
             name: value
@@ -1819,9 +2036,6 @@ class Culture(Target):
         return (1e3 if np.isnan(scored) else float(scored), miss)
 
     def _readout(self, env, data):
-        if self.READOUT != "channels":
-            return env, data
-
         _, per_channel = env.channel_recording(data.spike_ids, data.spike_times)
         if per_channel:
             it = np.concatenate(

@@ -202,24 +202,22 @@ This is unaffected by the prefixes above as whatever the target does not consume
 
 ## Built-in targets
 
-### `targets.EI` (`Culture`)
+### The motoneuron cultures: `targets.EI`
 
-The default target for cultures measures a free-running network and scores it against a handful of values you can set. Give it a `stimulus` and it also delivers a pulse train after the measured window and fits the network's recruitment curve, read with `livn.decoding.RecruitmentCurve`.
+`systems/targets/EI/` holds the targets the spinal motoneuron cultures were fitted with, the optimizer results behind the promoted solutions (`fronts/`), how each culture feature is measured (`measure.py`) and scored (`features.py`), and the format of a recording's unit-level targets (`units.py`).
 
-**Objectives** — squared distance between the measured value and its target. `mfr`, `isi_cv` and `active_fraction` are always scored; the burst family is scored wherever the culture bursts, and where it does not, `fano_factor`, `mean_channel_correlation` and `max_synchronous_peak` are scored in its place.
+| Target | Culture | Objectives | Promoted |
+|--------|---------|------------|----------|
+| `targets.EI` (`MixedCulture`) | 75/25, 50/50: motoneurons with Renshaw inhibition | median unit rate, unit rate CV, pair correlation, coordination excess | `livn.make("EI")`, `"EI-1000"`, `"EI-470"` |
+| `targets.EI.bursting` (`BurstingCulture`) | E only: network bursts | unit participation, recruitment-order spread, pair correlation, population autocorrelation time | |
+| `targets.EI.base` (`Culture`) | any, channel-level | the culture's channel features | |
 
-**Constraints**
+```sh
+livn systems tune "~fit('…/5050_5050-sample1_15.json', frozen='e.json', free=['noise-g_total'])" --launch
+livn systems tune "~fit('…/E_E-sample1_14.json', target='targets.EI.bursting')" --launch
+```
 
-| Constraint | Constants |
-|------------|-----------|
-| not runaway / not quiescent / is stable | `MAX_POP_RATE_PER_UNIT_HZ`, `MIN_POP_RATE_PER_UNIT_HZ`, `STABILITY_MARGIN` |
-| firing rates in band | `MAX_NEURON_RATE_HZ`, `MIN_MEAN_RATE_HZ`, `MAX_MEAN_RATE_HZ` |
-| synchrony | `SYNCHRONY_BAND`, `MIN_SYNC_PEAK`, `MAX_SYNC_PEAK` |
-| bursting | `MIN_BURST_RATE_HZ`, `MAX_BURST_RATE_HZ` |
-| liveness | `MIN_ACTIVE_FRACTION`, `MIN_POPULATION_ACTIVE` |
-| timescale and criticality | `POP_TAU_BAND_MS`, `BRANCHING_RATIO_BAND`, `MIN_AVALANCHE_R2` |
-
-**Search space** - the recurrent excitatory weight is searched on its own scale and every other weight as a ratio to it (`...-weight_ratio`), which keeps the E/I balance separable from the overall drive; the OU background is searched as a total conductance and an I:E ratio (`noise-g_total`, `noise-g_ratio`) with the two correlation times, the vesicle pool as `U` and `tau_rec`, and the cell's calcium-dependent adaptation half a decade each side of the culture-like cell. With an evoked block it also searches the stimulation gain.
+`targets.EI.base` is the channel-level culture target the others build on. It scores the channel features and searches the recurrent excitatory weight on its own scale with every other weight as a ratio to it, the OU background as a total conductance and an I:E ratio, the vesicle pool as `U` and `tau_rec`, and with an evoked block the stimulation gain.
 
 ## Tuning against your own measurements
 
@@ -419,7 +417,7 @@ livn systems tune '~ca1(selection="e1")' max_nodes=1 --sizing
 from machinable import get
 
 tuner = get("tune", {
-    "target": ["targets.EI", {"observation": "…/E_E-sample2_15.json"}],
+    "target": ["targets.EI.bursting", {"observation": "…/E_E-sample2_15.json"}],
     "trials": 1,
 })
 tuner.launch()
