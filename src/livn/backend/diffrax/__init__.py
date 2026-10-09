@@ -465,14 +465,28 @@ class Env(EnvProtocol):
                 as_gid(it), tt, padded=getattr(self.module, "padded_spikes", False)
             )
         if "voltage" in record:
-            run = run.add_voltage(as_gid(iv), v, dt=dt)
+            run = run.add_voltage(as_gid(iv), v, dt=dt, sections=self._row_sections(iv))
         if "membrane_current" in record:
-            run = run.add_current(as_gid(im), mp, dt=dt)
+            run = run.add_current(
+                as_gid(im), mp, dt=dt, sections=self._row_sections(im)
+            )
 
         for name, (ids, values) in states.items():
             run = run.add(name, as_gid(ids), values, dt=dt, kind="series")
 
         return run
+
+    def _row_sections(self, ids):
+        names = getattr(self.module, "section_names", None)
+        if ids is None or not names:
+            return None
+        n = int(np.shape(ids)[0])
+        if n % len(names):
+            raise ValueError(
+                f"{type(self.module).__name__} names {len(names)} sections per cell "
+                f"but returned {n} rows"
+            )
+        return np.tile(np.asarray(names), n // len(names))
 
     def _module_index_to_gid(self, indices):
         if indices is None:

@@ -493,11 +493,11 @@ class Run:
             return self
         return self.add("voltage", ids, values, dt=dt, kind="series", sections=sections)
 
-    def add_current(self, ids, values, dt: float = 0.1) -> Run:
+    def add_current(self, ids, values, dt: float = 0.1, sections=None) -> Run:
         """Add the ``current`` channel, or nothing when it was not recorded"""
         if ids is None and values is None:
             return self
-        return self.add("current", ids, values, dt=dt, kind="series")
+        return self.add("current", ids, values, dt=dt, kind="series", sections=sections)
 
     def drop(self, name: str) -> Run:
         """Return a copy of this run without ``name``"""
@@ -569,6 +569,10 @@ class Run:
     @property
     def current(self):
         return self.values("current")
+
+    @property
+    def current_sections(self):
+        return self.sections("current")
 
     @property
     def current_dt(self) -> float | None:
@@ -768,13 +772,24 @@ def _events_unflatten(aux, children) -> Events:
 
 
 def _series_flatten(series: Series):
-    return (series.ids, series.values), (series.dt, series.t0)
+    sections = (
+        None
+        if series.sections is None
+        else tuple(str(s) for s in numpy.asarray(series.sections).tolist())
+    )
+    return (series.ids, series.values), (series.dt, series.t0, sections)
 
 
 def _series_unflatten(aux, children) -> Series:
     ids, values = children
-    dt, t0 = aux
-    return Series(ids=ids, values=values, dt=dt, t0=t0)
+    dt, t0, sections = aux
+    return Series(
+        ids=ids,
+        values=values,
+        dt=dt,
+        t0=t0,
+        sections=None if sections is None else numpy.asarray(sections),
+    )
 
 
 def _run_flatten(run: Run):

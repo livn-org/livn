@@ -828,13 +828,18 @@ class Env(EnvProtocol):
                         series = pad
                     elif series.shape[0] > T:
                         series = series[:T]
-                    currents[idx, :] = series
+                    currents[idx * sections_per_neuron, :] = series
 
-        # one gid per current row, so each row finds its section's coordinate
+        sections = (
+            np.tile(np.asarray(["soma", "dend"]), n_neurons)
+            if has_compartments
+            else None
+        )
         return run.add_current(
             np.repeat(all_gids, sections_per_neuron),
             currents,
             dt=self.membrane_current_recording_dt,
+            sections=sections,
         )
 
     def _iter_stdp_synapses(self):

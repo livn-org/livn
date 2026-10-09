@@ -753,13 +753,13 @@ class Env(EnvProtocol):
             self._advance(n_steps, end_step)
 
         self.t = current_time + duration
-        ii, tt, iv, v, sv, im, mp = self._collect(current_time)
+        ii, tt, iv, v, sv, im, mp, sm = self._collect(current_time)
         self.duration = None
         return (
             Run(t0=current_time, duration=duration)
             .add_spikes(ii, tt)
             .add_voltage(iv, v, dt=self.voltage_recording_dt, sections=sv)
-            .add_current(im, mp, dt=self.membrane_current_recording_dt)
+            .add_current(im, mp, dt=self.membrane_current_recording_dt, sections=sm)
         )
 
     def _advance(self, n_steps: int, end_step: int) -> None:
@@ -808,7 +808,7 @@ class Env(EnvProtocol):
         else:
             iv = v = sv = None
 
-        im = mp = None
+        im = mp = sm = None
         lengths = [
             lib.rcsd_current_record_length(sim, trace) for trace in self.i_recs.values()
         ]
@@ -818,10 +818,17 @@ class Env(EnvProtocol):
                 :, 0
             ].astype(np.int32)
             mp = np.zeros((len(im), T), dtype=np.float32)
+            names = []
             section_of: dict[int, int] = {}
             for row, gid in enumerate(im):
                 sec_id = section_of.get(int(gid), 0)
                 section_of[int(gid)] = sec_id + 1
+                cell = self._find_cell(int(gid))
+                names.append(
+                    cell.section_names[sec_id]
+                    if cell is not None and sec_id < len(cell.section_names)
+                    else str(sec_id)
+                )
                 trace = self.i_recs.get((int(gid), sec_id))
                 if trace is None:
                     continue
@@ -829,7 +836,8 @@ class Env(EnvProtocol):
                 arr = L.copy_doubles(lib.rcsd_current_record(sim, trace), m) * 1e-3
                 k = min(arr.shape[0], T)
                 mp[row, :k] = arr[:k]
-        return ii, tt, iv, v, sv, im, mp
+            sm = np.asarray(names)
+        return ii, tt, iv, v, sv, im, mp, sm
 
     def apply_init_ic(self) -> None:
         """Pin each cell's resting current (the library does it at init as well)."""

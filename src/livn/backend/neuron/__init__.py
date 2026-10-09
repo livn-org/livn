@@ -237,6 +237,7 @@ class Env(EnvProtocol):
         self.v_sections: dict[tuple[int, int], str] = {}
         self.v_dt: dict[str, float] = {}
         self.i_recs: dict[tuple[int, int], object] = {}
+        self.i_sections: dict[tuple[int, int], str] = {}
         self.i_dt: dict[str, float] = {}
 
         # sim state
@@ -592,6 +593,7 @@ class Env(EnvProtocol):
                 vec = self._h.Vector()
                 vec.record(sec(0.5)._ref_i_membrane_, dt)
                 self.i_recs[(int(gid), sec_id)] = vec
+                self.i_sections[(int(gid), sec_id)] = sec.name().split(".")[-1]
         return self
 
     def clear_recordings(self) -> Self:
@@ -685,14 +687,14 @@ class Env(EnvProtocol):
             self.pc.psolve(target_time)
         self.t = target_time
 
-        ii, tt, iv, v, sv, im, mp = self._collect(current_time)
+        ii, tt, iv, v, sv, im, mp, sm = self._collect(current_time)
         self.duration = None
 
         return (
             Run(t0=current_time, duration=duration)
             .add_spikes(ii, tt)
             .add_voltage(iv, v, dt=self.voltage_recording_dt, sections=sv)
-            .add_current(im, mp, dt=self.membrane_current_recording_dt)
+            .add_current(im, mp, dt=self.membrane_current_recording_dt, sections=sm)
         )
 
     def _collect(self, current_time: float):
@@ -712,7 +714,7 @@ class Env(EnvProtocol):
         else:
             iv = v = sv = None
 
-        im = mp = None
+        im = mp = sm = None
         T = max((len(rec) for rec in self.i_recs.values()), default=0)
         if T:
             im = np.asarray(self.recording_coordinates(simulated_only=True))[
@@ -720,18 +722,30 @@ class Env(EnvProtocol):
             ].astype(np.int32)
             # i_membrane_ (fast_imem) is absolute nA per segment -> microampere
             mp = np.zeros((len(im), T), dtype=np.float32)
+            names = []
             section_of = {}
             for row, gid in enumerate(im):
                 sec_id = section_of.get(int(gid), 0)
                 section_of[int(gid)] = sec_id + 1
+                names.append(self._section_name(int(gid), sec_id))
                 rec = self.i_recs.get((int(gid), sec_id))
                 if rec is None:
                     continue
                 arr = np.asarray(rec.as_numpy(), dtype=np.float32) * 1e-3
                 n = min(arr.shape[0], T)
                 mp[row, :n] = arr[:n]
+            sm = np.asarray(names)
 
-        return ii, tt, iv, v, sv, im, mp
+        return ii, tt, iv, v, sv, im, mp, sm
+
+    def _section_name(self, gid: int, sec_id: int) -> str:
+        name = self.i_sections.get((gid, sec_id))
+        if name is not None:
+            return name
+        cell = self._find_cell(gid)
+        if cell is not None and sec_id < len(cell.sections):
+            return cell.sections[sec_id].name().split(".")[-1]
+        return str(sec_id)
 
     def _apply_delay_floor(self, dt: float) -> None:
         """Ensure every NetCon delay is >= 2*dt."""
@@ -2082,6 +2096,7 @@ class Env(EnvProtocol):
         self.v_recs.clear()
         self.v_sections.clear()
         self.i_recs.clear()
+        self.i_sections.clear()
         if self.syn is not None:
             self.syn.store.clear()
         if self.conn is not None:

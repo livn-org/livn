@@ -344,6 +344,23 @@ def test_survives_jit_and_vmap_as_a_return_value():
     assert len(leaves) == 2
 
 
+@pytest.mark.skipif("ax" not in backend(), reason="requires a jax backend")
+@pytest.mark.traces
+def test_section_names_survive_jit():
+    import jax
+    import jax.numpy as jnp
+
+    sections = np.array(["soma", "dend"])
+
+    def simulate(v):
+        return Run(duration=10.0).add_voltage(
+            jnp.zeros(2, dtype=int), v, dt=0.5, sections=sections
+        )
+
+    run = jax.jit(simulate)(jnp.ones((2, 20)))
+    np.testing.assert_array_equal(run.voltage_sections, sections)
+
+
 @pytest.mark.skipif("ax" in backend(), reason="jax-free install only")
 def test_container_module_does_not_import_jax():
     import subprocess
@@ -481,3 +498,10 @@ def test_declaring_padded_storage_for_a_ragged_list_is_rejected():
 
     with pytest.raises(ValueError, match="one row id per row"):
         run.add_spikes(np.arange(2), np.zeros((3, 4)), padded=True)
+
+
+def test_current_carries_its_sections():
+    run = Run(duration=1.0).add_current(
+        np.array([0, 0]), np.zeros((2, 2)), dt=0.5, sections=np.array(["soma", "dend"])
+    )
+    np.testing.assert_array_equal(run.current_sections, ["soma", "dend"])

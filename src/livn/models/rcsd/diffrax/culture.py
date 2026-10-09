@@ -7,6 +7,7 @@ from livn.models.rcsd.diffrax.motoneuron import BoothRinzelKiehn
 class MotoneuronCulture(eqx.Module):
     neurons: BoothRinzelKiehn
     num_neurons: int = eqx.field(static=True)
+    section_names: tuple[str, ...] = eqx.field(static=True)
 
     def __init__(self, num_neurons: int, params: dict | None = None, key=None):
         # if key is None:
@@ -15,6 +16,7 @@ class MotoneuronCulture(eqx.Module):
         # neuron_keys = jax.random.split(key, num=num_neurons)
 
         self.num_neurons = num_neurons
+        self.section_names = ("soma", "dend")
         # currently, we only support independent parallel simulation
         #  of individual neurons via vmap
         self.neurons = BoothRinzelKiehn(params)
