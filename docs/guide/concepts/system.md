@@ -2,19 +2,19 @@
 
 A **system** in livn defines the physical architecture of an in vitro neural network: the neuron positions, cell populations, connectivity, and synaptic structure. It is the static substrate on which [models](/guide/concepts/model) define dynamics and [IO](/guide/concepts/io) devices interface with the outside world.
 
-## Hosted systems
+Smaller cultures are generated on-the-fly by default, and livn includes tuned default configurations via `make`; for your own, use the [generator](/systems/generate):
 
-livn's [Hugging Face](https://huggingface.co/datasets/livn-org/livn) hosts a number of neuroh5 graphs:
+```python
+from livn import make
+from livn.system import predefined
 
-| Name | Neurons | EXC / INH | E→E | I→E | E→I | Description |
-|------|---------|-----------|-----|-----|-----|-------------|
-| `E` | 2,563 | 2563 / 0 | 20.1 | — | — | Excitatory only |
-| `E5I` | 2,575 | 2105 / 470 | 16.7 | 13.4 | 6.8 | 17% inhibitory |
-| `E3I` | 2,592 | 1911 / 681 | 14.9 | 20.1 | 6.2 | 25% inhibitory |
-| `EI` | 2,608 | 1306 / 1302 | 9.8 | 39.9 | 4.0 | Balanced |
-| `CA1` | ~10,000 | 15 cell types | | | | Hippocampal CA1 model |
+env = make("EI")           # tuned 50/50 culture, its parameters and array
+system = predefined("EI")  # just the system of a shipped culture
+```
 
-### Loading a system
+See [Standard Systems](/systems/#the-shipped-cultures) for the shipped cultures.
+
+Larger systems like the hippocampal CA1 network are too large to draw on the fly and are stored as a neuroh5 graph on livn's [Hugging Face](https://huggingface.co/datasets/livn-org/livn):
 
 ```python
 from livn.env import Env
@@ -29,9 +29,9 @@ env = Env(system).init()
 The `System` class provides access to all structural properties of a neural system:
 
 ```python
-from livn.system import NeuroH5System
+from livn.system import predefined
 
-system = NeuroH5System("./systems/graphs/EI")
+system = predefined("EI")
 
 # Cell populations
 system.populations          # ['EXC', 'INH']
@@ -54,7 +54,7 @@ Each neuron has a unique integer ID (GID) and a 3D position. The coordinate arra
 
 ```python
 coords = system.neuron_coordinates
-print(coords[0])  # [0, 125.3, 450.7, 175.0]
+print(coords[0])  # [0, 857.9, 608.9, 6.4]
 ```
 
 ### Populations
@@ -195,26 +195,29 @@ env.selection(0.25, method="patch")       # a centred region, keeping neighbours
 
 `method="patch"` matters when connectivity is distance-dependent. Thinning at random keeps an edge only where both endpoints survive, so in-degree collapses in proportion to the thinning. A contiguous patch keeps each cell's nearest partners and drops the distant ones, which are the weakest under a distance kernel.
 
-Even so, a subselection is a different network. For example, on `EI`, the rungs retain 3%, 11% and 37% of each cell's in-degree, so parameters fitted on the whole system do not describe a rung and vice versa. That is why each carries its own parameter file.
+Even so, a subselection is a different network: every cell loses the inputs that came from outside it, so parameters fitted on the whole system do not describe the part, and vice versa.
+
+The smaller shipped cultures (`EI-1000`, `E-470`, ...) are not subselections in this sense. Each is its own periodic box at the same density, in which every cell keeps its full number of inputs, so the full-size parameters carry over.
 
 ## Tuned parameters
 
-Parameters are not a property of a system. The same graph fitted with a different model, or on a different subset of its cells, yields a different set of numbers. You can load them from a env document:
+Parameters are not a property of a system but captured as an env document, which holds the system, the model, the recording array and the fitted parameters together:
 
 ```python
-from livn.env import Env
+from livn import make
 
-env = Env.from_json("./systems/graphs/EI/env.json")
+env = make("EI")                          # a shipped culture's document
+env = make("./runs/bursting/env.json")    # or one of your own
 ```
 
 ```json
 {
-  "system": {"cls": "livn.system.Monolayer", "kwargs": {"total_cells": 650, "...": "..."}},
-  "model":  {"cls": "livn.models.rcsd.ReducedCalciumSomaDendrite", "kwargs": {}},
-  "io":     null,
+  "system": {"cls": "livn.system.Monolayer", "kwargs": {"total_cells": 2600, "...": "..."}},
+  "model":  {"cls": "livn.models.rcsd.ReducedCalciumSomaDendrite", "kwargs": {"size_cv": 0.2, "weight_cv": 0.7}},
+  "io":     {"cls": "livn.io.MEA", "kwargs": {"noise_uv": 3.56, "...": "..."}},
   "selection": null,
-  "params": {"EXC_EXC-dend-AMPA-weight": 0.31, "noise-g_e0": 1.0},
-  "meta":   {"loc": 7, "retained_in_degree": 0.624}
+  "params": {"EXC_EXC-dend-AMPA-weight": 1.70, "noise-g_e0": 0.0001, "...": "..."},
+  "meta":   {"source": "EI", "row": 1031, "scale": 1.0}
 }
 ```
 

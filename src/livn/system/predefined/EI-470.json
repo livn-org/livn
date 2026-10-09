@@ -1,0 +1,270 @@
+{
+  "io": {
+    "cls": "livn.io.MEA",
+    "kwargs": {
+      "dead_time_ms": 3.0,
+      "detection_threshold": 0.2,
+      "input_radius": 50.0,
+      "noise_uv": 3.5626839087501336,
+      "output_radius": 150.0,
+      "threshold_sigma": 5.0,
+      "volume_conductor": {
+        "culture_height_um": 50.0,
+        "electrode_radius_um": 15.0,
+        "min_distance_um": 5.0,
+        "recording_gain": 53051.64769729845,
+        "stimulation_gain": 5.335497577070286
+      }
+    }
+  },
+  "meta": {
+    "row": 1031,
+    "scale": 0.4252,
+    "source": "EI"
+  },
+  "model": {
+    "cls": "livn.models.rcsd.ReducedCalciumSomaDendrite",
+    "kwargs": {
+      "size_cv": 0.2,
+      "weight_cv": 0.7
+    }
+  },
+  "params": {
+    "EXC-dend-AMPA-U": 0.2665038002753806,
+    "EXC-dend-AMPA-tau_rec": 1513.146912007581,
+    "EXC-dend-NMDA-U": 0.2665038002753806,
+    "EXC-dend-NMDA-tau_rec": 1513.146912007581,
+    "EXC_EXC-dend-AMPA-weight": 1.6987404826459604,
+    "EXC_EXC-dend-NMDA-weight": 1.112877244188779,
+    "EXC_INH-soma-GABA_A-weight": 0.05886756376087027,
+    "INH_EXC-soma-AMPA-weight": 1.1315744475037166,
+    "io-volume_conductor-stimulation_gain": 3.5,
+    "leaders-bias": 5.467626094818115,
+    "leaders-by_input": 1.0,
+    "leaders-delay_sd": 11.285737991333008,
+    "leaders-efferent": 1.21007443489948,
+    "leaders-fraction": 0.0490981787443161,
+    "leaders-input_power": 0.629349428799295,
+    "leaders-input_spread": 0.41320666670799255,
+    "leaders-rest_noise": 0.4693644940853119,
+    "noise-g_e0": 0.00010169342623578727,
+    "noise-g_i0": 0.0009189676876153067,
+    "noise-std_e": 8.88439123440614e-05,
+    "noise-std_i": 0.0008028511547660616,
+    "noise-tau_e": 3.615645769845194,
+    "noise-tau_i": 21.229482650756836
+  },
+  "selection": null,
+  "system": {
+    "cls": "livn.system.Monolayer",
+    "kwargs": {
+      "area": "rectangle",
+      "area_kwargs": {
+        "x_range": [
+          359.84,
+          1040.16
+        ],
+        "y_range": [
+          819.68,
+          2180.32
+        ]
+      },
+      "boundary": null,
+      "connectivity": {
+        "degree_reference": {
+          "EXC->EXC": 1.0,
+          "EXC->INH": 0.5,
+          "INH->EXC": 0.5
+        },
+        "degree_rule": "fixed_probability",
+        "mean_degree": {
+          "EXC->EXC": 18.861522882435352,
+          "EXC->INH": 0.6500000023477852,
+          "INH->EXC": 18.5809486658675,
+          "INH->INH": 0.0,
+          "default": 0.0
+        },
+        "sigma": 170.07999982992004,
+        "velocity": 138.14762647129788
+      },
+      "mea": {
+        "electrode_coordinates": [
+          [
+            2.0,
+            1000.0,
+            1400.0,
+            5.0
+          ],
+          [
+            3.0,
+            800.0,
+            1400.0,
+            5.0
+          ],
+          [
+            6.0,
+            1000.0,
+            1200.0,
+            5.0
+          ],
+          [
+            7.0,
+            800.0,
+            1200.0,
+            5.0
+          ],
+          [
+            10.0,
+            1000.0,
+            1000.0,
+            5.0
+          ],
+          [
+            11.0,
+            800.0,
+            1000.0,
+            5.0
+          ],
+          [
+            50.0,
+            1000.0,
+            1600.0,
+            5.0
+          ],
+          [
+            51.0,
+            800.0,
+            1600.0,
+            5.0
+          ],
+          [
+            54.0,
+            1000.0,
+            1800.0,
+            5.0
+          ],
+          [
+            55.0,
+            800.0,
+            1800.0,
+            5.0
+          ],
+          [
+            58.0,
+            1000.0,
+            2000.0,
+            5.0
+          ],
+          [
+            59.0,
+            800.0,
+            2000.0,
+            5.0
+          ],
+          [
+            68.0,
+            400.0,
+            2000.0,
+            5.0
+          ],
+          [
+            69.0,
+            600.0,
+            2000.0,
+            5.0
+          ],
+          [
+            72.0,
+            400.0,
+            1800.0,
+            5.0
+          ],
+          [
+            73.0,
+            600.0,
+            1800.0,
+            5.0
+          ],
+          [
+            76.0,
+            400.0,
+            1600.0,
+            5.0
+          ],
+          [
+            77.0,
+            600.0,
+            1600.0,
+            5.0
+          ],
+          [
+            116.0,
+            400.0,
+            1000.0,
+            5.0
+          ],
+          [
+            117.0,
+            600.0,
+            1000.0,
+            5.0
+          ],
+          [
+            120.0,
+            400.0,
+            1200.0,
+            5.0
+          ],
+          [
+            121.0,
+            600.0,
+            1200.0,
+            5.0
+          ],
+          [
+            124.0,
+            400.0,
+            1400.0,
+            5.0
+          ],
+          [
+            125.0,
+            600.0,
+            1400.0,
+            5.0
+          ]
+        ],
+        "input_radius": 50.0,
+        "output_radius": 50.0
+      },
+      "name": "50/50-sample1@recording-may-2026",
+      "populations": {
+        "EXC": {
+          "ratio": 0.5,
+          "soma_only": false,
+          "synapse_type": "excitatory",
+          "transmitter": "cholinergic"
+        },
+        "INH": {
+          "ratio": 0.5,
+          "soma_only": true,
+          "synapse_type": "inhibitory",
+          "transmitter": "glycinergic"
+        }
+      },
+      "seed": 50839,
+      "synapse_overrides": {
+        "EXC->EXC": {
+          "NMDA": {
+            "e": 0,
+            "g_unit": 0.0005,
+            "tau_decay": 80.0,
+            "tau_rise": 0.5,
+            "weight": 0.0
+          }
+        }
+      },
+      "total_cells": 470
+    }
+  }
+}

@@ -101,6 +101,17 @@ cit, ct = mea.channel_recording(system.neuron_coordinates, it, t)
 # ct[channel_id]  → array of spike times detected at this channel
 ```
 
+#### Physical detection
+
+Given the recording's noise level, the MEA decides which cells an electrode actually sees the way a spike detector does. A cell counts on a channel when its spike there reaches `threshold_sigma` times the noise, and spikes closer together than `dead_time_ms` on one channel are dropped.
+
+```python
+mea = MEA(noise_uv=3.6, threshold_sigma=5.0, dead_time_ms=3.0, output_radius=150.0)
+cit, ct = env.channel_recording(it, t)   # read through the env
+```
+
+The noise, threshold and dead time belong to the recording. How large a cell's spike is at a given distance belongs to the cell, so `env.channel_recording` attaches the model's `extracellular_profile()` when it reads the array, and populations with smaller cells come out weaker (`extracellular_amplitude`).
+
 ### Extracellular potential estimation
 
 For membrane current recordings, the MEA can estimate the extracellular field potential (local field potential) at each electrode using the point-source model:
