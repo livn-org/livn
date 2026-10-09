@@ -221,6 +221,21 @@ else:
             }
 
 
+def _checked_profile(profile: Mapping) -> dict:
+    distance = _np.asarray(profile["distance_um"], dtype=float)
+    trough = _np.asarray(profile["trough_uv"], dtype=float)
+    if (
+        distance.ndim != 1
+        or distance.shape != trough.shape
+        or (_np.diff(distance) <= 0).any()
+    ):
+        raise ValueError(
+            "a spike profile needs increasing `distance_um` and a `trough_uv` "
+            "of the same length"
+        )
+    return {"distance_um": distance.tolist(), "trough_uv": trough.tolist()}
+
+
 def _empty_array():
     return np.array([])
 
@@ -371,9 +386,12 @@ class MEA(IO):
         Smallest detectable signal, in the same relative units as the
         `amplitude` passed to `channel_recording`. Default is 0, which
         records every unit inside `output_radius`.
-    noise_uv, threshold_sigma, spike_profile
+    noise_uv, threshold_sigma
         Physical detection, used instead of `detection_threshold` when
-        `noise_uv > 0` and a `spike_profile` is given.
+        `noise_uv > 0` where a cell is on a channel when its spike there reaches
+        `threshold_sigma * noise_uv`.
+    spike_profile
+        The spike's trough against distance (`{"distance_um", "trough_uv"}`).
     dead_time_ms
         A detector's refractory period per channel: spikes on one channel
         closer than this to the previous kept one are dropped
@@ -407,23 +425,10 @@ class MEA(IO):
         self.noise_uv = float(noise_uv)
         self.threshold_sigma = float(threshold_sigma)
         self.dead_time_ms = float(dead_time_ms)
-        self.spike_profile = None
-        if spike_profile is not None:
-            distance = _np.asarray(spike_profile["distance_um"], dtype=float)
-            trough = _np.asarray(spike_profile["trough_uv"], dtype=float)
-            if (
-                distance.ndim != 1
-                or distance.shape != trough.shape
-                or (_np.diff(distance) <= 0).any()
-            ):
-                raise ValueError(
-                    "spike_profile needs increasing `distance_um` and a `trough_uv` "
-                    "of the same length"
-                )
-            self.spike_profile = {
-                "distance_um": distance.tolist(),
-                "trough_uv": trough.tolist(),
-            }
+        self.spike_profile = (
+            None if spike_profile is None else _checked_profile(spike_profile)
+        )
+        self._attached_profile = None
         if volume_conductor is None:
             volume_conductor = PointSourceModel()
         elif isinstance(volume_conductor, dict):
@@ -458,7 +463,11 @@ class MEA(IO):
             "noise_uv": self.noise_uv,
             "threshold_sigma": self.threshold_sigma,
             "dead_time_ms": self.dead_time_ms,
-            "spike_profile": self.spike_profile,
+            **(
+                {"spike_profile": self.spike_profile}
+                if self.spike_profile is not None
+                else {}
+            ),
             "volume_conductor": self.volume_conductor.serialize()
             if hasattr(self.volume_conductor, "serialize")
             else None,
@@ -467,7 +476,18 @@ class MEA(IO):
     @property
     def physical_detection(self) -> bool:
         """Whether cells are detected against the channel noise (`noise_uv`)."""
-        return self.noise_uv > 0.0 and self.spike_profile is not None
+        return self.noise_uv > 0.0
+
+    @property
+    def profile(self) -> dict | None:
+        return (
+            self.spike_profile
+            if self.spike_profile is not None
+            else self._attached_profile
+        )
+
+    def attach_spike_profile(self, profile: Mapping | None) -> None:
+        self._attached_profile = None if profile is None else _checked_profile(profile)
 
     def signal(
         self,
@@ -492,7 +512,11 @@ class MEA(IO):
             )
         if self.physical_detection:
             distance = rows[:, -1] * float(self.output_radius)
-            profile = self.spike_profile
+            profile = self.profile
+            if profile is None:
+                raise ValueError(
+                    "physical detection (noise_uv > 0) needs the cells' spike profile"
+                )
             trough = _np.interp(
                 distance,
                 profile["distance_um"],
