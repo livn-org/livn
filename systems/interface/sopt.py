@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 # NEURON compatible rank order
 os.environ.setdefault("DISTWQ_CONTROLLER_RANK", "-1")
+os.environ.setdefault("KERAS_BACKEND", "jax")
 
 _, Dmosopt = (
     Project(os.path.dirname(os.path.dirname(__file__)))
