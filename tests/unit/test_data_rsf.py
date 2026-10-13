@@ -9,8 +9,8 @@ from livn.run import Run, Series
 
 pytest.importorskip("zarr", minversion="3")
 
-from livn import rsf
-from livn.rsf import RSFError, load, store
+from livn.data import Missing, rsf
+from livn.data.rsf import RSFError, load, store
 
 DT = 0.1
 N_FRAMES = 50
@@ -397,3 +397,208 @@ def test_zarr_2_is_refused_with_the_install_hint(tmp_path, monkeypatch):
     with pytest.raises(ImportError, match="zarr>=3"):
         store(_run(), str(tmp_path / "session"), _Env())
     assert not os.path.exists(tmp_path / "session")
+
+
+class _AxonEnv(_Env):
+    __module__ = "livn.backend.native.env"
+
+    """Three sections per cell, a backend may record fewer of them"""
+
+    def recording_sections(self):
+        return np.array(["soma", "dend", "ais0"] * 3)
+
+    def recording_coordinates(self, simulated_only=False):
+        return np.array(
+            [
+                [g, x + dx, 5.0, 1.0]
+                for g, x in ((0, 10.0), (1, 110.0), (2, 210.0))
+                for dx in (0.0, 10.0, -40.0)
+            ]
+        )
+
+
+def _currents(sections):
+    ids = np.repeat([0, 1, 2], len(sections))
+    names = np.tile(sections, 3)
+    # a row's values depend on its gid and section, not on where it sits
+    values = np.stack(
+        [
+            np.random.default_rng([int(g), sum(map(ord, str(s)))]).normal(
+                scale=1e-3, size=N_FRAMES
+            )
+            for g, s in zip(ids, names, strict=True)
+        ]
+    ).astype(np.float32)
+    return (
+        Run(t0=0.0, duration=N_FRAMES * DT).add_current(
+            ids, values, dt=DT, sections=names
+        ),
+        {(int(g), str(s)): v for g, s, v in zip(ids, names, values, strict=True)},
+    )
+
+
+def test_current_rows_pair_with_coordinates_by_section_name():
+    env = _AxonEnv()
+    run, rows = _currents(["ais0", "soma"])
+
+    uv, sections = rsf._project(run, env, env.io)
+
+    # each row at its own section's coordinate, not the first ones in order
+    coordinates = env.recording_coordinates()
+    expected = 0.0
+    for (gid, name), values in rows.items():
+        at = coordinates[gid * 3 + ["soma", "dend", "ais0"].index(name)][None]
+        expected = expected + np.asarray(
+            env.io.potential_recording(env.io.distances(at), values[None])
+        )
+    np.testing.assert_allclose(uv, expected, rtol=1e-4, atol=1e-6)
+    assert sections == {"contributing": ["ais0", "soma"], "unplaced": []}
+
+    # the order of the rows does not matter, only their names
+    other, _ = _currents(["soma", "ais0"])
+    np.testing.assert_allclose(
+        rsf._project(other, env, env.io)[0], uv, rtol=1e-4, atol=1e-6
+    )
+
+
+def test_a_section_without_a_coordinate_is_left_out_and_named():
+    env = _AxonEnv()
+    run, _ = _currents(["soma", "ais9"])
+    uv, sections = rsf._project(run, env, env.io)
+    assert sections == {"contributing": ["soma"], "unplaced": ["ais9"]}
+    np.testing.assert_allclose(
+        uv, rsf._project(_currents(["soma"])[0], env, env.io)[0], rtol=1e-4, atol=1e-6
+    )
+
+
+def test_a_session_says_which_sections_are_in_its_traces(tmp_path):
+    env = _AxonEnv()
+    run, _ = _currents(["soma", "dend"])
+    session = str(tmp_path / "session")
+    store(run, session, env)
+    simulation = load(session).simulation
+    assert simulation["trace_sections"] == ["soma", "dend"]
+    assert "unplaced_sections" not in simulation
+
+
+# -- the lazy recording ------------------------------------------------------------------
+
+
+def test_load_keeps_the_traces_on_disk(tmp_path):
+    import pickle
+
+    import zarr
+
+    session = str(tmp_path / "session")
+    store(_run(), session, _Env(), voltage=True)
+    recording = load(session).recording
+
+    # a zarr array, not a numpy copy of the whole trace
+    assert isinstance(recording._traces, zarr.Array)
+    assert recording.num_samples(0) == N_FRAMES
+    assert recording.segments == 1 and recording.fs == pytest.approx(10000.0)
+
+    window = recording.read(0, 10, 7)
+    assert window.dtype == np.float32 and window.shape == (7, 3)
+    np.testing.assert_array_equal(
+        window, load(session).run.potential.values[:, 10:17].T
+    )
+    only = recording.read(0, 10, 7, channels=[2, 0])
+    np.testing.assert_array_equal(only, window[:, [2, 0]])
+    with pytest.raises(IndexError):
+        recording.read(0, N_FRAMES - 3, 7)
+    with pytest.raises(KeyError):
+        recording.read(0, 0, 3, channels=[9])
+
+    # a recording pickles by path and reopens
+    again = pickle.loads(pickle.dumps(recording))
+    np.testing.assert_array_equal(again.read(0, 10, 7), window)
+
+
+def test_a_window_of_the_recording_is_a_run(tmp_path):
+    session = str(tmp_path / "session")
+    store(_run(), session, _Env(), voltage=True, currents=True)
+    recording = load(session).recording
+    whole = recording.to_run()
+    part = recording.to_run(0, 10, 20)
+
+    assert part.t0 == pytest.approx(10 * DT) and part.duration == pytest.approx(20 * DT)
+    np.testing.assert_array_equal(
+        part.potential.values, whole.potential.values[:, 10:30]
+    )
+    np.testing.assert_array_equal(part.voltage, whole.voltage[:, 10:30])
+    # spikes in the window, relative to its start (the frames 3 and 49 fall outside)
+    assert part.spike_ids.size == 0
+
+    spikes = recording.spikes(0)
+    np.testing.assert_array_equal(spikes.ids, [1, 0, 2, 1])
+    np.testing.assert_allclose(spikes.times, [0.0, 0.3, 0.3, 4.9])
+    np.testing.assert_array_equal(
+        recording.ground_truth("currents").values, whole.current
+    )
+    with pytest.raises(Missing):
+        recording.ground_truth("templates")
+
+
+def test_a_session_without_spikes_says_so(tmp_path):
+    session = str(tmp_path / "session")
+    store(_run().drop_spikes(), session, _Env())
+    with pytest.raises(Missing, match="spikes"):
+        load(session).recording.spikes(0)
+    assert load(session).run.spikes is None
+
+
+def test_inputs_are_stored_on_the_frame_grid(tmp_path):
+    inputs = np.arange(15, dtype=np.float32).reshape(5, 3)  # 1 ms rows, 3 channels
+    session = str(tmp_path / "session")
+    store(_run(), session, _Env(), inputs=inputs, inputs_dt=1.0)
+    recording = load(session).recording
+
+    # 0.1 ms frames hold each 1 ms row for ten frames; the run is 5 ms long
+    got = recording.inputs(0, 0, N_FRAMES)
+    assert got.dtype == np.float32 and got.shape == (N_FRAMES, 3)
+    np.testing.assert_array_equal(got, np.repeat(inputs, 10, axis=0))
+    np.testing.assert_array_equal(recording.inputs(0, 12, 3), got[12:15])
+    assert load(session).simulation["inputs"]["source_dt_ms"] == 1.0
+
+
+def test_a_policy_is_recorded_and_rendered(tmp_path):
+    from livn.policy import BiphasicPulsePolicy
+
+    policy = BiphasicPulsePolicy(
+        n_channels=3,
+        channels=[1],
+        dt=0.1,
+        amplitude=2.0,
+        phase_duration=0.2,
+        interphase_gap=0.1,
+        pulse_times=[0.0],
+    )
+    session = str(tmp_path / "session")
+    store(_run(), session, _Env(), stimulus=policy)
+    recording = load(session).recording
+
+    simulation = load(session).simulation
+    assert simulation["stimulus"]["cls"].endswith("BiphasicPulsePolicy")
+    delivered = recording.inputs(0, 0, N_FRAMES)
+    np.testing.assert_allclose(delivered[:, 1][:6], [-2, -2, 0, 2, 2, 0])
+    assert not delivered[:, [0, 2]].any() and not delivered[6:].any()
+
+
+def test_a_spec_only_stimulus_keeps_working_and_has_no_inputs(tmp_path):
+    session = str(tmp_path / "session")
+    store(_run(), session, _Env(), stimulus={"cls": "x.Y", "kwargs": {"a": 1}})
+    recording = load(session).recording
+    assert load(session).simulation["stimulus"] == {"cls": "x.Y", "kwargs": {"a": 1}}
+    with pytest.raises(Missing, match="no input series"):
+        recording.inputs(0, 0, 5)
+
+
+def test_inputs_must_fit_the_stimulating_channels(tmp_path):
+    with pytest.raises(RSFError, match="has 2 channels"):
+        store(
+            _run(), str(tmp_path / "a"), _Env(), inputs=np.zeros((5, 2)), inputs_dt=1.0
+        )
+    with pytest.raises(RSFError, match="inputs_dt"):
+        store(_run(), str(tmp_path / "b"), _Env(), inputs=np.zeros((5, 3)))
+    assert not os.path.exists(tmp_path / "a") and not os.path.exists(tmp_path / "b")

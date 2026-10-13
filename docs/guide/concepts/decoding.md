@@ -139,30 +139,23 @@ result = env(decoding=AvalancheAnalysis(duration=5000))
 # Includes branching_ratio, power_law_exponent, mean_size, mean_duration, ...
 ```
 
-### ArrowDataset
+### Saving raw output
 
-Saves raw simulation output to Arrow files that can be loaded with [HF Datasets](https://huggingface.co/docs/datasets). Each call writes an independently valid shard, so the data is usable even if the process is interrupted. Extends `GatherAndMerge` to handle distributed simulations automatically.
+To keep raw simulation output as an Arrow dataset, gather it with `GatherAndMerge` and write it with [`livn.data.arrow.store`](/guide/concepts/env#storing-a-run). Each call adds one row (a shard) to the split, so the dataset is readable after every call, and `ground_truth` chooses the cell-space columns (`it`/`tt`, `iv`/`vv`, `im`/`mp`) that are kept beside the channel-space ones:
 
 ```python
-from livn.decoding import ArrowDataset
+from livn.data import arrow, open
+from livn.decoding import GatherAndMerge
 
-decoding = ArrowDataset(
-    duration=5000,
-    directory="./output/my_dataset",
-    spikes=True,
-    voltages=True,
-    membrane_currents=False,
-)
+decoding = GatherAndMerge(duration=5000, spikes=True, voltages=True, membrane_currents=False)
 
-# Each call writes a new shard (data-00000.arrow, data-00001.arrow, ...)
 for _ in range(10):
-    env(decoding=decoding)
+    run = env(decoding=decoding)
+    arrow.store(run, "./output/my_dataset", ground_truth=("spikes", "voltage"))
 
-# Load as a HF Dataset
-ds = decoding.dataset()
+recording = open("./output/my_dataset")   # an ArrowRecording; one segment per call
+recording.ground_truth("voltage", segment=0)
 ```
-
-New instances pick up where previous ones left off by counting existing shards on disk, so the decoding object can be safely destroyed and recreated without data loss.
 
 ## Composing decodings
 

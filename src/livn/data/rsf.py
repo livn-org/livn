@@ -8,14 +8,18 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import cached_property
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from livn.data import Missing
 from livn.utils import P
 
 if TYPE_CHECKING:
-    from livn.run import Run
+    from livn.io import IO
+    from livn.policy import Policy
+    from livn.run import Events, Run, Series
     from livn.types import Env
 
 RSF = "rsf"
@@ -26,6 +30,7 @@ RECORD_KEY = f"{RSF}_provenance"
 POINT_SOURCE = f"{RSF}.point_source/1"
 LIVN_IO = "livn.io/1"
 OPERATOR_PATH = f"traces.zarr/{RSF}/observe.json"
+INPUTS = "inputs"
 
 DEFAULT_GAIN_UV = 0.195
 PROBEINTERFACE_VERSION = "0.3.2"
@@ -40,7 +45,7 @@ class RSFError(ValueError):
 
 
 def _zarr():
-    hint = "livn.rsf needs zarr>=3; install it with `pip install 'zarr>=3'`"
+    hint = "livn.data.rsf needs zarr>=3; install it with `pip install 'zarr>=3'`"
     try:
         import zarr
     except ImportError as e:
@@ -67,7 +72,9 @@ def store(
     withhold: Sequence[Mapping] | None = None,
     voltage: bool = False,
     currents: bool = False,
-    stimulus: Mapping | None = None,
+    stimulus: Mapping | Policy | None = None,
+    inputs: np.ndarray | None = None,
+    inputs_dt: float | None = None,
     gain_uv: float = DEFAULT_GAIN_UV,
     label: str | None = None,
 ) -> str | None:
@@ -90,7 +97,14 @@ def store(
             recorded in the row stages, in stack order
         voltage: Also write ``ground_truth/voltage.zarr``
         currents: Also write ``ground_truth/currents.zarr``
-        stimulus: ``{"cls", "kwargs"}`` of what drove the run; ``None`` for spontaneous activity
+        stimulus: ``{"cls", "kwargs"}`` of what drove the run, or the channel-space
+            :class:`~livn.policy.Policy` itself (whose spec is recorded and whose rendered
+            array is stored as the input series unless ``inputs`` is given); ``None`` for
+            spontaneous activity
+        inputs: The delivered per-channel input, ``(timestep, n_channels)`` over the stimulating
+            IO's channels, starting at the run's ``t0``. It is stored at the traces' frame rate
+            (zero-order hold; zero past its end) so :meth:`RsfRecording.inputs` can serve it
+        inputs_dt: Sampling interval of ``inputs`` in ms; defaults to the policy's ``dt``
         gain_uv: uV per LSB of the stored traces; a sample outside int16 is an error
         label: Free text for people; defaults to the system's name
 
@@ -109,6 +123,8 @@ def store(
         voltage=voltage,
         currents=currents,
         stimulus=stimulus,
+        inputs=inputs,
+        inputs_dt=inputs_dt,
         gain_uv=gain_uv,
         label=label,
     )
@@ -116,7 +132,20 @@ def store(
     return plan["path"]
 
 
-def _prepare(run, path, env, *, withhold, voltage, currents, stimulus, gain_uv, label):
+def _prepare(
+    run,
+    path,
+    env,
+    *,
+    withhold,
+    voltage,
+    currents,
+    stimulus,
+    inputs,
+    inputs_dt,
+    gain_uv,
+    label,
+):
     path = os.fspath(path)
     _check_location(path)
     _check_not_batched(run)
@@ -183,6 +212,10 @@ def _prepare(run, path, env, *, withhold, voltage, currents, stimulus, gain_uv, 
         )
     traces = _quantize(uv, gain_uv)
 
+    stimulus, delivered = _stimulus(stimulus, inputs, inputs_dt)
+    if delivered is not None:
+        delivered = _delivered(io, delivered, dt, n_frames)
+
     # ground truth
     spikes = None
     if run.spikes is not None:
@@ -243,6 +276,12 @@ def _prepare(run, path, env, *, withhold, voltage, currents, stimulus, gain_uv, 
         "sources": source_document,
         "stimulus": None if stimulus is None else _plain(stimulus),
     }
+    if delivered is not None:
+        simulation["inputs"] = {
+            "channels": delivered["ids"],
+            "units": delivered["units"],
+            "source_dt_ms": delivered["source_dt"],
+        }
     if projected is not None:
         simulation["trace_sections"] = projected["contributing"]
         if projected["unplaced"]:
@@ -295,6 +334,7 @@ def _prepare(run, path, env, *, withhold, voltage, currents, stimulus, gain_uv, 
         "spikes": spikes,
         "sources": sources,
         "truth": truth,
+        "inputs": delivered,
         "record": record,
         "observe": observe,
         "simulation": simulation,
@@ -405,6 +445,22 @@ def _write(plan: dict) -> None:
     markers = zarr.open_group(os.path.join(rsf, "stim_markers"), mode="w")
     _array(markers, "tick", np.zeros(0, dtype=np.uint64))
     _strings(markers, "channel", [])
+    if plan["inputs"] is not None:
+        delivered = zarr.open_group(
+            os.path.join(rsf, INPUTS),
+            mode="w",
+            attributes={
+                "units": plan["inputs"]["units"],
+                "source_dt_ms": plan["inputs"]["source_dt"],
+            },
+        )
+        _strings(delivered, "channel_ids", plan["inputs"]["ids"])
+        _array(
+            delivered,
+            "values",
+            plan["inputs"]["values"],
+            chunks=_chunks(plan["fs"], plan["inputs"]["values"]),
+        )
     dropped = zarr.open_group(os.path.join(rsf, "dropped_spans"), mode="w")
     _array(dropped, "frame_start", np.zeros(0, dtype=np.uint64))
     _array(dropped, "n_frames", np.zeros(0, dtype=np.uint32))
@@ -505,6 +561,58 @@ def _stack_stages(io) -> list[dict]:
             }
         )
     return stages
+
+
+def _stimulus(stimulus, inputs, inputs_dt):
+    """`(spec, (values, dt, units) | None)`: the recorded spec and the delivered series."""
+    from livn.policy import Policy
+
+    units = None
+    if isinstance(stimulus, Policy):
+        spec = {
+            "cls": f"{type(stimulus).__module__}.{type(stimulus).__qualname__}",
+            "kwargs": stimulus.serialize(),
+        }
+        units = stimulus.input_units
+        if inputs is None:
+            inputs = stimulus.render()
+            inputs_dt = inputs_dt or getattr(stimulus, "dt", None)
+        stimulus = spec
+    if inputs is None:
+        return stimulus, None
+    if inputs_dt is None or not float(inputs_dt) > 0:
+        raise RSFError(
+            "inputs needs the sampling interval of its rows: pass inputs_dt in ms"
+        )
+    values = np.asarray(inputs, dtype=np.float32)
+    if values.ndim != 2:
+        raise RSFError(
+            f"inputs is (timestep, n_channels), not shape {tuple(values.shape)}"
+        )
+    return stimulus, {"values": values, "dt": float(inputs_dt), "units": units}
+
+
+def _delivered(io, given: dict, dt: float, n_frames: int) -> dict:
+    """The input series on the traces' frame grid, with the channels it drives."""
+    from livn.io import ComposedIO
+
+    device = io.inputs if isinstance(io, ComposedIO) and io.inputs is not None else io
+    ids = [_id_str(c) for c in np.asarray(device.channel_ids).ravel()]
+    values, dt_in = given["values"], given["dt"]
+    if values.shape[1] != len(ids):
+        raise RSFError(
+            f"inputs has {values.shape[1]} channels and the stimulating IO has {len(ids)}"
+        )
+    units = given["units"]
+    if units is None:
+        units = getattr(device, "input_units", None)
+
+    # frame i is at i * dt after the run starts; the input holds its row until the next
+    rows = np.floor(np.arange(n_frames) * dt / dt_in + 1e-9).astype(np.int64)
+    inside = rows < len(values)
+    series = np.zeros((n_frames, len(ids)), dtype=np.float32)
+    series[inside] = values[rows[inside]]
+    return {"ids": ids, "values": series, "source_dt": dt_in, "units": units}
 
 
 def _sampling_frequency(dt: float) -> float:
@@ -615,7 +723,7 @@ def _withhold_stages(withhold, row_ids) -> tuple[list[dict], set[str]]:
                 "role": "analysis",
                 "status": "known",
                 "transform": transform,
-                "attribution": "livn.rsf.store",
+                "attribution": "livn.data.rsf.store",
             }
         )
     return stages, masked
@@ -958,87 +1066,246 @@ def _strings(group, name: str, values: Sequence[str]) -> None:
         array[:] = np.asarray([str(v) for v in values], dtype=object)
 
 
-@dataclass(frozen=True)
-class Session:
-    run: Run
-    io: Any
-    record: dict
-    simulation: dict | None
+class RsfRecording:
+    """A session opened lazily: the zarr arrays stay on disk and :meth:`read` touches only
+    the chunks of the window it is asked for, so it is cheap to call from many threads
+    (a read is a plain zarr slice). Pickling keeps the path and reopens on the other side.
+    """
 
+    def __init__(self, path: str | os.PathLike):
+        self.path = os.fspath(path)
+        self._open()
 
-def load(path: str | os.PathLike) -> Session:
-    zarr = _zarr()
+    def _open(self) -> None:
+        zarr = _zarr()
 
-    from livn.run import Run, Series
+        path = self.path
+        traces_path = os.path.join(path, "traces.zarr")
+        if not os.path.isfile(os.path.join(traces_path, "zarr.json")):
+            raise RSFError(f"{path} is not a session: it has no traces.zarr/zarr.json")
+        group_attrs = _read_node(os.path.join(traces_path, RSF))
+        if not group_attrs.get("finished_at"):
+            raise RSFError(
+                f"{path} is not complete (traces.zarr has no finished_at); it may still be written"
+            )
 
-    path = os.fspath(path)
-    traces_path = os.path.join(path, "traces.zarr")
-    if not os.path.isfile(os.path.join(traces_path, "zarr.json")):
-        raise RSFError(f"{path} is not a session: it has no traces.zarr/zarr.json")
-    group_attrs = _read_node(os.path.join(traces_path, RSF))
-    if not group_attrs.get("finished_at"):
-        raise RSFError(
-            f"{path} is not complete (traces.zarr has no finished_at); it may still be written"
+        root = zarr.open_group(traces_path, mode="r")
+        attrs = _read_node(traces_path)
+        self.fs = float(attrs["sampling_frequency"])
+        self._dt = 1000.0 / self.fs
+        self.record = (attrs.get("annotations") or {}).get(RECORD_KEY) or {}
+        tick = self.record.get("first_sample_tick")
+        self._t0 = float(tick) * self._dt if tick is not None else 0.0
+
+        self._keys = [str(k) for k in _read(root, "channel_ids")]
+        self.channel_ids = _ids_array(self._keys)
+        self._column = {key: i for i, key in enumerate(self._keys)}
+        self._traces = _array_of(root, "traces_seg0")  # stays on disk
+        self._gain = np.asarray(_read(root, "properties/gain_to_uV"), dtype=np.float64)
+        self._offset = np.asarray(
+            _read(root, "properties/offset_to_uV"), dtype=np.float64
         )
 
-    root = zarr.open_group(traces_path, mode="r")
-    attrs = _read_node(traces_path)
-    fs = float(attrs["sampling_frequency"])
-    dt = 1000.0 / fs
-    record = (attrs.get("annotations") or {}).get(RECORD_KEY) or {}
-    tick = record.get("first_sample_tick")
-    t0 = float(tick) * dt if tick is not None else 0.0
+        documents = os.path.join(traces_path, RSF)
+        self.simulation = None
+        if os.path.isfile(os.path.join(documents, "simulation.json")):
+            with open(
+                os.path.join(documents, "simulation.json"), encoding="utf-8"
+            ) as f:
+                self.simulation = json.load(f)
+        self.io = _read_operator(os.path.join(documents, "observe.json"))
+        self._inputs_path = os.path.join(documents, INPUTS)
+        self.bad_channels = np.zeros(0, dtype=np.int64)
+        self.metadata = {
+            "format": RSF,
+            "path": path,
+            "record": self.record,
+            "simulation": self.simulation,
+            "label": group_attrs.get("label"),
+            "gain_uv": float(self._gain[0]) if len(self._gain) else None,
+        }
 
-    keys = [str(k) for k in _read(root, "channel_ids")]
-    stored = np.asarray(_read(root, "traces_seg0"))
-    gain = np.asarray(_read(root, "properties/gain_to_uV"), dtype=np.float64)
-    offset = np.asarray(_read(root, "properties/offset_to_uV"), dtype=np.float64)
-    values = (stored.astype(np.float64) * gain + offset).T.astype(np.float32)
-    n_frames = stored.shape[0]
-    duration = n_frames * dt
+    def __getstate__(self) -> dict:
+        return {"path": self.path}
 
-    potential = Series(ids=_ids_array(keys), values=values, dt=dt, t0=t0)
-    run = Run(t0=t0, duration=duration, potential=potential)
+    def __setstate__(self, state: dict) -> None:
+        self.path = state["path"]
+        self._open()
 
-    spikes_path = os.path.join(path, "ground_truth", "spikes.zarr")
-    if _complete(spikes_path):
-        sorting = zarr.open_group(spikes_path, mode="r")
+    @property
+    def segments(self) -> int:
+        return 1
+
+    def num_samples(self, segment: int = 0) -> int:
+        self._segment(segment)
+        return int(self._traces.shape[0])
+
+    def read(self, segment, start, length, channels=None) -> np.ndarray:
+        """Samples ``[start, start + length)`` of the given channel ids (all by default), as
+        float32 ``(length, channels)`` in uV."""
+        self._segment(segment)
+        start, length = _window(start, length, int(self._traces.shape[0]))
+        raw = np.asarray(self._traces[start : start + length, :])
+        gain, offset = self._gain, self._offset
+        if channels is not None:
+            columns = self._columns(channels)
+            raw, gain, offset = raw[:, columns], gain[columns], offset[columns]
+        return (raw.astype(np.float64) * gain + offset).astype(np.float32)
+
+    def spikes(self, segment: int = 0) -> Events:
+        self._segment(segment)
+        from livn.run import Events
+
+        ids, samples = self._sorting()
+        return Events(
+            ids=ids,
+            times=samples * self._dt,
+            t0=self._t0,
+            duration=self.num_samples() * self._dt,
+        )
+
+    def inputs(self, segment, start, length) -> np.ndarray:
+        """The delivered input on the frame grid, float32 ``(length, channels)``."""
+        self._segment(segment)
+        if not os.path.isdir(self._inputs_path):
+            raise Missing(
+                f"{self.path} stores no input series: it was saved without `inputs` "
+                "(or a policy as `stimulus`)"
+            )
+        values = _array_of(_zarr().open_group(self._inputs_path, mode="r"), "values")
+        start, length = _window(start, length, int(values.shape[0]))
+        return np.asarray(values[start : start + length, :], dtype=np.float32)
+
+    def ground_truth(self, name: str, segment: int = 0):
+        """``"spikes"`` (Events), ``"voltage"`` or ``"currents"`` (Series), whole segment."""
+        self._segment(segment)
+        if name == "spikes":
+            return self.spikes()
+        if name in ("current", "currents"):
+            name = "currents"
+        elif name != "voltage":
+            raise Missing(f"an rsf session holds no ground truth {name!r}")
+        series = self._truth_series(name, 0, self.num_samples())
+        if series is None:
+            raise Missing(f"{self.path} stores no ground_truth/{name}.zarr")
+        return series
+
+    def to_run(self, segment=0, start=0, length=None) -> Run:
+        from livn.run import Run, Series
+
+        self._segment(segment)
+        n = self.num_samples()
+        start, length = _window(start, n - start if length is None else length, n)
+        dt, t0 = self._dt, self._t0 + start * self._dt
+
+        potential = Series(
+            ids=self.channel_ids,
+            values=self.read(0, start, length).T,
+            dt=dt,
+            t0=t0,
+        )
+        run = Run(t0=t0, duration=length * dt, potential=potential)
+
+        if _complete(os.path.join(self.path, "ground_truth", "spikes.zarr")):
+            ids, samples = self._sorting()
+            keep = (samples >= start) & (samples < start + length)
+            run = run.add_spikes(ids[keep], (samples[keep] - start) * dt)
+
+        for name, channel in (("voltage", "voltage"), ("currents", "current")):
+            series = self._truth_series(name, start, length)
+            if series is not None:
+                run = run.add(
+                    channel,
+                    series.ids,
+                    series.values,
+                    dt=dt,
+                    kind="series",
+                    sections=series.sections,
+                )
+        return run
+
+    def _segment(self, segment: int) -> None:
+        if segment != 0:
+            raise IndexError(f"an rsf session has one segment, not segment {segment}")
+
+    def _columns(self, channels) -> np.ndarray:
+        try:
+            return np.asarray(
+                [self._column[_id_str(c)] for c in np.asarray(channels).tolist()]
+            )
+        except KeyError as e:
+            raise KeyError(f"{e.args[0]!r} is not a channel of {self.path}") from None
+
+    def _sorting(self) -> tuple[np.ndarray, np.ndarray]:
+        """``(unit ids, frames)`` of the ground-truth spikes, ordered by frame."""
+        store = os.path.join(self.path, "ground_truth", "spikes.zarr")
+        if not _complete(store):
+            raise Missing(f"{self.path} stores no ground_truth/spikes.zarr")
+        sorting = _zarr().open_group(store, mode="r")
         units = np.asarray(_read(sorting, "unit_ids"))
         sample_index = np.asarray(_read(sorting, "spikes/sample_index"), dtype=np.int64)
         unit_index = np.asarray(_read(sorting, "spikes/unit_index"), dtype=np.int64)
         order = np.argsort(sample_index, kind="stable")
-        run = run.add_spikes(
-            _ids_array(units[unit_index[order]]), sample_index[order] * dt
-        )
+        return _ids_array(units[unit_index[order]]), sample_index[order]
 
-    for name, channel in (("voltage", "voltage"), ("currents", "current")):
-        store = os.path.join(path, "ground_truth", f"{name}.zarr")
+    def _truth_series(self, name: str, start: int, length: int) -> Series | None:
+        from livn.run import Series
+
+        store = os.path.join(self.path, "ground_truth", f"{name}.zarr")
         if not _complete(store):
-            continue
-        truth = zarr.open_group(store, mode="r")
+            return None
+        truth = _zarr().open_group(store, mode="r")
         ids = [str(k) for k in _read(truth, "channel_ids")]
         sections = None
         if _has(truth, "properties/section"):
             sections = np.asarray([str(s) for s in _read(truth, "properties/section")])
         if _has(truth, "properties/source"):
             ids = [str(s) for s in _read(truth, "properties/source")]
-        samples = np.asarray(_read(truth, "traces_seg0"), dtype=np.float32).T
-        run = run.add(
-            channel, _ids_array(ids), samples, dt=dt, kind="series", sections=sections
+        array = _array_of(truth, "traces_seg0")
+        samples = np.asarray(array[start : start + length, :], dtype=np.float32).T
+        return Series(
+            ids=_ids_array(ids),
+            values=samples,
+            dt=self._dt,
+            t0=self._t0 + start * self._dt,
+            sections=sections,
         )
 
-    documents = os.path.join(traces_path, RSF)
-    simulation = None
-    if os.path.isfile(os.path.join(documents, "simulation.json")):
-        with open(os.path.join(documents, "simulation.json"), encoding="utf-8") as f:
-            simulation = json.load(f)
 
-    return Session(
-        run=run,
-        io=_read_operator(os.path.join(documents, "observe.json")),
-        record=record,
-        simulation=simulation,
-    )
+def _window(start, length, n: int) -> tuple[int, int]:
+    start, length = int(start), int(length)
+    if start < 0 or length < 0 or start + length > n:
+        raise IndexError(f"the window [{start}, {start + length}) is outside 0..{n}")
+    return start, length
+
+
+@dataclass(frozen=True)
+class Session:
+    """A session opened by :func:`load`. Nothing is read until it is asked for: ``run``
+    materialises the whole session as a :class:`~livn.run.Run`; ``recording`` is the lazy
+    view to read windows from."""
+
+    recording: RsfRecording
+
+    @cached_property
+    def run(self) -> Run:
+        return self.recording.to_run()
+
+    @property
+    def io(self) -> IO | None:
+        return self.recording.io
+
+    @property
+    def record(self) -> dict:
+        return self.recording.record
+
+    @property
+    def simulation(self) -> dict | None:
+        return self.recording.simulation
+
+
+def load(path: str | os.PathLike) -> Session:
+    return Session(RsfRecording(path))
 
 
 def _read(group, name: str) -> np.ndarray:
@@ -1048,6 +1315,16 @@ def _read(group, name: str) -> np.ndarray:
     if not isinstance(node, zarr.Array):
         raise RSFError(f"{group.store_path}/{name} is not an array")
     return np.asarray(node[...])
+
+
+def _array_of(group, name: str):
+    """The zarr array itself, not its contents."""
+    zarr = _zarr()
+
+    node = group.get(name)
+    if not isinstance(node, zarr.Array):
+        raise RSFError(f"{group.store_path}/{name} is not an array")
+    return node
 
 
 def _has(group, name: str) -> bool:

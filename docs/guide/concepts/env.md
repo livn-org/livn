@@ -193,12 +193,12 @@ second.t0                  # 100.0 on backends that track simulation time
 
 ### Storing a run
 
-`livn.rsf` ("recording session format") offers a neutral format to `store(run, path, env)` and `load(path)` a run. It needs `zarr` 3 or later, which livn does not install for you (`pip install 'zarr>=3'`).
+`livn.data.rsf` ("recording session format") offers a neutral format to `store(run, path, env)` and `load(path)` a run. It needs `zarr` 3 or later, which livn does not install for you (`pip install 'zarr>=3'`).
 
 To stay compatible with real recordings, a session must hold membrane currents from which the channel signal can be projected.
 
 ```python
-from livn.rsf import load, store
+from livn.data.rsf import load, store
 
 env.record_spikes()
 env.record_membrane_current()   # the channel signal is projected from these
@@ -218,6 +218,25 @@ session.record             # and the provenance record
 The directory is directly compatible with SpikeInterface via `spikeinterface.read_zarr("sessions/spontaneous-1/traces.zarr")`.
 
 Under MPI, gather first, e.g. `store(run.gather(env.comm), path, env)` writes on the root rank and does nothing on the others.
+
+To keep what drove the run, pass the channel-space `stimulus=policy` (its spec is recorded and its rendered array is stored) or `inputs=array, inputs_dt=ms`. The delivered input is stored on the traces' frame grid (each row held until the next, zero past the end) and read back with `recording.inputs(segment, start, length)`. A session saved without it raises `livn.data.Missing` rather than returning zeros.
+
+### Opening recordings lazily
+
+`load` reads nothing until asked. For windowed access, open the location with `livn.data.open`, which returns a `Recording` (one object whatever the format): `read(segment, start, length, channels=None)` gives float32 `[t, c]` in uV, `spikes`, `inputs`, `ground_truth` and `to_run(segment, start, length)` follow. A recording is safe to read from several threads and pickles by reference.
+
+```python
+from livn.data import open as open_recording
+
+recording = open_recording("sessions/spontaneous-1")         # rsf
+recording = open_recording("./systems/datasets/spe1/c16")    # a saved HF dataset (Arrow)
+recording = open_recording("hf://frthjf/spe1-zhao2026-benchmark/c16", split="test")
+
+window = recording.read(0, start=30_000, length=15_000)     # [15000, 384]
+units = recording.spikes(0)                                  # Events, ids = unit ids
+```
+
+`hf://<owner>/<repo>/<config>` downloads only that config's files (`huggingface_hub.snapshot_download`), never through `datasets.load_dataset`. The Arrow layout (`cp`, `cit`, `ctt`, optional `in` and cell-space ground truth columns, plus `conversion_metadata.json`, `templates.npz` and `dataset_stats.json`) is also written by `livn.data.arrow.store(run, path, env=env, ground_truth=("spikes", "voltage"))`, one row per call.
 
 ### Providing stimulus
 
