@@ -306,6 +306,25 @@ class Env(EnvProtocol):
         ]
         return stack_coordinates(rows) if rows else np.zeros((0, 4))
 
+    def _stimulus_labels(self):
+        from livn.io import section_labels
+
+        if self._selected_rows is None:
+            self._materialize_geometry()
+
+        placeholder = []
+        index = 0
+        for population, keep in self._selected_rows.items():
+            rows = np.zeros((len(keep), 4))
+            rows[:, 0] = self.module_gids[index : index + len(keep)]
+            index += len(keep)
+            placeholder.append(
+                self.model.stimulus_coordinates(rows, population=population)
+            )
+        return section_labels(
+            np.concatenate(placeholder) if placeholder else np.zeros((0, 4))
+        )
+
     def init(self):
         if self._select_spec is not None or self._select_bounds is not None:
             self._resolve_selection()
@@ -423,9 +442,7 @@ class Env(EnvProtocol):
             stimulus = Stimulus.from_arg(stimulus, env=self, duration=duration)
             stimulus = self.model.prepare_stimulus(stimulus)
             if stimulus.gids is not None:
-                from livn.io import section_labels
-
-                stimulus = stimulus.expand(*section_labels(self.stimulus_coordinates()))
+                stimulus = stimulus.expand(*self._stimulus_labels())
                 compartments = self._compartment_columns()
 
         input_current = None

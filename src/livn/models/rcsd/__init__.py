@@ -246,21 +246,34 @@ class ReducedCalciumSomaDendrite(Model):
             soma0, dend0, axon0.., soma1, dend1, axon1.., ...
         """
         n_neurons = neuron_coordinates.shape[0]
-
-        if self.dendrite_orientation == "aligned":
-            dx = _onp.full(n_neurons, self.dendrite_offset)
-            dy = _onp.zeros(n_neurons)
-        else:
-            angles = P.stable_uniform(
-                _onp.asarray(neuron_coordinates)[:, 0],
-                seed=self.dendrite_orientation_seed,
-                high=2.0 * math.pi,
-            )
-            dx = self.dendrite_offset * _onp.cos(angles)
-            dy = self.dendrite_offset * _onp.sin(angles)
-
         immutable = is_traced(neuron_coordinates)
         xp = np if immutable else _onp
+
+        if self.dendrite_orientation == "aligned":
+            dx = xp.full(n_neurons, self.dendrite_offset)
+            dy = xp.zeros(n_neurons)
+        else:
+
+            def draw(gids):
+                return P.stable_uniform(
+                    _onp.asarray(gids),
+                    seed=self.dendrite_orientation_seed,
+                    high=2.0 * math.pi,
+                )
+
+            if immutable:
+                import jax
+
+                dtype = neuron_coordinates.dtype
+                angles = jax.pure_callback(
+                    lambda gids: draw(gids).astype(dtype),
+                    jax.ShapeDtypeStruct((n_neurons,), dtype),
+                    jax.lax.stop_gradient(neuron_coordinates[:, 0]),
+                )
+            else:
+                angles = draw(neuron_coordinates[:, 0])
+            dx = self.dendrite_offset * xp.cos(angles)
+            dy = self.dendrite_offset * xp.sin(angles)
 
         dend_coords = neuron_coordinates.copy()
         if immutable:
@@ -273,7 +286,7 @@ class ReducedCalciumSomaDendrite(Model):
         rows = [neuron_coordinates]
         if self._has_dendrite(population):
             rows.append(dend_coords)
-        unit = _onp.stack([dx, dy], axis=1) / self.dendrite_offset
+        unit = xp.stack([dx, dy], axis=1) / self.dendrite_offset
         for offset in self._axon_offsets(population):
             link = neuron_coordinates.copy()
             step = unit * offset

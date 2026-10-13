@@ -11,7 +11,29 @@ if TYPE_CHECKING:
 
 _USES_JAX = "ax" in backend()
 
-if _USES_JAX:
+_JAX_NAMES = frozenset(
+    {
+        "CartesianParameterization",
+        "LearnableOrientation",
+        "LogRadialParameterization",
+        "OrientedTrainableSystem",
+        "PositionParameterization",
+        "SphericalParameterization",
+        "TrainableSystem",
+    }
+)
+
+if not _USES_JAX:
+
+    def __getattr__(name: str):
+        if name in _JAX_NAMES:
+            raise ImportError(
+                f"livn.system.{name} needs a jax backend (diffrax); the active "
+                f"backend is {backend()!r}. Set LIVN_BACKEND=diffrax"
+            )
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+else:
     import equinox as eqx
     import jax
     import jax.numpy as np
@@ -305,3 +327,146 @@ if _USES_JAX:
     jax.tree_util.register_pytree_node(
         TrainableSystem, _trainable_system_flatten, _trainable_system_unflatten
     )
+
+    class LearnableOrientation(eqx.Module):
+        """Per-neuron unconstrained orientation vectors, normalised at use time."""
+
+        raw: Any  # [n_total_neurons, 3]
+
+        @property
+        def unit(self):
+            n = np.linalg.norm(self.raw, axis=-1, keepdims=True)
+            return self.raw / np.maximum(n, 1e-6)
+
+    class OrientedTrainableSystem(eqx.Module):
+        """TrainableSystem with a learnable soma->dendrite orientation
+
+        Arguments:
+            base: The inner TrainableSystem
+            orientation: Learnable per-neuron orientation, indexed by gid
+            dipole_length_um: Soma-to-dendrite distance in um
+        """
+
+        base: TrainableSystem
+        orientation: LearnableOrientation
+        dipole_length_um: float = eqx.field(static=True)
+
+        @classmethod
+        def from_parameterization(
+            cls,
+            parameterization: PositionParameterization,
+            n_neurons: int,
+            n_populations: int = 1,
+            origins=None,
+            uri: str | None = None,
+            orient_init=None,
+            dipole_length_um: float = 108.0,
+        ):
+            if orient_init is None:
+                orient_init = np.tile(
+                    np.array([1.0, 0.0, 0.0]), (n_neurons * n_populations, 1)
+                )
+            return cls(
+                base=TrainableSystem(
+                    parameterization=parameterization,
+                    n_neurons=n_neurons,
+                    n_populations=n_populations,
+                    origins=origins,
+                    uri=uri,
+                ),
+                orientation=LearnableOrientation(
+                    raw=np.asarray(orient_init, dtype=np.float32)
+                ),
+                dipole_length_um=float(dipole_length_um),
+            )
+
+        @property
+        def parameterization(self):
+            return self.base.parameterization
+
+        @property
+        def params(self):
+            return self.base.params
+
+        @property
+        def origins(self):
+            return self.base.origins
+
+        @property
+        def n_neurons(self):
+            return self.base.n_neurons
+
+        @property
+        def n_populations(self):
+            return self.base.n_populations
+
+        @property
+        def name(self):
+            return self.base.name
+
+        @property
+        def populations(self):
+            return self.base.populations
+
+        @property
+        def uri(self):
+            return self.base.uri
+
+        @property
+        def num_neurons(self):
+            return self.base.num_neurons
+
+        @property
+        def gids(self):
+            return self.base.gids
+
+        @property
+        def neuron_coordinates(self):
+            return self.base.neuron_coordinates
+
+        @property
+        def bounding_box(self):
+            return self.base.bounding_box
+
+        @property
+        def center_point(self):
+            return self.base.center_point
+
+        @property
+        def orient_raw(self):
+            return self.orientation.raw
+
+        @property
+        def orient_unit(self):
+            return self.orientation.unit
+
+        def default_io(self) -> IO:
+            return self.base.default_io()
+
+        def coordinate_array(self, population: str):
+            return self.base.coordinate_array(population)
+
+        def transform_coordinates(
+            self,
+            transform: Callable,
+            populations: list[str] | None = None,
+        ) -> types.Float[types.Array, "n_coords ixyz=4"]:
+            """Apply the model's transform, then orient the dendrite rows"""
+            coords = np.asarray(
+                self.base.transform_coordinates(transform, populations=populations)
+            )
+            neurons = self.n_neurons * len(
+                self.populations if populations is None else populations
+            )
+            width = coords.shape[0] // neurons
+            if width < 2:
+                return coords
+
+            # rows are per neuron: soma, dend, then any axon sections
+            rows = coords.reshape(neurons, width, 4)
+            soma = rows[:, 0]
+            unit = self.orientation.unit[soma[:, 0].astype(np.int32)]
+            dend = np.concatenate(
+                [soma[:, :1], soma[:, 1:4] + self.dipole_length_um * unit], axis=-1
+            )
+            return rows.at[:, 1].set(dend).reshape(-1, 4)
