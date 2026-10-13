@@ -1,20 +1,39 @@
 {
   "io": {
-    "cls": "livn.io.MEA",
+    "cls": "livn.io.ComposedIO",
     "kwargs": {
-      "dead_time_ms": 3.0,
-      "detection_threshold": 0.2,
-      "input_radius": 50.0,
-      "noise_uv": 3.613825588551824,
-      "output_radius": 150.0,
-      "threshold_sigma": 5.0,
-      "volume_conductor": {
-        "culture_height_um": 50.0,
-        "electrode_radius_um": 15.0,
-        "min_distance_um": 5.0,
-        "recording_gain": 53051.64769729845,
-        "stimulation_gain": 5.335497577070286
-      }
+      "inputs": null,
+      "medium": {
+        "cls": "livn.io.Medium",
+        "electrical": {
+          "cls": "livn.io.PointSource",
+          "height_um": 50.0,
+          "min_distance_um": 5.0,
+          "sigma_s_per_m": 0.3,
+          "stimulation_resistivity_ohm_m": 3.5
+        },
+        "optical": {
+          "cls": "livn.io.KubelkaMunk",
+          "refractive_index": 1.36,
+          "scattering_per_mm": 11.2
+        }
+      },
+      "outputs": [
+        {
+          "cls": "livn.io.MEA",
+          "dead_time_ms": 3.0,
+          "detection_threshold": 0.2,
+          "electrode_radius_um": 15.0,
+          "input_radius": 50.0,
+          "output_radius": 150.0,
+          "threshold_sigma": 5.0
+        },
+        {
+          "cls": "livn.io.Noise",
+          "seed": 0,
+          "sigma_uv": 3.613825588551824
+        }
+      ]
     }
   },
   "meta": {
@@ -38,7 +57,7 @@
     "EXC_EXC-dend-NMDA-weight": 0.7016742061932661,
     "EXC_INH-soma-GABA_A-weight": 0.5380668392304807,
     "INH_EXC-soma-AMPA-weight": 10.735843693759216,
-    "io-volume_conductor-stimulation_gain": 0.8106653211505381,
+    "io-medium-electrical-stimulation_resistivity_ohm_m": 0.5317833216194349,
     "leaders-bias": 5.116666793823242,
     "leaders-by_input": 1.0,
     "leaders-delay_sd": 25.674999237060547,

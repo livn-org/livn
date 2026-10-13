@@ -1303,9 +1303,13 @@ class Env(Protocol):
         self,
         membrane_currents: Float[Array, "n_neurons timestep"] | None,
         gids=None,
+        dt: float | None = None,
+        key=None,
     ) -> Float[Array, "n_channels timestep"]:
+        if dt is None and getattr(self.io, "needs_dt", False):
+            dt = self.membrane_current_recording_dt
         return self.io.potential_recording(
-            self.recording_distances(gids), membrane_currents
+            self.recording_distances(gids), membrane_currents, dt=dt, key=key
         )
 
     def clear_recordings(self) -> Self:

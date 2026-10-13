@@ -1333,13 +1333,18 @@ class Culture(Target):
     def _protocol_space(self, model) -> dict[str, list]:
         space = {}
         if self.stimulus is not None:
-            from livn.io import DEFAULT_STIMULATION_GAIN
+            from livn.io import PointSource
 
+            default = PointSource().stimulation_resistivity_ohm_m
+            per_ohm_m = PointSource(stimulation_resistivity_ohm_m=1.0).stimulation_gain(
+                15.0
+            )
             span = 10.0
-            lo = DEFAULT_STIMULATION_GAIN / span
-            space["io-volume_conductor-stimulation_gain"] = [
+            lo = default / span
+            space["io-medium-electrical-stimulation_resistivity_ohm_m"] = [
                 lo,
-                self._gain_ceiling(model, lo, DEFAULT_STIMULATION_GAIN * span),
+                self._gain_ceiling(model, lo * per_ohm_m, default * span * per_ohm_m)
+                / per_ohm_m,
                 self.transform_log10,
             ]
 

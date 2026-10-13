@@ -98,7 +98,7 @@ light = LightArray(
     numerical_aperture=0.37,
     fiber_radius_um=100.0,
     wavelength_nm=473.0,
-    scattering_coefficient=11.2,  # mm^-1
+    # tissue: Medium(optical=KubelkaMunk(scattering_per_mm=11.2, refractive_index=1.36))
 )
 
 # Power trace: [timesteps, n_fibers] in mW

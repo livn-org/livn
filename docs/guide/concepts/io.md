@@ -22,7 +22,7 @@ class IO:
     def channel_recording(self, neuron_coordinates, neuron_ids, *recordings):
         """Transform per-neuron recordings into per-channel observations"""
 
-    def potential_recording(self, distances, membrane_currents) -> array:
+    def potential_recording(self, distances, membrane_currents, dt=None, key=None) -> array:
         """Estimate extracellular potentials from membrane currents"""
 ```
 
@@ -67,13 +67,7 @@ Each electrode has a unique integer ID and 3D coordinates in micrometers.
 
 ### Stimulation model
 
-When stimulating through an MEA, the effect on each neuron depends on its distance to the activated electrode. livn models this using a point-source volume conductor model:
-
-```
-v = ρ · I / (4π · r)
-```
-
-where `ρ` is the tissue resistivity, `I` is the electrode current, and `r` is the distance between the neuron and the electrode. Only neurons within `input_radius` of an electrode receive meaningful stimulation.
+When stimulating through an MEA, the effect on each neuron depends on its distance to the activated electrode. livn models this through the [medium](#medium) the array sits in, i.e. a point source whose field is `ρ · I / (4π · h_eff)` at the electrode surface, falling as `1 / sqrt(r² + h_eff²)`, where `ρ` is the stimulation resistivity, `I` is the electrode current, `r` is the distance between the neuron and the electrode and `h_eff` combines the electrode radius (`MEA(electrode_radius_um=15.0)`) with the culture height. Only neurons within `input_radius` of an electrode receive meaningful stimulation.
 
 ```python
 # Apply per-channel input to the system
@@ -106,7 +100,12 @@ cit, ct = mea.channel_recording(system.neuron_coordinates, it, t)
 Given the recording's noise level, the MEA decides which cells an electrode actually sees the way a spike detector does. A cell counts on a channel when its spike there reaches `threshold_sigma` times the noise, and spikes closer together than `dead_time_ms` on one channel are dropped.
 
 ```python
-mea = MEA(noise_uv=3.6, threshold_sigma=5.0, dead_time_ms=3.0, output_radius=150.0)
+from livn.io import MEA, ComposedIO, Noise
+
+io = ComposedIO(
+    inputs=None,   # the same MEA stimulates
+    outputs=[MEA(threshold_sigma=5.0, dead_time_ms=3.0, output_radius=150.0), Noise(3.6)],
+)
 cit, ct = env.channel_recording(it, t)   # read through the env
 ```
 
@@ -121,6 +120,8 @@ distances = mea.distances(system.neuron_coordinates)
 lfp = mea.potential_recording(distances, membrane_currents)
 # Returns: [n_channels, timesteps] in µV
 ```
+
+On an env, `env.potential_recording(membrane_currents)` supplies the recording distances and the sampling interval (`dt`, ms) itself.
 
 This is used by decodings like [`LFP`](/guide/concepts/decoding) for spectral analysis of the extracellular signal.
 
@@ -194,7 +195,7 @@ fibers = LightArray(
     numerical_aperture=0.37,
     fiber_radius_um=100.0,
     wavelength_nm=473.0,
-    scattering_coefficient=11.2,  # mm⁻¹, brain tissue at 473nm
+    # the tissue it shines into is a Medium(optical=KubelkaMunk(scattering_per_mm=11.2))
 )
 ```
 
@@ -215,23 +216,65 @@ env.run(100, stimulus=stim)
 The transmittance from each fiber to each neuron is computed using the Kubelka-Munk model (Aravanis et al. 2007), accounting for:
 
 - Fiber numerical aperture and cone geometry
-- Tissue scattering at the specified wavelength
+- Tissue scattering and refractive index, from the [medium](#medium)'s optical part
 - 3D distance between fiber tip and neuron
 
 livn also integrates with the [cleo](https://cleosim.readthedocs.io/) library for modelling optogenetic stimulation with detailed laser and opsin models.
+
+## Medium
+
+A `Medium` is the preparation between the devices and the tissue defining how fields and light propagate.
+
+```python
+from livn.io import DispersivePointSource, KubelkaMunk, Medium, PointSource
+
+medium = Medium(
+    electrical=PointSource(
+        sigma_s_per_m=0.3,                   # conductivity
+        height_um=50.0,                      # culture height
+        min_distance_um=5.0,                 # floor on the source distance
+        stimulation_resistivity_ohm_m=3.5,   # None: 1 / sigma
+    ),
+    optical=KubelkaMunk(scattering_per_mm=11.2, refractive_index=1.36),
+)
+mea = MEA(medium=medium)
+```
+
+## Transfer stacks
+
+A transfer acts on a channel's signal after the device that measured it.
+
+| transfer | what it models |
+|---|---|
+| `ElectrodeRC(r_seal_mohm, c_pf)` | the electrode-electrolyte interface as a first-order RC low-pass; learnable seal resistance, shared or per channel |
+| `FIR(taps, per_channel=False)` | a learned causal impulse response |
+| `Bandpass(low_hz, high_hz, order)` | the acquisition filter (a causal Butterworth) |
+| `Noise(sigma_uv, seed=0)` | additive Gaussian noise |
+
+```python
+from livn.io import FIR, MEA, ComposedIO, ElectrodeRC, Noise
+
+io = ComposedIO(
+    inputs=None,
+    outputs=[MEA(), ElectrodeRC(50.0, 100.0), FIR([1.0, 0.3]), Noise(6.0)],
+)
+v = io.potential_recording(distances, membrane_currents, dt=0.1)             # deterministic
+v = io.potential_recording(distances, membrane_currents, dt=0.1, key=key)    # with noise
+```
 
 ## Composed IO
 
 When stimulation and recording use different physical modalities (for example, optical stimulation via a `LightArray` and electrical recording via an `MEA`), use `ComposedIO` to pair them into a single IO object:
 
 ```python
-from livn.io import ComposedIO, LightArray, MEA
+from livn.io import ComposedIO, LightArray, MEA, Medium
 
 io = ComposedIO(
-    inputs=LightArray(),
+    inputs=LightArray(fibers),
     outputs=MEA(),
+    medium=Medium(),
 )
 env = Env(system, io=io)
 ```
 
-`ComposedIO` delegates `cell_stimulus` to the `inputs` IO and `channel_recording`, `potential_recording`, and `distances` to the `outputs` IO. Channel properties (`num_channels`, `channel_ids`) are taken from the output IO.
+`ComposedIO` delegates `cell_stimulus` to the `inputs` IO and `channel_recording`, `potential_recording`, and `distances` to the `outputs` IO. Channel properties (`num_channels`, `channel_ids`) are taken from the output IO. `outputs` may be a list `[device, *transfers]` (see [transfer stacks](#transfer-stacks)), and `inputs=None` means the output device stimulates too.

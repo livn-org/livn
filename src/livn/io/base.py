@@ -10,6 +10,7 @@ p = payload value (distance, induction strength etc.)
 
 from __future__ import annotations
 
+import copy
 import os
 from collections import defaultdict
 from typing import TYPE_CHECKING
@@ -33,15 +34,6 @@ if "ax" in backend():
 else:
     import numpy as np
 
-
-MIN_DISTANCE_UM = 5.0
-ELECTRODE_RADIUS_UM = 15.0
-CULTURE_HEIGHT_UM = 50.0
-_PI = 3.141592653589793
-_H_EFF_UM = (ELECTRODE_RADIUS_UM**2 + CULTURE_HEIGHT_UM**2) ** 0.5
-
-DEFAULT_RECORDING_GAIN = 1000.0 / (4.0 * _PI * 0.0003 * MIN_DISTANCE_UM)
-DEFAULT_STIMULATION_GAIN = 1000.0 * 3.5 / (4.0 * _PI * _H_EFF_UM)
 
 DEFAULT_MAX_STIMULUS_GB = 5.0
 MAX_STIMULUS_GB_ENV = "LIVN_MAX_STIMULUS_GB"
@@ -233,28 +225,204 @@ class IO(Jsonable):
         """
         raise NotImplementedError("Please specify an IO")
 
+    @property
+    def needs_dt(self) -> bool:
+        """Whether `potential_recording` needs the sampling interval."""
+        return False
+
     def potential_recording(
         self,
         distances: Float[Array, "n_distances cip=3"],
-        membrane_currents: Float[Array, "timestep n_neurons"],
-    ) -> Float[Array, "timestep n_channels"]:
+        membrane_currents: Float[Array, "n_neurons timestep"],
+        dt: float | None = None,
+        key=None,
+    ) -> Float[Array, "n_channels timestep"]:
         """Estimate the voltage recorded from the channels
 
         Parameters
         - distances: triplets [channel_id, gid, distance_um] as returned by `self.distances(...)`.
         - membrane_currents: current per neuron index (aligned with the coordinate order
-            used to compute `distances`). Shape must be (timestep, n_neurons).
+            used to compute `distances`). Shape must be (n_neurons, timestep).
+        - dt: sampling interval in ms; required when the medium or a transfer filters in time.
+        - key: random key for stochastic transfers (`Noise`); without one they pass the signal on.
         """
         raise NotImplementedError("Please specify an IO")
 
 
+class _Static:
+    def __init__(self, value):
+        self.value = value
+
+    def __eq__(self, other):
+        return isinstance(other, _Static) and self.value is other.value
+
+    def __hash__(self):
+        return id(self.value)
+
+
+def _unique(*devices):
+    seen: list = []
+    for device in devices:
+        if not any(device is other for other in seen):
+            seen.append(device)
+    return seen
+
+
+def _bound(device, medium, transfers):
+    bound = copy.copy(device)
+    if hasattr(bound, "medium"):
+        bound.medium = medium
+    bound._stack = transfers
+    return bound
+
+
+def _device(spec):
+    from livn.io._component import resolve_component
+
+    device = resolve_component(spec)
+    if not isinstance(device, IO) or isinstance(device, ComposedIO):
+        raise TypeError(
+            f"a device is a single IO such as MEA or LightArray, not {spec!r}"
+        )
+    return device
+
+
 class ComposedIO(IO):
-    def __init__(self, inputs: IO, outputs: IO):
-        self.inputs = inputs
-        self.outputs = outputs
+    """A stimulating device and a recording device in one preparation."""
+
+    def __init__(self, inputs=None, outputs=None, medium=None):
+        from livn.io._component import resolve_component
+        from livn.io.medium import Medium
+        from livn.io.transfer import Transfer
+
+        if isinstance(inputs, list | tuple):
+            raise NotImplementedError(
+                "a list of input stages ([*transfers, device]) is reserved and not "
+                "implemented; pass the stimulating device"
+            )
+        if outputs is None:
+            raise ValueError(
+                "ComposedIO needs outputs: a device or [device, *transfers]"
+            )
+
+        stages = list(outputs) if isinstance(outputs, list | tuple) else [outputs]
+        out_device = _device(stages[0])
+        transfers = tuple(resolve_component(t) for t in stages[1:])
+        for k, t in enumerate(transfers, start=1):
+            if not isinstance(t, Transfer):
+                raise TypeError(
+                    f"outputs[{k}] is {type(t).__name__}, but every element after "
+                    "the device must be a Transfer (channel to channel); only the "
+                    "first element is a device"
+                )
+        in_device = out_device if inputs is None else _device(inputs)
+
+        if medium is None:
+            media = [
+                d.medium for d in _unique(in_device, out_device) if hasattr(d, "medium")
+            ]
+            default = Medium().serialize()
+            chosen = [m for m in media if m.serialize() != default]
+            if any(m.serialize() != chosen[0].serialize() for m in chosen[1:]):
+                raise ValueError(
+                    "the inputs and outputs devices carry different media; pass the "
+                    "one `medium=` the composition uses"
+                )
+            medium = chosen[0] if chosen else Medium()
+        else:
+            medium = resolve_component(medium)
+
+        self._medium = medium
+        self.transfers = transfers
+        self.outputs = _bound(out_device, medium, transfers)
+        self.inputs = (
+            self.outputs
+            if in_device is out_device
+            else _bound(in_device, medium, transfers)
+        )
+
+    @property
+    def medium(self):
+        return self._medium
+
+    @medium.setter
+    def medium(self, medium):
+        self._medium = medium
+        for device in _unique(self.inputs, self.outputs):
+            if hasattr(device, "medium"):
+                device.medium = medium
+
+    def _set_transfers(self, transfers):
+        self.transfers = tuple(transfers)
+        for device in _unique(self.inputs, self.outputs):
+            device._stack = self.transfers
+
+    def __getattr__(self, name):
+        # a single MEA that stimulates and records is still addressed as `io.<attr>`
+        if name in ("inputs", "outputs", "transfers", "_medium") or name.startswith(
+            "__"
+        ):
+            raise AttributeError(name)
+        for device in (self.outputs, self.inputs):
+            if hasattr(device, name):
+                return getattr(device, name)
+        raise AttributeError(f"{type(self).__name__!r} has no attribute {name!r}")
 
     def parameter_children(self) -> dict:
-        return {"inputs": self.inputs, "outputs": self.outputs}
+        return {
+            "inputs": self.inputs,
+            "outputs": self.outputs,
+            "medium": self.medium,
+            **{f"transfer{k}": t for k, t in enumerate(self.transfers)},
+        }
+
+    def set_params(self, params: dict) -> ComposedIO:
+        children = self.parameter_children()
+        nested: dict = {}
+        for key, value in params.items():
+            head, _, rest = key.partition("-")
+            if not rest or head not in children:
+                raise KeyError(
+                    f"{key!r} is not a parameter of {type(self).__name__}; "
+                    f"its children are {sorted(children)}"
+                )
+            if head in ("inputs", "outputs") and rest.partition("-")[0] == "medium":
+                raise KeyError(f"{key!r}: the medium is shared, address it as '{rest}'")
+            nested.setdefault(head, {})[rest] = value
+
+        transfers = list(self.transfers)
+        for head, values in nested.items():
+            updated = children[head].set_params(values)
+            if head == "medium":
+                self.medium = updated
+            elif head.startswith("transfer"):
+                transfers[int(head[len("transfer") :])] = updated
+        self._set_transfers(transfers)
+        self.invalidate()
+        return self
+
+    def invalidate(self) -> None:
+        for device in _unique(self.inputs, self.outputs):
+            device.invalidate()
+
+    def serialize(self) -> dict:
+        from livn.io._component import cls_path
+
+        def document(device):
+            doc = {"cls": cls_path(device), **device.serialize()}
+            doc.pop("medium", None)
+            return doc
+
+        stages = [document(self.outputs), *(t.serialize() for t in self.transfers)]
+        return {
+            "inputs": None if self.inputs is self.outputs else document(self.inputs),
+            "outputs": stages if self.transfers else stages[0],
+            "medium": self.medium.serialize(),
+        }
+
+    @property
+    def needs_dt(self) -> bool:
+        return self.outputs.needs_dt or any(t.needs_dt for t in self.transfers)
 
     @property
     def num_channels(self) -> int:
@@ -296,14 +464,46 @@ class ComposedIO(IO):
     def potential_recording(
         self,
         distances: Float[Array, "n_distances cip=3"],
-        membrane_currents: Float[Array, "timestep n_neurons"],
-    ) -> Float[Array, "timestep n_channels"]:
-        return self.outputs.potential_recording(distances, membrane_currents)
+        membrane_currents: Float[Array, "n_neurons timestep"],
+        dt: float | None = None,
+        key=None,
+    ) -> Float[Array, "n_channels timestep"]:
+        from livn.io.transfer import stage_key
+
+        if dt is None and self.needs_dt:
+            raise ValueError("this IO filters in time, so potential_recording needs dt")
+        signal = self.outputs.potential_recording(distances, membrane_currents, dt=dt)
+        for k, transfer in enumerate(self.transfers):
+            signal = transfer(signal, dt=dt, key=stage_key(key, k))
+        return signal
 
     def distances(
         self, neuron_coordinates: Float[Array, "n_coords ixyz=4"]
     ) -> Float[Array, "n_sources*n_coords cip=3"]:
         return self.outputs.distances(neuron_coordinates)
+
+
+if _USES_JAX:
+    import jax
+
+    def _composed_flatten(io):
+        return (io._medium, io.transfers), _Static((io.inputs, io.outputs))
+
+    def _composed_unflatten(aux, children):
+        medium, transfers = children
+        inputs, outputs = aux.value
+        io = ComposedIO.__new__(ComposedIO)
+        io._medium = medium
+        io.transfers = tuple(transfers)
+        io.outputs = _bound(outputs, medium, io.transfers)
+        io.inputs = (
+            io.outputs if inputs is outputs else _bound(inputs, medium, io.transfers)
+        )
+        return io
+
+    jax.tree_util.register_pytree_node(
+        ComposedIO, _composed_flatten, _composed_unflatten
+    )
 
 
 def calculate_distances(

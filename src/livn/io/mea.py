@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import numpy as _np
 
 from livn.backend import backend
+from livn.io._component import resolve_component
 from livn.io.base import (
     IO,
     calculate_cell_stimulus,
@@ -16,7 +17,8 @@ from livn.io.base import (
     relative_distance,
     with_amplitude,
 )
-from livn.io.medium import PointSourceModel
+from livn.io.medium import Medium
+from livn.io.transfer import Noise
 
 if TYPE_CHECKING:
     from livn.stimulus import Stimulus
@@ -67,10 +69,18 @@ class MEA(IO):
         Smallest detectable signal, in the same relative units as the
         `amplitude` passed to `channel_recording`. Default is 0, which
         records every unit inside `output_radius`.
-    noise_uv, threshold_sigma
-        Physical detection, used instead of `detection_threshold` when
-        `noise_uv > 0` where a cell is on a channel when its spike there reaches
-        `threshold_sigma * noise_uv`.
+    threshold_sigma
+        Physical detection, used instead of `detection_threshold` when the
+        composition's stack has `Noise` stages (`detection_noise_uv > 0`): a cell
+        is on a channel when its spike there reaches `threshold_sigma` times the
+        stack's noise (the variances of its `Noise` stages summed). A bare MEA
+        has no stack and so no physical detection.
+    electrode_radius_um
+        The electrode's radius: it sets the field the electrode imposes in
+        stimulation (the medium supplies the height and the conductivity).
+    medium
+        The `Medium` (or its document); the electrical part carries recording
+        and stimulation. A `ComposedIO` replaces it with the one it owns.
     spike_profile
         The spike's trough against distance (`{"distance_um", "trough_uv"}`).
     dead_time_ms
@@ -90,9 +100,9 @@ class MEA(IO):
         electrode_coordinates: Float[Array, "n_electrodes ixyz=4"] | None = None,
         input_radius=250,
         output_radius=250,
-        volume_conductor=None,
+        electrode_radius_um: float = 15.0,
+        medium=None,
         detection_threshold: float = 0.0,
-        noise_uv: float = 0.0,
         threshold_sigma: float = 5.0,
         dead_time_ms: float = 0.0,
         spike_profile: Mapping | None = None,
@@ -103,25 +113,37 @@ class MEA(IO):
         self.input_radius = input_radius
         self.output_radius = output_radius
         self.detection_threshold = float(detection_threshold)
-        self.noise_uv = float(noise_uv)
         self.threshold_sigma = float(threshold_sigma)
         self.dead_time_ms = float(dead_time_ms)
         self.spike_profile = (
             None if spike_profile is None else _checked_profile(spike_profile)
         )
         self._attached_profile = None
-        if volume_conductor is None:
-            volume_conductor = PointSourceModel()
-        elif isinstance(volume_conductor, dict):
-            volume_conductor = PointSourceModel(**volume_conductor)
-        self.volume_conductor = volume_conductor
+        self.electrode_radius_um = float(electrode_radius_um)
+        self.medium = Medium() if medium is None else resolve_component(medium)
+        self._stack = ()
 
         self.cell_measurement = None
         self._cell_induction = None
         self._induction_cache = None
 
     def parameter_children(self) -> dict:
-        return {"volume_conductor": self.volume_conductor}
+        return {"medium": self.medium}
+
+    @property
+    def electrical(self):
+        return self.medium.require("electrical")
+
+    @property
+    def needs_dt(self) -> bool:
+        return bool(self.electrical.needs_dt)
+
+    @property
+    def detection_noise_uv(self) -> float:
+        variance = sum(
+            float(t.sigma_uv) ** 2 for t in self._stack if isinstance(t, Noise)
+        )
+        return variance**0.5
 
     @property
     def num_channels(self) -> int:
@@ -140,8 +162,8 @@ class MEA(IO):
             "electrode_coordinates": _np.asarray(self.electrode_coordinates).tolist(),
             "input_radius": self.input_radius,
             "output_radius": self.output_radius,
+            "electrode_radius_um": self.electrode_radius_um,
             "detection_threshold": self.detection_threshold,
-            "noise_uv": self.noise_uv,
             "threshold_sigma": self.threshold_sigma,
             "dead_time_ms": self.dead_time_ms,
             **(
@@ -149,15 +171,13 @@ class MEA(IO):
                 if self.spike_profile is not None
                 else {}
             ),
-            "volume_conductor": self.volume_conductor.serialize()
-            if hasattr(self.volume_conductor, "serialize")
-            else None,
+            "medium": self.medium.serialize(),
         }
 
     @property
     def physical_detection(self) -> bool:
-        """Whether cells are detected against the channel noise (`noise_uv`)."""
-        return self.noise_uv > 0.0
+        """Whether cells are detected against the stack's channel noise."""
+        return self.detection_noise_uv > 0.0
 
     @property
     def profile(self) -> dict | None:
@@ -196,7 +216,7 @@ class MEA(IO):
             profile = self.profile
             if profile is None:
                 raise ValueError(
-                    "physical detection (noise_uv > 0) needs the cells' spike profile"
+                    "physical detection (a Noise stage in the stack) needs the cells' spike profile"
                 )
             trough = _np.interp(
                 distance,
@@ -303,12 +323,12 @@ class MEA(IO):
     ) -> Float[Array, "n cip=3"]:
         """The measurement rows whose signal reaches the detection threshold.
 
-        `threshold_sigma * noise_uv` with physical detection, `detection_threshold`
+        `threshold_sigma * detection_noise_uv` with physical detection, `detection_threshold`
         otherwise.
         """
         if self.physical_detection:
             rows = _np.asarray(cell_measurement)
-            limit = self.threshold_sigma * self.noise_uv
+            limit = self.threshold_sigma * self.detection_noise_uv
             return rows[self.signal(rows, amplitude) >= limit]
         if self.detection_threshold <= 0.0 and amplitude is None:
             return cell_measurement
@@ -344,6 +364,15 @@ class MEA(IO):
                 best[int(channel)] = (float(value), int(gid))
         return {channel: gid for channel, (_v, gid) in sorted(best.items())}
 
+    def _pair_distances(self, distances):
+        n_electrodes = int(self.num_channels)
+        d = distances[:, -1]
+        if d.size % n_electrodes != 0:
+            raise ValueError(
+                f"distances size mismatch: expected a multiple of {n_electrodes}, got {d.size}"
+            )
+        return d.reshape(n_electrodes, d.size // n_electrodes)
+
     def source_gain(
         self,
         distances: Float[Array, "n_distances cip=3"],
@@ -351,26 +380,13 @@ class MEA(IO):
         """
         Compute per-recording-coordinate gain for electrode potential.
 
-        Uses the point-source volume conductor formula:
-
-            g = (1 / (4*pi*sigma_S_per_mm)) * (1 / r_mm)
-
         Only recording coordinates within output_radius get non-zero gain.
 
         Arguments
         - distances: as returned by `MEA.distances(neuron_coordinates)`
         """
-        n_electrodes = int(self.num_channels)
-        d = distances[:, -1]
-        if d.size % n_electrodes != 0:
-            raise ValueError(
-                f"distances size mismatch: expected a multiple of {n_electrodes}, got {d.size}"
-            )
-
-        n_recording_coords = d.size // n_electrodes
-        d = d.reshape(n_electrodes, n_recording_coords)
-
-        gain = self.volume_conductor.source_gain(d)
+        d = self._pair_distances(distances)
+        gain = self.electrical.potential_gain(d)
         mask = d <= float(self.output_radius)
         return np.where(mask, gain, 0.0)
 
@@ -378,23 +394,31 @@ class MEA(IO):
         self,
         distances: Float[Array, "n_distances cip=3"],
         membrane_currents: Float[Array, "n_neurons timestep"],
+        dt: float | None = None,
+        key=None,
     ) -> Float[Array, "n_channels timestep"]:
         """
-        Estimate electrode potentials from membrane currents using
-        the point-source volume conductor formula:
-
-            V [uV] = (1 / (4*pi*sigma_S_per_mm)) * sum_i( I_i[uA] / r_i[mm] )
+        Estimate electrode potentials from membrane currents through the
+        medium (a point source: `V [uV] = sum_i g(r_i) I_i [uA]`).
 
         Only neurons within output_radius contribute.
 
         Arguments
         - distances: as returned by `MEA.distances(neuron_coordinates)`
         - membrane_currents: in uA, shape [n_neurons, timestep]
+        - dt: sampling interval (ms); needed only by a medium that filters in time
+        - key: unused (a bare MEA has no stochastic stage)
 
         Returns: microvolts array (uV), shape [n_channels, timestep]
         """
         gain = self.source_gain(distances)
-        return self.volume_conductor.potential_recording(gain, membrane_currents)
+        return self.electrical.project(
+            gain,
+            self._pair_distances(distances),
+            membrane_currents,
+            dt,
+            output_radius_um=float(self.output_radius),
+        )
 
     def distances(
         self, neuron_coordinates: Float[Array, "n_coords ixyz=4"]
@@ -409,7 +433,8 @@ class MEA(IO):
         distances: Float[Array, "n_distances cip=3"],
     ) -> Float[Array, "n_amplitudes cip=3"]:
         return with_amplitude(
-            distances, self.volume_conductor.induction_gain(distances[:, -1])
+            distances,
+            self.electrical.field_gain(distances[:, -1], self.electrode_radius_um),
         )
 
     def reach(
@@ -459,42 +484,28 @@ class MEA(IO):
 if _USES_JAX:
 
     def _mea_tree_flatten(mea):
-        flat_vc = jax.tree_util.tree_leaves(mea.volume_conductor)
-        vc_is_pytree = not (len(flat_vc) == 1 and flat_vc[0] is mea.volume_conductor)
-        children = (mea.volume_conductor if vc_is_pytree else None,)
         aux = {
             "electrode_coordinates": mea.electrode_coordinates,
             "input_radius": mea.input_radius,
             "output_radius": mea.output_radius,
-            "volume_conductor": None if vc_is_pytree else mea.volume_conductor,
-            "vc_is_pytree": vc_is_pytree,
+            "electrode_radius_um": mea.electrode_radius_um,
             "cell_measurement": mea.cell_measurement,
             "_cell_induction": mea._cell_induction,
             "detection_threshold": mea.detection_threshold,
-            "noise_uv": mea.noise_uv,
             "threshold_sigma": mea.threshold_sigma,
             "dead_time_ms": mea.dead_time_ms,
             "spike_profile": mea.spike_profile,
             "_attached_profile": mea._attached_profile,
+            "_stack": mea._stack,
         }
-        return children, aux
+        return (mea.medium,), aux
 
     def _mea_tree_unflatten(aux, children):
-        (vc_child,) = children
-        vc = vc_child if aux["vc_is_pytree"] else aux["volume_conductor"]
+        (medium,) = children
         mea = MEA.__new__(MEA)
-        mea.electrode_coordinates = aux["electrode_coordinates"]
-        mea.input_radius = aux["input_radius"]
-        mea.output_radius = aux["output_radius"]
-        mea.volume_conductor = vc
-        mea.cell_measurement = aux["cell_measurement"]
-        mea._cell_induction = aux["_cell_induction"]
-        mea.detection_threshold = aux["detection_threshold"]
-        mea.noise_uv = aux["noise_uv"]
-        mea.threshold_sigma = aux["threshold_sigma"]
-        mea.dead_time_ms = aux["dead_time_ms"]
-        mea.spike_profile = aux["spike_profile"]
-        mea._attached_profile = aux["_attached_profile"]
+        mea.medium = medium
+        for name, value in aux.items():
+            setattr(mea, name, value)
         mea._induction_cache = None
         return mea
 

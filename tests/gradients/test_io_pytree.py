@@ -15,20 +15,16 @@ def test_the_mea_pytree_round_trip_keeps_the_detector():
     mea = MEA(
         [[0, 0.0, 0.0, 0.0], [1, 100.0, 0.0, 0.0]],
         detection_threshold=0.2,
-        noise_uv=3.5,
         threshold_sigma=4.0,
         dead_time_ms=1.5,
         spike_profile={"distance_um": [0, 50, 100], "trough_uv": [-80, -20, -5]},
     )
     mea.attach_spike_profile({"distance_um": [0, 10], "trough_uv": [-50, -5]})
-    assert mea.physical_detection
 
     out = jax.tree_util.tree_map(lambda x: x, mea)
 
-    assert out.physical_detection
     for name in (
         "detection_threshold",
-        "noise_uv",
         "threshold_sigma",
         "dead_time_ms",
         "spike_profile",

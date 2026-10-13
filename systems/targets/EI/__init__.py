@@ -31,7 +31,9 @@ class MixedCulture(BurstingCulture):
         "unit_corr_median",
         "coordination_excess",
     )
-    ALWAYS_FREE: ClassVar[tuple] = ("io-volume_conductor-stimulation_gain",)
+    ALWAYS_FREE: ClassVar[tuple] = (
+        "io-medium-electrical-stimulation_resistivity_ohm_m",
+    )
 
     def frozen(self) -> dict[str, float]:
         spec = self.config.frozen

@@ -75,7 +75,7 @@ class MockEnv:
             1: tt[~mask_even],
         }
 
-    def potential_recording(self, m, gids=None):
+    def potential_recording(self, m, gids=None, dt=None, key=None):
         if m is None:
             return None
         n_samples = m.shape[1]

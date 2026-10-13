@@ -4,7 +4,6 @@ import json
 import math
 import os
 import re
-import secrets
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -25,6 +24,7 @@ PRODUCER = "livn"
 COMPONENT = "rsf"
 RECORD_KEY = f"{RSF}_provenance"
 POINT_SOURCE = f"{RSF}.point_source/1"
+LIVN_IO = "livn.io/1"
 OPERATOR_PATH = f"traces.zarr/{RSF}/observe.json"
 
 DEFAULT_GAIN_UV = 0.195
@@ -84,9 +84,10 @@ def store(
         path: The session directory; must not exist, or be empty
         env: The env that produced the run: names the simulator and supplies the MEA, the
             recording coordinates, the simulated gids and the system
-        withhold: Stage transforms applied in order to the channel signal before quantization,
-            ``{"mask": {"fields": [...]}}`` or ``{"noise": {"distribution": "gaussian", "params":
-            {"sigma_uv": s}, "seed": n}}``
+        withhold: Transforms that drop what a session would reveal, applied after the IO's
+            stack and before quantization: ``{"mask": {"fields": [...]}}``. Noise is the
+            IO's own: its ``Noise`` stages are applied here with their ``seed`` and
+            recorded in the row stages, in stack order
         voltage: Also write ``ground_truth/voltage.zarr``
         currents: Also write ``ground_truth/currents.zarr``
         stimulus: ``{"cls", "kwargs"}`` of what drove the run; ``None`` for spontaneous activity
@@ -121,7 +122,7 @@ def _prepare(run, path, env, *, withhold, voltage, currents, stimulus, gain_uv, 
     _check_not_batched(run)
 
     simulator = _simulator_name(env)
-    operator, stimulates = _point_source_operator(env)
+    io, operator, stimulates = _observation(env)
     channel_ids = [_id_str(c) for c in np.asarray(operator.electrode_coordinates)[:, 0]]
 
     gain_uv = float(gain_uv)
@@ -132,9 +133,12 @@ def _prepare(run, path, env, *, withhold, voltage, currents, stimulus, gain_uv, 
 
     # the channel signal, (n_channels, T) in uV
     signal_series = run.channels.get("current")
+    projected = None
+    through_stack = False
     if signal_series is not None and signal_series.values is not None:
-        uv, row_ids = _project(run, env, operator), list(channel_ids)
         dt, t0 = float(signal_series.dt), float(signal_series.t0)
+        (uv, projected), row_ids = _project(run, env, io, dt), list(channel_ids)
+        through_stack = True
     elif getattr(run, "potential", None) is not None:
         potential = run.potential
         row_ids = [_id_str(c) for c in np.asarray(potential.ids)]
@@ -160,23 +164,18 @@ def _prepare(run, path, env, *, withhold, voltage, currents, stimulus, gain_uv, 
     sources = [int(g) for g in np.asarray(env.simulated_gids(everywhere=True)).ravel()]
     known_sources = {str(g) for g in sources}
 
+    stack_stages = _stack_stages(io) if through_stack else []
     stages, masked = _withhold_stages(withhold, row_ids)
     rng_rows = list(row_ids)
     for item in stages:
-        transform = item["transform"]
-        if "mask" in transform:
-            dropped = {
-                f.split(":", 1)[1]
-                for f in transform["mask"]["fields"]
-                if f.startswith("channel:")
-            }
-            keep = [i for i, key in enumerate(rng_rows) if key not in dropped]
-            uv = uv[keep]
-            rng_rows = [rng_rows[i] for i in keep]
-        else:
-            noise = transform["noise"]
-            rng = np.random.default_rng(noise["seed"])
-            uv = uv + rng.normal(0.0, noise["params"]["sigma_uv"], size=uv.shape)
+        dropped = {
+            f.split(":", 1)[1]
+            for f in item["transform"]["mask"]["fields"]
+            if f.startswith("channel:")
+        }
+        keep = [i for i, key in enumerate(rng_rows) if key not in dropped]
+        uv = uv[keep]
+        rng_rows = [rng_rows[i] for i in keep]
     row_ids = rng_rows
     if not row_ids:
         raise RSFError(
@@ -226,13 +225,13 @@ def _prepare(run, path, env, *, withhold, voltage, currents, stimulus, gain_uv, 
             "seed": seed,
         },
         "space": "channel",
-        "rows": {key: [observe_stage, *stages] for key in row_ids},
+        "rows": {key: [observe_stage, *stack_stages, *stages] for key in row_ids},
         "started_at": started_at,
         "first_sample_tick": int(tick0),
         "group": group,
     }
 
-    observe = _observe_document(operator, stimulates, masked)
+    observe = _observe_document(io, operator, stimulates, masked)
     source_document: dict[str, Any] = {"ids": sources}
     if "source_positions" not in masked:
         source_document["coordinates_um"] = _source_coordinates(env, sources)
@@ -244,6 +243,10 @@ def _prepare(run, path, env, *, withhold, voltage, currents, stimulus, gain_uv, 
         "sources": source_document,
         "stimulus": None if stimulus is None else _plain(stimulus),
     }
+    if projected is not None:
+        simulation["trace_sections"] = projected["contributing"]
+        if projected["unplaced"]:
+            simulation["unplaced_sections"] = projected["unplaced"]
     regenerate = _regenerate(env)
     if regenerate:
         simulation["regenerate"] = regenerate
@@ -457,25 +460,51 @@ def _simulator_name(env) -> str:
     return f"livn_{match.group(1)}"
 
 
-def _point_source_operator(env):
-    from livn.io import MEA, ComposedIO, PointSourceModel
+def _observation(env):
+    from livn.io import MEA, ComposedIO
 
     io = getattr(env, "io", None)
-    operator, stimulates = io, True
+    device, stimulates = io, True
     if isinstance(io, ComposedIO):
-        operator, stimulates = io.outputs, io.inputs is io.outputs
-    if not isinstance(operator, MEA):
-        name = "None" if operator is None else type(operator).__qualname__
+        device, stimulates = io.outputs, io.inputs is io.outputs
+    if not isinstance(device, MEA):
+        name = "None" if device is None else type(device).__qualname__
         raise RSFError(
-            f"the recording IO is {name}; only a point-source MEA has an observation operator "
-            f"the format defines ({POINT_SOURCE})"
+            f"the recording IO is {name}; a session is recorded through an MEA "
+            f"(its medium and transfers are stored with it)"
         )
-    if not isinstance(operator.volume_conductor, PointSourceModel):
-        raise RSFError(
-            f"the MEA's volume conductor is {type(operator.volume_conductor).__qualname__}, "
-            f"not livn's PointSourceModel, so it is not {POINT_SOURCE}"
+    device.medium.require("electrical")  # no electrical part, nothing to record
+    return io, device, stimulates
+
+
+def _transfers(io) -> tuple:
+    return tuple(getattr(io, "transfers", ()))
+
+
+def _stack_stages(io) -> list[dict]:
+    """The row stages of the IO's transfers, in signal order."""
+    stages = []
+    for transfer in _transfers(io):
+        document = transfer.serialize()
+        if document["cls"] == "livn.io.Noise":
+            transform = {
+                "noise": {
+                    "distribution": "gaussian",
+                    "params": {"sigma_uv": float(document["sigma_uv"])},
+                    "seed": int(document["seed"]),
+                }
+            }
+        else:
+            transform = {"transfer": document}
+        stages.append(
+            {
+                "role": "acquisition",
+                "status": "known",
+                "transform": transform,
+                "attribution": document["cls"],
+            }
         )
-    return operator, stimulates
+    return stages
 
 
 def _sampling_frequency(dt: float) -> float:
@@ -485,17 +514,42 @@ def _sampling_frequency(dt: float) -> float:
     return fs
 
 
-def _project(run, env, operator) -> np.ndarray:
+def _project(run, env, io, dt=None) -> tuple[np.ndarray, dict[str, list[str]] | None]:
+    operator = getattr(io, "outputs", io)
+    dt = run.current_dt if dt is None else dt
     ids = np.asarray(run.current_ids).astype(np.int64).ravel()
     values = np.asarray(run.current)
+    row_sections = run.current_sections
+    row_sections = (
+        None
+        if row_sections is None
+        else [str(s) for s in np.asarray(row_sections).ravel()]
+    )
 
     coordinates = np.asarray(env.recording_coordinates())
+    owners = coordinates[:, 0].astype(np.int64).tolist()
+    names = getattr(env, "recording_sections", lambda: None)()
+    by_name = row_sections is not None and names is not None
+    if by_name:
+        names = [str(n) for n in np.asarray(names).ravel()]
+        at = {
+            (gid, name): row
+            for row, (gid, name) in enumerate(zip(owners, names, strict=True))
+        }
     coordinates_of: dict[int, list[int]] = {}
-    for row, gid in enumerate(coordinates[:, 0].astype(np.int64).tolist()):
+    for row, gid in enumerate(owners):
         coordinates_of.setdefault(gid, []).append(row)
 
-    picked, taken = [], {}
-    for gid in ids.tolist():
+    picked, kept, unplaced, taken = [], [], [], {}
+    for r, gid in enumerate(ids.tolist()):
+        if by_name:
+            row = at.get((gid, row_sections[r]))
+            if row is None:
+                unplaced.append(row_sections[r])
+                continue
+            picked.append(row)
+            kept.append(r)
+            continue
         k = taken.get(gid, 0)
         own = coordinates_of.get(gid, [])
         if k >= len(own):
@@ -504,10 +558,29 @@ def _project(run, env, operator) -> np.ndarray:
                 "coordinate(s) the env places it at, so its signal cannot be projected"
             )
         picked.append(own[k])
+        kept.append(r)
         taken[gid] = k + 1
 
+    if not picked:
+        raise RSFError("no membrane-current row has a recording coordinate")
     distances = operator.distances(coordinates[np.asarray(picked, dtype=np.int64)])
-    return np.asarray(operator.potential_recording(distances, values), dtype=np.float64)
+
+    uv = np.asarray(
+        operator.potential_recording(distances, values[np.asarray(kept)], dt=dt),
+        dtype=np.float64,
+    )
+    for transfer in _transfers(io):
+        uv = (
+            transfer.apply_seeded(uv)
+            if hasattr(transfer, "apply_seeded")
+            else np.asarray(transfer(uv, dt=dt), dtype=np.float64)
+        )
+    if not by_name:
+        return uv, None
+    return uv, {
+        "contributing": list(dict.fromkeys(row_sections[r] for r in kept)),
+        "unplaced": list(dict.fromkeys(unplaced)),
+    }
 
 
 def _withhold_stages(withhold, row_ids) -> tuple[list[dict], set[str]]:
@@ -515,8 +588,7 @@ def _withhold_stages(withhold, row_ids) -> tuple[list[dict], set[str]]:
     for item in withhold or ():
         if not isinstance(item, Mapping) or len(item) != 1:
             raise RSFError(
-                f"a withhold item is one transform, {{'mask': ...}} or {{'noise': ...}}, "
-                f"not {item!r}"
+                f"a withhold item is one transform, {{'mask': ...}}, not {item!r}"
             )
         ((kind, params),) = item.items()
         if kind == "mask":
@@ -536,31 +608,6 @@ def _withhold_stages(withhold, row_ids) -> tuple[list[dict], set[str]]:
                 )
             masked.update(fields)
             transform = {"mask": {"fields": [str(f) for f in fields]}}
-        elif kind == "noise":
-            if (
-                not isinstance(params, Mapping)
-                or params.get("distribution") != "gaussian"
-            ):
-                raise RSFError(f"livn adds only gaussian noise, got {params!r}")
-            sigma = (params.get("params") or {}).get("sigma_uv")
-            if (
-                not isinstance(sigma, (int, float))
-                or not sigma >= 0
-                or not math.isfinite(sigma)
-            ):
-                raise RSFError(
-                    f"gaussian noise needs params.sigma_uv >= 0, got {params!r}"
-                )
-            seed = params.get("seed")
-            if seed is None:
-                seed = secrets.randbits(63)
-            transform = {
-                "noise": {
-                    "distribution": "gaussian",
-                    "params": {"sigma_uv": float(sigma)},
-                    "seed": int(seed),
-                }
-            }
         else:
             raise RSFError(f"livn does not know how to withhold by {kind!r}")
         stages.append(
@@ -671,9 +718,15 @@ def _series_rows(series, name, dt, t0, n_frames, known_sources) -> _Rows:
     )
 
 
-def _observe_document(operator, stimulates: bool, masked: set[str]) -> dict:
-    conductor = operator.volume_conductor
-    document: dict[str, Any] = {"kind": POINT_SOURCE}
+def _observe_document(io, operator, stimulates: bool, masked: set[str]) -> dict:
+    from livn.io import Noise, PointSource
+
+    medium = operator.medium
+    electrical = operator.electrical
+    plain_point_source = type(electrical) is PointSource and all(
+        isinstance(t, Noise) for t in _transfers(io)
+    )
+    document: dict[str, Any] = {"kind": POINT_SOURCE if plain_point_source else LIVN_IO}
     coordinates = np.asarray(operator.electrode_coordinates, dtype=np.float64)
     if "electrode_positions" in masked:
         document["electrode_ids"] = [_id_value(c) for c in coordinates[:, 0]]
@@ -683,21 +736,29 @@ def _observe_document(operator, stimulates: bool, masked: set[str]) -> dict:
             for row in coordinates
         ]
     document["output_radius_um"] = float(operator.output_radius)
-    document["recording_gain"] = float(conductor.recording_gain)
-    document["min_distance_um"] = float(conductor.min_distance_um)
     document["detection_threshold"] = float(operator.detection_threshold)
+    if plain_point_source:
+        document["recording_gain"] = float(electrical.recording_gain)
+        document["min_distance_um"] = float(electrical.min_distance_um)
     if stimulates:
         document["input_radius_um"] = float(operator.input_radius)
-        document["stimulation_gain"] = float(conductor.stimulation_gain)
-        document["electrode_radius_um"] = float(conductor.electrode_radius_um)
-        document["culture_height_um"] = float(conductor.culture_height_um)
+        document["electrode_radius_um"] = float(operator.electrode_radius_um)
+        if plain_point_source:
+            document["stimulation_gain"] = float(
+                electrical.stimulation_gain(operator.electrode_radius_um)
+            )
+            document["culture_height_um"] = float(electrical.height_um)
+    document["livn"] = {
+        "medium": medium.serialize(),
+        "transfers": [t.serialize() for t in _transfers(io)],
+    }
     return document
 
 
 def _probe(operator, row_ids: list[str]) -> dict:
     coordinates = np.asarray(operator.electrode_coordinates, dtype=np.float64)
     position = {_id_str(row[0]): (float(row[1]), float(row[2])) for row in coordinates}
-    radius = float(operator.volume_conductor.electrode_radius_um)
+    radius = float(operator.electrode_radius_um)
     n = len(row_ids)
     return {
         "specification": "probeinterface",
@@ -1016,33 +1077,54 @@ def _ids_array(ids) -> np.ndarray:
 
 
 def _read_operator(path: str):
-    from livn.io import MEA
+    from livn.io import MEA, ComposedIO, Medium, PointSource
 
     if not os.path.isfile(path):
         return None
     with open(path, encoding="utf-8") as f:
         document = json.load(f)
     if (
-        document.get("kind") != POINT_SOURCE
+        document.get("kind") not in (POINT_SOURCE, LIVN_IO)
         or "electrode_coordinates_um" not in document
     ):
         return None
     coordinates = document["electrode_coordinates_um"]
     if not all(isinstance(row[0], int) for row in coordinates):
         return None  # livn's MEA numbers its electrodes
-    conductor = {
-        "recording_gain": document["recording_gain"],
-        "min_distance_um": document["min_distance_um"],
-    }
-    for field in ("stimulation_gain", "electrode_radius_um", "culture_height_um"):
-        if field in document:
-            conductor[field] = document[field]
+    livn = document.get("livn")
+    transfers = []
+    if livn is not None:
+        medium = Medium(**{k: v for k, v in livn["medium"].items() if k != "cls"})
+        transfers = livn["transfers"]
+    else:
+        radius = document.get("electrode_radius_um", 15.0)
+        height = document.get("culture_height_um", 50.0)
+        sigma = 1e6 / (
+            4.0 * math.pi * document["recording_gain"] * document["min_distance_um"]
+        )
+        rho = None
+        if "stimulation_gain" in document:
+            h_eff = (radius**2 + height**2) ** 0.5
+            rho = document["stimulation_gain"] * 4.0 * math.pi * h_eff / 1000.0
+        medium = Medium(
+            electrical=PointSource(
+                sigma_s_per_m=sigma,
+                height_um=height,
+                min_distance_um=document["min_distance_um"],
+                stimulation_resistivity_ohm_m=rho,
+            )
+        )
     kwargs: dict[str, Any] = {
         "electrode_coordinates": np.asarray(coordinates, dtype=np.float64),
         "output_radius": document["output_radius_um"],
-        "volume_conductor": conductor,
+        "medium": medium,
         "detection_threshold": document.get("detection_threshold", 0.0),
     }
     if "input_radius_um" in document:
         kwargs["input_radius"] = document["input_radius_um"]
-    return MEA(**kwargs)
+    if "electrode_radius_um" in document:
+        kwargs["electrode_radius_um"] = document["electrode_radius_um"]
+    mea = MEA(**kwargs)
+    if not transfers:
+        return mea
+    return ComposedIO(None, [mea, *transfers], medium=medium)

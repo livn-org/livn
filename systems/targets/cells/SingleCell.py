@@ -874,7 +874,9 @@ class SingleCell(Target):
         env.io = mea
         coordinates = _np.asarray(env.stimulus_coordinates())
         distances = _np.asarray(mea.distances(coordinates))
-        gains = _np.asarray(mea.volume_conductor.induction_gain(distances[:, -1]))
+        gains = _np.asarray(
+            mea.electrical.field_gain(distances[:, -1], mea.electrode_radius_um)
+        )
         if len(gains) != len(cell.sections):
             raise ValueError(
                 f"{len(gains)} field sampling points for {len(cell.sections)} "

@@ -101,7 +101,7 @@ def test_a_saved_run_reads_back(tmp_path):
     back = loaded.run
 
     assert back.t0 == 0.0 and back.duration == pytest.approx(N_FRAMES * DT)
-    expected = np.asarray(rsf._project(run, env, env.io))
+    expected = np.asarray(rsf._project(run, env, env.io)[0])
     np.testing.assert_allclose(
         back.potential.values, expected, atol=rsf.DEFAULT_GAIN_UV / 2
     )
@@ -120,10 +120,7 @@ def test_a_saved_run_reads_back(tmp_path):
     np.testing.assert_allclose(
         loaded.io.electrode_coordinates, env.io.electrode_coordinates
     )
-    assert (
-        loaded.io.serialize()["volume_conductor"]
-        == env.io.serialize()["volume_conductor"]
-    )
+    assert loaded.io.serialize()["medium"] == env.io.serialize()["medium"]
 
     # what the format records beside the run comes back beside it
     assert loaded.record["space"] == "channel"
@@ -174,10 +171,16 @@ def test_rows_in_rank_order_project_like_rows_in_coordinate_order(tmp_path):
     env = _Env()
     # the sum runs in another order, so under jax's float32 it agrees to float32 precision
     np.testing.assert_allclose(
-        rsf._project(_run(rank_order=True), env, env.io),
-        rsf._project(_run(), env, env.io),
+        rsf._project(_run(rank_order=True), env, env.io)[0],
+        rsf._project(_run(), env, env.io)[0],
         rtol=1e-5,
     )
+
+
+def _noisy_env(seed=7):
+    from livn.io import Noise
+
+    return _Env(io=ComposedIO(None, [_Env().io, Noise(5.0, seed=seed)]))
 
 
 def test_withholding_records_its_stages(tmp_path):
@@ -185,14 +188,13 @@ def test_withholding_records_its_stages(tmp_path):
     store(
         _run(),
         session,
-        _Env(),
+        _noisy_env(),
         withhold=[
             {
                 "mask": {
                     "fields": ["electrode_positions", "source_positions", "channel:1"]
                 }
             },
-            {"noise": {"distribution": "gaussian", "params": {"sigma_uv": 5.0}}},
         ],
     )
 
@@ -201,10 +203,10 @@ def test_withholding_records_its_stages(tmp_path):
     rows = attrs["annotations"]["rsf_provenance"]["rows"]
     assert sorted(rows) == ["0", "2"]
     stages = [next(iter(s["transform"])) for s in rows["0"]]
-    assert stages == ["observe", "mask", "noise"]
-    assert isinstance(
-        rows["0"][2]["transform"]["noise"]["seed"], int
-    )  # drawn and written
+    assert stages == ["observe", "noise", "mask"]
+
+    assert rows["0"][1]["transform"]["noise"]["seed"] == 7
+    assert rows["0"][1]["transform"]["noise"]["params"] == {"sigma_uv": 5.0}
 
     loaded = load(session)
     assert loaded.io is None
@@ -283,6 +285,45 @@ def test_a_case_twin_is_refused(tmp_path):
 def test_unknown_withholding_is_refused(tmp_path, item):
     with pytest.raises(RSFError):
         store(_run(), str(tmp_path / "session"), _Env(), withhold=[item])
+
+
+def test_the_stack_noise_is_applied_with_its_seed_and_regenerates(tmp_path):
+    a, b, c = (tmp_path / n for n in "abc")
+    store(_run(), str(a), _noisy_env(7))
+    store(_run(), str(b), _noisy_env(7))
+    store(_run(), str(c), _noisy_env(8))
+    quiet = tmp_path / "quiet"
+    store(_run(), str(quiet), _Env())
+
+    def traces(path):
+        return load(str(path)).run.potential.values
+
+    np.testing.assert_array_equal(traces(a), traces(b))
+    assert not np.array_equal(traces(a), traces(c))
+    spread = (traces(a) - traces(quiet)).std()
+    assert spread == pytest.approx(5.0, rel=0.2)
+
+
+def test_a_stack_is_stored_and_read_back_whole(tmp_path):
+    from livn.io import FIR, ElectrodeRC, Noise
+
+    mea = _Env().io
+    io = ComposedIO(None, [mea, ElectrodeRC(20.0), FIR([1.0, 0.5]), Noise(2.0, seed=3)])
+    session = str(tmp_path / "session")
+    store(_run(), session, _Env(io=io))
+
+    observe = _doc(os.path.join(session, "traces.zarr", "rsf", "observe.json"))
+    assert observe["kind"] == rsf.LIVN_IO
+    loaded = load(session)
+    assert loaded.io.serialize() == io.serialize()
+
+    rows = loaded.record["rows"]["0"]
+    assert [next(iter(s["transform"])) for s in rows] == [
+        "observe",
+        "transfer",
+        "transfer",
+        "noise",
+    ]
 
 
 def test_only_a_point_source_mea_is_an_operator(tmp_path):

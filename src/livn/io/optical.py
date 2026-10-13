@@ -3,7 +3,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from livn.backend import backend
+from livn.io._component import resolve_component
 from livn.io.base import IO, _check_stimulus_size, coupled_sections
+from livn.io.medium import Medium
 
 if TYPE_CHECKING:
     from livn.types import Array, Float, Int
@@ -11,6 +13,7 @@ if TYPE_CHECKING:
 _USES_JAX = False
 
 if "ax" in backend():
+    import jax
     import jax.numpy as np
 
     _USES_JAX = True
@@ -22,7 +25,7 @@ class LightArray(IO):
     """Fiber optic array for optical stimulation
 
     Maps per-fiber light power (mW) to per-neuron irradiance (mW/mm^2)
-    using a Kubelka-Munk scattering propagation model
+    through the medium's optical part (by default Kubelka-Munk scattering).
     """
 
     def __init__(
@@ -31,14 +34,22 @@ class LightArray(IO):
         numerical_aperture: float = 0.37,
         fiber_radius_um: float = 100.0,
         wavelength_nm: float = 473.0,
-        scattering_coefficient: float = 11.2,
+        medium=None,
     ):
         self.fiber_coordinates = np.array(fiber_coordinates)
         self.numerical_aperture = numerical_aperture
         self.fiber_radius_um = fiber_radius_um
         self.wavelength_nm = wavelength_nm
-        self.scattering_coefficient = scattering_coefficient
+        self.medium = Medium() if medium is None else resolve_component(medium)
         self._cell_induction = None
+        self._stack = ()
+
+    def parameter_children(self) -> dict:
+        return {"medium": self.medium}
+
+    @property
+    def optical(self):
+        return self.medium.require("optical")
 
     def serialize(self) -> dict:
         return {
@@ -46,7 +57,7 @@ class LightArray(IO):
             "numerical_aperture": self.numerical_aperture,
             "fiber_radius_um": self.fiber_radius_um,
             "wavelength_nm": self.wavelength_nm,
-            "scattering_coefficient": self.scattering_coefficient,
+            "medium": self.medium.serialize(),
         }
 
     @property
@@ -106,42 +117,44 @@ class LightArray(IO):
     def potential_recording(
         self,
         distances: Float[Array, "n_distances cip=3"],
-        membrane_currents: Float[Array, "timestep n_neurons"],
-    ) -> Float[Array, "timestep n_channels"]:
+        membrane_currents: Float[Array, "n_neurons timestep"],
+        dt: float | None = None,
+        key=None,
+    ) -> Float[Array, "n_channels timestep"]:
         raise NotImplementedError("LightArray does not support recording")
 
     def cell_induction(
         self,
         neuron_coordinates: Float[Array, "n_coords ixyz=4"],
     ) -> Float[Array, "n_fibers n_gids"]:
-        """Compute irradiance at each neuron per unit source power
-
-        Kubelka-Munk model (Aravanis et al. 2007):
-            I(r,z) = (NA^2) / (n^2 * (z + z0)^2) * exp(-mu_s * sqrt(r^2 + z^2))
-        """
+        """Compute irradiance at each neuron per unit source power, through
+        the medium's optical part."""
         fiber_xyz = self.fiber_coordinates[:, 1:4]
         neuron_xyz = np.asarray(neuron_coordinates)[:, 1:4]
+        offsets_um = neuron_xyz[np.newaxis, :, :] - fiber_xyz[:, np.newaxis, :]
 
-        NA = self.numerical_aperture
-        n_tissue = 1.36
-        mu_s = self.scattering_coefficient  # mm^-1
-        fiber_r_mm = self.fiber_radius_um / 1000.0
-
-        # z0: distance from fiber tip where cone area equals fiber area
-        z0 = fiber_r_mm * n_tissue / NA
-
-        diff_mm = (neuron_xyz[np.newaxis, :, :] - fiber_xyz[:, np.newaxis, :]) / 1000.0
-
-        r = np.sqrt(diff_mm[..., 0] ** 2 + diff_mm[..., 1] ** 2)
-        z = np.abs(diff_mm[..., 2])
-
-        dist = np.sqrt(r**2 + z**2)
-        denom = np.maximum((z + z0) ** 2, 1e-12)
-
-        return (NA**2 / (n_tissue**2 * denom)) * np.exp(-mu_s * dist) / (4 * np.pi)
+        return self.optical.irradiance_gain(
+            offsets_um, self.numerical_aperture, self.fiber_radius_um
+        )
 
     def reach(
         self, neuron_coordinates: Float[Array, "n_coords ixyz=4"]
     ) -> Float[Array, "n_channels n_coords"]:
         """Irradiance per unit source power at each coordinate row, per fiber."""
         return np.asarray(self.cell_induction(neuron_coordinates))
+
+
+if _USES_JAX:
+
+    def _light_flatten(array):
+        aux = {k: v for k, v in array.__dict__.items() if k != "medium"}
+        return (array.medium,), aux
+
+    def _light_unflatten(aux, children):
+        (medium,) = children
+        array = LightArray.__new__(LightArray)
+        array.__dict__.update(aux)
+        array.medium = medium
+        return array
+
+    jax.tree_util.register_pytree_node(LightArray, _light_flatten, _light_unflatten)

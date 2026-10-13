@@ -215,7 +215,7 @@ class BurstingCulture(Culture):
             return None
         from importlib import import_module
 
-        from livn.io import MEA
+        from livn.io import MEA, ComposedIO, Noise
 
         path, options = self.model_spec()
         module, name = path.rsplit(".", 1)
@@ -226,11 +226,11 @@ class BurstingCulture(Culture):
         kwargs.pop("spike_profile", None)
         kwargs.update(
             output_radius=self.readout_radius(profile),
-            noise_uv=self.noise_uv,
             threshold_sigma=float(self.THRESHOLD_SIGMA),
             dead_time_ms=float(self.DEAD_TIME_MS),
         )
-        return MEA(**kwargs)
+
+        return ComposedIO(None, [MEA(**kwargs), Noise(self.noise_uv)])
 
     def _units(self, env) -> dict[int, int]:
         key = id(env.io)
