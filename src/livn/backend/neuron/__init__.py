@@ -1072,7 +1072,8 @@ class Env(EnvProtocol):
         if not self._stim_delivered_over(start_step, steps):
             steps = 2
 
-        from livn.io import MAX_STIMULUS_GB_ENV, _max_stimulus_bytes
+        from livn.io import MAX_STIMULUS_GB_ENV
+        from livn.io.base import _max_stimulus_bytes
 
         rows = len(self._stim_rows)
         held = (2.0 * len(self._stim_clamps) + rows) * steps * 8.0
