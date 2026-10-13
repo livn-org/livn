@@ -8,13 +8,12 @@ import numpy as np
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+from livn import ephys
 from livn.env import Env
 from livn.models.rcsd import ReducedCalciumSomaDendrite
 from livn.stimulus import Stimulus
 from livn.utils import import_object_by_path
 from systems.targets.protocol import Target
-
-from . import ephys
 
 ENA_MV = 60.6
 
@@ -718,22 +717,17 @@ class SingleCell(Target):
         self._pin_holding(env, gid, cell, v_target=v)
 
     def _run_step(self, env, gid, amp, t0, t1, tstop):
-        env.clear(reseed=False)
-        n = round(tstop / self.record_dt)
-        cur = np.zeros((n, 1), dtype=np.float32)
-        cur[round(t0 / self.record_dt) : round(t1 / self.record_dt), 0] = amp
-        stim = Stimulus.from_current(
-            cur, dt=self.record_dt, gids=np.array([gid], dtype=np.int32)
+        return ephys.current_step(
+            env,
+            gid,
+            amp,
+            t0,
+            t1,
+            tstop,
+            dt=self.sim_dt,
+            record_dt=self.record_dt,
+            isolate=False,
         )
-        _sid, _st, vid, v, _cid, _c = env.run(tstop, stim, dt=self.sim_dt)
-        vid = np.asarray(vid)
-        v = np.asarray(v)
-        row = int(np.where(vid == gid)[0][0])
-        trace = v[row]
-        # time axis at the dt we recorded with (record_voltage(dt=record_dt));
-        # env.voltage_recording_dt does not reflect the per-call dt.
-        t = np.arange(trace.size, dtype=float) * self.record_dt
-        return t, trace
 
     def _rate_window(self) -> tuple[float, float]:
         if self.fI_steady_ms:
@@ -776,25 +770,13 @@ class SingleCell(Target):
 
     def _threshold_current(self, env, gid, lo=1e-3, hi=5.0, tol=0.02, **kwargs):
         need = max(1, int(self.rheobase_min_spikes))
-        below, above = None, None
-        amp = float(lo)
-        while amp <= hi:
-            if self._spike_count(env, gid, amp, **kwargs) >= need:
-                above = amp
-                break
-            below = amp
-            amp *= 2.0
-        if above is None:
-            return None
-        if below is None:
-            return float(above)
-        while (above - below) / above > tol:
-            mid = (below * above) ** 0.5
-            if self._spike_count(env, gid, mid, **kwargs) >= need:
-                above = mid
-            else:
-                below = mid
-        return float(above)
+        return ephys.threshold_search(
+            lambda amp: self._spike_count(env, gid, amp, **kwargs),
+            lambda count: count >= need,
+            lo,
+            hi,
+            tol,
+        )
 
     def _rheobase(self, env, gid, cell) -> float:
         self._hold_at(env, gid, cell, self.fI_hold)

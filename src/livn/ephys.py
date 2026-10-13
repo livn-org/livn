@@ -1,8 +1,14 @@
+from __future__ import annotations
+
 import logging
+from collections.abc import Callable
 
 import numpy as np
 from scipy import signal
 from scipy.optimize import curve_fit
+
+from livn.types import Capability, supports
+from livn.utils import P
 
 logger = logging.getLogger(__name__)
 
@@ -19,11 +25,29 @@ isi_value_dtype = np.dtype(
 )
 
 
+def alpha_pulse(t, onset: float, tau: float, amplitude: float) -> np.ndarray:
+    """``amplitude * x * exp(1 - x)`` with ``x = (t - onset) / tau``, zero before ``onset``.
+
+    The peak is ``amplitude`` at ``t = onset + tau``.
+    """
+    t = np.asarray(t, dtype=float)
+    x = np.maximum((t - onset) / max(float(tau), 1e-6), 0.0)
+    u = amplitude * x * np.exp(1.0 - x)
+    return np.where(t < onset, 0.0, u)
+
+
+def square_step(t, t0: float, t1: float, amplitude: float) -> np.ndarray:
+    """``amplitude`` on ``t0 <= t < t1``, zero elsewhere."""
+    t = np.asarray(t, dtype=float)
+    slack = 1e-6
+    return np.where((t >= t0 - slack) & (t < t1 - slack), float(amplitude), 0.0)
+
+
 def measure_deflection(t, v, t0, t1, stim_amp=None):
     """Measure voltage deflection (min or max, between start and end)."""
 
-    start_index = int(np.argwhere(t >= t0 * 0.999)[0])
-    end_index = int(np.argwhere(t >= t1 * 0.999)[0])
+    start_index = int(np.argwhere(t >= t0 * 0.999)[0, 0])
+    end_index = int(np.argwhere(t >= t1 * 0.999)[0, 0])
 
     deflect_fn = np.argmin
     if stim_amp is not None and (stim_amp > 0):
@@ -57,8 +81,8 @@ def fit_membrane_time_constant(t, v, t0, t1, rmse_max_tol=1.0):
     def exp_curve(x, a, inv_tau, y0):
         return y0 + a * np.exp(-inv_tau * x)
 
-    start_index = int(np.argwhere(t >= t0 * 0.999)[0])
-    end_index = int(np.argwhere(t >= t1 * 0.999)[0])
+    start_index = int(np.argwhere(t >= t0 * 0.999)[0, 0])
+    end_index = int(np.argwhere(t >= t1 * 0.999)[0, 0])
 
     p0 = (v[start_index] - v[end_index], 0.1, v[end_index])
     t_window = (t[start_index:end_index] - t[start_index]).astype(np.float64)
@@ -103,7 +127,7 @@ def measure_time_constant(
     # Check that SNR is high enough to proceed
     sig = np.abs(v_baseline - v_peak)
     noise_interval_start_index = int(
-        np.argwhere(t >= (t0 - baseline_interval) * 0.999)[0]
+        np.argwhere(t >= (t0 - baseline_interval) * 0.999)[0, 0]
     )
     noise = np.std(v[noise_interval_start_index:start_index])
 
@@ -316,3 +340,205 @@ def measure_ISI(cur_steps_amp, spk_infos):
                 ISI_array[i]["std"] = np.std(ISI)
 
     return ISI_array
+
+
+def spike_shape(v, t, onset: float, crossing_mv: float = -20.0) -> dict:
+    """What a trace did after ``onset``, as numbers and no verdict.
+
+    Returns ``finite`` (no NaN or inf anywhere), ``peak_mV`` (maximum after
+    ``onset``), ``end_mV`` (the last sample) and ``n_crossings`` (upward crossings
+    of ``crossing_mv`` after ``onset``). A trace that is not finite reports NaN for
+    the voltages and -1 crossings, so a caller can tell a failed solve from a
+    quiet cell.
+    """
+    v = np.asarray(v, dtype=float)
+    t = np.asarray(t, dtype=float)
+    if not np.all(np.isfinite(v)):
+        return {
+            "finite": False,
+            "peak_mV": float("nan"),
+            "end_mV": float("nan"),
+            "n_crossings": -1,
+        }
+    after = v[t >= onset]
+    if after.size == 0:
+        raise ValueError(f"the trace ends at {t[-1]:g} ms, before onset {onset:g} ms")
+    up = (after[:-1] < crossing_mv) & (after[1:] >= crossing_mv)
+    return {
+        "finite": True,
+        "peak_mV": float(after.max()),
+        "end_mV": float(v[-1]),
+        "n_crossings": int(up.sum()),
+    }
+
+
+def threshold_search(
+    probe: Callable[[float], object],
+    criterion: Callable[[object], bool],
+    lo: float,
+    hi: float,
+    tol: float = 0.02,
+) -> float | None:
+    """Smallest amplitude at which ``criterion(probe(amplitude))`` holds."""
+    if not 0 < lo <= hi:
+        raise ValueError(f"need 0 < lo <= hi, got lo={lo}, hi={hi}")
+
+    below, above = None, None
+    amp = float(lo)
+    while amp <= hi:
+        if criterion(probe(amp)):
+            above = amp
+            break
+        below = amp
+        amp *= 2.0
+    if above is None:
+        return None
+    if below is None:
+        return float(above)
+    while (above - below) / above > tol:
+        mid = (below * above) ** 0.5
+        if criterion(probe(mid)):
+            above = mid
+        else:
+            below = mid
+    return float(above)
+
+
+def _isolated(env):
+    names = list(env.weight_names)
+    if names:
+        env = env.set_weights(dict.fromkeys(names, 0.0)) or env
+    return env
+
+
+def _prepare(env, *, record_dt: float, isolate: bool, gid: int, current: bool):
+    if isolate:
+        env = _isolated(env)
+    gids = [int(gid)] if supports(env, Capability.PER_GID_VOLTAGE) else None
+    env = env.record_voltage(dt=record_dt, gids=gids)
+    if current:
+        env = env.record_membrane_current(dt=record_dt)
+    return env.clear(reseed=False)
+
+
+def _narrowed(run, gid: int):
+    from livn.run import Run
+
+    out = Run(t0=run.t0, duration=run.duration)
+    for series in ("voltage", "current"):
+        if run.channel(series) is None:
+            continue
+        rows = np.asarray(run.ids(series)).astype(np.int64) == int(gid)
+        sections = run.sections(series)
+        out = getattr(out, f"add_{series}")(
+            np.asarray(run.ids(series))[rows],
+            np.asarray(run.values(series))[rows],
+            dt=run.channel(series).dt,
+            sections=None if sections is None else np.asarray(sections)[rows],
+        )
+    return out
+
+
+def _current_stimulus(env, gid: int, u: np.ndarray, dt: float):
+    from livn.stimulus import Stimulus
+
+    return Stimulus.from_current(
+        np.asarray(u, dtype=np.float32)[:, None],
+        dt=dt,
+        gids=np.array([gid], dtype=np.int32),
+    )
+
+
+def _run(env, duration_ms: float, stimulus, dt: float):
+    try:
+        run = env.run(duration_ms, stimulus, dt=dt)
+    except ValueError as error:
+        if "compiled for" not in str(error):
+            raise
+        raise ValueError(
+            f"{error}. livn.ephys injects current, so on this backend build the "
+            "model with input_mode='current', e.g. "
+            "ReducedCalciumSomaDendrite(input_mode='current')"
+        ) from error
+    if P.size(comm=env.comm) > 1:
+        run = run.gather(env.comm)
+    return run
+
+
+def _soma_row(run, gid: int, series: str = "voltage") -> int:
+    ids = np.asarray(run.ids(series)).astype(np.int64)
+    sections = run.sections(series)
+    rows = ids == int(gid)
+    if sections is not None:
+        sections = np.asarray(sections).astype(str)
+        rows &= np.char.startswith(sections, "soma")
+    found = np.flatnonzero(rows)
+    if found.size == 0:
+        raise RuntimeError(
+            f"the run recorded no {series} row for the soma of gid {gid}"
+        )
+    return int(found[0])
+
+
+def current_step(
+    env,
+    gid: int,
+    amplitude_nA: float,
+    t0_ms: float,
+    t1_ms: float,
+    duration_ms: float,
+    *,
+    dt: float,
+    record_dt: float,
+    isolate: bool = True,
+) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
+    """Inject a square current into the soma of ``gid`` and return ``(t, v_soma)``.
+
+    The env restarts from t=0 first, so repeated calls on one env are independent
+    protocol runs. ``dt`` is the integration step, at which the stimulus is sampled,
+    and ``record_dt`` the recording step; ``t`` is on the step the backend recorded at,
+    which on diffrax is ``dt``. With ``isolate`` the network's synaptic weights are
+    zeroed first.
+
+    Under MPI only the root rank gets a trace; the others get ``(None, None)``.
+    """
+    env = _prepare(env, record_dt=record_dt, isolate=isolate, gid=gid, current=False)
+    # the stimulus is sampled at the integration step: diffrax takes an array as
+    # given, where NEURON and brian2 resample it onto their own grid
+    t_stim = np.arange(round(duration_ms / dt)) * dt
+    u = square_step(t_stim, t0_ms, t1_ms, amplitude_nA)
+    run = _run(env, duration_ms, _current_stimulus(env, gid, u, dt), dt)
+    if run is None:
+        return None, None
+
+    trace = np.asarray(run.voltage)[_soma_row(run, gid)].astype(float)
+    # diffrax samples at its integration step, whatever was asked for
+    step = run.voltage_dt or record_dt
+    return np.arange(trace.size, dtype=float) * step, trace
+
+
+def spike_template(
+    env,
+    gid: int,
+    amplitude_nA: float,
+    pulse_tau_ms: float,
+    pre_ms: float,
+    post_ms: float,
+    *,
+    dt: float,
+    record_dt: float | None = None,
+    isolate: bool = True,
+):
+    """One spike, evoked by an alpha-shaped current pulse into the soma of ``gid``.
+
+    Under MPI the root rank gets the run and the others ``None``.
+    """
+    record_dt = dt if record_dt is None else record_dt
+    env = _prepare(env, record_dt=record_dt, isolate=isolate, gid=gid, current=True)
+    duration = pre_ms + post_ms
+    t = np.arange(round(duration / dt)) * dt
+    u = alpha_pulse(t, pre_ms, pulse_tau_ms, amplitude_nA)
+    run = _run(env, duration, _current_stimulus(env, gid, u, dt), dt)
+    if run is None:
+        return None
+    return _narrowed(run, gid)
