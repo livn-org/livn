@@ -35,8 +35,6 @@ class Env(EnvProtocol):
 
         self.comm = comm
 
-        self.encoding = None
-        self.decoding = None
         self.cells = CellRegistry(self, comm=comm)
 
         self.t = 0

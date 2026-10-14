@@ -261,8 +261,6 @@ class Env(EnvProtocol):
         )
         self.io = io if io is not None else self.system.default_io(comm=comm)
 
-        self.encoding = None
-        self.decoding = None
         self.duration = None
 
         self._select_spec = None

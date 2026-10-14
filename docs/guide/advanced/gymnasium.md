@@ -175,22 +175,17 @@ from livn.utils import P
 class ForceDecoder(Decoding):
     duration: int = 100
     scale: float = 5.0
-
     def setup(self, env):
         env.record_spikes()
 
-    def __call__(self, signal, env=None):
+    def __call__(self, signal, env=None, pipe=None):
         cit, ct = env.channel_recording(signal.spike_ids, signal.spike_times)
         cit, ct = P.gather(cit, ct, comm=env.comm)
         if P.is_root(comm=env.comm):
             cit, ct = P.merge(cit, ct)
             left = sum(len(t) for ch, t in cit.items() if ch in {1, 3})
             right = sum(len(t) for ch, t in cit.items() if ch in {0, 2})
-            pipe = getattr(env, "decoding", None)
-            if hasattr(pipe, "context"):
-                pipe.context["spike_counts"] = {
-                    int(ch): len(t) for ch, t in cit.items()
-                }
+            pipe.context["spike_counts"] = {int(ch): len(t) for ch, t in cit.items()}
             return float((right - left) * self.scale)
 
 

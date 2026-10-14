@@ -178,9 +178,6 @@ class Env(EnvProtocol):
         self.io = io
         self.comm = comm
 
-        self.encoding = None
-        self.decoding = None
-
         self._select_spec = None
         self._select_method = "first"
         self._select_bounds = None
@@ -565,8 +562,6 @@ def _env_tree_flatten(env):
         env.seed,
         env.init_key,
         env.run_key,
-        env.encoding,
-        env.decoding,
         None
         if env._selected_gids is None
         else tuple(sorted(int(g) for g in env._selected_gids)),
@@ -600,8 +595,6 @@ def _env_tree_unflatten(aux, children):
         seed,
         init_key,
         run_key,
-        encoding,
-        decoding,
         selected_gids,
         selected_rows,
         module_gids,
@@ -634,8 +627,6 @@ def _env_tree_unflatten(aux, children):
 
     env.init_key = init_key
     env.run_key = run_key
-    env.encoding = encoding
-    env.decoding = decoding
     return env
 
 

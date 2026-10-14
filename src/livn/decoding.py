@@ -7,7 +7,7 @@ from scipy.signal import butter, filtfilt, welch
 
 from livn.run import Run
 from livn.types import Decoding
-from livn.utils import P
+from livn.utils import P, accepts_keyword
 
 
 def merged_spikes(signal: Run, env=None) -> tuple[list, list]:
@@ -158,6 +158,12 @@ class GatherAndMerge(Decoding):
 
 
 class Pipe(Decoding):
+    """Decoding stages run in order, each fed the previous stage's result.
+
+    ``context`` (cleared every call) and ``state`` (kept across calls) are shared by the stages.
+    A stage whose ``__call__`` accepts ``pipe=`` is passed this pipe.
+    """
+
     stages: list[Callable] = Field(default_factory=list)
 
     _context: dict = PrivateAttr(default_factory=dict)  # cleared each __call__
@@ -213,7 +219,10 @@ class Pipe(Decoding):
         self._context.clear()
         data = signal
         for stage in self.stages:
-            result = stage(data, env)
+            if accepts_keyword(stage, "pipe"):
+                result = stage(data, env, pipe=self)
+            else:
+                result = stage(data, env)
             if result is not None:
                 data = result
         if isinstance(data, tuple) and len(data) == 1:

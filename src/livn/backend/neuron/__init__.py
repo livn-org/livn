@@ -190,8 +190,6 @@ class Env(EnvProtocol):
         self.io = io if io is not None else self.system.default_io(comm=comm)
         self.store_kind = "auto"
 
-        self.encoding = None
-        self.decoding = None
         self.duration = None
 
         mech_dir = self.model.neuron_mechanisms_directory()

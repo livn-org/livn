@@ -171,6 +171,37 @@ class TestPipeWithGymStep:
         assert hash(pipe1) != hash(pipe2)
 
 
+class TestPipeStages:
+    def test_a_stage_that_takes_the_pipe_gets_it_and_others_do_not(self):
+        seen = {}
+
+        class Needs:
+            def __call__(self, data, env=None, pipe=None):
+                pipe.context["x"] = data
+                seen["pipe"] = pipe
+
+        class Plain:
+            def __call__(self, data, env=None):
+                return data + 1
+
+        pipe = Pipe(stages=[Needs(), Plain()], duration=10)
+        assert pipe(1, None) == 2
+        assert seen["pipe"] is pipe
+        assert pipe.context["x"] == 1
+
+    def test_obs_augmentation_reads_the_pipe_it_is_given(self):
+        class Echo(ObsAugmentation):
+            obs_dim: int = 1
+
+            def _features(self, env, context, state):
+                return np.asarray([state["v"]], dtype=np.float32)
+
+        pipe = Pipe(stages=[Echo()], duration=10)
+        pipe.state["v"] = 5.0
+        obs, *_ = pipe((np.zeros(2, dtype=np.float32), 0.0, False, False, {}), None)
+        assert obs[-1] == 5.0
+
+
 class TestPipelineCall:
     @pytest.fixture(autouse=True)
     def _require_mpi4py(self):

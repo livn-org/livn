@@ -123,9 +123,6 @@ class Env(EnvProtocol):
 
         self.comm = comm
 
-        self.encoding = None
-        self.decoding = None
-
         self._select_spec = None
         self._select_method = "first"
         self._select_bounds = None

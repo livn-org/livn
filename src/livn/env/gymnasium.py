@@ -102,7 +102,8 @@ class GymnasiumEnv(gym.Env):
         pipe = self.decoding
         if hasattr(pipe, "state"):
             pipe.state["io_action"] = np.asarray(action, dtype=np.float32)
-        # encoding can read raw_gym_obs from env.decoding.state["raw_gym_obs"]
+        # an encoding whose __call__ accepts ``decoding=`` is handed it and can read
+        # decoding.state["raw_gym_obs"]
         result = self.env(self.decoding, action, self.encoding)
         if isinstance(result, list) and len(result) == 1:
             return result[0]
@@ -194,12 +195,10 @@ class GymStep:
             space.high,
         )
 
-    def __call__(self, action, env=None):
+    def __call__(self, action, env=None, pipe=None):
         """Take the action the stage before it decoded, and step the task"""
         if action is None:
             return None
-
-        pipe = getattr(env, "decoding", None)
 
         action = self._clamp_action(action)
 
@@ -243,14 +242,13 @@ class ObsAugmentation:
     def zero_features(self) -> np.ndarray:
         return np.zeros(self.obs_dim, dtype=np.float32)
 
-    def __call__(self, step, env=None):
+    def __call__(self, step, env=None, pipe=None):
         """Take ``GymStep``'s ``(obs, reward, terminated, truncated, info)``"""
         if step is None:
             return None
         obs, reward, terminated, truncated, info = step
         if obs is None:
             return None
-        pipe = getattr(env, "decoding", None)
         ctx = getattr(pipe, "context", {})
         st = getattr(pipe, "state", {})
         features = self._features(env, ctx, st)

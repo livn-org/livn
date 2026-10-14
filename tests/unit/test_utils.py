@@ -202,3 +202,29 @@ def test_stable_hash_does_not_warn_on_scalars():
         P.stable_hash(0)
         P.stable_hash(2**63 + 5, seed=2**63 + 7)
         P.stable_uniform(11, seed=3)
+
+
+def test_accepts_keyword_reads_the_signature():
+    from livn.utils import accepts_keyword
+
+    class Stage:
+        def __call__(self, data, env=None, pipe=None):
+            return data
+
+    class Plain:
+        def __call__(self, data, env=None):
+            return data
+
+    class Anything:
+        def __call__(self, data, **kwargs):
+            return data
+
+    def function(data, *, pipe):
+        return data
+
+    assert accepts_keyword(Stage(), "pipe")
+    assert not accepts_keyword(Plain(), "pipe")
+    assert accepts_keyword(Anything(), "pipe")
+    assert accepts_keyword(function, "pipe")
+    assert accepts_keyword(Stage().__call__, "pipe")
+    assert not accepts_keyword(len, "pipe")

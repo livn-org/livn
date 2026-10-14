@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import collections
+import functools
 import importlib
+import inspect
 import json
 import os
 import pickle
@@ -611,3 +613,29 @@ class DotDict:
 
 
 NOISE_STREAM_STRIDE = 1_000_003
+
+
+def accepts_keyword(fn, name: str) -> bool:
+    """Whether ``fn`` can be called with the keyword ``name`` (``**kwargs`` counts).
+
+    For a callable object this inspects its type's ``__call__``, cached per type, so a call
+    costs a dict lookup; a builtin without a signature accepts nothing.
+    """
+    if inspect.ismethod(fn):
+        fn = fn.__func__
+    elif not (inspect.isroutine(fn) or isinstance(fn, functools.partial)):
+        fn = type(fn).__call__
+    return _accepts_keyword(fn, name)
+
+
+@functools.cache
+def _accepts_keyword(fn, name: str) -> bool:
+    try:
+        parameters = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        p.kind is p.VAR_KEYWORD
+        or (p.name == name and p.kind in (p.KEYWORD_ONLY, p.POSITIONAL_OR_KEYWORD))
+        for p in parameters
+    )

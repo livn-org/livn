@@ -17,7 +17,7 @@ from typing import (
 
 from pydantic import BaseModel, field_validator
 
-from livn.utils import Jsonable
+from livn.utils import Jsonable, accepts_keyword
 
 DEFAULT_CONDUCTION_VELOCITY = 250.0
 
@@ -1179,9 +1179,6 @@ class Env(Protocol):
         encoding: Encoding | None = None,
         **kwargs,
     ) -> Any:
-        self.encoding = encoding
-        self.decoding = decoding
-
         if isinstance(decoding, int):
             duration = decoding
         else:
@@ -1193,7 +1190,10 @@ class Env(Protocol):
 
         stimulus = inputs
         if encoding is not None:
-            stimulus = encoding(self, duration, inputs)
+            if accepts_keyword(encoding, "decoding"):
+                stimulus = encoding(self, duration, inputs, decoding=decoding)
+            else:
+                stimulus = encoding(self, duration, inputs)
 
         response = self.run(duration, stimulus, **kwargs)
 
