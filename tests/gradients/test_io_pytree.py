@@ -43,3 +43,19 @@ def test_a_light_array_induction_builds_under_jax():
     T = LightArray(fibers).cell_induction(cells)
     assert T.shape == (2, 2)
     assert np.all(np.asarray(T) > 0)
+
+
+def test_a_composition_keeps_its_treedef_across_flattenings_and_a_round_trip():
+    from livn.io import ComposedIO
+
+    io = ComposedIO(outputs=MEA([[0, 0.0, 0.0, 0.0], [1, 100.0, 0.0, 0.0]]))
+    structure = jax.tree_util.tree_structure(io)
+
+    assert structure == jax.tree_util.tree_structure(io)
+    again = jax.tree_util.tree_unflatten(structure, jax.tree_util.tree_leaves(io))
+    assert jax.tree_util.tree_structure(again) == structure
+    mask = jax.tree_util.tree_map(lambda _: False, io)
+    assert jax.tree_util.tree_structure(mask) == structure
+
+    other = ComposedIO(outputs=MEA([[0, 0.0, 0.0, 0.0], [1, 100.0, 0.0, 0.0]]))
+    assert jax.tree_util.tree_structure(other) != structure

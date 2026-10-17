@@ -18,8 +18,8 @@ pytestmark = [
 
 
 def _run(env, duration=20, amplitude=200.0):
-    env.record_spikes()
-    env.record_voltage()
+    env = env.record_spikes()
+    env = env.record_voltage()
     inputs = np.zeros([duration, env.io.num_channels])
     inputs[duration // 3 : 2 * duration // 3, :] = amplitude
     return env.run(duration, stimulus=env.cell_stimulus(inputs))
@@ -122,7 +122,7 @@ def test_membrane_currents_line_up_with_the_recording_gain():
     spec, wanted = _explicit_selection(env)
     env.selection(spec)
     env.init()
-    env.record_membrane_current()
+    env = env.record_membrane_current()
 
     run = env.run(20)  # no stimulus: alignment does not depend on the drive
     currents = np.asarray(run.current)

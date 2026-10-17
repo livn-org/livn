@@ -32,7 +32,7 @@ from livn.stimulus import Stimulus
 backend()  # 'native', picked up automatically
 
 env = Env({"EXC": 1}).init()
-env.record_spikes()
+env = env.record_spikes()
 
 current = np.zeros((2400, 1))
 current[80:, 0] = 1.0  # 1 nA from 2 ms

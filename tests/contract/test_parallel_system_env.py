@@ -17,8 +17,8 @@ def test_parallel_system_env_runs_without_a_graph(num_neurons):
     assert isinstance(env.system, ParallelSystem)
 
     env.init()
-    env.record_spikes()
-    env.record_voltage()
+    env = env.record_spikes()
+    env = env.record_voltage()
 
     _, _, _, v, _, _ = env.run(20.0)
 
@@ -44,7 +44,7 @@ def test_parallel_system_env_reports_explicit_gids():
     )
 
     env = Env(system).init()
-    env.record_voltage()
+    env = env.record_voltage()
     _, _, iv, _, _, _ = env.run(10.0)
 
     assert set(np.asarray(iv).tolist()) == set(gids)

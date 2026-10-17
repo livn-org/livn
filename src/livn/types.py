@@ -1066,26 +1066,27 @@ class Env(Protocol):
         if not isinstance(what, str) or not what.isidentifier():
             raise ValueError(f"invalid signal name: {what!r}")
 
-        try:
-            handler = getattr(self, f"_record_{what}")
-        except AttributeError:
+        name = f"_record_{what}"
+        if not hasattr(self, name):
             raise AttributeError(
                 f"cannot record {what!r}; available: {self.recordable()}"
-            ) from None
+            )
 
         if kwargs.get("gids") is not None:
             kwargs["gids"] = self.resolve_recorded_gids(kwargs["gids"])
 
         if population is None:
             population = self.active_populations()
-        if isinstance(population, (list, tuple)):
-            for p in population:
-                handler(p, **kwargs)
-            return self
+        populations = (
+            population if isinstance(population, (list, tuple)) else (population,)
+        )
+        env = self
+        for p in populations:
+            recorded = getattr(env, name)(p, **kwargs)
+            if recorded is not None:
+                env = recorded
 
-        handler(population, **kwargs)
-
-        return self
+        return env
 
     def resolve_recorded_gids(self, gids) -> set[int]:
         wanted = {int(g) for g in gids}
@@ -1179,11 +1180,15 @@ class Env(Protocol):
         encoding: Encoding | None = None,
         **kwargs,
     ) -> Any:
+        env = self
         if isinstance(decoding, int):
             duration = decoding
         else:
             duration = decoding.duration
-            decoding.setup(self)
+            # an immutable env records on a copy, which is the one to run
+            prepared = decoding.setup(self)
+            if prepared is not None:
+                env = prepared
 
         if duration <= 0:
             raise ValueError(f"Encoding duration must be > 0, not {duration}.")
@@ -1191,16 +1196,16 @@ class Env(Protocol):
         stimulus = inputs
         if encoding is not None:
             if accepts_keyword(encoding, "decoding"):
-                stimulus = encoding(self, duration, inputs, decoding=decoding)
+                stimulus = encoding(env, duration, inputs, decoding=decoding)
             else:
-                stimulus = encoding(self, duration, inputs)
+                stimulus = encoding(env, duration, inputs)
 
-        response = self.run(duration, stimulus, **kwargs)
+        response = env.run(duration, stimulus, **kwargs)
 
         if isinstance(decoding, int):
             return response
 
-        return decoding(response, self)
+        return decoding(response, env)
 
     @property
     def voltage_recording_dt(self) -> float:
@@ -1348,6 +1353,7 @@ class Model(Protocol):
         self,
         neuron_coordinates: Float[Array, "n_coords ixyz=4"],
         population: str | None = None,
+        gids: Int[Array, " n_coords"] | None = None,
     ) -> Float[Array, "n_stim_coords ixyz=4"]:
         return neuron_coordinates
 
@@ -1355,6 +1361,7 @@ class Model(Protocol):
         self,
         neuron_coordinates: Float[Array, "n_coords ixyz=4"],
         population: str | None = None,
+        gids: Int[Array, " n_coords"] | None = None,
     ) -> Float[Array, "n_stim_coords ixyz=4"]:
         return neuron_coordinates
 
@@ -1500,8 +1507,12 @@ class Decoding(BaseModel):
             return NotImplemented
         return pickle.dumps(self) == pickle.dumps(other)
 
-    def setup(self, env: Env):
-        """Optional setup"""
+    def setup(self, env: Env) -> Env | None:
+        """Optional setup
+
+        Return the env to simulate (``env = env.record_spikes()``; an immutable backend records on
+        a copy), or ``None`` for ``env`` itself.
+        """
 
     def __call__(self, signal: Run, env: Env | None = None) -> Any:
         return signal

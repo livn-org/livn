@@ -314,7 +314,7 @@ def test_simulation_runs_after_setting_cell_params():
     params = env.cells.get_params()
     name = _a_param(params)
     env = env.cells.set_params({name: params[name]})
-    env.record_voltage()
+    env = env.record_voltage()
 
     run = env.run(10.0)
 
@@ -332,7 +332,7 @@ def test_cell_params_are_differentiable():
     import jax.numpy as jnp
 
     env = _make_env(4)
-    env.record_voltage()
+    env = env.record_voltage()
     theta = env.cells.get_params()
     assert set(theta) == {"gain", "tau"}
 

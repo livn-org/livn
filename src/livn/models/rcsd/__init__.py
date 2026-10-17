@@ -232,6 +232,7 @@ class ReducedCalciumSomaDendrite(Model):
         self,
         neuron_coordinates: types.Float[types.Array, "n_coords ixyz=4"],
         population: str | None = None,
+        gids: types.Int[types.Array, " n_coords"] | None = None,
     ) -> types.Float[types.Array, "n_stim_coords ixyz=4"]:
         """
         Where each section samples the extracellular field.
@@ -241,6 +242,10 @@ class ReducedCalciumSomaDendrite(Model):
         One row per section, interleaved per neuron, so the width follows the
         population.
 
+        Args:
+            gids: the concrete gid of each row. Needed only when the coordinates
+                are traced (positions under `jax.grad`)
+
         Returns:
             [width*n_neurons, 4], `width` sections per neuron:
             soma0, dend0, axon0.., soma1, dend1, axon1.., ...
@@ -248,6 +253,8 @@ class ReducedCalciumSomaDendrite(Model):
         n_neurons = neuron_coordinates.shape[0]
         immutable = is_traced(neuron_coordinates)
         xp = np if immutable else _onp
+        if not immutable:
+            neuron_coordinates = _onp.asarray(neuron_coordinates)
 
         if self.dendrite_orientation == "aligned":
             dx = xp.full(n_neurons, self.dendrite_offset)
@@ -262,14 +269,11 @@ class ReducedCalciumSomaDendrite(Model):
                 )
 
             if immutable:
-                import jax
-
-                dtype = neuron_coordinates.dtype
-                angles = jax.pure_callback(
-                    lambda gids: draw(gids).astype(dtype),
-                    jax.ShapeDtypeStruct((n_neurons,), dtype),
-                    jax.lax.stop_gradient(neuron_coordinates[:, 0]),
-                )
+                if gids is None:
+                    raise ValueError(
+                        "traced coordinates need the concrete `gids=` of their rows"
+                    )
+                angles = draw(gids).astype(neuron_coordinates.dtype)
             else:
                 angles = draw(neuron_coordinates[:, 0])
             dx = self.dendrite_offset * xp.cos(angles)
@@ -316,8 +320,11 @@ class ReducedCalciumSomaDendrite(Model):
         self,
         neuron_coordinates: types.Float[types.Array, "n_coords ixyz=4"],
         population: str | None = None,
+        gids: types.Int[types.Array, " n_coords"] | None = None,
     ) -> types.Float[types.Array, "n_stim_coords ixyz=4"]:
-        return self.stimulus_coordinates(neuron_coordinates, population=population)
+        return self.stimulus_coordinates(
+            neuron_coordinates, population=population, gids=gids
+        )
 
     def expand_stimulus_currents(
         self,

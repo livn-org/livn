@@ -53,12 +53,15 @@ class MockEnv:
 
     def record_spikes(self):
         self.calls["spikes"] += 1
+        return self
 
     def record_voltage(self):
         self.calls["voltages"] += 1
+        return self
 
     def record_membrane_current(self):
         self.calls["membrane_currents"] += 1
+        return self
 
     def channel_recording(self, it, tt):
         if it is None or tt is None:
@@ -451,6 +454,70 @@ class TestPipe:
 
         with pytest.raises(ValidationError):
             Pipe(duration=1000, stages=["not_callable"])
+
+
+class _ImmutableEnv:
+    def __init__(self, recorded=()):
+        self.recorded = tuple(recorded)
+
+    def record_spikes(self):
+        return _ImmutableEnv((*self.recorded, "spikes"))
+
+    def record_voltage(self, **options):
+        return _ImmutableEnv((*self.recorded, "voltage"))
+
+    def record_membrane_current(self):
+        return _ImmutableEnv((*self.recorded, "membrane_current"))
+
+
+class TestSetupReturnsTheEnv:
+    def test_a_decoding_hands_back_the_env_that_records(self):
+        env = _ImmutableEnv()
+        recording = ChannelRecording(duration=100).setup(env)
+        assert env.recorded == ()
+        assert recording.recorded == ("spikes", "voltage", "membrane_current")
+
+    def test_a_pipe_chains_its_stages_copies(self):
+        pipeline = Pipe(
+            duration=100,
+            stages=[
+                MeanFiringRate(duration=100),
+                ChannelRecording(duration=100, voltages=False),
+            ],
+        )
+        recording = pipeline.setup(_ImmutableEnv())
+        assert recording.recorded == ("spikes", "membrane_current")
+
+    def test_every_recording_decoding_returns_the_copy_that_records(self):
+        from livn.decoding import (
+            ExtracellularRecruitment,
+            PeriStimulusHistogram,
+            RecruitmentCurve,
+            StimulusResponse,
+            Waveforms,
+        )
+
+        spikes_only = (
+            StimulusResponse(duration=100),
+            RecruitmentCurve(duration=100),
+            PeriStimulusHistogram(duration=100),
+            ExtracellularRecruitment(duration=100),
+        )
+        for decoding in spikes_only:
+            assert decoding.setup(_ImmutableEnv()).recorded == ("spikes",)
+        both = ExtracellularRecruitment(duration=100, ceiling_mv=50.0)
+        assert both.setup(_ImmutableEnv()).recorded == ("spikes", "voltage")
+        assert Waveforms(duration=100).setup(_ImmutableEnv()).recorded == (
+            "spikes",
+            "voltage",
+        )
+
+    def test_a_decoding_with_nothing_to_enable_returns_the_env_it_was_given(self):
+        env = _ImmutableEnv()
+        assert MeanFiringRate(duration=100).setup(env) is None
+        assert (
+            Pipe(duration=100, stages=[MeanFiringRate(duration=100)]).setup(env) is env
+        )
 
 
 class TestAvalancheAnalysis:

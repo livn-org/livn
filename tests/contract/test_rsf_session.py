@@ -22,9 +22,9 @@ def recorded():
     pytest.importorskip("zarr", minversion="3")
     env = livn_test_env()
     env.init()
-    env.record_spikes()
-    env.record_voltage()
-    env.record_membrane_current()
+    env = env.record_spikes()
+    env = env.record_voltage()
+    env = env.record_membrane_current()
 
     inputs = np.zeros([DURATION, env.io.num_channels])
     inputs[10:30, :] = AMPLITUDE

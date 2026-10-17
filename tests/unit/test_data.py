@@ -17,8 +17,7 @@ from livn.io import MEA
 from livn.run import Run, Series
 
 if TYPE_CHECKING:
-    from livn.io import IO
-    from livn.run import Events
+    pass
 
 pytest.importorskip("datasets")
 pytest.importorskip("pyarrow")
@@ -28,81 +27,6 @@ from livn.data import arrow
 FS = 1000.0
 C, T = 4, 100
 POSITIONS = np.array([[0.0, 0.0], [20.0, 0.0], [0.0, 20.0], [20.0, 20.0]])
-
-
-class RunRecording:
-    def __init__(self, run: Run, io: IO | None = None):
-        self.run = run
-        self.io = io
-        potential = run.potential
-        self.fs = float("nan") if potential is None else 1000.0 / float(potential.dt)
-        self.channel_ids = (
-            np.zeros(0, dtype=np.int64)
-            if potential is None
-            else np.asarray(potential.ids)
-        )
-        self.bad_channels = np.zeros(0, dtype=np.int64)
-        self.metadata: dict = {"format": "run"}
-
-    @property
-    def segments(self) -> int:
-        return 1
-
-    def _segment(self, segment: int) -> None:
-        if segment != 0:
-            raise IndexError(f"a run is one segment, not segment {segment}")
-
-    def _potential(self):
-        if self.run.potential is None or self.run.potential.values is None:
-            raise Missing("the run holds no channel potential")
-        return self.run.potential
-
-    def num_samples(self, segment: int = 0) -> int:
-        self._segment(segment)
-        return int(self._potential().values.shape[1])
-
-    def read(self, segment, start, length, channels=None) -> np.ndarray:
-        self._segment(segment)
-        potential = self._potential()
-        n = potential.values.shape[1]
-        start, length = int(start), int(length)
-        if start < 0 or length < 0 or start + length > n:
-            raise IndexError(
-                f"the window [{start}, {start + length}) is outside 0..{n}"
-            )
-        values = np.asarray(potential.values)
-        if channels is not None:
-            ids = np.asarray(potential.ids).tolist()
-            values = values[[ids.index(int(c)) for c in np.asarray(channels).ravel()]]
-        return np.ascontiguousarray(values[:, start : start + length].T, np.float32)
-
-    def spikes(self, segment: int = 0) -> Events:
-        self._segment(segment)
-        if self.run.spikes is None:
-            raise Missing("the run recorded no spikes")
-        return self.run.spikes
-
-    def inputs(self, segment, start, length) -> np.ndarray:
-        raise Missing(
-            "a Run carries no input series; store it with `inputs=` (rsf or arrow) "
-            "to have it back"
-        )
-
-    def ground_truth(self, name: str, segment: int = 0):
-        self._segment(segment)
-        key = "current" if name == "currents" else name
-        channel = self.run.channel(key)
-        if channel is None:
-            raise Missing(f"the run holds no {name!r}")
-        return channel
-
-    def to_run(self, segment=0, start=0, length=None) -> Run:
-        self._segment(segment)
-        if start == 0 and length is None:
-            return self.run
-        dt = 1000.0 / self.fs
-        stop = self.num_samples() if length is None else start + length
-        return self.run.slice(start * dt, stop * dt)
 
 
 def _signal(row):
@@ -161,10 +85,10 @@ def release(tmp_path):
     return root
 
 
-def test_a_recording_satisfies_the_protocol(release):
+def test_a_recording_satisfies_the_protocol(release, run_recording):
     recording = arrow.ArrowRecording(release)
     assert isinstance(recording, Recording)
-    assert isinstance(RunRecording(Run(duration=1.0)), Recording)
+    assert isinstance(run_recording(Run(duration=1.0)), Recording)
 
 
 def test_rows_are_segments_read_by_window(release):
@@ -310,13 +234,13 @@ def test_hub_uris_download_only_their_config(release, monkeypatch):
         open_recording("hf://a/b/c", backend="rsf")
 
 
-def test_a_run_in_memory_is_a_recording():
+def test_a_run_in_memory_is_a_recording(run_recording):
     values = np.arange(C * 50, dtype=np.float32).reshape(C, 50)
     run = Run(
         duration=50.0,
         potential=Series(ids=np.arange(C), values=values, dt=1.0),
     ).add_spikes(np.array([3, 3]), np.array([5.0, 30.0]))
-    recording = RunRecording(run, io=None)
+    recording = run_recording(run, io=None)
 
     assert recording.fs == 1000.0 and recording.segments == 1
     assert recording.num_samples(0) == 50
@@ -336,7 +260,7 @@ def test_a_run_in_memory_is_a_recording():
     with pytest.raises(IndexError):
         recording.read(1, 0, 1)
     with pytest.raises(Missing):
-        RunRecording(Run(duration=1.0)).read(0, 0, 1)
+        run_recording(Run(duration=1.0)).read(0, 0, 1)
 
 
 # -- writing --------------------------------------------------------------------------

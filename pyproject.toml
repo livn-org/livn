@@ -35,6 +35,7 @@ diffrax = [
     "diffrax>=0.7.2",
 ]
 brian2 = ["cleosim>=0.18.1"]
+optimization = ["livn[diffrax]", "grain>=0.2.18"]
 
 [project.scripts]
 livn = "livn.cli:main"
@@ -81,7 +82,7 @@ version = "0.1.18"
 requires-dist = ["click", "h5py", "mpi4py", "numpy"]
 
 [tool.uv.workspace]
-members = ["systems", "benchmarks", "optimization"]
+members = ["systems", "benchmarks"]
 
 
 [tool.hatch.build.targets.wheel]
@@ -133,7 +134,7 @@ ignore = [
 ]
 
 [tool.ty.src]
-include = ["src", "optimization"]
+include = ["src"]
 
 [tool.ruff.format]
 exclude = ["*.md"]

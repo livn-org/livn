@@ -628,13 +628,12 @@ class SingleCell(Target):
         if isinstance(system, (str, os.PathLike)):
             env.selection(1)
         env.init()
-        env.record_voltage(dt=self.record_dt)
+        env = env.record_voltage(dt=self.record_dt)
         env.v_init = self.v_hold  # initialize at the holding potential each run
         return env
 
     def init(self, env):
-        env.record_voltage(dt=self.record_dt)
-        return env
+        return env.record_voltage(dt=self.record_dt)
 
     def _construction_params(self) -> dict:
         return {k: v for k, v in self.fixed.items() if k not in self.space}
@@ -1030,8 +1029,8 @@ class SingleCell(Target):
     def _drive_counts(self, env, gid) -> np.ndarray:
         resting = self._resting_noise(env)
         driving = self._drive_noise(env)
-        env.record_spikes()
-        env.record_voltage(dt=self.record_dt)
+        env = env.record_spikes()
+        env = env.record_voltage(dt=self.record_dt)
         counts = []
         try:
             for i, level in enumerate(self.drive.levels):

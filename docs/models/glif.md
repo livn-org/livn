@@ -87,17 +87,17 @@ Beyond spikes and voltage, GLIF exposes the rest of its state to [`env.record()`
 | `AScurrents` | `[n_cells, T, 2]` | the two after-spike currents, zero at levels 1 and 2 |
 
 ```python
-env.record_voltage()
-env.record("threshold")
+env = env.record_voltage()
+env = env.record("threshold")
 
 run = env.run(100)
 run["threshold"].values          # [n_cells, T]
 ```
 
 ```python
-env.record_voltage(dt=dt)
-env.record("threshold")
-env.record_spikes()
+env = env.record_voltage(dt=dt)
+env = env.record("threshold")
+env = env.record_spikes()
 
 run = env.run(duration, stimulus, dt=dt)
 run.spikes.padded.times     # exact event times, differentiable

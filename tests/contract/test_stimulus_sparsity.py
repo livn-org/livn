@@ -168,7 +168,7 @@ def test_narrowing_does_not_change_what_the_network_does():
     spikes = []
     for widen in (False, True):
         env = _env()
-        env.record_spikes()
+        env = env.record_spikes()
         coordinates = env.system.transform_coordinates(
             env.model.stimulus_coordinates, populations=env.active_populations()
         )
@@ -215,7 +215,7 @@ def test_a_policy_is_delivered_over_the_run_it_is_handed_to():
     from livn.policy import PulseSweepPolicy
 
     env = _env()
-    env.record_spikes()
+    env = env.record_spikes()
     sweep = PulseSweepPolicy(
         n_channels=len(env.io.channel_ids),
         channels=[0],

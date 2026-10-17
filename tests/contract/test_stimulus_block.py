@@ -35,7 +35,7 @@ def _env():
     env = livn_test_env()
     env.selection(CELLS)
     env.init()
-    env.record_spikes()
+    env = env.record_spikes()
     _OPEN_ENVS.append(env)
     return env
 

@@ -51,8 +51,8 @@ def test_the_pulse_arrives_at_the_same_time_on_every_run(env):
 
     def run(stimulus):
         env.clear()
-        env.record_spikes()
-        result = env.run(duration, stimulus=stimulus)
+        recording = env.record_spikes()
+        result = recording.run(duration, stimulus=stimulus)
         times = np.asarray(result.spike_times if result.spike_times is not None else [])
         return np.histogram(times, bins=bins)[0].astype(int)
 

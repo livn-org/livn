@@ -88,7 +88,7 @@ W = system.connectivity_matrix()  # shape [num_neurons, num_neurons]
 from livn.env import Env
 
 env = Env(64).init()   # 64 independent cells, no graph required
-env.record_voltage()
+env = env.record_voltage()
 it, t, iv, v, *_ = env.run(100)
 ```
 

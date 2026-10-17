@@ -24,7 +24,7 @@ from livn.env import Env
 # Create and initialize the environment
 env = Env("path/to/system").init()
 env.apply_model_defaults()
-env.record_spikes()
+env = env.record_spikes()
 
 # Wrap with cleo (assigns coordinates automatically)
 sim = env.cleosim()

@@ -33,25 +33,6 @@ if TYPE_CHECKING:
     from livn.types import System
 
 
-_TRAINABLE = (
-    "CartesianParameterization",
-    "LearnableOrientation",
-    "LogRadialParameterization",
-    "OrientedTrainableSystem",
-    "PositionParameterization",
-    "SphericalParameterization",
-    "TrainableSystem",
-)
-
-
-def __getattr__(name: str):
-    if name in _TRAINABLE:
-        from livn.system import trainable
-
-        return getattr(trainable, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
 def fetch(
     source: str,
     directory: str = ".",

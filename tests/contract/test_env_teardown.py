@@ -26,7 +26,7 @@ def _stimulated_env():
     from testing import livn_test_env, livn_test_mea
 
     env = livn_test_env(io=livn_test_mea()).init()
-    env.record_spikes()
+    env = env.record_spikes()
 
     dt, duration = 0.5, 10.0
     channel_inputs = np.zeros((round(duration / dt), len(env.io.channel_ids)))

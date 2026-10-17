@@ -44,3 +44,15 @@ expressed in bits. Higher is better; 0 means no better than the null model.
 
 `rates` are firing rates, not log-rates, and both arguments are binned to `(batch, time,
 neurons)`. `NaN` entries in `spikes` are treated as missing and dropped.
+
+## `reconstruction` <Badge type="warning" text="hard" />
+
+Global MSE and per-channel Pearson correlation of a `(time, channel)` trace against a recording, with its mean.
+
+## `threshold_spikes` <Badge type="warning" text="hard" />
+
+Spike times from a trace by MAD threshold: `mad_k · 1.4826 · MAD` below the trace (`polarity="positive"` for above) with a refractory period.
+
+## `spike_f1` <Badge type="warning" text="hard" />
+
+Precision, recall and F1 of predicted against recorded spike times within `tol_ms`.

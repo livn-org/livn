@@ -784,7 +784,7 @@ class CA1(Target):
     def record(self, env):
         self._reset_state()
         self.durations(env.system, comm=getattr(env, "comm", None))
-        env.record_spikes()
+        env = env.record_spikes()
         self._record_block_sample(env)
         env.apply_stimulus_from_h5(
             self.inputs,

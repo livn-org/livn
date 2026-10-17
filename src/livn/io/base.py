@@ -253,11 +253,17 @@ class _Static:
     def __init__(self, value):
         self.value = value
 
+    def _members(self):
+        return self.value if isinstance(self.value, tuple) else (self.value,)
+
     def __eq__(self, other):
-        return isinstance(other, _Static) and self.value is other.value
+        if not isinstance(other, _Static):
+            return False
+        a, b = self._members(), other._members()
+        return len(a) == len(b) and all(x is y for x, y in zip(a, b, strict=True))
 
     def __hash__(self):
-        return id(self.value)
+        return hash(tuple(id(x) for x in self._members()))
 
 
 def _unique(*devices):
@@ -487,6 +493,13 @@ if _USES_JAX:
     import jax
 
     def _composed_flatten(io):
+        origin = io.__dict__.get("_origin")
+        if (
+            origin is not None
+            and io.inputs is origin[1][0]
+            and io.outputs is origin[1][1]
+        ):
+            return (io._medium, io.transfers), origin[0]
         return (io._medium, io.transfers), _Static((io.inputs, io.outputs))
 
     def _composed_unflatten(aux, children):
@@ -499,6 +512,7 @@ if _USES_JAX:
         io.inputs = (
             io.outputs if inputs is outputs else _bound(inputs, medium, io.transfers)
         )
+        io._origin = (aux, (io.inputs, io.outputs))
         return io
 
     jax.tree_util.register_pytree_node(

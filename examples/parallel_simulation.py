@@ -27,9 +27,9 @@ mea = MEA(electrode_array_coordinates_for_area(400, ((xmin, ymin), (xmax, ymax))
 env = Env(system, io=mea).init()
 
 env.apply_model_defaults()
-env.record_spikes()
-env.record_voltage()
-env.record_membrane_current()
+env = env.record_spikes()
+env = env.record_voltage()
+env = env.record_membrane_current()
 
 
 warmup = 0

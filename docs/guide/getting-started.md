@@ -26,8 +26,8 @@ from livn.system import Monolayer
 
 env = Env(Monolayer(total_cells=650)).init()
 
-env.record_spikes()
-env.record_voltage()
+env = env.record_spikes()
+env = env.record_voltage()
 
 it, t, iv, v, *_ = env.run(100)
 
