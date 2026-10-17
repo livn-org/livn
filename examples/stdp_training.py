@@ -26,8 +26,8 @@ WEIGHT_REC_DT = 1.0
 
 env = Env("systems/graphs/EI").init()
 env.apply_model_defaults()
-env.record_spikes()
-env.record_voltage()
+env = env.record_spikes()
+env = env.record_voltage()
 env.record_weights(dt=WEIGHT_REC_DT)
 
 print(f"Phase 1: Baseline ({BASELINE_MS} ms, no plasticity)")

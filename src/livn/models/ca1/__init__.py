@@ -89,7 +89,7 @@ class PinskyRinzel(Model):
         Ltotal = cell_config[config_key]["PinskyRinzel"]["Ltotal"]
         return np.array([0.0, Ltotal / 2.0])
 
-    def stimulus_coordinates(self, neuron_coordinates, population=None):
+    def stimulus_coordinates(self, neuron_coordinates, population=None, gids=None):
         neuron_coordinates = np.asarray(neuron_coordinates)
         offsets = self.section_y_offsets(population)
         if len(offsets) == 0:
@@ -99,7 +99,7 @@ class PinskyRinzel(Model):
         coords[:, 2] += np.tile(offsets, n)
         return coords
 
-    def recording_coordinates(self, neuron_coordinates, population=None):
+    def recording_coordinates(self, neuron_coordinates, population=None, gids=None):
         return self.stimulus_coordinates(neuron_coordinates, population=population)
 
     def neuron_refractory_period(self) -> float:

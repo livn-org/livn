@@ -64,7 +64,7 @@ def test_recording_named_cells_records_those_and_no_others():
     env = _env()
     wanted = sorted(env.simulated_gids(everywhere=True))[:3]
 
-    env.record_voltage(gids=wanted, dt=DT)
+    env = env.record_voltage(gids=wanted, dt=DT)
     iv, vv = _traces(env.run(DURATION, root_only=False))
 
     assert sorted(set(iv.tolist())) == wanted
@@ -73,13 +73,13 @@ def test_recording_named_cells_records_those_and_no_others():
 
 def test_a_narrowed_recording_is_the_wide_one_with_the_other_cells_dropped():
     wide_env = _env()
-    wide_env.record_voltage(dt=DT)
+    wide_env = wide_env.record_voltage(dt=DT)
     wide_iv, wide_vv = _traces(wide_env.run(DURATION, root_only=False))
 
     wanted = sorted(wide_env.simulated_gids(everywhere=True))[:3]
 
     narrow_env = _env()
-    narrow_env.record_voltage(gids=wanted, dt=DT)
+    narrow_env = narrow_env.record_voltage(gids=wanted, dt=DT)
     narrow_iv, narrow_vv = _traces(narrow_env.run(DURATION, root_only=False))
 
     assert len(narrow_iv) < len(wide_iv), "nothing was narrowed"
@@ -93,7 +93,7 @@ def test_a_gid_with_no_cell_is_refused_rather_than_silently_dropped():
     absent = max(int(g) for g in env.system.gids) + 1000
 
     with pytest.raises(ValueError, match="have no cell in this simulation"):
-        env.record_voltage(gids=[absent])
+        env = env.record_voltage(gids=[absent])
 
 
 def test_a_gid_the_selection_left_out_says_that_is_why():
@@ -106,7 +106,7 @@ def test_a_gid_the_selection_left_out_says_that_is_why():
         pytest.skip("this graph is smaller than the selection")
 
     with pytest.raises(ValueError) as raised:
-        env.record_voltage(gids=[left_out[0]])
+        env = env.record_voltage(gids=[left_out[0]])
 
     assert "no cell in this simulation" in str(raised.value)
     assert f"{len(env.simulated_gids(everywhere=True))} gids do" in str(raised.value)
@@ -116,7 +116,7 @@ def test_recording_no_cells_at_all_is_refused():
     env = _env()
 
     with pytest.raises(ValueError, match="Pass `gids=None`"):
-        env.record_voltage(gids=[])
+        env = env.record_voltage(gids=[])
 
 
 def test_a_decoding_can_ask_for_the_cells_and_the_resolution_it_needs():

@@ -144,7 +144,7 @@ def test_streaming_a_command_simulates_identically_to_holding_it():
     spikes = []
     for stream in (True, False):
         env = _env()
-        env.record_spikes()
+        env = env.record_spikes()
         sweep = _sweep(env)
 
         stimulus = sweep
@@ -182,7 +182,7 @@ def test_a_protocol_too_long_to_hold_is_still_delivered(monkeypatch):
     with pytest.raises(MemoryError):
         env.cell_stimulus(sweep.window(0.0, sweep.duration_ms, DT), dt=DT)
 
-    env.record_spikes()
+    env = env.record_spikes()
     env.run(sweep.duration_ms, stimulus=sweep)
 
     stream = env._stim_streams[0]

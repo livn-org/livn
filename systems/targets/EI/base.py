@@ -1753,7 +1753,7 @@ class Culture(Target):
         self._reset_state()
         duration = int(self.warmup_duration + self.recording_duration)
 
-        env.record_spikes()
+        env = env.record_spikes()
         t0 = time.time()
         self.response_data = env.run(duration, root_only=False)
         self.simulated_ms = duration

@@ -257,8 +257,11 @@ class Env(EnvProtocol):
         if self._selected_rows is None:
             self._materialize_geometry()
 
+        index = 0
         for population, keep in self._selected_rows.items():
-            yield population, self.system.coordinate_array(population)[keep]
+            gids = self.module_gids[index : index + len(keep)]
+            index += len(keep)
+            yield population, self.system.coordinate_array(population)[keep], gids
 
     @property
     def module_gids(self) -> np.ndarray:
@@ -272,11 +275,13 @@ class Env(EnvProtocol):
 
     def _compartment_columns(self):
         widths, offset = [], 0
-        for population, coordinates in self._selected_coordinates():
+        for population, coordinates, gids in self._selected_coordinates():
             n = len(coordinates)
             if n == 0:
                 continue
-            rows = self.model.stimulus_coordinates(coordinates, population=population)
+            rows = self.model.stimulus_coordinates(
+                coordinates, population=population, gids=gids
+            )
             widths.append((n, len(rows) // n))
             offset += len(rows)
 
@@ -298,8 +303,10 @@ class Env(EnvProtocol):
         from livn.system._common import stack_coordinates
 
         rows = [
-            self.model.stimulus_coordinates(coordinates, population=population)
-            for population, coordinates in self._selected_coordinates()
+            self.model.stimulus_coordinates(
+                coordinates, population=population, gids=gids
+            )
+            for population, coordinates, gids in self._selected_coordinates()
         ]
         return stack_coordinates(rows) if rows else np.zeros((0, 4))
 
@@ -362,11 +369,15 @@ class Env(EnvProtocol):
             self.__dict__["_cells"] = registry
         return registry
 
-    def _with_module(self, module) -> "Env":
+    def _copy(self) -> "Env":
         env = copy.copy(self)
-        env.module = module
         env._recording = {name: dict(o) for name, o in self._recording.items()}
         env.__dict__.pop("_cells", None)
+        return env
+
+    def _with_module(self, module) -> "Env":
+        env = self._copy()
+        env.module = module
         return env
 
     def set_weights(self, weights):
@@ -379,8 +390,10 @@ class Env(EnvProtocol):
         return self
 
     def _enable(self, signal: str, **options) -> "Env":
-        self._recording[signal] = dict(options)
-        return self
+        """A copy of the env that also records ``signal``; this env is left as it was."""
+        env = self._copy()
+        env._recording[signal] = dict(options)
+        return env
 
     def _record_spikes(self, population: str) -> "Env":
         return self._enable("spikes")
@@ -438,6 +451,21 @@ class Env(EnvProtocol):
         if stimulus is not None:
             stimulus = Stimulus.from_arg(stimulus, env=self, duration=duration)
             stimulus = self.model.prepare_stimulus(stimulus)
+
+            readable = {"current", "current_density", "conductance", "irradiance"}
+            expected = getattr(self.module, "input_mode", None)
+            if (
+                expected is not None
+                and stimulus.input_mode != expected
+                and stimulus.input_mode in readable
+            ):
+                raise ValueError(
+                    f"a {stimulus.input_mode!r} stimulus on a module compiled for "
+                    f"{expected!r} input: the module would read the array in its own "
+                    "units. Build the model with "
+                    f"input_mode={stimulus.input_mode!r}, or the stimulus in "
+                    f"{expected!r}"
+                )
             if stimulus.gids is not None:
                 stimulus = stimulus.expand(*self._stimulus_labels())
                 compartments = self._compartment_columns()
@@ -530,6 +558,25 @@ class Env(EnvProtocol):
         return env
 
 
+def _key_as_aux(key):
+    if key is None:
+        return None
+    data = np.asarray(
+        jax.random.key_data(key)
+        if jnp.issubdtype(jnp.asarray(key).dtype, jax.dtypes.prng_key)
+        else key
+    )
+    return (tuple(data.ravel().tolist()), str(data.dtype), data.shape)
+
+
+def _key_from_aux(aux):
+    if aux is None:
+        return None
+    values, dtype, shape = aux
+
+    return np.asarray(values, dtype=dtype).reshape(shape)
+
+
 def _env_tree_flatten(env):
     if env.module is not None:
         module_params, module_static = eqx.partition(env.module, eqx.is_array)
@@ -560,8 +607,8 @@ def _env_tree_flatten(env):
         io_is_pytree,
         env.comm,
         env.seed,
-        env.init_key,
-        env.run_key,
+        _key_as_aux(env.init_key),
+        _key_as_aux(env.run_key),
         None
         if env._selected_gids is None
         else tuple(sorted(int(g) for g in env._selected_gids)),
@@ -625,8 +672,8 @@ def _env_tree_unflatten(aux, children):
     env._weights = weights
     env._recording = {name: dict(options) for name, options in recording}
 
-    env.init_key = init_key
-    env.run_key = run_key
+    env.init_key = _key_from_aux(init_key)
+    env.run_key = _key_from_aux(run_key)
     return env
 
 

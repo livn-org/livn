@@ -271,7 +271,7 @@ case "$cmd" in
     ci_job_command() {
       case "$1" in
         lint)            echo "ruff format --check; ruff check" ;;
-        types)           echo "ty check optimization" ;;
+        types)           echo "ty check src/livn/optimization" ;;
         fast)            echo "tests/cli fast" ;;
         h5-system)       echo "tests/cli generate-system (a step of the neuron jobs)" ;;
         test-default)    echo "tests/cli verify --backend none" ;;
@@ -395,8 +395,8 @@ case "$cmd" in
         echo "ty is not installed here (uv sync --group dev)"
         return $CI_SKIP
       fi
-      # CI gates `optimization` only; src is not at zero yet
-      ci_step ty check optimization
+      # CI gates `src/livn/optimization` only; src is not at zero yet
+      ci_step ty check src/livn/optimization
     }
 
     job_fast() {
@@ -418,7 +418,7 @@ case "$cmd" in
     }
 
     job_test_diffrax() {
-      if ci_missing diffrax "uv sync --extra diffrax"; then return $CI_SKIP; fi
+      if ci_missing diffrax "uv sync --extra optimization"; then return $CI_SKIP; fi
       ci_step "$0" verify --backend diffrax ${verify_flags[@]+"${verify_flags[@]}"}
     }
 

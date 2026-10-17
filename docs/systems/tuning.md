@@ -91,8 +91,8 @@ class MyTarget(Target):
     def __call__(self, env):
         """Run a simulation and return (objectives, constraints)."""
         total = int(self.warmup + self.duration)
-        env.record_spikes()
-        env.record_voltage()
+        env = env.record_spikes()
+        env = env.record_voltage()
         data = env.run(total)
 
         # Compute objectives: dict of name -> [(objective_value, feature_value)]
@@ -280,9 +280,9 @@ class OrganoidMatch(Target):
 
     def __call__(self, env):
         total = int(self.warmup + self.duration)
-        env.record_spikes()
-        env.record_voltage()
-        env.record_membrane_current()
+        env = env.record_spikes()
+        env = env.record_voltage()
+        env = env.record_membrane_current()
         data = env.run(total)
 
         recording = Slice(start=self.warmup, stop=total)(data)

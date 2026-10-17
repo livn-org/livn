@@ -13,8 +13,11 @@ class MyDecoding(Decoding):
     duration: int = 1000
 
     def setup(self, env):
-        """Optional: configure the environment before simulation (e.g., enable recordings)"""
-        env.record_spikes()
+        """Optional: configure the environment before simulation (e.g., enable recordings).
+
+        Return the env to support immutable backends.
+        """
+        return env.record_spikes()
 
     def __call__(self, signal, env=None):
         """Process one signal's channels and return structured output"""

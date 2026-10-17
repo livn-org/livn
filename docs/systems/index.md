@@ -97,8 +97,8 @@ from livn import make
 env = make("EI")
 env = make("runs/bursting/env.json")  # a configured env of your own
 
-env.record_spikes()
-env.record_voltage()
+env = env.record_spikes()
+env = env.record_voltage()
 it, t, iv, v, *_ = env.run(100)
 ```
 

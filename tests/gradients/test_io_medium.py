@@ -109,6 +109,43 @@ def test_the_dispersive_width_differentiates():
     _finite_and_nonzero(grad.sigma_s_per_m)
 
 
+def test_an_anchored_blur_width_stops_the_distances_from_moving_it():
+    electrodes, cells, currents = _scene()
+    live = DispersivePointSource()
+    mea = MEA(electrodes, output_radius=500.0, medium=Medium(electrical=live))
+    d = mea.distances(cells)
+    # the blur the cells' geometry asks for, per channel
+    near = np.asarray(d)[:, -1].reshape(len(electrodes), -1)
+    mean = np.where(near <= 500.0, near, 0.0).sum(axis=1) / (near <= 500.0).sum(axis=1)
+    pinned = MEA(
+        electrodes,
+        output_radius=500.0,
+        medium=Medium(electrical=DispersivePointSource(mean_distance_um=mean)),
+    )
+
+    same = pinned.potential_recording(d, currents, dt=DT)
+    np.testing.assert_allclose(
+        same, mea.potential_recording(d, currents, dt=DT), rtol=1e-5, atol=1e-4
+    )
+
+    moved = np.asarray(d).copy()
+    moved[:, -1] *= 1.6
+
+    # the live blur follows the distances; the anchored one keeps its width
+    assert not np.allclose(
+        mea.potential_recording(moved, currents, dt=DT),
+        pinned.potential_recording(moved, currents, dt=DT),
+        rtol=1e-2,
+    )
+    sigma_free = np.asarray(mea.electrical.potential_gain(moved[:, -1])) / np.asarray(
+        mea.electrical.potential_gain(np.asarray(d)[:, -1])
+    )
+    assert np.all(sigma_free < 1.0)  # farther cells are weaker in both
+    assert pinned.medium.serialize()["electrical"]["mean_distance_um"] == pytest.approx(
+        mean.tolist()
+    )
+
+
 def test_gradients_flow_through_each_transfer_leaf():
     x = jnp.asarray(np.random.default_rng(1).normal(size=(2, 200)), dtype=jnp.float32)
 

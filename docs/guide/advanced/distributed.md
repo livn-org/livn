@@ -29,8 +29,8 @@ The `system` argument must be a directory path, not a loaded system object as ea
 `DistributedEnv` mirrors the same configuration API as the standard [`Env`](/guide/concepts/env) where calls are automatically broadcast to all workers:
 
 ```python
-env.record_membrane_current()
-env.record_spikes()
+env = env.record_membrane_current()
+env = env.record_spikes()
 env.apply_model_defaults()
 ```
 

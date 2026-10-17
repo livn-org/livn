@@ -50,8 +50,8 @@ def make_step(
 env = Env(Monolayer(total_cells=200)).init()
 
 env.apply_model_defaults()
-env.record_spikes()
-env.record_voltage()
+env = env.record_spikes()
+env = env.record_voltage()
 
 
 step_key = env.run_key
@@ -95,7 +95,7 @@ import numpy as np  # noqa: E402
 from livn.models.glif import GLIF  # noqa: E402
 
 cells = Env(4, model=GLIF(level=3)).init()
-cells.record_spikes()
+cells = cells.record_spikes()
 
 duration, step = 60.0, 0.1
 current = jnp.full((int(duration / step) + 1, 4), 0.3)  # nA

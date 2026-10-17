@@ -15,7 +15,7 @@ from livn.system import Monolayer
 ELECTRODE = 0
 
 env = Env(Monolayer(total_cells=650)).init().apply_model_defaults()
-env.record_spikes()
+env = env.record_spikes()
 
 policy = PulseSweepPolicy(
     amplitudes=(50.0, 200.0),

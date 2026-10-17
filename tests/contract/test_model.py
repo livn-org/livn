@@ -53,7 +53,7 @@ def test_recompile_and_smoke(case, mpiexec_n):
 
     assert os.path.isdir(compiled), "mechanisms were not recompiled"
 
-    env.record_spikes()
+    env = env.record_spikes()
     result = env.run(100.0, root_only=False)
 
     assert len(result) == 6

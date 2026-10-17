@@ -68,9 +68,9 @@ def env_response(request):
         env = livn_test_env(io=livn_test_mea())
         env.init()
 
-        env.record_spikes()
-        env.record_voltage()
-        env.record_membrane_current()
+        env = env.record_spikes()
+        env = env.record_voltage()
+        env = env.record_membrane_current()
 
         t_end = RESPONSE_DURATION
         inputs = np.zeros([t_end, env.io.num_channels])
@@ -140,7 +140,7 @@ def test_stability_integration(env_response):
 )
 def test_lfp_integration(env_response):
     env = livn_test_env(io=livn_test_mea()).init()
-    env.record_membrane_current()
+    env = env.record_membrane_current()
 
     lfp = LFP(duration=250)
     result = lfp(env_response, env)
@@ -156,8 +156,8 @@ def test_pipeline_integration(env_response):
     env = livn_test_env()
     if backend() == "brian2":
         env.init()
-    env.record_spikes()
-    env.record_membrane_current()
+    env = env.record_spikes()
+    env = env.record_membrane_current()
 
     pipeline = Pipe(
         duration=250,
@@ -198,9 +198,9 @@ def test_slice_decoding(env_response):
     env = livn_test_env()
     if backend() == "brian2":
         env.init()
-    env.record_spikes()
-    env.record_voltage()
-    env.record_membrane_current()
+    env = env.record_spikes()
+    env = env.record_voltage()
+    env = env.record_membrane_current()
 
     start = 100
     duration = 50
@@ -231,9 +231,9 @@ def test_slice_float_valid(env_response):
     env = livn_test_env()
     if backend() == "brian2":
         env.init()
-    env.record_spikes()
-    env.record_voltage()
-    env.record_membrane_current()
+    env = env.record_spikes()
+    env = env.record_voltage()
+    env = env.record_membrane_current()
 
     recording_dt = 0.1
     start = 10.0

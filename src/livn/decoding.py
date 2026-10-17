@@ -77,7 +77,7 @@ class ChannelRecording(Decoding):
 
     def setup(self, env):
         if self.spikes:
-            env.record_spikes()
+            env = env.record_spikes()
         if self.voltages:
             options = {
                 "gids": self.voltage_gids,
@@ -85,9 +85,10 @@ class ChannelRecording(Decoding):
             }
             if self.voltage_dt is not None:
                 options["dt"] = self.voltage_dt
-            env.record_voltage(**options)
+            env = env.record_voltage(**options)
         if self.membrane_currents:
-            env.record_membrane_current()
+            env = env.record_membrane_current()
+        return env
 
     def __call__(self, signal: Run, env=None):
         it, tt = signal.spike_ids, signal.spike_times
@@ -134,7 +135,7 @@ class GatherAndMerge(Decoding):
 
     def setup(self, env):
         if self.spikes:
-            env.record_spikes()
+            env = env.record_spikes()
         if self.voltages:
             options = {
                 "gids": self.voltage_gids,
@@ -142,9 +143,10 @@ class GatherAndMerge(Decoding):
             }
             if self.voltage_dt is not None:
                 options["dt"] = self.voltage_dt
-            env.record_voltage(**options)
+            env = env.record_voltage(**options)
         if self.membrane_currents:
-            env.record_membrane_current()
+            env = env.record_membrane_current()
+        return env
 
     def __call__(self, signal: Run, env=None):
         if not self.spikes:
@@ -190,7 +192,10 @@ class Pipe(Decoding):
     def setup(self, env):
         for stage in self.stages:
             if hasattr(stage, "setup"):
-                stage.setup(env)
+                prepared = stage.setup(env)
+                if prepared is not None:
+                    env = prepared
+        return env
 
     def reset(self, **kwargs):
         for stage in self.stages:
@@ -1831,7 +1836,7 @@ class StimulusResponse(Decoding):
     threshold_k: float = 3.0
 
     def setup(self, env):
-        env.record_spikes()
+        return env.record_spikes()
 
     def __call__(self, signal: Run, env=None):
         comm = getattr(env, "comm", None)
@@ -1864,7 +1869,7 @@ class RecruitmentCurve(Decoding):
     recruited: float = 0.5
 
     def setup(self, env):
-        env.record_spikes()
+        return env.record_spikes()
 
     def __call__(self, signal: Run, env=None):
         comm = getattr(env, "comm", None)
@@ -1929,12 +1934,13 @@ class ExtracellularRecruitment(Decoding):
     voltage_dt: float | None = 0.025
 
     def setup(self, env):
-        env.record_spikes()
+        env = env.record_spikes()
         if self.ceiling_mv is not None:
             options = {"sections": None if self.section is None else [self.section]}
             if self.voltage_dt is not None:
                 options["dt"] = self.voltage_dt
-            env.record_voltage(**options)
+            env = env.record_voltage(**options)
+        return env
 
     def __call__(self, signal: Run, env=None):
         comm = getattr(env, "comm", None)
@@ -2057,7 +2063,7 @@ class PeriStimulusHistogram(Decoding):
     populations: list[str] | None = None
 
     def setup(self, env):
-        env.record_spikes()
+        return env.record_spikes()
 
     def __call__(self, signal: Run, env=None):
         comm = getattr(env, "comm", None)
@@ -2151,14 +2157,14 @@ class Waveforms(Decoding):
     voltage_dt: float | None = 0.025
 
     def setup(self, env):
-        env.record_spikes()
+        env = env.record_spikes()
         options = {
             "gids": self.voltage_gids,
             "sections": None if self.section is None else [self.section],
         }
         if self.voltage_dt is not None:
             options["dt"] = self.voltage_dt
-        env.record_voltage(**options)
+        return env.record_voltage(**options)
 
     def __call__(self, signal: Run, env=None):
         comm = getattr(env, "comm", None)

@@ -45,28 +45,30 @@ Before running a simulation, specify what to record. Every backend provides at l
 
 ```python
 # Record spike times for all populations
-env.record_spikes()
+env = env.record_spikes()
 
 # Record voltage traces (membrane potential)
-env.record_voltage()
+env = env.record_voltage()
 
 # Record membrane currents (for LFP estimation)
-env.record_membrane_current()
+env = env.record_membrane_current()
 ```
+
+Every recording method returns the env that records, so continue with the return value. A backend that records in place (NEURON, brian2, native) returns the same env; the differentiable diffrax backend is immutable (`Capability.IMMUTABLE`) and returns a modified copy, leaving the env you called it on as it was. Written as `env = env.record_spikes()` the code is right for both.
 
 Each recording method accepts an optional `population` argument to restrict recording to specific cell populations:
 
 ```python
-env.record_spikes("EXC")        # only excitatory cells
-env.record_voltage(["EXC", "INH"])  # multiple populations
+env = env.record_spikes("EXC")        # only excitatory cells
+env = env.record_voltage(["EXC", "INH"])  # multiple populations
 ```
 
 The set of modalities is open and the methods above are wrappers over `env.record(what, population, **kwargs)`, which dispatches on the signal name. Signal-specific options are passed as keyword arguments, so the calls above are equivalent to:
 
 ```python
-env.record("spikes")
-env.record("voltage", dt=0.1)
-env.record("membrane_current", ["EXC", "INH"], dt=0.5)
+env = env.record("spikes")
+env = env.record("voltage", dt=0.1)
+env = env.record("membrane_current", ["EXC", "INH"], dt=0.5)
 ```
 
 Which signals an environment supports depends on its backend and on its model, and is reported by `recordable()`:
@@ -86,7 +88,7 @@ env = Env(64, model=GLIF(level=5)).init()
 
 env.recordable()   # [..., 'AScurrents', 'theta_s', 'theta_v', 'threshold', ...]
 
-env.record("threshold")
+env = env.record("threshold")
 run = env.run(100)
 
 run["threshold"].values    # [n_neurons, timestep], on the run's own dt
@@ -200,9 +202,9 @@ To stay compatible with real recordings, a session must hold membrane currents f
 ```python
 from livn.data.rsf import load, store
 
-env.record_spikes()
-env.record_membrane_current()   # the channel signal is projected from these
-env.record_voltage()
+env = env.record_spikes()
+env = env.record_membrane_current()   # the channel signal is projected from these
+env = env.record_voltage()
 
 run = env.run(1000)
 store(run, "sessions/spontaneous-1", env, voltage=True, currents=True)

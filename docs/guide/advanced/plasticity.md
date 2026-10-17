@@ -13,8 +13,8 @@ from livn import make
 
 env = make("EI")
 
-env.record_spikes()
-env.record_voltage()
+env = env.record_spikes()
+env = env.record_voltage()
 env.record_weights(dt=1.0)  # track weight evolution
 
 env.enable_plasticity()

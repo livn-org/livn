@@ -768,8 +768,8 @@ def test_a_run_reports_spikes_and_voltage():
     from livn.stimulus import Stimulus
 
     env = _make_env(2)
-    env.record_spikes()
-    env.record_voltage()
+    env = env.record_spikes()
+    env = env.record_voltage()
     duration, dt = 40.0, 0.1
     current = _driven(env.module, duration=duration, dt=dt)
 
@@ -830,7 +830,7 @@ def test_the_model_contributes_its_states_to_recordable():
     }
 
     with pytest.raises(TypeError, match="unexpected keyword argument 'dt'"):
-        env.record("threshold", dt=0.5)
+        env = env.record("threshold", dt=0.5)
 
     assert GLIF(level=5).recordable_states() == RECORDABLE_STATES
 
@@ -839,11 +839,11 @@ def test_the_model_contributes_its_states_to_recordable():
 @pytest.mark.parametrize("level", [2, 4, 5])
 def test_theta_is_recoverable_for_the_levels_that_have_one(level):
     env = _make_env(1, level=level)
-    env.record_spikes()
-    env.record_voltage()
-    env.record("threshold")
-    env.record("theta_s")
-    env.record("theta_v")
+    env = env.record_spikes()
+    env = env.record_voltage()
+    env = env.record("threshold")
+    env = env.record("theta_s")
+    env = env.record("theta_v")
 
     run = _stimulated(env)
 
@@ -867,7 +867,7 @@ def test_theta_is_recoverable_for_the_levels_that_have_one(level):
 @_env
 def test_a_signal_that_was_not_recorded_allocates_no_buffer():
     env = _make_env(2)
-    env.record_spikes()
+    env = env.record_spikes()
 
     run = _stimulated(env)
 
@@ -893,10 +893,10 @@ def test_lambda_reconstructs_from_the_recorded_channels():
         return jax.nn.softplus((v - threshold) / sigma)
 
     env = _make_env(2, level=5)
-    env.record_voltage()
-    env.record("threshold")
-    env.record("theta_s")
-    env.record("theta_v")
+    env = env.record_voltage()
+    env = env.record("threshold")
+    env = env.record("theta_s")
+    env = env.record("theta_v")
 
     run = _stimulated(env)
 
@@ -931,8 +931,8 @@ def test_the_reconstruction_is_differentiable():
     sigma = 2.0
     duration, dt = 30.0, 0.1
     env = _make_env(1, level=5)
-    env.record_voltage()
-    env.record("threshold")
+    env = env.record_voltage()
+    env = env.record("threshold")
     stimulus = Stimulus.from_current(
         _driven(env.module, duration=duration, dt=dt), dt=dt
     )
@@ -980,8 +980,8 @@ def test_a_run_through_env_on_a_connected_system(mechanism):
         ),
     )
     env = env.set_weights({"EXC_EXC": 400.0, "EXC_INH": 400.0, "INH_EXC": 400.0}).init()
-    env.record_spikes()
-    env.record_voltage()
+    env = env.record_spikes()
+    env = env.record_voltage()
 
     assert env.module.network is not None, "the system under test is not connected"
 

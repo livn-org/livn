@@ -382,8 +382,8 @@ class BoothRinzelKiehn(eqx.Module):
                 )
 
         self.T_kelvin = self.celsius + 273.15
-        self.ENa = self._nernst(self.nai, self.nao, 1.0)
-        self.EK = self._nernst(self.ki, self.ko, 1.0)
+        self.ENa = float(self._nernst(self.nai, self.nao, 1.0))
+        self.EK = float(self._nernst(self.ki, self.ko, 1.0))
 
         ic_s, ic_d = self._init_ic_values(self.V_hold)
         if not ic_provided_s:

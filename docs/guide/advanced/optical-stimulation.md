@@ -23,8 +23,8 @@ from livn import make
 from livn.stimulus import Stimulus
 
 env = make("EI")
-env.record_spikes()
-env.record_voltage()
+env = env.record_spikes()
+env = env.record_voltage()
 
 # Create a light pulse: 5 mW/mm² for 50ms on all neurons
 n_neurons = env.system.num_neurons

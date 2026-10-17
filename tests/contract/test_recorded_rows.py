@@ -19,9 +19,9 @@ SERIES = ("voltage", "current")
 def run():
     env = livn_test_env()
     env.init()
-    env.record_spikes()
-    env.record_voltage()
-    env.record_membrane_current()
+    env = env.record_spikes()
+    env = env.record_voltage()
+    env = env.record_membrane_current()
     yield env.run(20, dt=0.025)
     with contextlib.suppress(Exception):
         env.close()

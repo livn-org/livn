@@ -1,6 +1,6 @@
 # Optimization
 
-`optimization` is livn's differentiable ML layer containing metrics, losses, and fitting machinary used to estimate model parameters from data.
+`livn.optimization` is livn's differentiable ML layer containing metrics, losses, and fitting machinary used to estimate model parameters from data.
 
 ::: tip
 Naturally, this section assumes a [differentiable environment](/guide/backends) requiring a `JAX` backend.
@@ -8,13 +8,13 @@ Naturally, this section assumes a [differentiable environment](/guide/backends) 
 
 ## Installation
 
-`optimization` ships with the repository as a workspace member:
+`livn.optimization` is an extra of livn:
 
 ```sh
-uv sync --package optimization
+pip install livn[optimization]
 ```
 
-It depends on `livn[diffrax]`, so this also installs JAX, diffrax, equinox, and optax.
+It depends on `livn[diffrax]`, so this also installs JAX, diffrax, equinox, and optax, plus `grain` for the data pipeline. The module works with whatever `LIVN_BACKEND` is set; only building a differentiable `Env` needs `LIVN_BACKEND=diffrax`.
 
 ## Hard and soft
 

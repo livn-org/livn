@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import numpy as _np
 
@@ -121,6 +121,7 @@ class DispersivePointSource(PointSource):
     max_sigma_ms: float = static_field(2.0)
     kernel_sigma_ratio: int = static_field(3)
     per_pair: bool = static_field(False)
+    mean_distance_um: Any = None
 
     needs_dt = True
 
@@ -138,7 +139,9 @@ class DispersivePointSource(PointSource):
             return self._project_per_pair(gain, d, currents, dt)
 
         v = np.matmul(gain, currents)
-        if output_radius_um is None:
+        if self.mean_distance_um is not None:
+            mean = np.asarray(self.mean_distance_um)
+        elif output_radius_um is None:
             mean = d.mean(axis=1)
         else:
             inside = d <= output_radius_um

@@ -9,16 +9,18 @@ import jax.numpy as jnp
 from livn.env import Env
 from livn.io import MEA
 from livn.models.rcsd import ReducedCalciumSomaDendrite
-from livn.stimulus import Stimulus
-from livn.system import (
+from livn.optimization.trainable import (
     CartesianParameterization,
     LogRadialParameterization,
     OrientedTrainableSystem,
     SphericalParameterization,
     TrainableSystem,
 )
+from livn.stimulus import Stimulus
 
 N, DT, DURATION = 3, 0.1, 4.0
+
+needs_diffrax_axon = pytest.mark.skip(reason="the diffrax motoneuron has no axon")
 
 
 def _parameterization(cls=LogRadialParameterization):
@@ -62,6 +64,7 @@ def _finite_and_nonzero(x):
     assert np.all(np.isfinite(x)) and np.any(x != 0.0)
 
 
+@needs_diffrax_axon
 @pytest.mark.parametrize(
     "cls",
     [CartesianParameterization, LogRadialParameterization, SphericalParameterization],
@@ -75,6 +78,7 @@ def test_positions_differentiate_through_run_and_recording(cls):
         _finite_and_nonzero(leaf)
 
 
+@needs_diffrax_axon
 def test_sigma_differentiates_through_run_and_recording():
     env = _env(TrainableSystem(_parameterization(), n_neurons=N))
     grad = _grad(env)
@@ -87,6 +91,7 @@ def test_sigma_differentiates_through_run_and_recording():
     )
 
 
+@needs_diffrax_axon
 def test_the_trainable_env_round_trips_as_a_pytree():
     env = _env(TrainableSystem(_parameterization(), n_neurons=N))
     out = jax.tree_util.tree_map(lambda x: x, env)
@@ -103,6 +108,7 @@ def test_the_default_io_is_a_medium_carrying_mea():
     assert io.medium.electrical.sigma_s_per_m > 0
 
 
+@needs_diffrax_axon
 def test_orientation_differentiates_through_run_and_recording():
     system = OrientedTrainableSystem.from_parameterization(
         _parameterization(), n_neurons=N, orient_init=np.tile([1.0, 0.2, 0.5], (N, 1))
@@ -139,9 +145,58 @@ def test_orientation_moves_only_the_dendrite_rows():
 
 
 def test_orientation_is_normalised_at_use_time():
-    from livn.system import LearnableOrientation
+    from livn.optimization.trainable import LearnableOrientation
 
     unit = LearnableOrientation(
         raw=jnp.array([[3.0, 4.0, 0.0], [0.0, 0.0, 5.0], [1.0, 0.0, 0.0]])
     ).unit
     np.testing.assert_allclose(jnp.linalg.norm(unit, axis=-1), 1.0, atol=1e-5)
+
+
+def test_traced_coordinates_agree_with_concrete_ones():
+    model = ReducedCalciumSomaDendrite(
+        input_mode="current", dendrite_orientation="random"
+    )
+    system = TrainableSystem(_parameterization(), n_neurons=N)
+    population = system.populations[0]
+    concrete = np.asarray(
+        model.stimulus_coordinates(
+            np.asarray(system.coordinate_array(population)), population=population
+        )
+    )
+    traced = jax.jit(
+        lambda s: model.stimulus_coordinates(
+            s.coordinate_array(population),
+            population=population,
+            gids=np.arange(N),
+        )
+    )(system)
+    np.testing.assert_allclose(np.asarray(traced), concrete, atol=1e-4)
+
+    with pytest.raises(ValueError, match="gids"):
+        jax.jit(
+            lambda s: model.stimulus_coordinates(
+                s.coordinate_array(population), population=population
+            )
+        )(system)
+
+
+def test_an_env_keeps_its_treedef_for_a_mask_of_its_leaves_and_for_another_env_of_one_seed():
+    system = TrainableSystem(_parameterization(), n_neurons=N)
+    model, io = ReducedCalciumSomaDendrite(input_mode="current"), _io()
+    env = Env(system=system, model=model, io=io).init()
+    other = Env(system=system, model=model, io=io).init()  # a new object, equal keys
+
+    structure = jax.tree_util.tree_structure(env)
+    assert (
+        jax.tree_util.tree_structure(jax.tree_util.tree_map(lambda _: False, env))
+        == structure
+    )
+    assert (
+        jax.tree_util.tree_structure(
+            jax.tree_util.tree_unflatten(structure, jax.tree_util.tree_leaves(env))
+        )
+        == structure
+    )
+    assert env.init_key is not other.init_key
+    assert jax.tree_util.tree_structure(other) == structure

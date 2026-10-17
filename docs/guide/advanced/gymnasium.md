@@ -176,7 +176,7 @@ class ForceDecoder(Decoding):
     duration: int = 100
     scale: float = 5.0
     def setup(self, env):
-        env.record_spikes()
+        return env.record_spikes()
 
     def __call__(self, signal, env=None, pipe=None):
         cit, ct = env.channel_recording(signal.spike_ids, signal.spike_times)
@@ -216,7 +216,7 @@ decoding = Pipe(
 
 # 4. Create the livn environment and wrap it
 livn_env = make("EI")
-livn_env.record_spikes()
+livn_env = livn_env.record_spikes()
 
 gymnasium_env = GymnasiumEnv(
     env=livn_env,

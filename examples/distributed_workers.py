@@ -46,8 +46,8 @@ env = DistributedEnv(
 
 env.init()
 
-env.record_membrane_current()
-env.record_spikes()
+env = env.record_membrane_current()
+env = env.record_spikes()
 env.apply_model_defaults()
 
 if env.is_root():
