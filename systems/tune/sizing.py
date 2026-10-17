@@ -56,9 +56,10 @@ def _layout(ranks_per_worker, ranks_per_node_max, workers_wanted, max_nodes):
     def search(reach):
         best = None
         for offset in _outward(reach):
-            workers = workers_wanted + offset
-            if workers < 1:
+            # have more workers than the batch so keep them utilized
+            if offset < 0:
                 continue
+            workers = workers_wanted + offset
             total = workers * ranks_per_worker + 1
             for nodes in _divisors(total):
                 if max_nodes is not None and nodes > max_nodes:
@@ -70,7 +71,7 @@ def _layout(ranks_per_worker, ranks_per_node_max, workers_wanted, max_nodes):
                     break  # smallest node count for this worker count
         return best[1] if best else None
 
-    # within 10% of the wanted worker count, then within 64 of it
+    # within 10% above the wanted worker count, then within 64 above it
     found = search(max(1, workers_wanted // 10)) or search(min(workers_wanted, 64))
     if found is not None:
         return found
