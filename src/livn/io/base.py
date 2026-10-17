@@ -11,6 +11,7 @@ p = payload value (distance, induction strength etc.)
 from __future__ import annotations
 
 import copy
+import dataclasses
 import os
 from collections import defaultdict
 from typing import TYPE_CHECKING
@@ -19,7 +20,14 @@ import gymnasium
 import numpy as _np
 
 from livn.backend import backend
-from livn.utils import Jsonable, is_traced
+from livn.utils import (
+    Jsonable,
+    class_path,
+    import_instance,
+    is_traced,
+    lnp,
+    with_fields,
+)
 
 if TYPE_CHECKING:
     from livn.stimulus import Stimulus
@@ -28,11 +36,67 @@ if TYPE_CHECKING:
 _USES_JAX = False
 
 if "ax" in backend():
+    import equinox as eqx
     import jax.numpy as np
 
     _USES_JAX = True
+    Module = eqx.Module
+
+    def static_field(default):
+        return eqx.field(default=default, static=True)
+
 else:
     import numpy as np
+
+    Module = object
+
+    def static_field(default):
+        return dataclasses.field(default=default)
+
+
+def _plain(value):
+    """A JSON-ready copy of a field value."""
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, (float, _np.floating)):
+        return float(value)
+    return _np.asarray(value, dtype=float).tolist()
+
+
+class Component(Module):
+    if not _USES_JAX:
+
+        def __init_subclass__(cls, **kwargs):
+            super().__init_subclass__(**kwargs)
+            dataclasses.dataclass(cls)
+
+    def serialize(self) -> dict:
+        document = {"cls": class_path(self)}
+        for f in dataclasses.fields(self):
+            document[f.name] = _plain(getattr(self, f.name))
+        return document
+
+    def set_params(self, params: dict):
+        known = {f.name for f in dataclasses.fields(self)}
+        unknown = sorted(k for k in params if k not in known)
+        if unknown:
+            raise KeyError(
+                f"{unknown} are not parameters of {type(self).__name__}; "
+                f"its parameters are {sorted(known)}"
+            )
+
+        def coerce(old, new):
+            if old is None or (
+                isinstance(old, (float, int)) and not isinstance(old, bool)
+            ):
+                return None if new is None else float(new)
+            if isinstance(old, bool):
+                return bool(new)
+            return lnp().asarray(new, dtype=getattr(old, "dtype", None))
+
+        return with_fields(
+            self, **{k: coerce(getattr(self, k), v) for k, v in params.items()}
+        )
 
 
 DEFAULT_MAX_STIMULUS_GB = 5.0
@@ -283,9 +347,7 @@ def _bound(device, medium, transfers):
 
 
 def _device(spec):
-    from livn.io._component import resolve_component
-
-    device = resolve_component(spec)
+    device = import_instance(spec)
     if not isinstance(device, IO) or isinstance(device, ComposedIO):
         raise TypeError(
             f"a device is a single IO such as MEA or LightArray, not {spec!r}"
@@ -297,7 +359,6 @@ class ComposedIO(IO):
     """A stimulating device and a recording device in one preparation."""
 
     def __init__(self, inputs=None, outputs=None, medium=None):
-        from livn.io._component import resolve_component
         from livn.io.medium import Medium
         from livn.io.transfer import Transfer
 
@@ -313,7 +374,7 @@ class ComposedIO(IO):
 
         stages = list(outputs) if isinstance(outputs, list | tuple) else [outputs]
         out_device = _device(stages[0])
-        transfers = tuple(resolve_component(t) for t in stages[1:])
+        transfers = tuple(import_instance(t) for t in stages[1:])
         for k, t in enumerate(transfers, start=1):
             if not isinstance(t, Transfer):
                 raise TypeError(
@@ -336,7 +397,7 @@ class ComposedIO(IO):
                 )
             medium = chosen[0] if chosen else Medium()
         else:
-            medium = resolve_component(medium)
+            medium = import_instance(medium)
 
         self._medium = medium
         self.transfers = transfers
@@ -412,10 +473,8 @@ class ComposedIO(IO):
             device.invalidate()
 
     def serialize(self) -> dict:
-        from livn.io._component import cls_path
-
         def document(device):
-            doc = {"cls": cls_path(device), **device.serialize()}
+            doc = {"cls": class_path(device), **device.serialize()}
             doc.pop("medium", None)
             return doc
 

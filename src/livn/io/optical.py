@@ -3,9 +3,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from livn.backend import backend
-from livn.io._component import resolve_component
 from livn.io.base import IO, _check_stimulus_size, coupled_sections
 from livn.io.medium import Medium
+from livn.utils import import_instance
 
 if TYPE_CHECKING:
     from livn.types import Array, Float, Int
@@ -40,7 +40,7 @@ class LightArray(IO):
         self.numerical_aperture = numerical_aperture
         self.fiber_radius_um = fiber_radius_um
         self.wavelength_nm = wavelength_nm
-        self.medium = Medium() if medium is None else resolve_component(medium)
+        self.medium = Medium() if medium is None else import_instance(medium)
         self._cell_induction = None
         self._stack = ()
 

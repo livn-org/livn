@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 import numpy as _np
 
 from livn.backend import backend
-from livn.io._component import resolve_component
 from livn.io.base import (
     IO,
     calculate_cell_stimulus,
@@ -19,6 +18,7 @@ from livn.io.base import (
 )
 from livn.io.medium import Medium
 from livn.io.transfer import Noise
+from livn.utils import import_instance
 
 if TYPE_CHECKING:
     from livn.stimulus import Stimulus
@@ -120,7 +120,7 @@ class MEA(IO):
         )
         self._attached_profile = None
         self.electrode_radius_um = float(electrode_radius_um)
-        self.medium = Medium() if medium is None else resolve_component(medium)
+        self.medium = Medium() if medium is None else import_instance(medium)
         self._stack = ()
 
         self.cell_measurement = None

@@ -6,19 +6,12 @@ from typing import Any, Protocol, runtime_checkable
 import numpy as _np
 
 from livn.backend import backend
-from livn.io._component import (
-    _USES_JAX,
-    Component,
-    _Base,
-    cls_path,
-    module,
-    resolve_component,
-    static_field,
-    with_fields,
-)
-from livn.utils import is_traced
+from livn.io.base import Component, Module, static_field
+from livn.utils import class_path, import_instance, is_traced, with_fields
 
-if "ax" in backend():
+_USES_JAX = "ax" in backend()
+
+if _USES_JAX:
     import jax
     import jax.numpy as np
 else:
@@ -75,7 +68,6 @@ class OpticalMedium(Protocol):
     def set_params(self, params: dict): ...
 
 
-@module
 class PointSource(Component):
     """Point current sources in a homogeneous conductor."""
 
@@ -112,7 +104,6 @@ class PointSource(Component):
         return np.matmul(gain, membrane_currents)
 
 
-@module
 class DispersivePointSource(PointSource):
     """A point source whose tissue also low-passes."""
 
@@ -183,7 +174,6 @@ class DispersivePointSource(PointSource):
         return np.stack([channel((g, s)) for g, s in zip(gain, sigma_ms, strict=True)])
 
 
-@module
 class KubelkaMunk(Component):
     """Light spreading from a fiber by cone divergence and scattering
     (Aravanis et al. 2007):
@@ -216,16 +206,16 @@ class KubelkaMunk(Component):
         return (NA**2 / (n_tissue**2 * denom)) * np.exp(-mu_s * dist) / (4 * np.pi)
 
 
-class Medium(_Base):
+class Medium(Module):
     electrical: ElectricalMedium | None
     optical: OpticalMedium | None
 
     def __init__(self, electrical=_DEFAULT, optical=_DEFAULT):
         self.electrical = (
-            PointSource() if electrical is _DEFAULT else resolve_component(electrical)
+            PointSource() if electrical is _DEFAULT else import_instance(electrical)
         )
         self.optical = (
-            KubelkaMunk() if optical is _DEFAULT else resolve_component(optical)
+            KubelkaMunk() if optical is _DEFAULT else import_instance(optical)
         )
 
     def require(self, modality: str):
@@ -239,7 +229,7 @@ class Medium(_Base):
 
     def serialize(self) -> dict:
         return {
-            "cls": cls_path(self),
+            "cls": class_path(self),
             "electrical": None
             if self.electrical is None
             else self.electrical.serialize(),

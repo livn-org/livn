@@ -5,16 +5,12 @@ from typing import Protocol, runtime_checkable
 import numpy as _np
 
 from livn.backend import backend
-from livn.io._component import (
-    _USES_JAX,
-    Component,
-    module,
-    plain,
-    static_field,
-    with_fields,
-)
+from livn.io.base import Component, _plain, static_field
+from livn.utils import class_path, with_fields
 
-if "ax" in backend():
+_USES_JAX = "ax" in backend()
+
+if _USES_JAX:
     import jax
     import jax.numpy as np
 else:
@@ -50,7 +46,6 @@ def _require_dt(dt, name):
     return float(dt)
 
 
-@module
 class ElectrodeRC(Component):
     """The electrode-electrolyte interface as a first-order RC low-pass."""
 
@@ -65,8 +60,8 @@ class ElectrodeRC(Component):
 
     def serialize(self) -> dict:
         return {
-            "cls": "livn.io.ElectrodeRC",
-            "r_seal_mohm": plain(np.exp(self.log_r_seal)),
+            "cls": class_path(self),
+            "r_seal_mohm": _plain(np.exp(self.log_r_seal)),
             "c_pf": float(self.c_pf),
         }
 
@@ -114,7 +109,6 @@ class ElectrodeRC(Component):
         )
 
 
-@module
 class FIR(Component):
     """A causal finite impulse response: `y[t] = sum_k taps[k] x[t - k]`."""
 
@@ -172,7 +166,6 @@ def _set_first(taps):
     return taps
 
 
-@module
 class Bandpass(Component):
     """A causal Butterworth band-pass."""
 
@@ -218,7 +211,6 @@ class Bandpass(Component):
         return y
 
 
-@module
 class Noise(Component):
     """Additive Gaussian noise of standard deviation `sigma_uv`."""
 

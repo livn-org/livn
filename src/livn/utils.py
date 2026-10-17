@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import collections
+import copy
 import functools
 import importlib
 import inspect
@@ -10,6 +11,7 @@ import pickle
 import shutil
 import sys
 import time
+from collections.abc import Mapping
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
@@ -21,7 +23,7 @@ if TYPE_CHECKING:
 
 sentinel = object()
 
-ObjSpec = tuple | list | str | None
+ObjSpec = tuple | list | str | Mapping | None
 
 
 def import_object_by_path(path):
@@ -43,6 +45,9 @@ def resolve_instance(spec: ObjSpec):
         ("pkg.Foo", {"a": 1}, {"a": 2})    -> Foo, {"a": 2}
         (("pkg.Foo", {"a": 1}), {"b": 2})  -> Foo, {"a": 1, "b": 2}
         (("pkg.Foo", {"a": 1}), {"a": 2})  -> Foo, {"a": 2}  (outer wins)
+        {"cls": "pkg.Foo", "a": 1}         -> Foo, {"a": 1}
+        {"cls": "pkg.Foo", "kwargs": {"a": 1}, "b": 2}
+                                           -> Foo, {"a": 1, "b": 2}
 
     Dicts are merged left-to-right so that the rightmost value of a key wins.
       The first element may itself be an ObjSpec in which case its kwargs
@@ -52,6 +57,14 @@ def resolve_instance(spec: ObjSpec):
         return None
     if isinstance(spec, str):
         return import_object_by_path(spec), {}
+    if isinstance(spec, Mapping):
+        document = dict(spec)
+        if "cls" not in document:
+            raise ValueError(f"'cls' missing: {spec!r}")
+        cls = import_object_by_path(document.pop("cls"))
+        kwargs = dict(document.pop("kwargs", None) or {})
+        kwargs.update(document)
+        return cls, kwargs
 
     head = spec[0]
     dicts = list(spec[1:])
@@ -69,12 +82,33 @@ def resolve_instance(spec: ObjSpec):
     return cls, merged
 
 
-def import_instance(spec: ObjSpec):
+def import_instance(spec):
+    if not isinstance(spec, ObjSpec):
+        return spec
     resolved = resolve_instance(spec)
     if resolved is None:
         return None
     cls, kwargs = resolved
     return cls(**kwargs)
+
+
+def class_path(obj) -> str:
+    """The shortest dotted path `import_object_by_path` resolves to `obj`'s class."""
+    cls = obj if isinstance(obj, type) else type(obj)
+    parts = cls.__module__.split(".")
+    for i in range(1, len(parts)):
+        package = sys.modules.get(".".join(parts[:i]))
+        if getattr(package, cls.__qualname__, None) is cls:
+            return f"{package.__name__}.{cls.__qualname__}"
+    return f"{cls.__module__}.{cls.__qualname__}"
+
+
+def with_fields(obj, **fields):
+    """A shallow copy of `obj` with `fields` replaced."""
+    new = copy.copy(obj)
+    for name, value in fields.items():
+        object.__setattr__(new, name, value)
+    return new
 
 
 def lnp() -> np:
