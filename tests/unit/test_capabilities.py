@@ -31,7 +31,9 @@ def test_every_capability_is_a_difference_between_backends():
     declared = {}
     for name in ("default", "neuron", "brian2", "diffrax", "native"):
         module = pytest.importorskip(
-            f"livn.backend.{name}", reason=f"{name} is not installed"
+            f"livn.backend.{name}",
+            reason=f"{name} is not installed",
+            exc_type=ImportError,
         )
         declared[name] = module.Env.capabilities
 
