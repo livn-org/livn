@@ -42,6 +42,7 @@ def feasibility_transformer(patience: int = 150):
             bound_margin: float = 0.01,
             min_iterations: int = 0,
             constraint_columns=None,
+            max_move: float | None = None,
         ) -> tuple[np.ndarray, dict]:
             import jax
             import jax.numpy as jnp
@@ -99,6 +100,10 @@ def feasibility_transformer(patience: int = 150):
             inset = float(bound_margin) * (hi - lo)
             lo_in, hi_in = jnp.asarray(lo + inset), jnp.asarray(hi - inset)
             x = jnp.asarray(X)
+            if max_move is not None:
+                span = float(max_move) * (hi - lo)
+                lo_in = jnp.maximum(lo_in, x - span)
+                hi_in = jnp.minimum(hi_in, x + span)
             m = jnp.zeros_like(x)
             v = jnp.zeros_like(x)
             b1, b2, eps = 0.9, 0.999, 1e-7
@@ -148,7 +153,15 @@ class Projecting:
     MIN_STEPS = 200
 
     def __init__(
-        self, optimizer, surrogate, seen, targets, iterations, after, liveness=()
+        self,
+        optimizer,
+        surrogate,
+        seen,
+        targets,
+        iterations,
+        after,
+        liveness=(),
+        max_move: float | None = 0.1,
     ):
         self._wrapped = optimizer
         self._wrapped.x_distance_metrics = None
@@ -158,6 +171,7 @@ class Projecting:
         self._iterations = int(iterations)
         self._after = int(after)
         self._liveness = tuple(int(c) for c in liveness)
+        self._max_move = None if max_move is None else float(max_move)
         self._generations = 0
         self._cache: tuple[bytes, tuple] | None = None
 
@@ -176,8 +190,9 @@ class Projecting:
             from scipy.spatial.distance import cdist
 
             move |= cdist(parameters, self._seen).min(axis=1) <= 1e-12
-        dead = self.predicted_dead(parameters)
+        dead = self.predicted_dead(parameters) & move
         rest = move & ~dead
+        original = parameters.copy()
         info = {}
         if rest.any():
             moved, info = self._surrogate.make_feasible(
@@ -185,28 +200,40 @@ class Projecting:
                 targets=self._targets,
                 max_iterations=self._iterations,
                 min_iterations=self.MIN_STEPS,
+                max_move=self._max_move,
             )
             parameters[rest] = moved
         dead_info = {}
         if dead.any():
             moved, dead_info = self._surrogate.make_feasible(
                 parameters[dead],
-                targets="constraint",
+                targets=self._targets,
                 max_iterations=self._iterations,
                 min_iterations=self.MIN_STEPS,
                 constraint_columns=self._liveness,
+                max_move=self._max_move,
             )
             parameters[dead] = moved
-        move = rest | dead
+        reverted = np.zeros(len(parameters), dtype=bool)
+        if move.any():
+            before = np.asarray(self._surrogate.evaluate(original[move]))
+            after = np.asarray(self._surrogate.evaluate(parameters[move]))
+            worse = np.all(after >= before, axis=1) & np.any(after > before, axis=1)
+            idx = np.flatnonzero(move)[worse]
+            parameters[idx] = original[idx]
+            reverted[idx] = True
         still = self.predicted_dead(parameters)
+        displacement = np.linalg.norm(parameters - original, axis=1)
         logger.info(
-            "feasibility projection: %d of %d moved (%d predicted dead, %d elites); "
-            "rest %s steps, loss %.4g -> %.4g; dead %s steps, loss %.4g -> %.4g; "
-            "predicted dead after %d",
-            int(move.sum()),
+            "feasibility projection: %d of %d moved (%d predicted dead, %d elites "
+            "held, %d reverted as predicted worse); rest %s steps, loss %.4g -> "
+            "%.4g; dead %s steps, loss %.4g -> %.4g; predicted dead after %d; "
+            "median displacement %.3g",
+            int((move & ~reverted).sum()),
             len(parameters),
             int(dead.sum()),
-            int(dead[: len(parameters) // 2].sum()),
+            int((~move).sum()),
+            int(reverted.sum()),
             info.get("steps"),
             info.get("loss_start", float("nan")),
             info.get("loss_end", float("nan")),
@@ -214,6 +241,7 @@ class Projecting:
             dead_info.get("loss_start", float("nan")),
             dead_info.get("loss_end", float("nan")),
             int(still.sum()),
+            float(np.median(displacement[move])) if move.any() else 0.0,
         )
         predicted = np.asarray(self._surrogate.evaluate(parameters))
         result = (
@@ -230,7 +258,7 @@ class Projecting:
             return np.zeros(len(parameters), dtype=bool)
         out = model.predict(np.asarray(parameters, dtype=np.float32), verbose=0)
         probabilities = np.asarray(out["constraints"] if isinstance(out, dict) else out)
-        return np.prod(probabilities[:, columns], axis=1) < 0.5
+        return (probabilities[:, columns] < 0.5).any(axis=1)
 
     def get_population_strategy(self):
         return self.population_objectives

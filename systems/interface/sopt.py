@@ -169,6 +169,7 @@ def surrogate_training(
     feasibility_iterations: int = 1000,
     feasibility_after: int = 10,
     feasibility_liveness: tuple = (),
+    feasibility_max_move: float | None = 0.1,
     #
     max_epochs: int = 500,
     patience: int = 150,
@@ -205,10 +206,11 @@ def surrogate_training(
             )
             logger.info(
                 "feasibility projection on: targets %r, after %d generations, "
-                "liveness columns %s",
+                "liveness columns %s, max move %s box units",
                 feasibility_targets,
                 feasibility_after,
                 list(liveness),
+                feasibility_max_move,
             )
 
             def build(*args, **kw):
@@ -220,6 +222,7 @@ def surrogate_training(
                     feasibility_iterations,
                     feasibility_after,
                     liveness,
+                    max_move=feasibility_max_move,
                 )
 
             return build
