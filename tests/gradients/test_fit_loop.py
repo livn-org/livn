@@ -11,6 +11,7 @@ import jax
 import jax.numpy as jnp
 import optax
 
+from livn.io.mea import _USES_JAX
 from livn.optimization import losses
 from livn.optimization.fit import fit, select
 from livn.optimization.train import (
@@ -591,6 +592,7 @@ def test_an_iterable_of_batches_is_consumed_one_per_step():
     assert seen == [0.0, 1.0, 2.0, 3.0]
 
 
+@pytest.mark.skipif(not _USES_JAX, reason="jax backend only")
 def test_default_params_train_python_float_leaves_of_a_medium():
     from livn.io import MEA
 

@@ -8,6 +8,7 @@ import jax.numpy as jnp
 
 from livn.env import Env
 from livn.io import MEA
+from livn.io.mea import _USES_JAX
 from livn.models.rcsd import ReducedCalciumSomaDendrite
 from livn.optimization.trainable import (
     CartesianParameterization,
@@ -21,6 +22,7 @@ from livn.stimulus import Stimulus
 N, DT, DURATION = 3, 0.1, 4.0
 
 needs_diffrax_axon = pytest.mark.skip(reason="the diffrax motoneuron has no axon")
+needs_jax_backend = pytest.mark.skipif(not _USES_JAX, reason="needs a jax backend")
 
 
 def _parameterization(cls=LogRadialParameterization):
@@ -153,6 +155,7 @@ def test_orientation_is_normalised_at_use_time():
     np.testing.assert_allclose(jnp.linalg.norm(unit, axis=-1), 1.0, atol=1e-5)
 
 
+@needs_jax_backend
 def test_traced_coordinates_agree_with_concrete_ones():
     model = ReducedCalciumSomaDendrite(
         input_mode="current", dendrite_orientation="random"
@@ -181,6 +184,7 @@ def test_traced_coordinates_agree_with_concrete_ones():
         )(system)
 
 
+@needs_jax_backend
 def test_an_env_keeps_its_treedef_for_a_mask_of_its_leaves_and_for_another_env_of_one_seed():
     system = TrainableSystem(_parameterization(), n_neurons=N)
     model, io = ReducedCalciumSomaDendrite(input_mode="current"), _io()

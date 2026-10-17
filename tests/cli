@@ -78,10 +78,10 @@ VERIFY_TIERS=(unit contract concurrency gradients)
 backend_env() {
   case "$1" in
     diffrax) echo "JAX_PLATFORMS=cpu LIVN_BACKEND=diffrax" ;;
-    neuron)  echo "LIVN_BACKEND=neuron" ;;
-    brian2)  echo "LIVN_BACKEND=brian2" ;;
-    native)  echo "LIVN_BACKEND=native" ;;
-    none|"") echo "LIVN_BACKEND=" ;;
+    neuron)  echo "JAX_PLATFORMS=cpu LIVN_BACKEND=neuron" ;;
+    brian2)  echo "JAX_PLATFORMS=cpu LIVN_BACKEND=brian2" ;;
+    native)  echo "JAX_PLATFORMS=cpu LIVN_BACKEND=native" ;;
+    none|"") echo "JAX_PLATFORMS=cpu LIVN_BACKEND=" ;;
     *) echo "Unknown backend: $1" >&2; exit 1 ;;
   esac
 }

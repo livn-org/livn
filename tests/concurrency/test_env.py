@@ -31,11 +31,8 @@ def _create_env(comm, subworld):
     )
 
     env.init()
-    env.record_spikes()
-    env.record_voltage()
-    env.record_membrane_current()
 
-    return env
+    return env.record_spikes().record_voltage().record_membrane_current()
 
 
 def _concat_optional(a, b):

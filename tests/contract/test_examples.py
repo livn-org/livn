@@ -50,4 +50,5 @@ def test_differentiable_simulation():
 def test_fitting():
     from examples import fitting
 
-    assert fitting.history["loss"][-1] < fitting.history["loss"][0]
+    history = fitting.result.history
+    assert history["loss"][-1] < history["loss"][0]
