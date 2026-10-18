@@ -100,7 +100,7 @@ def test_mean_firing_rate_integration(env_response):
     result = mfr(env_response, env)
 
     assert result is not None
-    assert result["rate_hz"] >= 0
+    assert result["rate"] >= 0
     assert result["total_spikes"] >= 0
 
 
@@ -127,7 +127,7 @@ def test_stability_integration(env_response):
     if backend() == "brian2":
         env.init()
 
-    stability = Stability(duration=250, tail_window=100)
+    stability = Stability(duration=250, tail=100)
     result = stability(env_response, env)
 
     assert result is not None
@@ -170,7 +170,7 @@ def test_pipeline_integration(env_response):
     result = pipeline(env_response, env)
 
     assert result is not None
-    assert "rate_hz" in result
+    assert "rate" in result
 
 
 @pytest.mark.skipif(

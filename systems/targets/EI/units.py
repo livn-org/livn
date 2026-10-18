@@ -32,9 +32,9 @@ class UnitTargets(UnitBlock):
     observation: str
     recording: str
     sort: str
-    window_ms: float
+    window: float
     n_channels: int
-    noise_uv: float | None = None
+    noise_uV: float | None = None
     scales: dict[str, UnitBlock] = Field(default_factory=dict)
     source: str = ""
 

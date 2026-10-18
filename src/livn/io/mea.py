@@ -36,18 +36,18 @@ else:
 
 
 def _checked_profile(profile: Mapping) -> dict:
-    distance = _np.asarray(profile["distance_um"], dtype=float)
-    trough = _np.asarray(profile["trough_uv"], dtype=float)
+    distance = _np.asarray(profile["distance"], dtype=float)
+    trough = _np.asarray(profile["trough_uV"], dtype=float)
     if (
         distance.ndim != 1
         or distance.shape != trough.shape
         or (_np.diff(distance) <= 0).any()
     ):
         raise ValueError(
-            "a spike profile needs increasing `distance_um` and a `trough_uv` "
+            "a spike profile needs increasing `distance` and a `trough_uV` "
             "of the same length"
         )
-    return {"distance_um": distance.tolist(), "trough_uv": trough.tolist()}
+    return {"distance": distance.tolist(), "trough_uV": trough.tolist()}
 
 
 class MEA(IO):
@@ -71,19 +71,19 @@ class MEA(IO):
         records every unit inside `output_radius`.
     threshold_sigma
         Physical detection, used instead of `detection_threshold` when the
-        composition's stack has `Noise` stages (`detection_noise_uv > 0`): a cell
+        composition's stack has `Noise` stages (`detection_noise_uV > 0`): a cell
         is on a channel when its spike there reaches `threshold_sigma` times the
         stack's noise (the variances of its `Noise` stages summed). A bare MEA
         has no stack and so no physical detection.
-    electrode_radius_um
+    electrode_radius
         The electrode's radius: it sets the field the electrode imposes in
         stimulation (the medium supplies the height and the conductivity).
     medium
         The `Medium` (or its document); the electrical part carries recording
         and stimulation. A `ComposedIO` replaces it with the one it owns.
     spike_profile
-        The spike's trough against distance (`{"distance_um", "trough_uv"}`).
-    dead_time_ms
+        The spike's trough against distance (`{"distance", "trough_uV"}`).
+    dead_time
         A detector's refractory period per channel: spikes on one channel
         closer than this to the previous kept one are dropped
         (`apply_dead_time`). 0 keeps every spike.
@@ -100,11 +100,11 @@ class MEA(IO):
         electrode_coordinates: Float[Array, "n_electrodes ixyz=4"] | None = None,
         input_radius=250,
         output_radius=250,
-        electrode_radius_um: float = 15.0,
+        electrode_radius: float = 15.0,
         medium=None,
         detection_threshold: float = 0.0,
         threshold_sigma: float = 5.0,
-        dead_time_ms: float = 0.0,
+        dead_time: float = 0.0,
         spike_profile: Mapping | None = None,
     ):
         if electrode_coordinates is None:
@@ -114,12 +114,12 @@ class MEA(IO):
         self.output_radius = output_radius
         self.detection_threshold = float(detection_threshold)
         self.threshold_sigma = float(threshold_sigma)
-        self.dead_time_ms = float(dead_time_ms)
+        self.dead_time = float(dead_time)
         self.spike_profile = (
             None if spike_profile is None else _checked_profile(spike_profile)
         )
         self._attached_profile = None
-        self.electrode_radius_um = float(electrode_radius_um)
+        self.electrode_radius = float(electrode_radius)
         self.medium = Medium() if medium is None else import_instance(medium)
         self._stack = ()
 
@@ -139,9 +139,9 @@ class MEA(IO):
         return bool(self.electrical.needs_dt)
 
     @property
-    def detection_noise_uv(self) -> float:
+    def detection_noise_uV(self) -> float:
         variance = sum(
-            float(t.sigma_uv) ** 2 for t in self._stack if isinstance(t, Noise)
+            float(t.sigma_uV) ** 2 for t in self._stack if isinstance(t, Noise)
         )
         return variance**0.5
 
@@ -162,10 +162,10 @@ class MEA(IO):
             "electrode_coordinates": _np.asarray(self.electrode_coordinates).tolist(),
             "input_radius": self.input_radius,
             "output_radius": self.output_radius,
-            "electrode_radius_um": self.electrode_radius_um,
+            "electrode_radius": self.electrode_radius,
             "detection_threshold": self.detection_threshold,
             "threshold_sigma": self.threshold_sigma,
-            "dead_time_ms": self.dead_time_ms,
+            "dead_time": self.dead_time,
             **(
                 {"spike_profile": self.spike_profile}
                 if self.spike_profile is not None
@@ -177,7 +177,7 @@ class MEA(IO):
     @property
     def physical_detection(self) -> bool:
         """Whether cells are detected against the stack's channel noise."""
-        return self.detection_noise_uv > 0.0
+        return self.detection_noise_uV > 0.0
 
     @property
     def profile(self) -> dict | None:
@@ -220,8 +220,8 @@ class MEA(IO):
                 )
             trough = _np.interp(
                 distance,
-                profile["distance_um"],
-                profile["trough_uv"],
+                profile["distance"],
+                profile["trough_uV"],
                 right=0.0,
             )
             return scale * trough
@@ -229,14 +229,14 @@ class MEA(IO):
 
     def apply_dead_time(self, per_channel: Mapping) -> dict:
         """Per-channel spike times with the detector's dead time applied."""
-        if self.dead_time_ms <= 0.0:
+        if self.dead_time <= 0.0:
             return dict(per_channel)
         out = {}
         for channel, times in per_channel.items():
             times = _np.sort(_np.asarray(times, dtype=float))
             kept, last = [], -_np.inf
             for t in times:
-                if t - last >= self.dead_time_ms:
+                if t - last >= self.dead_time:
                     kept.append(t)
                     last = t
             out[channel] = _np.asarray(kept, dtype=float)
@@ -323,12 +323,12 @@ class MEA(IO):
     ) -> Float[Array, "n cip=3"]:
         """The measurement rows whose signal reaches the detection threshold.
 
-        `threshold_sigma * detection_noise_uv` with physical detection, `detection_threshold`
+        `threshold_sigma * detection_noise_uV` with physical detection, `detection_threshold`
         otherwise.
         """
         if self.physical_detection:
             rows = _np.asarray(cell_measurement)
-            limit = self.threshold_sigma * self.detection_noise_uv
+            limit = self.threshold_sigma * self.detection_noise_uV
             return rows[self.signal(rows, amplitude) >= limit]
         if self.detection_threshold <= 0.0 and amplitude is None:
             return cell_measurement
@@ -393,7 +393,7 @@ class MEA(IO):
     def potential_recording(
         self,
         distances: Float[Array, "n_distances cip=3"],
-        membrane_currents: Float[Array, "n_neurons timestep"],
+        membrane_currents_uA: Float[Array, "n_neurons timestep"],
         dt: float | None = None,
         key=None,
     ) -> Float[Array, "n_channels timestep"]:
@@ -405,7 +405,7 @@ class MEA(IO):
 
         Arguments
         - distances: as returned by `MEA.distances(neuron_coordinates)`
-        - membrane_currents: in uA, shape [n_neurons, timestep]
+        - membrane_currents_uA: in uA, shape [n_neurons, timestep]
         - dt: sampling interval (ms); needed only by a medium that filters in time
         - key: unused (a bare MEA has no stochastic stage)
 
@@ -415,9 +415,9 @@ class MEA(IO):
         return self.electrical.project(
             gain,
             self._pair_distances(distances),
-            membrane_currents,
+            membrane_currents_uA,
             dt,
-            output_radius_um=float(self.output_radius),
+            output_radius=float(self.output_radius),
         )
 
     def distances(
@@ -434,7 +434,7 @@ class MEA(IO):
     ) -> Float[Array, "n_amplitudes cip=3"]:
         return with_amplitude(
             distances,
-            self.electrical.field_gain(distances[:, -1], self.electrode_radius_um),
+            self.electrical.field_gain(distances[:, -1], self.electrode_radius),
         )
 
     def reach(
@@ -474,7 +474,7 @@ class MEA(IO):
         return pd.DataFrame(
             {
                 "gid": ch[:, 1].astype(int),
-                "distance_um": ch[:, 2],
+                "distance": ch[:, 2],
                 "gain": ch_gain,
                 "contribution_pct": contribution_pct,
             }
@@ -488,12 +488,12 @@ if _USES_JAX:
             "electrode_coordinates": mea.electrode_coordinates,
             "input_radius": mea.input_radius,
             "output_radius": mea.output_radius,
-            "electrode_radius_um": mea.electrode_radius_um,
+            "electrode_radius": mea.electrode_radius,
             "cell_measurement": mea.cell_measurement,
             "_cell_induction": mea._cell_induction,
             "detection_threshold": mea.detection_threshold,
             "threshold_sigma": mea.threshold_sigma,
-            "dead_time_ms": mea.dead_time_ms,
+            "dead_time": mea.dead_time,
             "spike_profile": mea.spike_profile,
             "_attached_profile": mea._attached_profile,
             "_stack": mea._stack,

@@ -22,7 +22,7 @@ AMPLITUDE = 0.05
 
 def _env(n):
     model = GLIF.leaky_integrate_and_fire(
-        mechanism="hard", config=SolverConfig(max_rate=1.0)
+        mechanism="hard", config=SolverConfig(max_rate_per_ms=1.0)
     )
     env = Env(n, model=model)
     env.init()

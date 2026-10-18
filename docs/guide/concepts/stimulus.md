@@ -61,7 +61,7 @@ The result carries a column only for the sections the inputs actually reach (via
 
 A policy produces a `[timestep, n_channels]` array of per-channel commands (the input-side counterpart to a `Decoding`).
 
-A policy's `amplitude` is a commanded amplitude in channel space, and carries no physical unit. What the number means is the IO layer's business so the same policy can be used for different IO layers.
+A policy's `amplitude_uA` is the commanded electrode current in µA, the unit the MEA stimulation gain takes.
 
 ```python
 from livn.policy import BiphasicPulsePolicy
@@ -69,7 +69,7 @@ from livn.policy import BiphasicPulsePolicy
 pulses = BiphasicPulsePolicy(
     n_channels=16,
     channels=[5, 6],          # channels to stimulate
-    amplitude=1.5,            # commanded amplitude, see below
+    amplitude_uA=1.5,         # µA
     phase_duration=0.2,       # ms per phase
     interphase_gap=0.05,      # ms between phases
     pulse_times=[0.0, 50.0],  # onset times
@@ -80,7 +80,7 @@ pulses = BiphasicPulsePolicy(
 env.run(100.0, stimulus=pulses)
 ```
 
-A run too short to deliver the whole policy is refused rather than truncated. Use `start_ms` to offset it within the run.
+A run too short to deliver the whole policy is refused rather than truncated. Use `start` to offset it within the run.
 
 ::: tip Let the env allocate
 A per-cell stimulus is dense in both time and cells, driving memory usage. For example, a pulse train spanning a long run is almost entirely zeros but on a 2600-cell graph running 117 s run at `dt=0.1`, the dense stimulus would amount to ~22 GB!
@@ -154,7 +154,7 @@ stim = Stimulus.from_irradiance(
 
 ## Stimulus types
 
-Each stimulus carries an `input_mode` that tells the backend what physical quantity the array represents:
+Each stimulus carries an `input_mode` that tells the backend what physical quantity the array represents (see [Units](/guide/concepts/units)):
 
 | Type | Factory | Units | Description |
 |------|---------|-------|-------------|

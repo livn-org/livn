@@ -79,16 +79,16 @@ class Policy(BaseModel, Jsonable):
         )
 
     @property
-    def extent_ms(self) -> float | None:
+    def extent(self) -> float | None:
         """How long the command runs, or `None` when it does not say.
 
         Used to refuse a run too short to deliver it."""
         return None
 
-    def window(self, start_ms: float, stop_ms: float, dt: float) -> Array:
+    def window(self, start: float, stop: float, dt: float) -> Array:
         full = self.render()
-        lo = max(0, round(start_ms / dt))
-        hi = max(lo, round(stop_ms / dt))
+        lo = max(0, round(start / dt))
+        hi = max(lo, round(stop / dt))
         if lo >= len(full):
             return _zeros(max(0, hi - lo), full.shape[-1])
         window = full[lo:hi]
@@ -164,7 +164,7 @@ class BiphasicPulsePolicy(ElectrodePolicy):
     channels: list[int]
     dt: float = Field(default=0.05, gt=0)
 
-    amplitude: float = 1.5
+    amplitude_uA: float = 1.5
     phase_duration: float = Field(default=0.2, gt=0)
     """Duration of each phase, in ms (default 200 us)."""
 
@@ -194,7 +194,7 @@ class BiphasicPulsePolicy(ElectrodePolicy):
 
         phase_steps = int(self.phase_duration / dt)
         gap_steps = int(self.interphase_gap / dt)
-        first = -self.amplitude if self.cathodic_first else self.amplitude
+        first = -self.amplitude_uA if self.cathodic_first else self.amplitude_uA
 
         for onset in pulse_times:
             start = int(onset / dt)
@@ -216,7 +216,7 @@ class MonophasicPulsePolicy(ElectrodePolicy):
     n_channels: int = Field(gt=0)
     channels: list[int]
 
-    amplitude: float | list[float] = 1.5
+    amplitude_uA: float | list[float] = 1.5
     pulse_width: float = Field(default=1.0, gt=0)
     """Duration of each pulse, in ms."""
 
@@ -232,11 +232,11 @@ class MonophasicPulsePolicy(ElectrodePolicy):
 
     @model_validator(mode="after")
     def _amplitude_matches_the_channels(self):
-        if isinstance(self.amplitude, list) and len(self.amplitude) != len(
+        if isinstance(self.amplitude_uA, list) and len(self.amplitude_uA) != len(
             self.channels
         ):
             raise ValueError(
-                f"{len(self.amplitude)} amplitudes for {len(self.channels)} "
+                f"{len(self.amplitude_uA)} amplitudes for {len(self.channels)} "
                 "channels; a per-channel amplitude names one value per channel, "
                 "in the same order"
             )
@@ -248,7 +248,7 @@ class MonophasicPulsePolicy(ElectrodePolicy):
         dt = self.dt
 
         amplitudes = _np.broadcast_to(
-            _np.asarray(self.amplitude, dtype=_np.float32), channels.shape
+            _np.asarray(self.amplitude_uA, dtype=_np.float32), channels.shape
         )
 
         n_steps = int(_np.ceil((pulse_times[-1] + self.pulse_width) / dt))
@@ -270,22 +270,22 @@ class MonophasicPulsePolicy(ElectrodePolicy):
 class PulseSweepPolicy(ElectrodePolicy):
     """One pulse per trial, cycling through a set of amplitudes."""
 
-    amplitudes: tuple[float | tuple[float, ...], ...] = (300.0, 400.0, 500.0, 600.0)
+    amplitudes_uA: tuple[float | tuple[float, ...], ...] = (300.0, 400.0, 500.0, 600.0)
     """The amplitudes to sweep, in the order they are first delivered."""
 
     repeats: int = Field(default=8, ge=1)
     """Trials per amplitude."""
 
-    trial_ms: float = Field(default=2000.0, gt=0)
+    trial: float = Field(default=2000.0, gt=0)
     """Spacing between pulses.
 
     Has to leave the network back at steady state before the next pulse, since
     a response is measured against the baseline immediately before it."""
 
-    onset_ms: float = Field(default=1000.0, ge=0)
+    onset: float = Field(default=1000.0, ge=0)
     """Where the pulse falls inside its trial, and so how much precedes it."""
 
-    pulse_ms: float = Field(default=0.2, gt=0)
+    pulse: float = Field(default=0.2, gt=0)
     """Total width of the biphasic pulse, half to each phase."""
 
     order: tuple[int, ...] = ()
@@ -294,15 +294,15 @@ class PulseSweepPolicy(ElectrodePolicy):
     A fixed pseudorandom sequence keeps adjacent trials from sharing an
     amplitude; cycling achieves the same and is reproducible."""
 
-    start_ms: float = Field(default=0.0, ge=0)
+    start: float = Field(default=0.0, ge=0)
     """Where the sweep begins, so a run can hold a free-running stretch first."""
 
-    total_ms: float | None = Field(default=None, gt=0)
+    total: float | None = Field(default=None, gt=0)
     """Length of the produced array. `None` ends it with the last trial."""
 
     dt: float = Field(default=0.1, gt=0)
 
-    @field_validator("amplitudes")
+    @field_validator("amplitudes_uA")
     @classmethod
     def _at_least_one_amplitude(cls, v: tuple) -> tuple:
         if not v:
@@ -311,7 +311,7 @@ class PulseSweepPolicy(ElectrodePolicy):
 
     @model_validator(mode="after")
     def _every_pattern_names_one_value_per_channel(self):
-        widths = {len(a) for a in self.amplitudes if isinstance(a, tuple)}
+        widths = {len(a) for a in self.amplitudes_uA if isinstance(a, tuple)}
         if len(widths) > 1:
             raise ValueError(f"the sweep mixes patterns of {sorted(widths)} channels")
         if widths and self.channels:
@@ -324,105 +324,101 @@ class PulseSweepPolicy(ElectrodePolicy):
 
     @model_validator(mode="after")
     def _the_pulse_fits_its_trial(self):
-        if self.onset_ms >= self.trial_ms:
+        if self.onset >= self.trial:
             raise ValueError(
-                f"the pulse falls at {self.onset_ms:g} ms of a {self.trial_ms:g} ms "
+                f"the pulse falls at {self.onset:g} ms of a {self.trial:g} ms "
                 "trial, which is outside it"
             )
-        if self.onset_ms + self.pulse_ms > self.trial_ms:
+        if self.onset + self.pulse > self.trial:
             raise ValueError("the pulse does not fit inside its trial")
         if self.order and len(self.order) != self.n_trials:
             raise ValueError(
                 f"order names {len(self.order)} trials but the sweep runs "
                 f"{self.n_trials}"
             )
-        if self.order and max(self.order) >= len(self.amplitudes):
+        if self.order and max(self.order) >= len(self.amplitudes_uA):
             raise ValueError(
                 f"order names amplitude {max(self.order)} but only "
-                f"{len(self.amplitudes)} were given"
+                f"{len(self.amplitudes_uA)} were given"
             )
         return self
 
     @property
     def n_trials(self) -> int:
-        return len(self.amplitudes) * self.repeats
+        return len(self.amplitudes_uA) * self.repeats
 
     @property
-    def duration_ms(self) -> float:
-        """How long the sweep itself lasts, excluding `start_ms`."""
-        return self.n_trials * self.trial_ms
+    def duration(self) -> float:
+        """How long the sweep itself lasts, excluding `start`."""
+        return self.n_trials * self.trial
 
     @property
-    def extent_ms(self) -> float:
-        return self.start_ms + self.duration_ms
+    def extent(self) -> float:
+        return self.start + self.duration
 
     def schedule(
-        self, start_ms: float | None = None
+        self, start: float | None = None
     ) -> list[tuple[float, float | tuple[float, ...]]]:
         """`(pulse time, amplitude)` per trial, in order.
 
-        Times are absolute, so `start_ms` is where the stimulated segment
+        Times are absolute, so `start` is where the stimulated segment
         begins after whatever free-running stretch precedes it.
         """
-        start = self.start_ms if start_ms is None else start_ms
+        start = self.start if start is None else start
         order = self.order or tuple(
-            i % len(self.amplitudes) for i in range(self.n_trials)
+            i % len(self.amplitudes_uA) for i in range(self.n_trials)
         )
         return [
             (
-                start + trial * self.trial_ms + self.onset_ms,
-                self.amplitudes[index],
+                start + trial * self.trial + self.onset,
+                self.amplitudes_uA[index],
             )
             for trial, index in enumerate(order)
         ]
 
-    def window(self, start_ms: float, stop_ms: float, dt: float) -> Array:
-        return self._render(start_ms, stop_ms, dt, strict=False)
+    def window(self, start: float, stop: float, dt: float) -> Array:
+        return self._render(start, stop, dt, strict=False)
 
     def __call__(self, observation: Any = None) -> Array:
-        total = (
-            self.start_ms + self.duration_ms if self.total_ms is None else self.total_ms
-        )
+        total = self.start + self.duration if self.total is None else self.total
         return self._render(0.0, total, self.dt, strict=True)
 
-    def _render(
-        self, start_ms: float, stop_ms: float, dt: float, strict: bool
-    ) -> Array:
+    def _render(self, start: float, stop: float, dt: float, strict: bool) -> Array:
         n_channels, channels = self._resolved()
 
-        n_steps = max(0, round((stop_ms - start_ms) / dt))
+        n_steps = max(0, round((stop - start) / dt))
         inputs = _zeros(n_steps, n_channels)
 
-        width = max(1, round(self.pulse_ms / dt))
+        width = max(1, round(self.pulse / dt))
         for at, amplitude in self.schedule():
-            at = at - start_ms
-            if at + self.pulse_ms <= 0 or at >= stop_ms - start_ms:
+            at = at - start
+            if at + self.pulse <= 0 or at >= stop - start:
                 if strict:
                     raise ValueError(
-                        f"a pulse at {at + start_ms:g} ms does not fit in a "
-                        f"{stop_ms - start_ms:g} ms run"
+                        f"a pulse at {at + start:g} ms does not fit in a "
+                        f"{stop - start:g} ms run"
                     )
                 continue
-            start = round(at / dt)
-            end = start + width
-            if end > n_steps:
+            first = round(at / dt)
+            last = first + width
+            if last > n_steps:
                 if not strict:
-                    end = n_steps
-                    if start >= end:
+                    last = n_steps
+                    if first >= last:
                         continue
                 else:
                     raise ValueError(
-                        f"a pulse at {at + start_ms:g} ms does not fit in a "
-                        f"{stop_ms - start_ms:g} ms run"
+                        f"a pulse at {at + start:g} ms does not fit in a "
+                        f"{stop - start:g} ms run"
                     )
-            half = start + max(1, width // 2)
+            half = first + max(1, width // 2)
             values = _np.broadcast_to(
                 _np.asarray(amplitude, dtype=_np.float64), channels.shape
             )
             for channel, value in zip(channels, values, strict=False):
                 if value == 0.0:
                     continue
-                inputs = _write(inputs, slice(start, half), channel, -float(value))
-                inputs = _write(inputs, slice(half, end), channel, float(value))
+                inputs = _write(inputs, slice(first, half), channel, -float(value))
+                inputs = _write(inputs, slice(half, last), channel, float(value))
 
         return inputs

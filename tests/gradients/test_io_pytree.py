@@ -16,17 +16,17 @@ def test_the_mea_pytree_round_trip_keeps_the_detector():
         [[0, 0.0, 0.0, 0.0], [1, 100.0, 0.0, 0.0]],
         detection_threshold=0.2,
         threshold_sigma=4.0,
-        dead_time_ms=1.5,
-        spike_profile={"distance_um": [0, 50, 100], "trough_uv": [-80, -20, -5]},
+        dead_time=1.5,
+        spike_profile={"distance": [0, 50, 100], "trough_uV": [-80, -20, -5]},
     )
-    mea.attach_spike_profile({"distance_um": [0, 10], "trough_uv": [-50, -5]})
+    mea.attach_spike_profile({"distance": [0, 10], "trough_uV": [-50, -5]})
 
     out = jax.tree_util.tree_map(lambda x: x, mea)
 
     for name in (
         "detection_threshold",
         "threshold_sigma",
-        "dead_time_ms",
+        "dead_time",
         "spike_profile",
         "_attached_profile",
         "input_radius",

@@ -11,7 +11,7 @@ pytestmark = pytest.mark.needs("plasticity")
 _is_neuron = backend() == "neuron"
 _has_point_processes = backend() in ("neuron", "native")
 
-LEARNING_MS = 200
+LEARNING = 200
 
 
 def _plasticity_config():
@@ -224,7 +224,7 @@ def test_weights_move_when_plasticity_is_on_and_not_when_it_is_off():
 
             before = env.get_weights()
             env.set_noise(_noise_config())
-            env.run(LEARNING_MS)
+            env.run(LEARNING)
             after = env.get_weights()
 
             shared = set(before) & set(after)
@@ -270,7 +270,7 @@ def test_recording_weights_samples_the_whole_run(learning_env):
 
 def test_normalising_holds_each_neuron_s_total_and_its_ratios(learning_env):
     learning_env.set_noise(_noise_config())
-    learning_env.run(LEARNING_MS)
+    learning_env.run(LEARNING)
 
     before = learning_env.get_weights()
     learning_env.normalize_weights()
@@ -311,7 +311,7 @@ def test_normalising_to_a_target_respects_the_bounds():
                     synapses.w_max[:] = 5.0
 
         env.set_noise(_noise_config())
-        env.run(LEARNING_MS)
+        env.run(LEARNING)
         env.normalize_weights(target=3.0)
 
         for neuron, weights in _by_post_neuron(env.get_weights()).items():

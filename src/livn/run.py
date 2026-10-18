@@ -432,6 +432,9 @@ class Run:
         t0: Absolute simulation time at which the window starts
         duration: Length of the window in ms
         potential: The channel-space signal in µV, one row per channel.
+
+    A recorded ``current`` channel holds membrane currents in µA, which is what
+    ``potential_recording`` takes as ``membrane_currents_uA``.
     """
 
     channels: Mapping[str, Any] = field(default_factory=dict)

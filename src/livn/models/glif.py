@@ -1348,7 +1348,7 @@ class GlifNeuronJAX(eqx.Module):
     ):
         if config is None:
             config = SolverConfig(
-                max_segment_span=math.inf, points_per_segment=50, max_rate=1.0
+                max_segment_span=math.inf, points_per_segment=50, max_rate_per_ms=1.0
             )
         self.neurons = GlifNeurons(
             1, params, level=level, config=config, current_scale=1.0, **kwargs
@@ -1365,15 +1365,15 @@ class GlifNeuronJAX(eqx.Module):
     def __repr__(self):
         return f"GlifNeuronJAX({', '.join(f'{k}={v:g}' for k, v in self.p.items())})"
 
-    def run(self, stimulus_pA, native_hz, dt: float | None = None) -> dict:
+    def run(self, stimulus_pA, native_rate, dt: float | None = None) -> dict:
         stim = jnp.asarray(stimulus_pA, dtype=jnp.result_type(float)).reshape(-1, 1)
         n_samples = stim.shape[0]
         if n_samples < 2:
             raise ValueError(f"stimulus must have >= 2 samples, got {n_samples}")
-        if native_hz <= 0:
-            raise ValueError(f"native_hz must be positive, got {native_hz}")
+        if native_rate <= 0:
+            raise ValueError(f"native_rate must be positive, got {native_rate}")
 
-        stimulus_dt = 1000.0 / native_hz
+        stimulus_dt = 1000.0 / native_rate
         t1 = (n_samples - 1) * stimulus_dt
         dt = stimulus_dt if dt is None else float(dt)
 
@@ -1390,9 +1390,9 @@ class GlifNeuronJAX(eqx.Module):
             "theta_s": solution.theta_s[0],
             "theta_v": solution.theta_v[0],
             "AScurrents": solution.ascs[0],
-            "spike_times": spikes / 1000.0,  # ms -> s
+            "spike_times": spikes,
             "n_spikes": int(spikes.shape[0]),
-            "duration_s": n_samples / native_hz,
+            "duration": 1000.0 * n_samples / native_rate,
         }
 
 
@@ -1478,6 +1478,17 @@ class GLIF(Model):
 
     def diffrax_default_weights(self, system: str):
         return {}
+
+    @property
+    def brian2_param_units(self) -> dict:
+        """GLIF keeps nS / pA on every backend, so the brian2 handle reads them so"""
+        import brian2 as b2
+
+        return {
+            "g_L": b2.nS,
+            "asc_amp_1": b2.pA,
+            "asc_amp_2": b2.pA,
+        }
 
     def brian2_population_group(
         self, population_name, n, offset, coordinates, prng, rows=None

@@ -96,6 +96,24 @@ existing_tiers() {
   echo ${out[@]+"${out[@]}"}
 }
 
+# The naming rule (docs/guide/concepts/units.md): a name without a unit is in
+# its default unit, so ms, um, mV, nA, uS, mM, Hz, nm and degrees are never
+# written out. _per_ms and _per_um are compound units of a different quantity.
+# Add a name to UNIT_SUFFIX_ALLOW only for an external one (a library argument
+# or a file format) that livn does not control.
+UNIT_SUFFIX_ALLOW='(_per_ms|_per_um)$'
+unit_suffix_check() {
+  local hits
+  hits=$(grep -rnoE --include='*.py' \
+      '\b[A-Za-z_][A-Za-z0-9_]*_(ms|um|mV|mv|nA|uS|mM|hz|Hz|nm|deg|MS|UM|HZ)\b' \
+      "$PROJECT_DIR/src" | grep -vE "$UNIT_SUFFIX_ALLOW" || true)
+  if [[ -n "$hits" ]]; then
+    echo "Names in src/ that spell out a default unit (see docs/guide/concepts/units.md):"
+    echo "$hits"
+    return 1
+  fi
+}
+
 cmd="${1:-}"
 shift || true
 
@@ -111,7 +129,8 @@ case "$cmd" in
     # shellcheck disable=SC2086
     ruff format --check $tracked_files
     # shellcheck disable=SC2086
-    exec ruff check $tracked_files
+    ruff check $tracked_files
+    unit_suffix_check
     ;;
 
   fast)
@@ -387,6 +406,7 @@ case "$cmd" in
       local code=0
       ci_step ruff format --check || code=$?
       ci_step ruff check || code=$?
+      ci_step unit_suffix_check || code=$?
       return $code
     }
 

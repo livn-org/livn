@@ -32,6 +32,20 @@ def _population_parameters(group) -> list[str]:
     )
 
 
+DEFAULT_UNITS = (b2.ms, b2.mV, b2.um, b2.nA, b2.usiemens, b2.Mohm)
+
+
+def _param_unit(group, name: str, overrides: dict):
+    if name in overrides:
+        return overrides[name], 1
+    dim = group.variables[name].dim
+    for unit in DEFAULT_UNITS:
+        for power in (1, -1, 2, -2):
+            if dim == unit.dim**power:
+                return unit, power
+    return None
+
+
 STIMULUS_TERMS = {
     "extracellular": ("stim_v", b2.mV),
     "current": ("stim_i", b2.nA),
@@ -55,9 +69,13 @@ class CellHandle(Cell):
     """Per-cell parameter handle over one row of a brian2 ``NeuronGroup``.
 
     Parameters are the group's parameter-typed state variables, read and
-    written in brian2's base SI units (volt, second, ...)::
+    written in livn's default units (ms, mV, nA, ...) rather than brian2's SI,
+    so the same key means the same number on every backend::
 
-        env.cells[3].set_params({"E_K": -0.077})
+        env.cells[3].set_params({"E_K": -77.0})  # mV
+
+    A model whose parameters keep other units (GLIF: nS, pA) lists them in a
+    ``brian2_param_units`` dict of ``name -> brian2 unit``.
     """
 
     def __init__(self, env: "Env", population: str, gid: int, index: int):
@@ -74,12 +92,20 @@ class CellHandle(Cell):
         """The ``NeuronGroup`` holding the cell"""
         return self._env._populations[self._population]
 
+    def _units(self, name: str):
+        overrides = getattr(self._env.model, "brian2_param_units", None) or {}
+        return _param_unit(self.group, name, overrides)
+
     def get_params(self) -> dict[str, float]:
         group = self.group
-        return {
-            name: float(group.state(name, use_units=False)[self._index])
-            for name in _population_parameters(group)
-        }
+        params = {}
+        for name in _population_parameters(group):
+            value = float(group.state(name, use_units=False)[self._index])
+            unit = self._units(name)
+            if unit is not None:
+                value /= float(unit[0]) ** unit[1]
+            params[name] = value
+        return params
 
     def set_params(self, params: dict[str, float]) -> "Env":
         group = self.group
@@ -87,7 +113,11 @@ class CellHandle(Cell):
         for name, value in params.items():
             if name not in known:
                 raise self.unknown_param(name, known)
-            group.state(name, use_units=False)[self._index] = float(value)
+            value = float(value)
+            unit = self._units(name)
+            if unit is not None:
+                value *= float(unit[0]) ** unit[1]
+            group.state(name, use_units=False)[self._index] = value
 
         return self._env
 
@@ -478,8 +508,8 @@ class Env(EnvProtocol):
                 S.delay = 0 * b2.ms
                 continue
             distances = np.array(S.distance)  # in um
-            delays_ms = np.maximum(distances / velocity, 2.0 * dt)
-            S.delay = delays_ms * b2.ms
+            delays = np.maximum(distances / velocity, 2.0 * dt)
+            S.delay = delays * b2.ms
 
         return self
 
@@ -1031,8 +1061,8 @@ class Env(EnvProtocol):
 
         for name, pop in self._populations.items():
             coords_array = self.system.coordinate_array(name)  # [n, 4] = gid, x, y, z
-            xyz_um = coords_array[:, 1:4]
-            assign_coords(pop, xyz_um * b2.um)
+            xyz = coords_array[:, 1:4]
+            assign_coords(pop, xyz * b2.um)
 
         sim = cleo.CLSimulator(self._network)
 

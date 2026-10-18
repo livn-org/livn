@@ -41,9 +41,9 @@ NOISE_H = 0.025  # Gfluct3's update interval parameter
 
 SUPPORTED_MODES = ("extracellular", "current", "current_density", "irradiance")
 
-_OPSIN_PARAMS = ("g0", "E", "v0", "k_a", "k_r", "p", "q", "Gd", "Gr0", "phi_m")
+_OPSIN_PARAMS = ("g0_pS", "E", "v0", "k_a", "k_r", "p", "q", "Gd", "Gr0", "phi_m")
 _OPSIN_DEFAULTS = {
-    "g0": 1.0,
+    "g0_pS": 1.0,
     "E": 0.0,
     "v0": 43.0,
     "k_a": 0.28,
@@ -847,13 +847,13 @@ class Env(EnvProtocol):
     def _install_stimulus(self, stimulus: Stimulus, current_time: float) -> None:
         state = self._stim[stimulus.input_mode]
         if stimulus.input_mode == "irradiance":
-            wavelength_nm = stimulus.extra.get("wavelength_nm", None)
-            if wavelength_nm is None:
-                wavelength_nm = self._opsin_config().get("wavelength_nm", 473.0)
+            wavelength = stimulus.extra.get("wavelength", None)
+            if wavelength is None:
+                wavelength = self._opsin_config().get("wavelength", 473.0)
             if stimulus.units == "photon_flux":
                 scale = 1.0
             else:
-                scale = 1.0 / (6.626e-34 * 3e8 / (wavelength_nm * 1e-9) * 1e3)
+                scale = 1.0 / (6.626e-34 * 3e8 / (wavelength * 1e-9) * 1e3)
             installed = state.streams or state.block is not None
             if installed and abs(scale - state.scale) > 1e-9 * max(scale, state.scale):
                 raise ValueError(

@@ -4,7 +4,7 @@ import shutil
 import pandas as pd
 
 ANATOMY_REPORT = (
-    "burst_width_ms",
+    "burst_width",
     "spikes_per_unit_per_burst",
     "burst_onset_peak",
     "burst_interval_cv",

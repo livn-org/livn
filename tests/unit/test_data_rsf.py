@@ -157,7 +157,7 @@ def test_the_documents_say_what_ran(tmp_path):
     )  # the simulation clock, one tick per frame
     assert simulation["sources"]["ids"] == [0, 1, 2]
     # several recording coordinates per gid: the soma stands for the source
-    assert simulation["sources"]["coordinates_um"][0] == [10.0, 5.0, 1.0]
+    assert simulation["sources"]["coordinates"][0] == [10.0, 5.0, 1.0]
     assert simulation["stimulus"] == {"cls": "a.Policy", "kwargs": {"x": 1}}
     assert simulation["regenerate"]["noise_stream"] == 2
     assert _doc(os.path.join(rsf, "stores.json")) == [
@@ -206,7 +206,7 @@ def test_withholding_records_its_stages(tmp_path):
     assert stages == ["observe", "noise", "mask"]
 
     assert rows["0"][1]["transform"]["noise"]["seed"] == 7
-    assert rows["0"][1]["transform"]["noise"]["params"] == {"sigma_uv": 5.0}
+    assert rows["0"][1]["transform"]["noise"]["params"] == {"sigma_uV": 5.0}
 
     loaded = load(session)
     assert loaded.io is None
@@ -215,8 +215,8 @@ def test_withholding_records_its_stages(tmp_path):
 
 
 def test_the_traces_never_clip(tmp_path):
-    with pytest.raises(RSFError, match="pass gain_uv >="):
-        store(_run(), str(tmp_path / "session"), _Env(), gain_uv=1e-6)
+    with pytest.raises(RSFError, match="pass gain_uV >="):
+        store(_run(), str(tmp_path / "session"), _Env(), gain_uV=1e-6)
     assert not os.path.exists(tmp_path / "session")
 
 
@@ -278,7 +278,7 @@ def test_a_case_twin_is_refused(tmp_path):
     [
         {"mask": {"fields": ["impedance"]}},
         {"mask": {"fields": ["channel:9"]}},
-        {"noise": {"distribution": "uniform", "params": {"sigma_uv": 1.0}}},
+        {"noise": {"distribution": "uniform", "params": {"sigma_uV": 1.0}}},
         {"filter": {}},
     ],
 )
@@ -342,7 +342,7 @@ def test_a_composed_io_records_through_its_outputs(tmp_path):
     mea = _Env().io
     store(_run(), session, _Env(io=ComposedIO(LightArray([[0, 0.0, 0.0, 0.0]]), mea)))
     observe = _doc(os.path.join(session, "traces.zarr", "rsf", "observe.json"))
-    assert "stimulation_gain" not in observe and "input_radius_um" not in observe
+    assert "stimulation_gain" not in observe and "input_radius" not in observe
 
 
 def test_an_incomplete_session_is_not_read(tmp_path):
@@ -559,7 +559,7 @@ def test_inputs_are_stored_on_the_frame_grid(tmp_path):
     assert got.dtype == np.float32 and got.shape == (N_FRAMES, 3)
     np.testing.assert_array_equal(got, np.repeat(inputs, 10, axis=0))
     np.testing.assert_array_equal(recording.inputs(0, 12, 3), got[12:15])
-    assert load(session).simulation["inputs"]["source_dt_ms"] == 1.0
+    assert load(session).simulation["inputs"]["source_dt"] == 1.0
 
 
 def test_a_policy_is_recorded_and_rendered(tmp_path):
@@ -569,7 +569,7 @@ def test_a_policy_is_recorded_and_rendered(tmp_path):
         n_channels=3,
         channels=[1],
         dt=0.1,
-        amplitude=2.0,
+        amplitude_uA=2.0,
         phase_duration=0.2,
         interphase_gap=0.1,
         pulse_times=[0.0],

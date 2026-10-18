@@ -38,11 +38,11 @@ class _NoArray:
 
 def sweep(**overrides):
     settings = {
-        "amplitudes": (1.0,),
+        "amplitudes_uA": (1.0,),
         "repeats": 1,
-        "trial_ms": 100.0,
-        "onset_ms": 50.0,
-        "pulse_ms": 0.2,
+        "trial": 100.0,
+        "onset": 50.0,
+        "pulse": 0.2,
         "dt": 0.1,
     }
     settings.update(overrides)
@@ -59,7 +59,7 @@ def test_an_explicit_channel_is_the_one_driven():
 
 def test_a_list_of_channels_drives_all_of_them():
     encoding = ElectrodeStimulus(channel=[1, 4, 6])
-    policy = sweep(amplitudes=((10.0, 20.0, 30.0),))
+    policy = sweep(amplitudes_uA=((10.0, 20.0, 30.0),))
     resolved = encoding(_Array(), 100.0, policy)
 
     assert resolved.channels == [1, 4, 6]
@@ -89,7 +89,7 @@ def test_an_explicit_channel_overrules_the_policy():
 def test_the_policy_is_stretched_to_fill_the_run():
     resolved = ElectrodeStimulus(channel=1)(_Array(), 250.0, sweep())
 
-    assert resolved.total_ms == 250.0
+    assert resolved.total == 250.0
     assert len(resolved()) == 2500
 
 
@@ -98,7 +98,7 @@ def test_a_policy_without_a_length_of_its_own_is_left_alone():
     resolved = ElectrodeStimulus()(_Array(), 100.0, policy)
 
     assert resolved.channels == [1]
-    assert "total_ms" not in type(resolved).model_fields
+    assert "total" not in type(resolved).model_fields
 
 
 def test_the_resolved_policy_is_what_was_delivered():

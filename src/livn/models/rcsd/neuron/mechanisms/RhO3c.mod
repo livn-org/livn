@@ -3,7 +3,7 @@ TITLE Three-state rhodopsin kinetic model
 NEURON  {
     POINT_PROCESS RhO3c
     NONSPECIFIC_CURRENT i
-    RANGE i, E, v0, v1, g0      :, fphi, fv
+    RANGE i, E, v0, v1, g0_pS      :, fphi, fv
     RANGE k_a, k_r, Gd, Gr0, p, q
     RANGE phi, phi_m
 }
@@ -25,7 +25,7 @@ PARAMETER { : Initialise parameters to defaults. These may be changed through ho
     phi_m   = 1e16      : (photons/sec mm2) < 0, 1e30 > : Hill Constant
   
 : Conductance    
-    g0      = 1         (pS)   < 0, 1e9 >   : Biological conductance scaling factor
+    g0_pS      = 1         (pS)   < 0, 1e9 >   : Biological conductance scaling factor
 
 : Inward rectifier conductance  fv(-70mV) := 1
     E       = 0         (mV)                : Channel reversal potential
@@ -60,7 +60,7 @@ BREAKPOINT {
     SOLVE kin METHOD sparse
     fphi    = O                             : Light dependency on open state O=[0:1] 
     fv      = (1-exp(-(v-E)/v0))*v1/(v-E)   : Voltage dependency (equal 1 at Vm=-70mV)
-    i       = g0*fphi*fv*(v-E)*(1e-6)       : Photocurrent
+    i       = g0_pS*fphi*fv*(v-E)*(1e-6)       : Photocurrent
 }
 
 
@@ -111,6 +111,6 @@ PROCEDURE setV1(E (mV), v0 (mV)) { :
 }
 
 : FUNCTION f_name(arg1 (units1), arg2 (units2), . . . ) (returned_units)
-FUNCTION g(g0 (pS), fphi (1), fv (1)) (pS) { : Make the effective channel conductance available to hoc
-    g = g0 * fphi * fv
+FUNCTION g(g0_pS (pS), fphi (1), fv (1)) (pS) { : Make the effective channel conductance available to hoc
+    g = g0_pS * fphi * fv
 }

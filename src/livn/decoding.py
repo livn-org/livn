@@ -264,13 +264,13 @@ class MeanFiringRate(Decoding):
 
             n_units = len(all_units) if all_units else 1
             duration_s = self.duration / 1000.0
-            rate_hz = total_spikes / (n_units * duration_s + 1e-9)
+            rate = total_spikes / (n_units * duration_s + 1e-9)
 
             result = {
-                "rate_hz": float(rate_hz),
+                "rate": float(rate),
                 "total_spikes": int(total_spikes),
                 "n_units": int(n_units),
-                "duration_s": float(duration_s),
+                "duration": float(self.duration),
             }
 
         return P.broadcast(result, comm=env.comm)
@@ -471,7 +471,7 @@ class BurstRate(Decoding):
     Contiguous bursting bins are collapsed into a single burst event.
 
     Returns dict with:
-        burst_rate_hz
+        burst_rate
         n_bursts
         threshold
         onsets (when each burst started, in ms from the window start)
@@ -510,7 +510,7 @@ class BurstRate(Decoding):
                 burst_rate = n_bursts / (duration / 1000.0)
 
             result = {
-                "burst_rate_hz": float(burst_rate),
+                "burst_rate": float(burst_rate),
                 "n_bursts": int(n_bursts),
                 "threshold": float(threshold),
                 "onsets": list(onsets),
@@ -528,16 +528,16 @@ class BurstAnatomy(Decoding):
     """
 
     bin_size: float = 5.0
-    merge_ms: float = 200.0
+    merge: float = 200.0
     mad_k: float = 5.0
     min_floor_fraction: float = 0.25
     min_floor: float = 3.0
-    pre_ms: float = 100.0
-    post_ms: float = 200.0
+    pre: float = 100.0
+    post: float = 200.0
 
     def _decode(self, it, tt, n_units: int) -> dict:
         empty = {
-            "burst_width_ms": float("nan"),
+            "burst_width": float("nan"),
             "spikes_per_unit_per_burst": float("nan"),
             "burst_onset_peak": float("nan"),
             "units_recruited_per_burst": float("nan"),
@@ -551,11 +551,11 @@ class BurstAnatomy(Decoding):
         it = np.asarray(it)
         tt = np.asarray(tt, dtype=np.float64)
         n_units = max(int(n_units), 1)
-        duration_ms = float(self.duration)
-        if tt.size == 0 or duration_ms <= 0.0:
+        duration = float(self.duration)
+        if tt.size == 0 or duration <= 0.0:
             return empty
 
-        n_bins = max(1, int(duration_ms // self.bin_size))
+        n_bins = max(1, int(duration // self.bin_size))
         counts, _ = np.histogram(tt, bins=n_bins, range=(0.0, n_bins * self.bin_size))
         empty["peak_bin_rate"] = float(counts.max()) / n_units
 
@@ -577,7 +577,7 @@ class BurstAnatomy(Decoding):
         for start, stop in zip(starts, stops, strict=True):
             b0 = float(start * self.bin_size)
             b1 = float(stop * self.bin_size)
-            if spans and b0 - spans[-1][1] < self.merge_ms:
+            if spans and b0 - spans[-1][1] < self.merge:
                 spans[-1][1] = b1
             else:
                 spans.append([b0, b1])
@@ -590,10 +590,10 @@ class BurstAnatomy(Decoding):
         in_bursts = 0
         previous_hi = 0.0
         for index, (b0, b1) in enumerate(spans):
-            lo = max(0.0, b0 - self.pre_ms, previous_hi)
-            hi = min(duration_ms, b1 + self.post_ms)
+            lo = max(0.0, b0 - self.pre, previous_hi)
+            hi = min(duration, b1 + self.post)
             if index + 1 < len(spans):
-                hi = min(hi, max(lo, spans[index + 1][0] - self.pre_ms))
+                hi = min(hi, max(lo, spans[index + 1][0] - self.pre))
             previous_hi = hi
             window = (tt >= lo) & (tt < hi)
             n_spikes = int(window.sum())
@@ -623,7 +623,7 @@ class BurstAnatomy(Decoding):
             interval_cv = float(intervals.std() / intervals.mean())
 
         return {
-            "burst_width_ms": float(np.mean(widths)),
+            "burst_width": float(np.mean(widths)),
             "spikes_per_unit_per_burst": float(np.mean(per_unit)),
             "burst_onset_peak": float(np.mean(peaks)),
             "units_recruited_per_burst": float(np.mean(recruited)),
@@ -654,15 +654,15 @@ class RecruitmentOrder(Decoding):
     """Position of units in a burst
 
     - ``unit_participation``: median over units of the share of bursts with a
-      spike within `window_ms` of the peak.
-    - ``unit_between_rate_hz``: median rate further than `quiet_ms` from every
+      spike within `window` of the peak.
+    - ``unit_between_rate``: median rate further than `quiet` from every
       peak.
-    - ``order_spread_ms``: the SD across units of their reproducible typical
+    - ``order_spread``: the SD across units of their reproducible typical
       time.
     - ``order_reliability``: Spearman of the even and odd centroids.
     - ``unit_spikes_per_burst``: median over units of spikes per joined burst.
     - ``unit_active_between_fraction``: share of units firing at least
-      `active_hz` between bursts
+      `active_rate` between bursts
     - ``between_time_rho``: Spearman, over units, of the rate between bursts
       against the typical time in the burst.
     """
@@ -671,11 +671,11 @@ class RecruitmentOrder(Decoding):
     mad_k: float = 5.0
     floor_fraction: float = 0.05
     min_floor: float = 3.0
-    merge_ms: float = 100.0
-    window_ms: float = 150.0
-    quiet_ms: float = 300.0
+    merge: float = 100.0
+    window: float = 150.0
+    quiet: float = 300.0
     min_unit_spikes: int = 5
-    active_hz: float = 0.1
+    active_rate: float = 0.1
 
     def burst_peaks(self, tt, n_units: int | None = None) -> np.ndarray:
         """Burst peak times (ms) of merged spikes from `n_units` units."""
@@ -700,7 +700,7 @@ class RecruitmentOrder(Decoding):
         spans: list[list[float]] = []
         for a, b in zip(starts, stops, strict=True):
             b0, b1 = a * self.bin_size, b * self.bin_size
-            if spans and b0 - spans[-1][1] < self.merge_ms:
+            if spans and b0 - spans[-1][1] < self.merge:
                 spans[-1][1] = b1
             else:
                 spans.append([b0, b1])
@@ -721,8 +721,8 @@ class RecruitmentOrder(Decoding):
         out = {
             "n_bursts": 0,
             "unit_participation": nan,
-            "unit_between_rate_hz": nan,
-            "order_spread_ms": nan,
+            "unit_between_rate": nan,
+            "order_spread": nan,
             "order_reliability": nan,
             "unit_spikes_per_burst": nan,
             "unit_active_between_fraction": nan,
@@ -749,8 +749,8 @@ class RecruitmentOrder(Decoding):
         duration = float(self.duration)
         covered = (
             (
-                np.minimum(peaks + self.quiet_ms, duration)
-                - np.maximum(peaks - self.quiet_ms, 0.0)
+                np.minimum(peaks + self.quiet, duration)
+                - np.maximum(peaks - self.quiet, 0.0)
             )
             .clip(0)
             .sum()
@@ -758,8 +758,8 @@ class RecruitmentOrder(Decoding):
         free_s = max(duration - covered, 0.0) / 1000.0
         participation, between, per_burst = [], [], []
         for s in units:
-            a = np.searchsorted(s, peaks - self.window_ms)
-            b = np.searchsorted(s, peaks + self.window_ms)
+            a = np.searchsorted(s, peaks - self.window)
+            b = np.searchsorted(s, peaks + self.window)
             participation.append(float(np.mean(b > a)))
             joined = (b - a)[b > a]
             per_burst.append(float(joined.mean()) if joined.size else nan)
@@ -767,28 +767,28 @@ class RecruitmentOrder(Decoding):
             near = np.zeros(len(s), bool)
             for k in (j - 1, j):
                 ok = (k >= 0) & (k < len(peaks))
-                near[ok] |= np.abs(s[ok] - peaks[k[ok]]) < self.quiet_ms
+                near[ok] |= np.abs(s[ok] - peaks[k[ok]]) < self.quiet
             between.append(float((~near).sum()) / free_s if free_s > 0 else nan)
         out["unit_participation"] = float(np.median(participation))
         out["unit_spikes_per_burst"] = float(np.nanmedian(per_burst))
         if free_s > 0:
-            out["unit_between_rate_hz"] = float(np.nanmedian(between))
+            out["unit_between_rate"] = float(np.nanmedian(between))
             out["unit_active_between_fraction"] = float(
-                np.mean(np.asarray(between) >= self.active_hz)
+                np.mean(np.asarray(between) >= self.active_rate)
             )
         if len(peaks) < 4:
             return out
 
-        edges = np.arange(-self.window_ms, self.window_ms + 5.0, 5.0)
+        edges = np.arange(-self.window, self.window + 5.0, 5.0)
         mids = 0.5 * (edges[1:] + edges[:-1])
 
-        def centroid(s, rate_hz, chosen):
-            a = np.searchsorted(s, chosen - self.window_ms)
-            b = np.searchsorted(s, chosen + self.window_ms)
+        def centroid(s, rate, chosen):
+            a = np.searchsorted(s, chosen - self.window)
+            b = np.searchsorted(s, chosen + self.window)
             rel = np.concatenate(
                 [s[x:y] - p for x, y, p in zip(a, b, chosen, strict=True)]
             )
-            h = np.histogram(rel, edges)[0] - rate_hz * 0.005 * len(chosen)
+            h = np.histogram(rel, edges)[0] - rate * 0.005 * len(chosen)
             h = h.clip(0)
             return float((h * mids).sum() / h.sum()) if h.sum() >= 2 else nan
 
@@ -810,14 +810,14 @@ class RecruitmentOrder(Decoding):
 
         if ok.sum() >= 5:
             cov = float(np.cov(c1[ok], c2[ok])[0, 1])
-            out["order_spread_ms"] = float(np.sqrt(max(cov, 0.0)))
+            out["order_spread"] = float(np.sqrt(max(cov, 0.0)))
             out["order_reliability"] = float(spearmanr(c1[ok], c2[ok])[0])
         if free_s > 0:
             # all spikes, background included: when a unit fires around a burst
             rate = np.asarray(between, dtype=float)
             typical = np.array([centroid(s, 0.0, peaks) for s in units])
             usable = ~np.isnan(typical) & ~np.isnan(rate)
-            if usable.sum() >= 5 and (rate[usable] >= self.active_hz).sum() >= 3:
+            if usable.sum() >= 5 and (rate[usable] >= self.active_rate).sum() >= 3:
                 out["between_time_rho"] = float(
                     spearmanr(rate[usable], typical[usable])[0]
                 )
@@ -839,20 +839,20 @@ class UnitCoordination(Decoding):
     - ``unit_top10_share``: share of all spikes fired by the top `top_fraction`
       of units.
     - ``unit_corr_median``: median pairwise correlation of `bin_size` counts,
-      over the units firing at least `min_rate_hz` (NaN under `min_corr_units`).
+      over the units firing at least `min_rate` (NaN under `min_corr_units`).
     - ``coordination_excess``: multi-unit events (>= `event_units` units within
-      `event_ms`, then `event_dead_ms` dead) against the same spikes each
-      jittered uniformly by +-`jitter_ms`, as (observed + 1) / (jittered + 1).
+      `event`, then `event_dead` dead) against the same spikes each
+      jittered uniformly by +-`jitter`, as (observed + 1) / (jittered + 1).
     """
 
     bin_size: float = 50.0
-    min_rate_hz: float = 0.2
+    min_rate: float = 0.2
     min_corr_units: int = 3
     top_fraction: float = 0.1
     event_units: int = 3
-    event_ms: float = 20.0
-    event_dead_ms: float = 100.0
-    jitter_ms: float = 500.0
+    event: float = 20.0
+    event_dead: float = 100.0
+    jitter: float = 500.0
     seed: int = 0
 
     def _events(self, it, tt) -> int:
@@ -860,10 +860,10 @@ class UnitCoordination(Decoding):
         t, u = np.asarray(tt, dtype=float)[order], np.asarray(it)[order]
         count, i = 0, 0
         while i < len(t):
-            j = np.searchsorted(t, t[i] + self.event_ms)
+            j = np.searchsorted(t, t[i] + self.event)
             if len(np.unique(u[i:j])) >= self.event_units:
                 count += 1
-                i = np.searchsorted(t, t[i] + self.event_dead_ms)
+                i = np.searchsorted(t, t[i] + self.event_dead)
             else:
                 i += 1
         return count
@@ -891,7 +891,7 @@ class UnitCoordination(Decoding):
         out["unit_rate_cv"] = float(rates.std() / rates.mean())
         out["unit_top10_share"] = float(top[:keep].sum() / top.sum())
         edges = np.arange(0.0, duration + self.bin_size, self.bin_size)
-        active = [u for u, r in zip(units, rates, strict=True) if r >= self.min_rate_hz]
+        active = [u for u, r in zip(units, rates, strict=True) if r >= self.min_rate]
         if len(active) >= self.min_corr_units:
             counts = np.array(
                 [np.histogram(tt[it == u], edges)[0] for u in active], float
@@ -901,7 +901,7 @@ class UnitCoordination(Decoding):
                 np.nanmedian(cc[np.triu_indices(len(active), 1)])
             )
         rng = np.random.default_rng(self.seed)
-        jittered = tt + rng.uniform(-self.jitter_ms, self.jitter_ms, len(tt))
+        jittered = tt + rng.uniform(-self.jitter, self.jitter, len(tt))
         out["coordination_excess"] = float(
             (self._events(it, tt) + 1) / (self._events(it, jittered) + 1)
         )
@@ -1014,10 +1014,10 @@ class PerUnitFiringRate(Decoding):
     """Per-unit firing rates (Hz) and summary statistics.
 
     Returns dict with:
-        per_unit_rates_hz
-        max_rate_hz
-        min_rate_hz
-        mean_rate_hz
+        per_unit_rates
+        max_rate
+        min_rate
+        mean_rate
         rate_cv
         n_units
     """
@@ -1039,10 +1039,10 @@ class PerUnitFiringRate(Decoding):
 
             rate_arr = np.asarray(list(rates.values())) if rates else np.array([])
             result = {
-                "per_unit_rates_hz": rates,
-                "max_rate_hz": float(rate_arr.max()) if rate_arr.size else 0.0,
-                "min_rate_hz": float(rate_arr.min()) if rate_arr.size else 0.0,
-                "mean_rate_hz": (float(rate_arr.mean()) if rate_arr.size else 0.0),
+                "per_unit_rates": rates,
+                "max_rate": float(rate_arr.max()) if rate_arr.size else 0.0,
+                "min_rate": float(rate_arr.min()) if rate_arr.size else 0.0,
+                "mean_rate": (float(rate_arr.mean()) if rate_arr.size else 0.0),
                 "rate_cv": (
                     float(rate_arr.std() / rate_arr.mean())
                     if rate_arr.size and rate_arr.mean() > 0
@@ -1060,7 +1060,7 @@ class PopulationFiringRates(Decoding):
     Buckets spike gids by ``system.population_ranges`` and divides
     each population's spike count by (simulated cells in that population x seconds).
     The denominator uses env.cells, so it is correct under ``selection()``
-    subsampling. Returns ``{"rates_hz": {pop: Hz}}``.
+    subsampling. Returns ``{"rates": {pop: Hz}}``.
     """
 
     def __call__(self, signal: Run, env=None):
@@ -1087,7 +1087,7 @@ class PopulationFiringRates(Decoding):
 
         duration_s = float(self.duration) / 1000.0
         return {
-            "rates_hz": {
+            "rates": {
                 p: float(s / (c * duration_s + 1e-9))
                 for p, s, c in zip(pops, spikes, cells, strict=False)
                 if c > 0
@@ -1174,20 +1174,21 @@ def baks(spike_times, time, alpha: float = 4.77, beta: float | None = None):
     prior, after Ahmadi et al. (https://github.com/nurahmadi/BAKS).
 
     Args:
-        spike_times: Spike times in seconds
-        time: Time points to estimate the rate at, in seconds
+        spike_times: Spike times in ms
+        time: Time points to estimate the rate at, in ms
         alpha: Shape parameter of the bandwidth prior
         beta: Scale parameter; ``None`` uses the reference default
             ``n_spikes ** 0.42``
 
     Returns:
         ``(rate, h)`` rate in Hz at each time point, and the adaptive
-        bandwidth used there
+        bandwidth used there in ms
     """
     from scipy.special import gamma
 
-    spikes = np.asarray(spike_times, dtype=np.float64).reshape(-1)
-    t = np.asarray(time, dtype=np.float64).reshape(-1)
+    # the estimator is defined in seconds (its prior scale is 1/b s^2)
+    spikes = np.asarray(spike_times, dtype=np.float64).reshape(-1) / 1000.0
+    t = np.asarray(time, dtype=np.float64).reshape(-1) / 1000.0
     n = spikes.size
     if n == 0:
         return np.zeros_like(t), np.zeros_like(t)
@@ -1208,7 +1209,7 @@ def baks(spike_times, time, alpha: float = 4.77, beta: float | None = None):
     exponent[within] = -(delta[within] ** 2) / (2.0 * scale[within] ** 2)
     rate = ((1.0 / (np.sqrt(2.0 * np.pi) * h[None, :])) * np.exp(exponent)).sum(axis=0)
 
-    return rate, h
+    return rate, h * 1000.0
 
 
 class PopulationSpikeDensity(Decoding):
@@ -1305,8 +1306,8 @@ class PopulationSpikeDensity(Decoding):
                 if spikes.size < 2:
                     continue
                 rate = baks(
-                    spikes / 1000.0,
-                    time_bins / 1000.0,
+                    spikes,
+                    time_bins,
                     alpha=self.baks_alpha,
                     beta=self.baks_beta,
                 )[0]
@@ -1360,9 +1361,9 @@ class PopulationSpikeDensity(Decoding):
 
 
 class Stability(Decoding):
-    tail_window: float = 1000.0
-    max_rate_hz: float = 20.0
-    min_rate_hz: float = 0.05
+    tail: float = 1000.0
+    max_rate: float = 20.0
+    min_rate: float = 0.05
     bin_size: float = 100.0
 
     def __call__(self, signal: Run, env=None):
@@ -1374,9 +1375,9 @@ class Stability(Decoding):
 
             merged_spikes = np.array(merged_spikes) if merged_spikes else np.array([])
 
-            duration_ms = float(self.duration)
-            n_bins = max(1, int(duration_ms / self.bin_size))
-            bin_edges = np.linspace(0, duration_ms, n_bins + 1)
+            duration = float(self.duration)
+            n_bins = max(1, int(duration / self.bin_size))
+            bin_edges = np.linspace(0, duration, n_bins + 1)
 
             if len(merged_spikes) > 0:
                 hist, _ = np.histogram(merged_spikes, bins=bin_edges)
@@ -1384,17 +1385,15 @@ class Stability(Decoding):
             else:
                 rates = np.zeros(n_bins)
 
-            tail_start_bin = max(
-                0, int((duration_ms - self.tail_window) / self.bin_size)
-            )
+            tail_start_bin = max(0, int((duration - self.tail) / self.bin_size))
             tail_rates = rates[tail_start_bin:]
             tail_mean = float(np.mean(tail_rates)) if len(tail_rates) > 0 else 0.0
             global_mean = float(np.mean(rates)) if len(rates) > 0 else 0.0
 
             has_nan = bool(np.any(np.isnan(rates)) or np.any(np.isinf(rates)))
 
-            is_runaway = tail_mean > self.max_rate_hz
-            is_quiescent = global_mean < self.min_rate_hz
+            is_runaway = tail_mean > self.max_rate
+            is_quiescent = global_mean < self.min_rate
             is_stable = not is_runaway and not is_quiescent and not has_nan
 
             result = {
@@ -1402,10 +1401,10 @@ class Stability(Decoding):
                 "is_runaway": bool(is_runaway),
                 "is_quiescent": bool(is_quiescent),
                 "has_nan": bool(has_nan),
-                "tail_mean_hz": tail_mean,
-                "global_mean_hz": global_mean,
-                "max_rate_hz": float(self.max_rate_hz),
-                "min_rate_hz": float(self.min_rate_hz),
+                "tail_mean": tail_mean,
+                "global_mean": global_mean,
+                "max_rate": float(self.max_rate),
+                "min_rate": float(self.min_rate),
             }
 
         return P.broadcast(result, comm=env.comm)
@@ -1413,8 +1412,8 @@ class Stability(Decoding):
 
 class LFP(Decoding):
     channels: list[int] | None = None
-    downsample_hz: float = 1000.0
-    lowpass_hz: float | None = None
+    downsample_rate: float = 1000.0
+    lowpass: float | None = None
     lowpass_order: int = 4
     compute_band_power: bool | dict[str, tuple[float, float]] = False
     nperseg: int = 2048  # Welch window length for band power
@@ -1440,28 +1439,28 @@ class LFP(Decoding):
                 lfp = np.array(potential, dtype=np.float32)  # [n_channels, T]
 
                 n_samples = lfp.shape[1]
-                original_dt_ms = self.duration / n_samples if n_samples > 0 else 0.1
-                original_hz = 1000.0 / original_dt_ms
+                original_dt = self.duration / n_samples if n_samples > 0 else 0.1
+                original_rate = 1000.0 / original_dt
 
                 if self.channels is not None:
                     lfp = lfp[self.channels, :]
 
-                if self.lowpass_hz is not None and self.lowpass_hz < original_hz / 2:
-                    nyq = original_hz / 2
-                    normalized_cutoff = self.lowpass_hz / nyq
+                if self.lowpass is not None and self.lowpass < original_rate / 2:
+                    nyq = original_rate / 2
+                    normalized_cutoff = self.lowpass / nyq
                     b, a = butter(self.lowpass_order, normalized_cutoff, btype="low")
                     lfp = filtfilt(b, a, lfp, axis=1).astype(np.float32)
 
-                downsample_factor = int(original_hz / self.downsample_hz)
+                downsample_factor = int(original_rate / self.downsample_rate)
                 if downsample_factor > 1:
                     lfp = lfp[:, ::downsample_factor]
-                    sample_rate_hz = original_hz / downsample_factor
+                    sample_rate = original_rate / downsample_factor
                 else:
-                    sample_rate_hz = original_hz
+                    sample_rate = original_rate
 
                 result = {
                     "lfp": lfp,
-                    "sample_rate_hz": float(sample_rate_hz),
+                    "sample_rate": float(sample_rate),
                     "n_channels": int(lfp.shape[0]),
                     "n_samples": int(lfp.shape[1]),
                 }
@@ -1478,11 +1477,11 @@ class LFP(Decoding):
                             "gamma": (30.0, 80.0),
                         }
 
-                    result.update(self._compute_band_power(lfp, sample_rate_hz, bands))
+                    result.update(self._compute_band_power(lfp, sample_rate, bands))
             else:
                 result = {
                     "lfp": np.array([], dtype=np.float32),
-                    "sample_rate_hz": self.downsample_hz,
+                    "sample_rate": self.downsample_rate,
                     "n_channels": 0,
                     "n_samples": 0,
                 }
@@ -1492,7 +1491,7 @@ class LFP(Decoding):
     def _compute_band_power(
         self,
         lfp: np.ndarray,
-        sample_rate_hz: float,
+        sample_rate: float,
         bands: dict[str, tuple[float, float]],
     ) -> dict:
         noverlap = self.noverlap if self.noverlap is not None else self.nperseg // 2
@@ -1501,14 +1500,14 @@ class LFP(Decoding):
         if lfp.ndim == 2:
             freqs, psd = welch(
                 lfp.mean(axis=0),
-                fs=sample_rate_hz,
+                fs=sample_rate,
                 nperseg=min(self.nperseg, lfp.shape[1]),
                 noverlap=min(noverlap, lfp.shape[1] // 2),
             )
         else:
             freqs, psd = welch(
                 lfp,
-                fs=sample_rate_hz,
+                fs=sample_rate,
                 nperseg=min(self.nperseg, len(lfp)),
                 noverlap=min(noverlap, len(lfp) // 2),
             )
@@ -1656,52 +1655,52 @@ def stimulus_response(
     it: np.ndarray,
     tt: np.ndarray,
     n_units: int,
-    onset_ms: float,
+    onset: float,
     *,
-    window_ms: float | None = None,
-    pre_ms: float = 1000.0,
-    post_ms: float = 500.0,
+    window: float | None = None,
+    pre: float = 1000.0,
+    post: float = 500.0,
     bin_size: float = 10.0,
-    tail_ms: float = 4000.0,
+    tail: float = 4000.0,
     threshold_k: float = 3.0,
 ) -> dict:
     if tt.size == 0:
         return {}
-    extent = float(window_ms) if window_ms is not None else float(tt.max() + bin_size)
-    if onset_ms - pre_ms < 0 or onset_ms + post_ms > extent:
+    extent = float(window) if window is not None else float(tt.max() + bin_size)
+    if onset - pre < 0 or onset + post > extent:
         return {}
 
     n_units = max(int(n_units), 1)
-    pre = (tt >= onset_ms - pre_ms) & (tt < onset_ms)
-    post = (tt >= onset_ms) & (tt < onset_ms + post_ms)
+    pre_mask = (tt >= onset - pre) & (tt < onset)
+    post_mask = (tt >= onset) & (tt < onset + post)
 
-    baseline_hz = float(pre.sum()) / (pre_ms / 1000.0) / n_units
-    response_hz = float(post.sum()) / (post_ms / 1000.0) / n_units
+    baseline_rate = float(pre_mask.sum()) / (pre / 1000.0) / n_units
+    response_rate = float(post_mask.sum()) / (post / 1000.0) / n_units
 
     f: dict = {
-        "evoked_rate_hz": response_hz - baseline_hz,
+        "evoked_rate": response_rate - baseline_rate,
         "response_gain": (
-            response_hz / baseline_hz if baseline_hz > 0 else float("nan")
+            response_rate / baseline_rate if baseline_rate > 0 else float("nan")
         ),
     }
 
     f |= _histogram(
         tt,
         n_units,
-        onset_ms,
-        pre_ms=pre_ms,
-        post_ms=post_ms,
+        onset,
+        pre=pre,
+        post=post,
         bin_size=bin_size,
-        tail_ms=tail_ms,
+        tail=tail,
         threshold_k=threshold_k,
     )
     responded = responders(
         it,
-        pre,
-        post,
+        pre_mask,
+        post_mask,
         width=_bincount_width(it, n_units),
-        pre_ms=pre_ms,
-        post_ms=post_ms,
+        pre=pre,
+        post=post,
     )
     f["response_probability"] = float(responded.sum()) / n_units
     return f
@@ -1711,57 +1710,55 @@ def _bincount_width(it, n_units: int) -> int:
     return max(int(it.max()) + 1 if it.size else 0, int(n_units))
 
 
-def _histogram(
-    tt, n_units, onset_ms, *, pre_ms, post_ms, bin_size, tail_ms, threshold_k
-) -> dict:
+def _histogram(tt, n_units, onset, *, pre, post, bin_size, tail, threshold_k) -> dict:
     """Peak, latency and duration off the peri-stimulus histogram."""
     scale = 1000.0 / bin_size / n_units  # counts per bin -> Hz per unit
 
-    n_pre = max(1, int(pre_ms // bin_size))
+    n_pre = max(1, int(pre // bin_size))
     pre_counts, _ = np.histogram(
-        tt, bins=n_pre, range=(onset_ms - n_pre * bin_size, onset_ms)
+        tt, bins=n_pre, range=(onset - n_pre * bin_size, onset)
     )
     median = float(np.median(pre_counts))
     mad = float(np.median(np.abs(pre_counts - median)))
     threshold = median + threshold_k * 1.4826 * max(mad, 1.0 / 1.4826)
 
-    n_post = max(1, int(post_ms // bin_size))
+    n_post = max(1, int(post // bin_size))
     post_counts, _ = np.histogram(
-        tt, bins=n_post, range=(onset_ms, onset_ms + n_post * bin_size)
+        tt, bins=n_post, range=(onset, onset + n_post * bin_size)
     )
     peak = int(np.argmax(post_counts))
 
-    f = {"response_peak_hz": float(post_counts[peak]) * scale}
+    f = {"response_peak": float(post_counts[peak]) * scale}
 
     if post_counts[peak] > threshold:
-        f["response_latency_ms"] = (peak + 0.5) * bin_size
+        f["response_latency"] = (peak + 0.5) * bin_size
     else:
-        f["response_latency_ms"] = float("nan")
+        f["response_latency"] = float("nan")
 
-    n_tail = max(1, int(tail_ms // bin_size))
-    tail, _ = np.histogram(
-        tt, bins=n_tail, range=(onset_ms, onset_ms + n_tail * bin_size)
+    n_tail = max(1, int(tail // bin_size))
+    tail_counts, _ = np.histogram(
+        tt, bins=n_tail, range=(onset, onset + n_tail * bin_size)
     )
-    above = np.flatnonzero(tail > threshold)
+    above = np.flatnonzero(tail_counts > threshold)
     if above.size == 0:
-        f["response_duration_ms"] = float("nan")
+        f["response_duration"] = float("nan")
         return f
 
     start = int(above[0])
-    quiet = tail[start:] <= threshold
+    quiet = tail_counts[start:] <= threshold
     settled = np.flatnonzero(
         np.convolve(quiet.astype(int), np.ones(3, dtype=int), mode="valid") == 3
     )
-    f["response_duration_ms"] = (
+    f["response_duration"] = (
         float(settled[0] * bin_size) if settled.size else float("nan")
     )
     return f
 
 
-def responders(it, pre, post, *, width, pre_ms, post_ms) -> np.ndarray:
-    expected = post_ms / pre_ms  # scale a baseline count to the response window
-    pre_counts = np.bincount(it[pre], minlength=width).astype(np.float64)
-    post_counts = np.bincount(it[post], minlength=width).astype(np.float64)
+def responders(it, pre_mask, post_mask, *, width, pre, post) -> np.ndarray:
+    expected = post / pre  # scale a baseline count to the response window
+    pre_counts = np.bincount(it[pre_mask], minlength=width).astype(np.float64)
+    post_counts = np.bincount(it[post_mask], minlength=width).astype(np.float64)
 
     return post_counts > pre_counts * expected + 1.0
 
@@ -1777,11 +1774,11 @@ def recruitment_threshold(curve: dict[float, float], *, recruited: float = 0.5) 
     if not above:
         return {
             "censored": "above",
-            "below_mv": None,
-            "above_mv": None,
-            "highest_tested_mv": amplitudes[-1],
+            "below": None,
+            "above": None,
+            "highest_tested": amplitudes[-1],
             "probability_at_highest": probabilities[-1],
-            "amplitudes_mv": amplitudes,
+            "amplitudes": amplitudes,
             "probabilities": probabilities,
             "recruited": float(recruited),
         }
@@ -1790,11 +1787,11 @@ def recruitment_threshold(curve: dict[float, float], *, recruited: float = 0.5) 
     lower = [a for a in amplitudes if a < crossing]
     return {
         "censored": None if lower else "below",
-        "below_mv": max(lower) if lower else None,
-        "above_mv": crossing,
-        "highest_tested_mv": amplitudes[-1],
+        "below": max(lower) if lower else None,
+        "above": crossing,
+        "highest_tested": amplitudes[-1],
         "probability_at_highest": probabilities[-1],
-        "amplitudes_mv": amplitudes,
+        "amplitudes": amplitudes,
         "probabilities": probabilities,
         "recruited": float(recruited),
     }
@@ -1822,17 +1819,17 @@ def electrode_positions(env) -> dict:
 
 
 class StimulusResponse(Decoding):
-    """What a network does in post_ms after a pulse.
+    """What a network does in post after a pulse.
 
     Measured against the baseline immediately before it, in the same window, so
     drift and a quiet electrode cancel in the ratio.
     """
 
-    onset_ms: float = 0.0
-    pre_ms: float = 1000.0
-    post_ms: float = 500.0
+    onset: float = 0.0
+    pre: float = 1000.0
+    post: float = 500.0
     bin_size: float = 10.0
-    tail_ms: float = 4000.0
+    tail: float = 4000.0
     threshold_k: float = 3.0
 
     def setup(self, env):
@@ -1848,12 +1845,12 @@ class StimulusResponse(Decoding):
                 it,
                 tt,
                 unit_count(env),
-                float(self.onset_ms),
-                window_ms=float(self.duration),
-                pre_ms=self.pre_ms,
-                post_ms=self.post_ms,
+                float(self.onset),
+                window=float(self.duration),
+                pre=self.pre,
+                post=self.post,
                 bin_size=self.bin_size,
-                tail_ms=self.tail_ms,
+                tail=self.tail,
                 threshold_k=self.threshold_k,
             )
 
@@ -1864,8 +1861,8 @@ class RecruitmentCurve(Decoding):
     schedule: list[tuple[float, float]] = Field(default_factory=list)
     """`(pulse time in ms from the start of this run, amplitude in mV)`."""
 
-    pre_ms: float = 1000.0
-    post_ms: float = 500.0
+    pre: float = 1000.0
+    post: float = 500.0
     recruited: float = 0.5
 
     def setup(self, env):
@@ -1897,13 +1894,13 @@ class RecruitmentCurve(Decoding):
 
     def _recruited(self, it, tt, at: float, extent: float, units: int, width: int):
         """Fraction of the array that answered this one pulse."""
-        if tt.size == 0 or at - self.pre_ms < 0 or at + self.post_ms > extent:
+        if tt.size == 0 or at - self.pre < 0 or at + self.post > extent:
             return 0.0
 
-        pre = (tt >= at - self.pre_ms) & (tt < at)
-        post = (tt >= at) & (tt < at + self.post_ms)
+        pre_mask = (tt >= at - self.pre) & (tt < at)
+        post_mask = (tt >= at) & (tt < at + self.post)
         responded = responders(
-            it, pre, post, width=width, pre_ms=self.pre_ms, post_ms=self.post_ms
+            it, pre_mask, post_mask, width=width, pre=self.pre, post=self.post
         )
         return float(responded.sum()) / units
 
@@ -1914,15 +1911,15 @@ class ExtracellularRecruitment(Decoding):
     schedule: list[tuple[float, float]] = Field(default_factory=list)
     """`(pulse time in ms from the start of this run, amplitude)`."""
 
-    pre_ms: float = 50.0
-    post_ms: float = 20.0
+    pre: float = 50.0
+    post: float = 20.0
     recruited: float = 0.5
     """Fraction of units that have to answer for an amplitude to count."""
 
     min_spikes: int = 1
     """Spikes in the response window that count as one unit answering."""
 
-    ceiling_mv: float | None = None
+    ceiling: float | None = None
     """Peak potential above which the response is not a spike.
       `None` skips the measurement and its voltage recording.
     """
@@ -1935,7 +1932,7 @@ class ExtracellularRecruitment(Decoding):
 
     def setup(self, env):
         env = env.record_spikes()
-        if self.ceiling_mv is not None:
+        if self.ceiling is not None:
             options = {"sections": None if self.section is None else [self.section]}
             if self.voltage_dt is not None:
                 options["dt"] = self.voltage_dt
@@ -1944,7 +1941,7 @@ class ExtracellularRecruitment(Decoding):
 
     def __call__(self, signal: Run, env=None):
         comm = getattr(env, "comm", None)
-        merged = signal.gather(comm=comm) if self.ceiling_mv is not None else signal
+        merged = signal.gather(comm=comm) if self.ceiling is not None else signal
 
         result = None
         if P.is_root(comm=comm):
@@ -1969,10 +1966,14 @@ class ExtracellularRecruitment(Decoding):
                 peaks.setdefault(amplitude, []).append(peak)
 
         curve = {a: float(np.median(v)) for a, v in answered.items() if v}
-        peak_mv = {a: float(np.max(v)) for a, v in peaks.items() if v}
-        return {"curve": curve, "peak_mv": peak_mv, **self._edges(curve, peak_mv)}
+        by_amplitude = {a: float(np.max(v)) for a, v in peaks.items() if v}
+        return {
+            "curve": curve,
+            "peak": by_amplitude,
+            **self._edges(curve, by_amplitude),
+        }
 
-    def _edges(self, curve: dict, peak_mv: dict) -> dict:
+    def _edges(self, curve: dict, by_amplitude: dict) -> dict:
         rungs = sorted(curve)
         recruits = [a for a in rungs if curve[a] >= self.recruited]
         threshold = recruits[0] if recruits else None
@@ -1983,8 +1984,10 @@ class ExtracellularRecruitment(Decoding):
             block = above[0] if above else None
 
         ceiling = None
-        if self.ceiling_mv is not None:
-            over = [a for a in sorted(peak_mv) if peak_mv[a] > float(self.ceiling_mv)]
+        if self.ceiling is not None:
+            over = [
+                a for a in sorted(by_amplitude) if by_amplitude[a] > float(self.ceiling)
+            ]
             ceiling = over[0] if over else None
 
         upper = [x for x in (block, ceiling) if x is not None]
@@ -1994,21 +1997,21 @@ class ExtracellularRecruitment(Decoding):
             else (float("inf") if threshold else float("nan"))
         )
         return {
-            "threshold_ua": threshold,
-            "block_ua": block,
-            "ceiling_ua": ceiling,
+            "threshold_uA": threshold,
+            "block_uA": block,
+            "ceiling_uA": ceiling,
             "band": band,
         }
 
     def _answered(self, it, tt, at: float, extent: float, units: int, width: int):
         """Fraction of the units that answered this one pulse."""
-        if tt.size == 0 or at - self.pre_ms < 0 or at + self.post_ms > extent:
+        if tt.size == 0 or at - self.pre < 0 or at + self.post > extent:
             return 0.0
-        pre = (tt >= at - self.pre_ms) & (tt < at)
-        post = (tt >= at) & (tt < at + self.post_ms)
-        expected = self.post_ms / self.pre_ms
-        pre_counts = np.bincount(it[pre], minlength=width).astype(np.float64)
-        post_counts = np.bincount(it[post], minlength=width).astype(np.float64)
+        pre_mask = (tt >= at - self.pre) & (tt < at)
+        post_mask = (tt >= at) & (tt < at + self.post)
+        expected = self.post / self.pre
+        pre_counts = np.bincount(it[pre_mask], minlength=width).astype(np.float64)
+        post_counts = np.bincount(it[post_mask], minlength=width).astype(np.float64)
         responded = (post_counts >= self.min_spikes) & (
             post_counts > pre_counts * expected
         )
@@ -2016,14 +2019,14 @@ class ExtracellularRecruitment(Decoding):
 
     def _peak(self, signal: Run, env, at: float) -> float | None:
         """Highest potential any recorded section reached over one pulse."""
-        if self.ceiling_mv is None:
+        if self.ceiling is None:
             return None
         vv = np.asarray(signal.voltage if signal.voltage is not None else [])
         if not len(vv):
             return None
         dt = float(getattr(env, "voltage_recording_dt", None) or self.voltage_dt or 0.1)
         lo = int(at / dt)
-        hi = int((at + self.post_ms) / dt)
+        hi = int((at + self.post) / dt)
         if hi <= lo or lo >= vv.shape[1]:
             return None
         return float(np.max(vv[:, lo : min(hi, vv.shape[1])]))
@@ -2038,13 +2041,13 @@ def population_gids(env) -> dict[int, str]:
     }
 
 
-def peristimulus(tt, it, onsets, pre_ms: float, post_ms: float):
+def peristimulus(tt, it, onsets, pre: float, post: float):
     """Spikes relative to each pulse, pooled over trials."""
     times, ids = [], []
     tt, it = np.asarray(tt), np.asarray(it)
     for at in onsets:
         relative = tt - float(at)
-        keep = (relative >= -pre_ms) & (relative < post_ms)
+        keep = (relative >= -pre) & (relative < post)
         times.append(relative[keep])
         ids.append(it[keep])
 
@@ -2057,8 +2060,8 @@ class PeriStimulusHistogram(Decoding):
     """Spikes per trial per bin, aligned to every pulse of a train."""
 
     onsets: list[float] = Field(default_factory=list)
-    pre_ms: float = 50.0
-    post_ms: float = 150.0
+    pre: float = 50.0
+    post: float = 150.0
     bin_size: float = 5.0
     populations: list[str] | None = None
 
@@ -2071,8 +2074,8 @@ class PeriStimulusHistogram(Decoding):
 
         result = None
         if P.is_root(comm=comm):
-            edges = np.arange(-self.pre_ms, self.post_ms + self.bin_size, self.bin_size)
-            relative, ids = peristimulus(tt, it, self.onsets, self.pre_ms, self.post_ms)
+            edges = np.arange(-self.pre, self.post + self.bin_size, self.bin_size)
+            relative, ids = peristimulus(tt, it, self.onsets, self.pre, self.post)
             trials = max(len(self.onsets), 1)
 
             groups: dict[str, np.ndarray] = {}
@@ -2102,9 +2105,9 @@ class PeriStimulusHistogram(Decoding):
         return P.broadcast(result, comm=comm)
 
 
-def spike_waveforms(trace, times, spikes, *, pre_ms: float, post_ms: float, dt: float):
+def spike_waveforms(trace, times, spikes, *, pre: float, post: float, dt: float):
     """Spike-aligned cutouts, aligned on the peak rather than the crossing."""
-    n_pre, n_post = round(pre_ms / dt), round(post_ms / dt)
+    n_pre, n_post = round(pre / dt), round(post / dt)
     out = []
     for at in spikes:
         centre = int(np.searchsorted(times, at))
@@ -2120,7 +2123,7 @@ def spike_waveforms(trace, times, spikes, *, pre_ms: float, post_ms: float, dt: 
     return np.asarray(out)
 
 
-def waveform_shape(waves, *, pre_ms: float, dt: float) -> dict:
+def waveform_shape(waves, *, pre: float, dt: float) -> dict:
     """Peak, half-width and after-hyperpolarisation of a mean waveform."""
     if len(waves) == 0:
         return {}
@@ -2133,13 +2136,13 @@ def waveform_shape(waves, *, pre_ms: float, dt: float) -> dict:
     after = mean[int(np.argmax(mean)) :]
 
     return {
-        "threshold_mV": threshold,
-        "peak_mV": peak,
-        "amplitude_mV": peak - threshold,
-        "half_width_ms": (
+        "threshold": threshold,
+        "peak": peak,
+        "amplitude": peak - threshold,
+        "half_width": (
             float((above[-1] - above[0]) * dt) if len(above) > 1 else float("nan")
         ),
-        "ahp_mV": float(after.min()) - threshold,
+        "ahp": float(after.min()) - threshold,
         "n_spikes": len(waves),
     }
 
@@ -2147,8 +2150,8 @@ def waveform_shape(waves, *, pre_ms: float, dt: float) -> dict:
 class Waveforms(Decoding):
     """Spike-aligned voltage cutouts, and the shape of their mean."""
 
-    pre_ms: float = 4.0
-    post_ms: float = 10.0
+    pre: float = 4.0
+    post: float = 10.0
     section: str | None = "soma"
     populations: list[str] | None = None
     max_spikes: int = 500
@@ -2199,17 +2202,17 @@ class Waveforms(Decoding):
                 vv[row],
                 times,
                 tt[it == gid][: self.max_spikes],
-                pre_ms=self.pre_ms,
-                post_ms=self.post_ms,
+                pre=self.pre,
+                post=self.post,
                 dt=dt,
             )
             if len(cut):
                 rows.setdefault(name, []).append(cut)
 
-        result = {"dt": dt, "pre_ms": self.pre_ms, "waveforms": {}, "shape": {}}
+        result = {"dt": dt, "pre": self.pre, "waveforms": {}, "shape": {}}
         for name, cuts in rows.items():
             waves = np.vstack(cuts)
             result["waveforms"][name] = waves
-            result["shape"][name] = waveform_shape(waves, pre_ms=self.pre_ms, dt=dt)
+            result["shape"][name] = waveform_shape(waves, pre=self.pre, dt=dt)
 
         return result

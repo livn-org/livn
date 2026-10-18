@@ -32,14 +32,14 @@ class LightArray(IO):
         self,
         fiber_coordinates: Float[Array, "n_fibers ixyz=4"],
         numerical_aperture: float = 0.37,
-        fiber_radius_um: float = 100.0,
-        wavelength_nm: float = 473.0,
+        fiber_radius: float = 100.0,
+        wavelength: float = 473.0,
         medium=None,
     ):
         self.fiber_coordinates = np.array(fiber_coordinates)
         self.numerical_aperture = numerical_aperture
-        self.fiber_radius_um = fiber_radius_um
-        self.wavelength_nm = wavelength_nm
+        self.fiber_radius = fiber_radius
+        self.wavelength = wavelength
         self.medium = Medium() if medium is None else import_instance(medium)
         self._cell_induction = None
         self._stack = ()
@@ -55,8 +55,8 @@ class LightArray(IO):
         return {
             "fiber_coordinates": self.fiber_coordinates.tolist(),
             "numerical_aperture": self.numerical_aperture,
-            "fiber_radius_um": self.fiber_radius_um,
-            "wavelength_nm": self.wavelength_nm,
+            "fiber_radius": self.fiber_radius,
+            "wavelength": self.wavelength,
             "medium": self.medium.serialize(),
         }
 
@@ -117,7 +117,7 @@ class LightArray(IO):
     def potential_recording(
         self,
         distances: Float[Array, "n_distances cip=3"],
-        membrane_currents: Float[Array, "n_neurons timestep"],
+        membrane_currents_uA: Float[Array, "n_neurons timestep"],
         dt: float | None = None,
         key=None,
     ) -> Float[Array, "n_channels timestep"]:
@@ -131,10 +131,10 @@ class LightArray(IO):
         the medium's optical part."""
         fiber_xyz = self.fiber_coordinates[:, 1:4]
         neuron_xyz = np.asarray(neuron_coordinates)[:, 1:4]
-        offsets_um = neuron_xyz[np.newaxis, :, :] - fiber_xyz[:, np.newaxis, :]
+        offsets = neuron_xyz[np.newaxis, :, :] - fiber_xyz[:, np.newaxis, :]
 
         return self.optical.irradiance_gain(
-            offsets_um, self.numerical_aperture, self.fiber_radius_um
+            offsets, self.numerical_aperture, self.fiber_radius
         )
 
     def reach(

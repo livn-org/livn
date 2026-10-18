@@ -7,8 +7,8 @@
         "cls": "livn.io.Medium",
         "electrical": {
           "cls": "livn.io.PointSource",
-          "height_um": 50.0,
-          "min_distance_um": 5.0,
+          "height": 50.0,
+          "min_distance": 5.0,
           "sigma_s_per_m": 0.3,
           "stimulation_resistivity_ohm_m": 3.5
         },
@@ -21,9 +21,9 @@
       "outputs": [
         {
           "cls": "livn.io.MEA",
-          "dead_time_ms": 3.0,
+          "dead_time": 3.0,
           "detection_threshold": 0.2,
-          "electrode_radius_um": 15.0,
+          "electrode_radius": 15.0,
           "input_radius": 50.0,
           "output_radius": 150.0,
           "threshold_sigma": 5.0
@@ -31,7 +31,7 @@
         {
           "cls": "livn.io.Noise",
           "seed": 0,
-          "sigma_uv": 3.613825588551824
+          "sigma_uV": 3.613825588551824
         }
       ]
     }
@@ -58,7 +58,7 @@
     "EXC_INH-soma-GABA_A-weight": 0.5380668392304807,
     "INH_EXC-soma-AMPA-weight": 10.735843693759216,
     "io-medium-electrical-stimulation_resistivity_ohm_m": 0.5317833216194349,
-    "leaders-bias": 5.116666793823242,
+    "leaders-bias_pA": 5.116666793823242,
     "leaders-by_input": 1.0,
     "leaders-delay_sd": 25.674999237060547,
     "leaders-efferent": 3.8024187741129984,

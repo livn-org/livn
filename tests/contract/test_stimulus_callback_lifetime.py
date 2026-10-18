@@ -46,8 +46,8 @@ def test_removal_is_passed_what_registration_used(env):
 
 
 def test_the_pulse_arrives_at_the_same_time_on_every_run(env):
-    duration, onset, bin_ms = 120.0, 60.0, 10.0
-    bins = np.arange(0.0, duration + bin_ms, bin_ms)
+    duration, onset, bin = 120.0, 60.0, 10.0
+    bins = np.arange(0.0, duration + bin, bin)
 
     def run(stimulus):
         env.clear()

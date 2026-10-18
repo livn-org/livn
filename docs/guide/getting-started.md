@@ -36,6 +36,7 @@ print("Initial voltages: ", v[:, 0])
 
 ## Next Steps
 
+- Read the [units convention](/guide/concepts/units)
 - Learn about the available [backends](/guide/backends)
 - Explore [examples](/examples/)
 

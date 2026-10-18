@@ -285,7 +285,7 @@ class IO(Jsonable):
         """Compute the per-recording-coordinate gain matrix
 
         Parameters
-        - distances: triplets [channel_id, gid, distance_um] as returned by `self.distances(...)`
+        - distances: triplets [channel_id, gid, distance] as returned by `self.distances(...)`
         """
         raise NotImplementedError("Please specify an IO")
 
@@ -297,15 +297,15 @@ class IO(Jsonable):
     def potential_recording(
         self,
         distances: Float[Array, "n_distances cip=3"],
-        membrane_currents: Float[Array, "n_neurons timestep"],
+        membrane_currents_uA: Float[Array, "n_neurons timestep"],
         dt: float | None = None,
         key=None,
     ) -> Float[Array, "n_channels timestep"]:
         """Estimate the voltage recorded from the channels
 
         Parameters
-        - distances: triplets [channel_id, gid, distance_um] as returned by `self.distances(...)`.
-        - membrane_currents: current per neuron index (aligned with the coordinate order
+        - distances: triplets [channel_id, gid, distance] as returned by `self.distances(...)`.
+        - membrane_currents_uA: current per neuron index (aligned with the coordinate order
             used to compute `distances`). Shape must be (n_neurons, timestep).
         - dt: sampling interval in ms; required when the medium or a transfer filters in time.
         - key: random key for stochastic transfers (`Noise`); without one they pass the signal on.
@@ -529,7 +529,7 @@ class ComposedIO(IO):
     def potential_recording(
         self,
         distances: Float[Array, "n_distances cip=3"],
-        membrane_currents: Float[Array, "n_neurons timestep"],
+        membrane_currents_uA: Float[Array, "n_neurons timestep"],
         dt: float | None = None,
         key=None,
     ) -> Float[Array, "n_channels timestep"]:
@@ -537,7 +537,9 @@ class ComposedIO(IO):
 
         if dt is None and self.needs_dt:
             raise ValueError("this IO filters in time, so potential_recording needs dt")
-        signal = self.outputs.potential_recording(distances, membrane_currents, dt=dt)
+        signal = self.outputs.potential_recording(
+            distances, membrane_currents_uA, dt=dt
+        )
         for k, transfer in enumerate(self.transfers):
             signal = transfer(signal, dt=dt, key=stage_key(key, k))
         return signal

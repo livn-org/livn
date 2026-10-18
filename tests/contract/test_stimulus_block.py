@@ -15,7 +15,7 @@ pytestmark = pytest.mark.skipif(
 
 DT = 0.1
 CELLS = 20
-STEP_MS = 50.0
+STEP = 50.0
 
 
 _OPEN_ENVS = []
@@ -58,7 +58,7 @@ def test_installing_a_stimulus_again_reuses_its_rows():
 
     heights = []
     for _ in range(4):
-        env.run(STEP_MS, stimulus=_pulse(gids))
+        env.run(STEP, stimulus=_pulse(gids))
         heights.append(env._stim_block.shape[0])
 
     assert len(set(heights)) == 1, (
@@ -73,7 +73,7 @@ def test_the_block_carries_the_command_precision_not_double_it():
     env = _env()
     gids = np.asarray(env.active_neuron_coordinates())[:, 0].astype(int)
 
-    env.run(STEP_MS, stimulus=_pulse(gids))
+    env.run(STEP, stimulus=_pulse(gids))
 
     assert env._stim_block.dtype == np.float32
 
@@ -82,10 +82,10 @@ def test_a_later_shorter_stimulus_does_not_truncate_an_earlier_one():
     env = _env()
     gids = np.asarray(env.active_neuron_coordinates())[:, 0].astype(int)
 
-    env.run(STEP_MS, stimulus=_pulse(gids, n_steps=400))
+    env.run(STEP, stimulus=_pulse(gids, n_steps=400))
     wide = env._stim_block.shape[1]
 
-    env.run(STEP_MS, stimulus=_pulse(gids, n_steps=2))
+    env.run(STEP, stimulus=_pulse(gids, n_steps=2))
     assert env._stim_block.shape[1] >= wide
 
 
@@ -93,9 +93,9 @@ def test_the_pulse_lands_at_the_offset_the_run_had_reached():
     env = _env()
     gids = np.asarray(env.active_neuron_coordinates())[:, 0].astype(int)
 
-    env.run(STEP_MS)
-    env.run(STEP_MS, stimulus=_pulse(gids))
+    env.run(STEP)
+    env.run(STEP, stimulus=_pulse(gids))
 
     driven = np.flatnonzero(np.abs(env._stim_block).max(axis=0) > 0)
     assert driven.size, "nothing was written into the block"
-    assert driven.min() * DT == pytest.approx(STEP_MS + 5 * DT, abs=DT)
+    assert driven.min() * DT == pytest.approx(STEP + 5 * DT, abs=DT)

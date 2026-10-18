@@ -92,26 +92,26 @@ class SectionSpec:
     parent_x: float = 0.0
 
 
-def lambda_f(L_um: float, diam: float, Ra: float, cm: float, freq: float) -> float:
+def lambda_f(length: float, diam: float, Ra: float, cm: float, freq: float) -> float:
     """NEURON's lambda_f for a stylised section (no 3d points)."""
     return 1e5 * math.sqrt(diam / (4 * math.pi * freq * Ra * cm))
 
 
 def d_lambda_nseg(
-    L_um: float, diam: float, Ra: float, cm: float, freq=100, d_lambda=0.1
+    length: float, diam: float, Ra: float, cm: float, freq=100, d_lambda=0.1
 ):
-    lam = lambda_f(L_um, diam, Ra, cm, freq)
-    return int((L_um / (d_lambda * lam) + 0.9) / 2) * 2 + 1
+    lam = lambda_f(length, diam, Ra, cm, freq)
+    return int((length / (d_lambda * lam) + 0.9) / 2) * 2 + 1
 
 
-def segment_area(L_um: float, diam: float, nseg: int) -> float:
+def segment_area(length: float, diam: float, nseg: int) -> float:
     """``h.area(0.5)``: the middle segment's membrane area in um2."""
-    return math.pi * diam * (L_um / nseg)
+    return math.pi * diam * (length / nseg)
 
 
-def ri_at_half(L_um: float, diam: float, nseg: int, Ra: float) -> float:
+def ri_at_half(length: float, diam: float, nseg: int, Ra: float) -> float:
     """``h.ri(0.5)``: NEURON's 1/NODERINV of the segment containing x = 0.5, MOhm."""
-    half = 1e-2 * Ra * ((L_um / nseg) / 2.0) / (math.pi * diam * diam / 4.0)
+    half = 1e-2 * Ra * ((length / nseg) / 2.0) / (math.pi * diam * diam / 4.0)
     j = int(0.5 * nseg)
     if j >= nseg:
         j = nseg - 1
@@ -175,7 +175,7 @@ class _Template:
                     kind=L.SEC_AXON,
                     sec_type="axon",
                     nseg=1,
-                    L=float(params["axon_segment_um"]),
+                    L=float(params["axon_segment_length"]),
                     diam=float(params["axon_diam"]),
                     Ra=float(params["axon_Ra"]),
                     cm=float(params["axon_cm"]),
@@ -204,7 +204,7 @@ class BRKTemplate(_Template):
     template_keys = (
         "pp",
         "Ltotal",
-        "gc",
+        "gc_mS_per_cm2",
         "global_diam",
         "global_cm",
         "cm_ratio",
@@ -248,7 +248,7 @@ class BRKTemplate(_Template):
     def set_default_parameters(self):
         self.pp = 0.5
         self.Ltotal = 400 / np.pi
-        self.gc = 10.5
+        self.gc_mS_per_cm2 = 10.5
         self.global_e_pas = -60
         self.soma_g_pas = 0.0001
         self.soma_gmax_Na = 0.00030
@@ -277,7 +277,7 @@ class BRKTemplate(_Template):
         self.axon_params = _axon.axon_parameters(params)
         self.pp = params.get("pp", self.pp)
         self.Ltotal = params.get("Ltotal", self.Ltotal)
-        self.gc = params.get("gc", self.gc)
+        self.gc_mS_per_cm2 = params.get("gc_mS_per_cm2", self.gc_mS_per_cm2)
         self.global_diam = params.get("global_diam", self.global_diam)
         self.global_cm = params.get("global_cm", self.global_cm)
         self.cm_ratio = params.get("cm_ratio", self.cm_ratio)
@@ -315,11 +315,11 @@ class BRKTemplate(_Template):
             )
 
     def _coupling_ra(self, name: str) -> float:
-        """``biophys()``: Ra such that the half-section conductance is gc/pp per area."""
-        L_um, diam, nseg = self._L[name], self._diam[name], self._nseg[name]
-        area_cm2 = segment_area(L_um, diam, nseg) * 1e-8
-        return (1e-6 / (self.gc / self.pp * area_cm2 * 1e-3)) / (
-            2 * ri_at_half(L_um, diam, nseg, 1.0)
+        """``biophys()``: Ra such that the half-section conductance is gc_mS_per_cm2/pp per area."""
+        length, diam, nseg = self._L[name], self._diam[name], self._nseg[name]
+        area_cm2 = segment_area(length, diam, nseg) * 1e-8
+        return (1e-6 / (self.gc_mS_per_cm2 / self.pp * area_cm2 * 1e-3)) / (
+            2 * ri_at_half(length, diam, nseg, 1.0)
         )
 
     def biophys(self):
@@ -635,9 +635,9 @@ class NativeCell(Cell):
 
     def _geometry(self, section: int) -> tuple[float, float, float]:
         lib, sim = self._lib()
-        L_um, diam, ra = L.c_double(), L.c_double(), L.c_double()
-        L.check(lib.rcsd_section_info(sim, section, None, L_um, diam, ra, None), lib)
-        return float(L_um.value), float(diam.value), float(ra.value)
+        length, diam, ra = L.c_double(), L.c_double(), L.c_double()
+        L.check(lib.rcsd_section_info(sim, section, None, length, diam, ra, None), lib)
+        return float(length.value), float(diam.value), float(ra.value)
 
     def _rebuild_template(self, params: dict[str, float]) -> None:
         lib, sim = self._lib()

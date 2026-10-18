@@ -22,7 +22,7 @@ class IO:
     def channel_recording(self, neuron_coordinates, neuron_ids, *recordings):
         """Transform per-neuron recordings into per-channel observations"""
 
-    def potential_recording(self, distances, membrane_currents, dt=None, key=None) -> array:
+    def potential_recording(self, distances, membrane_currents_uA, dt=None, key=None) -> array:
         """Estimate extracellular potentials from membrane currents"""
 ```
 
@@ -67,7 +67,7 @@ Each electrode has a unique integer ID and 3D coordinates in micrometers.
 
 ### Stimulation model
 
-When stimulating through an MEA, the effect on each neuron depends on its distance to the activated electrode. livn models this through the [medium](#medium) the array sits in, i.e. a point source whose field is `ρ · I / (4π · h_eff)` at the electrode surface, falling as `1 / sqrt(r² + h_eff²)`, where `ρ` is the stimulation resistivity, `I` is the electrode current, `r` is the distance between the neuron and the electrode and `h_eff` combines the electrode radius (`MEA(electrode_radius_um=15.0)`) with the culture height. Only neurons within `input_radius` of an electrode receive meaningful stimulation.
+When stimulating through an MEA, the effect on each neuron depends on its distance to the activated electrode. livn models this through the [medium](#medium) the array sits in, i.e. a point source whose field is `ρ · I / (4π · h_eff)` at the electrode surface, falling as `1 / sqrt(r² + h_eff²)`, where `ρ` is the stimulation resistivity, `I` is the electrode current, `r` is the distance between the neuron and the electrode and `h_eff` combines the electrode radius (`MEA(electrode_radius=15.0)`) with the culture height. Only neurons within `input_radius` of an electrode receive meaningful stimulation.
 
 ```python
 # Apply per-channel input to the system
@@ -97,14 +97,14 @@ cit, ct = mea.channel_recording(system.neuron_coordinates, it, t)
 
 #### Physical detection
 
-Given the recording's noise level, the MEA decides which cells an electrode actually sees the way a spike detector does. A cell counts on a channel when its spike there reaches `threshold_sigma` times the noise, and spikes closer together than `dead_time_ms` on one channel are dropped.
+Given the recording's noise level, the MEA decides which cells an electrode actually sees the way a spike detector does. A cell counts on a channel when its spike there reaches `threshold_sigma` times the noise, and spikes closer together than `dead_time` on one channel are dropped.
 
 ```python
 from livn.io import MEA, ComposedIO, Noise
 
 io = ComposedIO(
     inputs=None,   # the same MEA stimulates
-    outputs=[MEA(threshold_sigma=5.0, dead_time_ms=3.0, output_radius=150.0), Noise(3.6)],
+    outputs=[MEA(threshold_sigma=5.0, dead_time=3.0, output_radius=150.0), Noise(3.6)],
 )
 cit, ct = env.channel_recording(it, t)   # read through the env
 ```
@@ -117,11 +117,11 @@ For membrane current recordings, the MEA can estimate the extracellular field po
 
 ```python
 distances = mea.distances(system.neuron_coordinates)
-lfp = mea.potential_recording(distances, membrane_currents)
+lfp = mea.potential_recording(distances, membrane_currents_uA)
 # Returns: [n_channels, timesteps] in µV
 ```
 
-On an env, `env.potential_recording(membrane_currents)` supplies the recording distances and the sampling interval (`dt`, ms) itself.
+On an env, `env.potential_recording(membrane_currents_uA)` supplies the recording distances and the sampling interval (`dt`, ms) itself.
 
 This is used by decodings like [`LFP`](/guide/concepts/decoding) for spectral analysis of the extracellular signal.
 
@@ -152,7 +152,7 @@ from livn.stimulus import Stimulus
 stim = Stimulus.biphasic_pulse(
     n_channels=mea.num_channels,
     channels=[5, 6],         # electrodes to stimulate
-    amplitude=1.5,           # µA
+    amplitude_uA=1.5,           # µA
     phase_duration=0.2,      # ms per phase
     interphase_gap=0.05,     # ms gap between phases
     pulse_times=[0.0, 50.0], # pulse onset times in ms
@@ -193,8 +193,8 @@ fibers = LightArray(
         [1, 1500, 500, 0],   # fiber 1 at (1500, 500, 0)
     ]),
     numerical_aperture=0.37,
-    fiber_radius_um=100.0,
-    wavelength_nm=473.0,
+    fiber_radius=100.0,
+    wavelength=473.0,
     # the tissue it shines into is a Medium(optical=KubelkaMunk(scattering_per_mm=11.2))
 )
 ```
@@ -231,8 +231,8 @@ from livn.io import DispersivePointSource, KubelkaMunk, Medium, PointSource
 medium = Medium(
     electrical=PointSource(
         sigma_s_per_m=0.3,                   # conductivity
-        height_um=50.0,                      # culture height
-        min_distance_um=5.0,                 # floor on the source distance
+        height=50.0,                      # culture height
+        min_distance=5.0,                 # floor on the source distance
         stimulation_resistivity_ohm_m=3.5,   # None: 1 / sigma
     ),
     optical=KubelkaMunk(scattering_per_mm=11.2, refractive_index=1.36),
@@ -246,10 +246,10 @@ A transfer acts on a channel's signal after the device that measured it.
 
 | transfer | what it models |
 |---|---|
-| `ElectrodeRC(r_seal_mohm, c_pf)` | the electrode-electrolyte interface as a first-order RC low-pass; learnable seal resistance, shared or per channel |
+| `ElectrodeRC(r_seal, c_pF)` | the electrode-electrolyte interface as a first-order RC low-pass; learnable seal resistance, shared or per channel |
 | `FIR(taps, per_channel=False)` | a learned causal impulse response |
-| `Bandpass(low_hz, high_hz, order)` | the acquisition filter (a causal Butterworth) |
-| `Noise(sigma_uv, seed=0)` | additive Gaussian noise |
+| `Bandpass(low, high, order)` | the acquisition filter (a causal Butterworth) |
+| `Noise(sigma_uV, seed=0)` | additive Gaussian noise |
 
 ```python
 from livn.io import FIR, MEA, ComposedIO, ElectrodeRC, Noise
@@ -258,8 +258,8 @@ io = ComposedIO(
     inputs=None,
     outputs=[MEA(), ElectrodeRC(50.0, 100.0), FIR([1.0, 0.3]), Noise(6.0)],
 )
-v = io.potential_recording(distances, membrane_currents, dt=0.1)             # deterministic
-v = io.potential_recording(distances, membrane_currents, dt=0.1, key=key)    # with noise
+v = io.potential_recording(distances, membrane_currents_uA, dt=0.1)             # deterministic
+v = io.potential_recording(distances, membrane_currents_uA, dt=0.1, key=key)    # with noise
 ```
 
 ## Composed IO

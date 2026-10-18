@@ -294,7 +294,7 @@ class Sample(Interface):
             conversion_metadata = {
                 "sampling_frequency": _meta_fs,
                 "num_channels": _meta_n_channels,
-                "warmup_ms": warmup,
+                "warmup": warmup,
                 "system": self.config.system,
             }
             with open(os.path.join(dest, "conversion_metadata.json"), "w") as f:

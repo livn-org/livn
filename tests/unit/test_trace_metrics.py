@@ -5,30 +5,30 @@ from livn.optimization.metrics import reconstruction, spike_f1, threshold_spikes
 
 
 def test_spike_f1_hand_built():
-    out = spike_f1([10.0, 20.0, 30.0], [10.5, 29.0, 50.0], tol_ms=1.0)
+    out = spike_f1([10.0, 20.0, 30.0], [10.5, 29.0, 50.0], tol=1.0)
     assert (out["tp"], out["fp"], out["fn"]) == (2, 1, 1)
     assert out["precision"] == pytest.approx(2 / 3)
     assert out["recall"] == pytest.approx(2 / 3)
     assert out["f1"] == pytest.approx(2 / 3)
 
-    far = spike_f1([10.0, 20.0, 30.0], [10.5, 40.0, 50.0], tol_ms=1.0)
+    far = spike_f1([10.0, 20.0, 30.0], [10.5, 40.0, 50.0], tol=1.0)
     assert (far["tp"], far["fp"], far["fn"]) == (1, 2, 2)
     assert far["f1"] == pytest.approx(2 / 6)
 
-    perfect = spike_f1([1.0, 5.0], [5.0, 1.0], tol_ms=0.1)
+    perfect = spike_f1([1.0, 5.0], [5.0, 1.0], tol=0.1)
     assert perfect["f1"] == 1.0 and perfect["tp"] == 2
 
 
 def test_spike_f1_is_one_to_one_and_inclusive():
     # two predictions near one recorded spike: only one can claim it
-    out = spike_f1([9.5, 10.5], [10.0], tol_ms=1.0)
+    out = spike_f1([9.5, 10.5], [10.0], tol=1.0)
     assert (out["tp"], out["fp"], out["fn"]) == (1, 1, 0)
     # the nearer wins; the other stays unmatched (and can claim the next one)
-    out = spike_f1([10.0, 12.0], [10.0, 11.0], tol_ms=1.0)
+    out = spike_f1([10.0, 12.0], [10.0, 11.0], tol=1.0)
     assert out["tp"] == 2
     # the boundary is inclusive
-    assert spike_f1([0.0], [1.0], tol_ms=1.0)["tp"] == 1
-    assert spike_f1([0.0], [1.0 + 1e-6], tol_ms=1.0)["tp"] == 0
+    assert spike_f1([0.0], [1.0], tol=1.0)["tp"] == 1
+    assert spike_f1([0.0], [1.0 + 1e-6], tol=1.0)["tp"] == 0
 
 
 def test_spike_f1_empty_trains():
@@ -92,8 +92,8 @@ def test_threshold_spikes_finds_negative_spikes():
 def test_threshold_spikes_refractory_and_channels():
     dt = 0.1
     trace = _noisy_trace([1000, 1050])
-    assert threshold_spikes(trace, dt, refractory_ms=10.0).size == 1
-    assert threshold_spikes(trace, dt, refractory_ms=2.0).size == 2
+    assert threshold_spikes(trace, dt, refractory=10.0).size == 1
+    assert threshold_spikes(trace, dt, refractory=2.0).size == 2
 
     both = np.stack([_noisy_trace([300]), _noisy_trace([700], seed=3)], axis=1)
     per_channel = threshold_spikes(both, dt)
@@ -103,3 +103,16 @@ def test_threshold_spikes_refractory_and_channels():
 
     with pytest.raises(ValueError):
         threshold_spikes(trace, dt, polarity="up")
+
+
+def test_explained_variance_is_in_ms():
+    from livn.optimization.metrics import EV_DT, EV_SIGMA, explained_variance_ratio
+
+    assert (EV_DT, EV_SIGMA) == (0.05, 10.0)
+    trial = [20.0, 80.0, 150.0]
+    # duration, spike times and sigma are all ms: identical trials explain each other
+    same = explained_variance_ratio(trial, [trial, trial], duration=200.0)
+    assert same == pytest.approx(1.0)
+    # spikes 300 ms away from the data lie outside a 200 ms window and are dropped
+    off = explained_variance_ratio([320.0, 380.0], [trial, trial], duration=200.0)
+    assert off is None or off < 0.1

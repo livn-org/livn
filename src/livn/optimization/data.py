@@ -525,9 +525,9 @@ def _write(path: Path, stats: Stats) -> None:
 def windows(
     recording,
     *,
-    context_ms: float,
-    gap_ms: float = 0.0,
-    prediction_ms: float = 0.0,
+    context: float,
+    gap: float = 0.0,
+    prediction: float = 0.0,
     fs: float | None = None,
     preprocess: Sequence[Callable] = (),
     normalize: Standardize | None = None,
@@ -547,14 +547,14 @@ def windows(
 ) -> Pipeline:
     """Windows of one or several recordings as a step-addressed :class:`Pipeline`.
 
-    A window is ``context_ms``, then ``gap_ms`` and ``prediction_ms`` of signal, read at the
+    A window is ``context``, then ``gap`` and ``prediction`` of signal, read at the
     recording's rate, preprocessed there, decimated to ``fs`` (zero-phase FIR, with the read
     padded at both ends so the kernel never sees an edge) and normalised.
 
     Args:
         recording: A :class:`livn.data.Recording` or a list of them (same channels and rate)
-        context_ms, gap_ms, prediction_ms: Window layout; ``prediction`` is in the batch only
-            when ``prediction_ms > 0``
+        context, gap, prediction: Window layout; ``prediction`` is in the batch only
+            when ``prediction > 0``
         fs: Target rate in Hz; the recording's rate must be an integer multiple
         preprocess: Callables ``f(x[T, C] float64, fs, good[C]) -> x`` applied in order at the
             native rate, e.g. ``(Bandpass(300, 3000), CMR())``. ``margin(fs)`` and
@@ -623,20 +623,18 @@ def windows(
         raise ValueError(
             f"fs={target:g} is not a divisor of the recording rate {first.fs:g}"
         )
-    context = round(context_ms * target / 1e3)
-    gap = round(gap_ms * target / 1e3)
-    prediction = round(prediction_ms * target / 1e3)
-    if context < 1:
-        raise ValueError(
-            f"context_ms={context_ms} is under one sample at {target:g} Hz"
-        )
+    context_samples = round(context * target / 1e3)
+    gap_samples = round(gap * target / 1e3)
+    prediction_samples = round(prediction * target / 1e3)
+    if context_samples < 1:
+        raise ValueError(f"context={context} is under one sample at {target:g} Hz")
     if per_segment < 1:
         raise ValueError("per_segment must be at least 1")
     slots = 1 if starts in ("head", "tail") else per_segment
 
     selected = _select(recordings, split)
     entries = [(r, s, k) for r, s in selected for k in range(slots)]
-    total = context + gap + prediction
+    total = context_samples + gap_samples + prediction_samples
     for r, s in selected:
         if recordings[r].num_samples(s) // q < total:
             raise ValueError(
@@ -660,9 +658,9 @@ def windows(
     windower = _Windower(
         recordings,
         q=q,
-        context=context,
-        gap=gap,
-        prediction=prediction,
+        context=context_samples,
+        gap=gap_samples,
+        prediction=prediction_samples,
         starts=starts,
         per_segment=slots,
         preprocess=preprocess,

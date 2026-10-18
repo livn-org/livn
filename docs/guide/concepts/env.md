@@ -403,7 +403,7 @@ A model can bring parameters of its own to `set_params()` without the simulator 
 The reduced motoneuron model uses this for its leaders mechanism (`livn.models.rcsd.leaders`) where a self-firing minority of excitatory cells, a quiet background for the rest, rescaled efferents and a transmission delay spread, all from `leaders-*` keys:
 
 ```python
-env.set_params({"leaders-fraction": 0.05, "leaders-bias": 5.0, "leaders-delay_sd": 10.0})
+env.set_params({"leaders-fraction": 0.05, "leaders-bias_pA": 5.0, "leaders-delay_sd": 10.0})
 
 from livn.models.rcsd.leaders import chosen
 chosen(env)    # the leading gids

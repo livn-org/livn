@@ -25,7 +25,7 @@ jax.grad(first_spike)(jnp.asarray([12.0]))
 The metric, however, has not gradient since `spikes_to_idx` computes:
 
 ```python
-idx = jnp.round(spike_times_s / dt).astype(jnp.int32)
+idx = jnp.round(spike_times / dt).astype(jnp.int32)
 ```
 Quantizing a continuous time to an integer bin index is piecewise constant, so the gradient vanishes. Thus, while the exact spike-time gradients arrives at the metric, it is thrown away by the binning. So "hard metrics are not differentiable" means *not differentiable in the spike times* as a property of the metric, not of the simulator.
 
@@ -55,4 +55,4 @@ Spike times from a trace by MAD threshold: `mad_k · 1.4826 · MAD` below the tr
 
 ## `spike_f1` <Badge type="warning" text="hard" />
 
-Precision, recall and F1 of predicted against recorded spike times within `tol_ms`.
+Precision, recall and F1 of predicted against recorded spike times within `tol`.

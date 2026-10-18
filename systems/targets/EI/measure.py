@@ -23,7 +23,7 @@ BURST_MIN_FLOOR_FRACTION = 0.10
 MIN_SPIKES_FOR_CORRELATION = 150
 
 ANATOMY_FEATURES = (
-    "burst_width_ms",
+    "burst_width",
     "spikes_per_unit_per_burst",
     "burst_onset_peak",
     "burst_interval_cv",
@@ -46,8 +46,8 @@ CHANNEL_FEATURES = (
 
 ORDER_FEATURES = (
     "unit_participation",
-    "unit_between_rate_hz",
-    "order_spread_ms",
+    "unit_between_rate",
+    "order_spread",
     "unit_spikes_per_burst",
     "unit_active_between_fraction",
     "between_time_rho",
@@ -86,10 +86,10 @@ def resting_features(data, env, duration: float) -> dict:
     total = int(getattr(total, "item", lambda: total)())
 
     out: dict = {"total_spikes": total}
-    out["mfr"] = get(MeanFiringRate(duration=d)(data, env), "rate_hz", 0.0)
+    out["mfr"] = get(MeanFiringRate(duration=d)(data, env), "rate", 0.0)
     per_unit = PerUnitFiringRate(duration=d)(data, env) or {}
-    out["per_unit_rates_hz"] = per_unit.get("per_unit_rates_hz", {})
-    out["max_neuron_firing_rate"] = get(per_unit, "max_rate_hz", 0.0)
+    out["per_unit_rates"] = per_unit.get("per_unit_rates", {})
+    out["max_neuron_firing_rate"] = get(per_unit, "max_rate", 0.0)
     isi = ISICV(duration=d, min_spikes_per_unit=5)(data, env) or {}
     out["isi_cv"] = get(isi, "isi_cv", 0.0)
     out["isi_cv_n_units_used"] = int(isi.get("n_units_used", 0))
@@ -125,7 +125,7 @@ def resting_features(data, env, duration: float) -> dict:
             min_floor_fraction=BURST_MIN_FLOOR_FRACTION,
             min_floor=2.0,
         )(data, env),
-        "burst_rate_hz",
+        "burst_rate",
         0.0,
     )
     anatomy = BurstAnatomy(duration=d)(data, env) or {}

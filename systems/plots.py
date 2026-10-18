@@ -11,7 +11,7 @@ from livn.decoding import (
 )
 
 COLOUR = {"EXC": "#2f6fd0", "INH": "#cf3f57"}
-BIN_MS = 20.0
+BIN = 20.0
 
 
 def _plt():
@@ -69,7 +69,7 @@ class Figure(BaseModel):
 class Raster(Figure):
     warmup: float = 0.0
     duration: float | None = None
-    bin_ms: float = BIN_MS
+    bin: float = BIN
 
     def __call__(self, run, path, *, env=None, encoding=None):
         plt = _plt()
@@ -95,11 +95,11 @@ class Raster(Figure):
         _lanes(ax, _population_ranges(env))
         ax.set_title(self.title, fontsize=10)
 
-        bins = np.arange(0, duration + self.bin_ms, self.bin_ms)
+        bins = np.arange(0, duration + self.bin, self.bin)
         counts, _ = np.histogram(tt, bins=bins)
         bx.fill_between(bins[:-1] / 1000.0, counts, step="post", alpha=0.7)
         bx.set_xlabel("time (s)")
-        bx.set_ylabel(f"spikes / {self.bin_ms:g} ms")
+        bx.set_ylabel(f"spikes / {self.bin:g} ms")
 
         fig.savefig(path, dpi=130, bbox_inches="tight")
         plt.close(fig)
@@ -109,8 +109,8 @@ class Raster(Figure):
 class BurstRaster(Figure):
     warmup: float = 0.0
     duration: float | None = None
-    bin_ms: float = 10.0
-    zoom_ms: float = 200.0
+    bin: float = 10.0
+    zoom: float = 200.0
     axis: int = 2
 
     def __call__(self, run, path, *, env=None, encoding=None):
@@ -157,35 +157,33 @@ class BurstRaster(Figure):
             fontsize=10,
         )
 
-        edges = np.arange(0.0, duration + self.bin_ms, self.bin_ms)
+        edges = np.arange(0.0, duration + self.bin, self.bin)
         counts, _ = np.histogram(tt, bins=edges)
-        rate = counts / (self.bin_ms / 1000.0) / max(n_units, 1)
+        rate = counts / (self.bin / 1000.0) / max(n_units, 1)
 
         fine, _ = np.histogram(tt, bins=np.arange(0.0, duration + 1.0, 1.0))
-        sliding = np.convolve(fine, np.ones(int(self.zoom_ms)), mode="valid")
+        sliding = np.convolve(fine, np.ones(int(self.zoom)), mode="valid")
         at = float(np.argmax(sliding)) if sliding.size else 0.0
-        zoom = (tt >= at) & (tt < at + self.zoom_ms)
+        zoom = (tt >= at) & (tt < at + self.zoom)
 
         bx = fig.add_subplot(grid[1, :], sharex=ax)
         bx.fill_between(
             edges[:-1] / 1000.0, rate, step="post", color="#1e6b86", alpha=0.7
         )
-        bx.set_ylabel(f"Hz per unit\n({self.bin_ms:g} ms bins)")
+        bx.set_ylabel(f"Hz per unit\n({self.bin:g} ms bins)")
         bx.set_xlabel("time (s)")
-        bx.axvspan(
-            at / 1000.0, (at + self.zoom_ms) / 1000.0, color="#b8860b", alpha=0.25
-        )
+        bx.axvspan(at / 1000.0, (at + self.zoom) / 1000.0, color="#b8860b", alpha=0.25)
 
         cx = fig.add_subplot(grid[2, 0])
         cx.scatter(
             tt[zoom] - at, rows[zoom], s=4, c="#1e6b86", marker="|", linewidths=1.0
         )
-        cx.set_xlim(0, self.zoom_ms)
+        cx.set_xlim(0, self.zoom)
         cx.set_ylim(0, max(n_units, 1))
         cx.set_xlabel(f"time from {at / 1000:.2f} s (ms)")
         cx.set_ylabel(label)
         cx.set_title(
-            f"largest burst, {self.zoom_ms:g} ms; a travelling one reads as a slope",
+            f"largest burst, {self.zoom:g} ms; a travelling one reads as a slope",
             fontsize=9,
         )
 
@@ -204,7 +202,7 @@ class BurstRaster(Figure):
                 linewidths=1.0,
             )
             dx.set_ylabel(f"{'xyz'[self.axis - 1]} (mm)")
-        dx.set_xlim(0, self.zoom_ms)
+        dx.set_xlim(0, self.zoom)
         dx.set_xlabel("ms")
         dx.set_title("same burst, position", fontsize=9)
 
@@ -225,8 +223,8 @@ class BurstRaster(Figure):
 
 class Traces(Figure):
     cells: int = 3
-    pre_ms: float = 4.0
-    post_ms: float = 10.0
+    pre: float = 4.0
+    post: float = 10.0
     section: str = "soma"
     overlay: int = 200
 
@@ -302,8 +300,8 @@ class Traces(Figure):
                     vv[i],
                     times,
                     tt[it == iv[i]],
-                    pre_ms=self.pre_ms,
-                    post_ms=self.post_ms,
+                    pre=self.pre,
+                    post=self.post,
                     dt=dt,
                 )
                 for i in rows
@@ -311,18 +309,18 @@ class Traces(Figure):
             ]
             cuts = [c for c in cuts if len(c)]
             waves = np.vstack(cuts) if cuts else np.empty((0, 0))
-            shape = waveform_shape(waves, pre_ms=self.pre_ms, dt=dt)
+            shape = waveform_shape(waves, pre=self.pre, dt=dt)
 
             bx = axes[row][1]
             if len(waves):
-                t = np.arange(waves.shape[1]) * dt - self.pre_ms
+                t = np.arange(waves.shape[1]) * dt - self.pre
                 for one in waves[: self.overlay]:
                     bx.plot(t, one, lw=0.4, alpha=0.25, color=colour)
                 bx.plot(t, waves.mean(axis=0), lw=2.0, color="black")
                 bx.set_title(
-                    f"{shape['n_spikes']} spikes   {shape['amplitude_mV']:.0f} mV   "
-                    f"half-width {shape['half_width_ms']:.2f} ms   "
-                    f"AHP {shape['ahp_mV']:.0f} mV",
+                    f"{shape['n_spikes']} spikes   {shape['amplitude']:.0f} mV   "
+                    f"half-width {shape['half_width']:.2f} ms   "
+                    f"AHP {shape['ahp']:.0f} mV",
                     loc="left",
                     fontsize=9.5,
                 )
@@ -350,9 +348,9 @@ def _print_shapes(table):
         row = f"{name:6}{n:>7}{rate:>10.3f}{active:>6}/{n:<2}"
         if shape:
             row += (
-                f"{shape['threshold_mV']:>11.1f}{shape['peak_mV']:>9.1f}"
-                f"{shape['amplitude_mV']:>11.1f}{shape['half_width_ms']:>12.2f}"
-                f"{shape['ahp_mV']:>8.1f}"
+                f"{shape['threshold']:>11.1f}{shape['peak']:>9.1f}"
+                f"{shape['amplitude']:>11.1f}{shape['half_width']:>12.2f}"
+                f"{shape['ahp']:>8.1f}"
             )
         else:
             row += f"{'no spikes':>11}"
@@ -360,9 +358,9 @@ def _print_shapes(table):
 
 
 class StimulusResponse(Figure):
-    pre_ms: float = 50.0
-    post_ms: float = 150.0
-    bin_ms: float = 5.0
+    pre: float = 50.0
+    post: float = 150.0
+    bin: float = 5.0
 
     def __call__(self, run, path, *, env=None, encoding=None):
         plt = _plt()
@@ -400,11 +398,11 @@ class StimulusResponse(Figure):
         ax.set_xlabel("time (s)")
         ax.set_title(f"{self.title}  --  whole recording", loc="left", fontsize=10)
 
-        edges = np.arange(-self.pre_ms, self.post_ms + self.bin_ms, self.bin_ms)
+        edges = np.arange(-self.pre, self.post + self.bin, self.bin)
         curve: dict[str, list[float]] = {name: [] for name in names}
         for row, amplitude in enumerate(amplitudes):
             onsets = by_amplitude[amplitude]
-            relative, who = peristimulus(tt, it, onsets, self.pre_ms, self.post_ms)
+            relative, who = peristimulus(tt, it, onsets, self.pre, self.post)
             bx = axes[row + 1]
             for name in names:
                 mask = (

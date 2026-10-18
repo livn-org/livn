@@ -22,7 +22,7 @@ GLIF(level=3).trainable_params()
 
 ## Units
 
-Everything is in **mV / pA / ms**: `tau_m` and `t_ref` in ms, `E_L` and the threshold in mV, `g_L` in nS (so `I/g_L` is a voltage), decay rates in 1/ms. A stimulus reaching `env.run` on the diffrax backend is scaled by `current_scale` (nA by default) before it is added.
+GLIF is a delibarate exception to the [unit convention](/guide/concepts/units) so parameters keep their Allen Institute names without suffix. Everything is in **mV / pA / ms**: `tau_m` and `t_ref` in ms, `E_L` and the threshold in mV, `g_L` in nS (so `I/g_L` is a voltage), decay rates in 1/ms. A stimulus reaching `env.run` on the diffrax backend is scaled by `current_scale` (nA by default) before it is added.
 
 ## Mechanisms
 

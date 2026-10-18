@@ -83,17 +83,17 @@ class MockEnv:
         return np.random.randn(self.n_channels, n_samples).astype(np.float32)
 
 
-def make_mock_spikes(n_spikes, n_units, duration_ms, seed=42):
+def make_mock_spikes(n_spikes, n_units, duration, seed=42):
     np.random.seed(seed)
     it = np.random.randint(0, n_units, n_spikes)
-    tt = np.random.uniform(0, duration_ms, n_spikes)
+    tt = np.random.uniform(0, duration, n_spikes)
     tt = np.sort(tt)
     return it.astype(np.int32), tt.astype(np.float64)
 
 
-def make_mock_membrane_current(n_units, duration_ms, dt=0.1, seed=42):
+def make_mock_membrane_current(n_units, duration, dt=0.1, seed=42):
     np.random.seed(seed)
-    n_samples = int(duration_ms / dt)
+    n_samples = int(duration / dt)
     im = np.arange(n_units)
     m = np.random.randn(n_units, n_samples).astype(np.float32)
     return im, m
@@ -111,10 +111,11 @@ class TestMeanFiringRate:
         result = mfr(_recording(it, tt, None, None, None, None), env)
 
         assert result is not None
-        assert "rate_hz" in result
+        assert "rate" in result
         assert result["total_spikes"] == 20
         assert result["n_units"] == 10
-        assert abs(result["rate_hz"] - 2.0) < 0.01
+        assert abs(result["rate"] - 2.0) < 0.01
+        assert result["duration"] == 1000.0  # ms
 
     def test_empty_spikes(self):
         env = MockEnv(n_units=10)
@@ -126,7 +127,7 @@ class TestMeanFiringRate:
 
         assert result is not None
         assert result["total_spikes"] == 0
-        assert result["rate_hz"] < 1e-6
+        assert result["rate"] < 1e-6
 
 
 class TestActiveFraction:
@@ -256,13 +257,13 @@ class TestStability:
         n_spikes = 50
         it, tt = make_mock_spikes(n_spikes, 10, duration)
 
-        stability = Stability(duration=duration, max_rate_hz=20, min_rate_hz=0.01)
+        stability = Stability(duration=duration, max_rate=20, min_rate=0.01)
         result = stability(_recording(it, tt, None, None, None, None), env)
 
         assert result is not None
         assert "is_stable" in result
-        assert "tail_mean_hz" in result
-        assert "global_mean_hz" in result
+        assert "tail_mean" in result
+        assert "global_mean" in result
 
     def test_runaway_detection(self):
         env = MockEnv(n_units=10)
@@ -271,7 +272,7 @@ class TestStability:
         it = np.repeat(np.arange(10), 50)
         tt = np.random.uniform(1500, 2000, 500)
 
-        stability = Stability(duration=duration, tail_window=500, max_rate_hz=10)
+        stability = Stability(duration=duration, tail=500, max_rate=10)
         result = stability(_recording(it, tt, None, None, None, None), env)
 
         assert result["is_runaway"] is True
@@ -284,10 +285,10 @@ class TestStability:
         it = np.array([], dtype=np.int32)
         tt = np.array([], dtype=np.float64)
 
-        stability = Stability(duration=duration, min_rate_hz=0.05)
+        stability = Stability(duration=duration, min_rate=0.05)
         result = stability(_recording(it, tt, None, None, None, None), env)
 
-        assert result["global_mean_hz"] == 0.0
+        assert result["global_mean"] == 0.0
         assert result["is_quiescent"] is True
         assert result["is_stable"] is False
 
@@ -299,13 +300,13 @@ class TestLFP:
 
         im, m = make_mock_membrane_current(50, duration)
 
-        lfp = LFP(duration=duration, downsample_hz=1000)
+        lfp = LFP(duration=duration, downsample_rate=1000)
         result = lfp(_recording(None, None, None, None, im, m), env)
 
         assert result is not None
         assert "lfp" in result
         assert result["n_channels"] == 8
-        assert result["sample_rate_hz"] > 0
+        assert result["sample_rate"] > 0
 
     def test_downsampling(self):
         env = MockEnv(n_units=50, n_channels=4)
@@ -314,10 +315,10 @@ class TestLFP:
 
         im, m = make_mock_membrane_current(50, duration, dt=0.1)
 
-        lfp = LFP(duration=duration, downsample_hz=1000)
+        lfp = LFP(duration=duration, downsample_rate=1000)
         result = lfp(_recording(None, None, None, None, im, m), env)
 
-        assert result["sample_rate_hz"] == 1000.0
+        assert result["sample_rate"] == 1000.0
 
     def test_channel_selection(self):
         env = MockEnv(n_units=50, n_channels=16)
@@ -343,12 +344,12 @@ class TestLFP:
 class TestLFPBandPower:
     def test_basic_computation(self):
         env = MockEnv(n_units=50, n_channels=1)
-        duration_ms = 4000
+        duration = 4000
 
-        im, m = make_mock_membrane_current(50, duration_ms, dt=1.0)
+        im, m = make_mock_membrane_current(50, duration, dt=1.0)
 
         lfp_decoder = LFP(
-            duration=duration_ms,
+            duration=duration,
             compute_band_power={
                 "delta": (1.0, 4.0),
                 "theta": (4.0, 8.0),
@@ -434,7 +435,7 @@ class TestPipe:
         result = pipeline(_recording(it, tt, None, None, None, None), env)
 
         assert result is not None
-        assert "rate_hz" in result
+        assert "rate" in result
 
     def test_repr(self):
         pipeline = Pipe(
@@ -505,7 +506,7 @@ class TestSetupReturnsTheEnv:
         )
         for decoding in spikes_only:
             assert decoding.setup(_ImmutableEnv()).recorded == ("spikes",)
-        both = ExtracellularRecruitment(duration=100, ceiling_mv=50.0)
+        both = ExtracellularRecruitment(duration=100, ceiling=50.0)
         assert both.setup(_ImmutableEnv()).recorded == ("spikes", "voltage")
         assert Waveforms(duration=100).setup(_ImmutableEnv()).recorded == (
             "spikes",
@@ -777,7 +778,7 @@ def _bursting(
     n_units,
     n_bursts,
     spikes_per_unit,
-    spread_ms,
+    spread,
     *,
     period=1000.0,
     start=500.0,
@@ -788,7 +789,7 @@ def _bursting(
 ):
     rng = np.random.default_rng(seed)
     it, tt = [], []
-    step = spread_ms / max(spikes_per_unit - 1, 1)
+    step = spread / max(spikes_per_unit - 1, 1)
     for k in range(n_bursts):
         t0 = start + period * k
         for unit in range(n_units):
@@ -815,8 +816,8 @@ class TestBurstAnatomy:
         )
 
         assert wide["n_bursts"] == volley["n_bursts"] == 5
-        assert 80.0 <= wide["burst_width_ms"] <= 130.0
-        assert volley["burst_width_ms"] <= 30.0
+        assert 80.0 <= wide["burst_width"] <= 130.0
+        assert volley["burst_width"] <= 30.0
         assert wide["spikes_per_unit_per_burst"] > 4.0
         assert volley["spikes_per_unit_per_burst"] < 2.0
 
@@ -859,7 +860,7 @@ class TestBurstAnatomy:
         it, tt = np.asarray(it), np.asarray(tt)
 
         merged = _burst_anatomy(it, tt, 40, 5000.0)
-        split = _burst_anatomy(it, tt, 40, 5000.0, merge_ms=50.0)
+        split = _burst_anatomy(it, tt, 40, 5000.0, merge=50.0)
 
         assert merged["n_bursts"] == 3
         assert split["n_bursts"] == 6
@@ -875,7 +876,7 @@ class TestBurstAnatomy:
 
         assert result["n_bursts"] == 0
         for name in (
-            "burst_width_ms",
+            "burst_width",
             "spikes_per_unit_per_burst",
             "burst_onset_peak",
             "units_recruited_per_burst",
@@ -890,7 +891,7 @@ class TestBurstAnatomy:
 
         assert result["n_bursts"] == 0
         assert result["burst_spike_fraction"] == 0.0
-        assert np.isnan(result["burst_width_ms"])
+        assert np.isnan(result["burst_width"])
 
     def test_decoder_takes_its_unit_count_from_the_readout(self):
         it, tt = _bursting(40, 5, 5, 90.0, seed=7)
@@ -910,7 +911,16 @@ class TestBurstAnatomy:
         """Every spike is counted for at most one burst, at any burst rate."""
         it, tt = _bursting(40, 9, 3, 60.0, period=420.0, duration=5000.0, seed=8)
 
-        result = _burst_anatomy(it, tt, 40, 5000.0, merge_ms=100.0)
+        result = _burst_anatomy(it, tt, 40, 5000.0, merge=100.0)
 
         assert result["n_bursts"] >= 2
         assert 0.0 < result["burst_spike_fraction"] <= 1.0
+
+
+def test_baks_takes_ms_and_returns_hz():
+    from livn.decoding import baks
+
+    spikes = np.arange(0.0, 2000.0, 100.0)  # a 10 Hz train, in ms
+    rate, h = baks(spikes, np.array([1000.0]))
+    assert 5.0 < rate[0] < 15.0  # Hz
+    assert 10.0 < h[0] < 1000.0  # bandwidth in ms

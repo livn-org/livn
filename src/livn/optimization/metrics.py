@@ -16,12 +16,12 @@ __all__ = [
     "threshold_spikes",
 ]
 
-EV_SIGMA = 0.01  # Gaussian width = Teeter et al.'s 10 ms temporal scale
-EV_DT = 5e-5  # 20 kHz frame for building the spike trains
+EV_SIGMA = 10.0  # ms, Gaussian width = Teeter et al.'s 10 ms temporal scale
+EV_DT = 0.05  # ms, 20 kHz frame for building the spike trains
 
 
-def _gauss_kernel(sigma_s, dt):
-    sig = sigma_s / dt
+def _gauss_kernel(sigma, dt):
+    sig = sigma / dt
     L = round(sig * 10)
     x = jnp.arange(L) - (L - 1) / 2.0
     k = jnp.exp(-0.5 * (x / sig) ** 2)
@@ -49,15 +49,15 @@ def _ev_ratio_traces(model_trace, data_traces, kernel):
     return jnp.where(ev_dd == 0, jnp.nan, ev_md / ev_dd)
 
 
-def spikes_to_idx(spike_times_s, steps, dt):
-    idx = jnp.round(jnp.asarray(spike_times_s) / dt).astype(jnp.int32)
+def spikes_to_idx(spike_times, steps, dt):
+    idx = jnp.round(jnp.asarray(spike_times) / dt).astype(jnp.int32)
     return idx[(idx >= 0) & (idx < steps)]
 
 
-def ev_ratio(model_idx, data_idx_list, steps, dt, sigma_s=EV_SIGMA):
+def ev_ratio(model_idx, data_idx_list, steps, dt, sigma=EV_SIGMA):
     if len(data_idx_list) < 2:
         return None
-    kernel = _gauss_kernel(sigma_s, dt)
+    kernel = _gauss_kernel(sigma, dt)
     data_traces = jnp.stack(
         [_binary_train(jnp.asarray(idx), steps) for idx in data_idx_list]
     )
@@ -67,14 +67,14 @@ def ev_ratio(model_idx, data_idx_list, steps, dt, sigma_s=EV_SIGMA):
 
 
 def explained_variance_ratio(
-    model_spikes, data_spike_list, duration_s, dt=EV_DT, sigma=EV_SIGMA
+    model_spikes, data_spike_list, duration, dt=EV_DT, sigma=EV_SIGMA
 ):
     if len(data_spike_list) < 2:
         return None
-    steps = round(duration_s / dt)
+    steps = round(duration / dt)
     midx = spikes_to_idx(model_spikes, steps, dt)
     didx = [spikes_to_idx(s, steps, dt) for s in data_spike_list]
-    r = ev_ratio(midx, didx, steps, dt, sigma_s=sigma)
+    r = ev_ratio(midx, didx, steps, dt, sigma=sigma)
     if r is None:
         return None
     r = float(r)
@@ -154,7 +154,7 @@ def threshold_spikes(
     trace,
     dt: float,
     mad_k: float = 5.0,
-    refractory_ms: float = 10.0,
+    refractory: float = 10.0,
     polarity: str = "negative",
 ):
     """Spike times from a trace by MAD threshold.
@@ -163,7 +163,7 @@ def threshold_spikes(
         trace: ``(time,)`` or ``(time, channel)``
         dt: sample interval in ms
         mad_k: threshold in robust standard deviations
-        refractory_ms: dead time after a detection
+        refractory: dead time after a detection
         polarity: ``"negative"`` or ``"positive"``
 
     Returns:
@@ -174,7 +174,7 @@ def threshold_spikes(
     trace = np.asarray(trace, dtype=np.float64)
     if trace.ndim == 2:
         return [
-            threshold_spikes(trace[:, c], dt, mad_k, refractory_ms, polarity)
+            threshold_spikes(trace[:, c], dt, mad_k, refractory, polarity)
             for c in range(trace.shape[1])
         ]
     if trace.ndim != 1:
@@ -183,24 +183,24 @@ def threshold_spikes(
     mad = float(np.median(np.abs(trace - np.median(trace)))) + 1e-9
     threshold = mad_k * mad * 1.4826
     hit = trace < -threshold if polarity == "negative" else trace > threshold
-    refractory = max(1, round(refractory_ms / max(dt, 1e-9)))
+    refractory_samples = max(1, round(refractory / max(dt, 1e-9)))
 
     kept = []
-    last = -refractory - 1
+    last = -refractory_samples - 1
     for t in np.flatnonzero(hit):
-        if t - last > refractory:
+        if t - last > refractory_samples:
             kept.append(t)
             last = t
     return np.asarray(kept, dtype=np.float64) * dt
 
 
-def spike_f1(pred_times, gt_times, tol_ms: float = 1.0) -> dict:
+def spike_f1(pred_times, gt_times, tol: float = 1.0) -> dict:
     """Tolerance-matched spike precision, recall and F1 for one train.
 
     Args:
         pred_times: predicted spike times in ms
         gt_times: recorded spike times in ms
-        tol_ms: matching tolerance in ms
+        tol: matching tolerance in ms
 
     Returns:
         ``{"precision", "recall", "f1", "tp", "fp", "fn"}``. Ratios are NaN when undefined (no
@@ -209,7 +209,7 @@ def spike_f1(pred_times, gt_times, tol_ms: float = 1.0) -> dict:
     """
     pred = np.sort(np.asarray(pred_times, dtype=np.float64).ravel())
     gt = np.sort(np.asarray(gt_times, dtype=np.float64).ravel())
-    tol = max(0.0, float(tol_ms))
+    tol = max(0.0, float(tol))
 
     used = np.zeros(gt.shape, dtype=bool)
     tp = 0

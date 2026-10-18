@@ -527,8 +527,8 @@ class Generate2DSystem(Interface):
     def lightarray(
         self,
         fiber_coordinates: list[list[float]] | None = None,
-        fiber_height_um: float = 100.0,
-        wavelength_nm: float = 473.0,
+        fiber_height: float = 100.0,
+        wavelength: float = 473.0,
         overwrite: bool = False,
     ):
         """Write a ``lightarray.json`` for use with ``LightArray.from_directory``.
@@ -536,7 +536,7 @@ class Generate2DSystem(Interface):
         Args:
             fiber_coordinates: Explicit ``[[id, x, y, z], ...]`` fibre positions.
                 If *None*, a single fibre is placed at the centre of the culture
-                area at ``-fiber_height_um`` above the surface.
+                area at ``-fiber_height`` above the surface.
         """
         fn = os.path.join(self.config.output_directory, "lightarray.json")
         if not overwrite and os.path.isfile(fn):
@@ -549,12 +549,12 @@ class Generate2DSystem(Interface):
             bounds = (tuple(area[0]), tuple(area[1]))
             (xmin, ymin), (xmax, ymax) = bounds
             fiber_coordinates = [
-                [0, (xmin + xmax) / 2, (ymin + ymax) / 2, -fiber_height_um]
+                [0, (xmin + xmax) / 2, (ymin + ymax) / 2, -fiber_height]
             ]
 
         la = LightArray(
             fiber_coordinates=np.array(fiber_coordinates, dtype=np.float32),
-            wavelength_nm=wavelength_nm,
+            wavelength=wavelength,
         )
 
         with open(fn, "w") as f:

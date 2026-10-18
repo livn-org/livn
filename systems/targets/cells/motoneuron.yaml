@@ -37,8 +37,7 @@ Drive:
     repeats: 3
 Targets:
     Rin:    
-        I: [-100.0]
-        I_factor: 1.0e-3
+        I_pA: [-100.0]
         upper: [598.0]
         lower: [540.0]
         t: [250, 1250]
@@ -64,12 +63,11 @@ Targets:
         # a mean f-I curve can carry rate below the mean rheobase:
         #   I:    [20,   30,   40,    50,    60,    70,    80]
         #   mean: [3.88, 9.09, 11.75, 14.29, 15.96, 16.58, 18.25]
-        I: [25, 30, 40, 50, 60, 70, 80]
-        I_factor: 1.0e-3
+        I_pA: [25, 30, 40, 50, 60, 70, 80]
         mean: [5.1, 9.09, 11.75, 14.29, 15.96, 16.58, 18.25]
         t: [500, 1500]
         # Miles 2004 "steady-state firing frequency (averaged over the last 500 msec of pulses)".
-        steady_ms: 500
+        steady: 500
         # Stated rather than left to the default. These points are read off
         # Miles' figure, not tabulated, so the tolerance is reading error plus
         # cell-to-cell spread rather than the SEMs the paper quotes on the
@@ -90,7 +88,7 @@ Recruitment:
 Parameters:
   Nas_s_on: 1
   axon_segments: 5
-  axon_segment_um: 30.0
+  axon_segment_length: 30.0
   axon_Ra: 70.0
   axon_gmax_K: 0.3
   e_pas: -62

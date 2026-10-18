@@ -73,7 +73,7 @@ def test_the_best_coupled_channel_is_an_index_a_policy_can_drive():
     channel = int(env.channel_reach().sum(axis=1).argmax())
 
     policy = BiphasicPulsePolicy(
-        n_channels=len(env.io.channel_ids), channels=[channel], amplitude=1.0
+        n_channels=len(env.io.channel_ids), channels=[channel], amplitude_uA=1.0
     )
     command = np.asarray(policy())
     assert command.shape[-1] == len(env.io.channel_ids)

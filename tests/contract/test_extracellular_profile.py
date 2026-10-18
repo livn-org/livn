@@ -33,10 +33,10 @@ def test_the_stored_profile_and_amplitudes_are_what_the_cells_produce():
     profile, amplitude = constants(_measured("EXC"), _measured("INH"))
     model = ReducedCalciumSomaDendrite
     np.testing.assert_allclose(
-        profile["distance_um"], model.EXTRACELLULAR_PROFILE["distance_um"]
+        profile["distance"], model.EXTRACELLULAR_PROFILE["distance"]
     )
     np.testing.assert_allclose(
-        profile["trough_uv"], model.EXTRACELLULAR_PROFILE["trough_uv"], atol=1e-3
+        profile["trough_uV"], model.EXTRACELLULAR_PROFILE["trough_uV"], atol=1e-3
     )
     assert amplitude["INH"] == pytest.approx(
         model.EXTRACELLULAR_AMPLITUDE["INH"], rel=1e-6

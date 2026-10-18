@@ -219,18 +219,18 @@ def test_a_policy_is_delivered_over_the_run_it_is_handed_to():
     sweep = PulseSweepPolicy(
         n_channels=len(env.io.channel_ids),
         channels=[0],
-        amplitudes=safe_stimulus_amplitudes(env),
+        amplitudes_uA=safe_stimulus_amplitudes(env),
         repeats=2,
-        trial_ms=200.0,
-        onset_ms=50.0,
+        trial=200.0,
+        onset=50.0,
         dt=DT,
     )
 
     quiet = 100.0
     env.run(quiet)
-    env.run(sweep.duration_ms, stimulus=sweep)
+    env.run(sweep.duration, stimulus=sweep)
 
-    driven = np.flatnonzero(_drive(env, int((quiet + sweep.duration_ms) / DT) + 1))
+    driven = np.flatnonzero(_drive(env, int((quiet + sweep.duration) / DT) + 1))
     starts = [driven[0]] + [b for a, b in itertools.pairwise(driven) if b - a > 1]
 
     assert len(starts) == sweep.n_trials, "a pulse went missing"
@@ -246,10 +246,10 @@ def test_a_run_too_short_for_its_policy_is_refused():
     sweep = PulseSweepPolicy(
         n_channels=len(env.io.channel_ids),
         channels=[0],
-        amplitudes=(300.0,),
+        amplitudes_uA=(300.0,),
         repeats=4,
-        trial_ms=200.0,
-        onset_ms=50.0,
+        trial=200.0,
+        onset=50.0,
         dt=DT,
     )
 
@@ -260,6 +260,6 @@ def test_a_run_too_short_for_its_policy_is_refused():
 def test_a_policy_handed_straight_to_stimulus_says_where_it_belongs():
     from livn.policy import PulseSweepPolicy
 
-    sweep = PulseSweepPolicy(n_channels=4, channels=[0], amplitudes=(1.0,))
+    sweep = PulseSweepPolicy(n_channels=4, channels=[0], amplitudes_uA=(1.0,))
     with pytest.raises(ValueError, match="commands channels, not cells"):
         Stimulus.from_arg(sweep)

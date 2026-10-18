@@ -50,16 +50,16 @@ def _env():
     return env
 
 
-def _sweep(env, repeats=2, trial_ms=200.0):
+def _sweep(env, repeats=2, trial=200.0):
     from livn.policy import PulseSweepPolicy
 
     return PulseSweepPolicy(
         n_channels=len(env.io.channel_ids),
         channels=[0],
-        amplitudes=safe_stimulus_amplitudes(env),
+        amplitudes_uA=safe_stimulus_amplitudes(env),
         repeats=repeats,
-        trial_ms=trial_ms,
-        onset_ms=50.0,
+        trial=trial,
+        onset=50.0,
         dt=DT,
     )
 
@@ -133,7 +133,7 @@ def test_a_policy_handed_to_run_is_deferred_rather_than_held():
     env = _env()
     sweep = _sweep(env)
 
-    env.run(sweep.duration_ms, stimulus=sweep)
+    env.run(sweep.duration, stimulus=sweep)
 
     assert env._stim_block is None, "the command was held after all"
     assert len(env._stim_streams) == 1
@@ -149,12 +149,10 @@ def test_streaming_a_command_simulates_identically_to_holding_it():
 
         stimulus = sweep
         if not stream:
-            stimulus = env.cell_stimulus(
-                sweep.window(0.0, sweep.duration_ms, DT), dt=DT
-            )
+            stimulus = env.cell_stimulus(sweep.window(0.0, sweep.duration, DT), dt=DT)
             assert not stimulus.deferred
 
-        run = env.run(sweep.duration_ms, stimulus=stimulus)
+        run = env.run(sweep.duration, stimulus=stimulus)
         assert (env._stim_block is None) is stream
         times = run.spike_times
         spikes.append(np.asarray([] if times is None else times))
@@ -172,30 +170,30 @@ def test_streaming_a_command_simulates_identically_to_holding_it():
 @neuron_only
 def test_a_protocol_too_long_to_hold_is_still_delivered(monkeypatch):
     env = _env()
-    sweep = _sweep(env, repeats=4, trial_ms=400.0)
+    sweep = _sweep(env, repeats=4, trial=400.0)
 
-    n_steps = round(sweep.duration_ms / DT)
+    n_steps = round(sweep.duration / DT)
     held_bytes = n_steps * _width(env) * 4
     monkeypatch.setenv(MAX_STIMULUS_GB_ENV, str(held_bytes / 2**30 / 2))
     monkeypatch.setenv(STIMULUS_CHUNK_MB_ENV, str(held_bytes / 2**20 / 8))
 
     with pytest.raises(MemoryError):
-        env.cell_stimulus(sweep.window(0.0, sweep.duration_ms, DT), dt=DT)
+        env.cell_stimulus(sweep.window(0.0, sweep.duration, DT), dt=DT)
 
     env = env.record_spikes()
-    env.run(sweep.duration_ms, stimulus=sweep)
+    env.run(sweep.duration, stimulus=sweep)
 
     stream = env._stim_streams[0]
     assert stream["chunk_steps"] < n_steps, "the window is the whole protocol"
 
     peaks, at = [], 0.0
-    step_ms = stream["chunk_steps"] * DT
-    while at < sweep.duration_ms:
+    step = stream["chunk_steps"] * DT
+    while at < sweep.duration:
         window = np.asarray(
-            stream["stimulus"].window(at, min(at + step_ms, sweep.duration_ms))
+            stream["stimulus"].window(at, min(at + step, sweep.duration))
         )
         peaks.append(np.abs(window).max(axis=1))
-        at += step_ms
+        at += step
 
     peak = np.concatenate(peaks)
     assert len(peak) == n_steps, "the windows do not tile the protocol"
@@ -209,12 +207,12 @@ def test_windows_do_not_accumulate_over_a_protocol_delivered_in_pieces():
     env = _env()
     sweep = _sweep(env)
 
-    env.run(sweep.duration_ms, stimulus=sweep)
+    env.run(sweep.duration, stimulus=sweep)
     assert len(env._stim_streams) == 1
 
-    env.run(sweep.duration_ms, stimulus=sweep)
+    env.run(sweep.duration, stimulus=sweep)
     assert len(env._stim_streams) == 1, "the finished command is still held"
-    assert env._stim_streams[0]["start_step"] == round(sweep.duration_ms / DT)
+    assert env._stim_streams[0]["start_step"] == round(sweep.duration / DT)
 
 
 @neuron_clamps
@@ -222,7 +220,7 @@ def test_a_run_handed_no_stimulus_is_not_stimulated_by_the_last_one():
     env = _env()
     sweep = _sweep(env)
 
-    env.run(sweep.duration_ms, stimulus=sweep)
+    env.run(sweep.duration, stimulus=sweep)
     for clamp in env._stim_clamps:
         clamp.amp = 12.0
 
@@ -238,7 +236,7 @@ def test_a_streamed_command_stops_when_it_ends():
     sweep = _sweep(env)
     quiet = 100.0
 
-    env.run(sweep.duration_ms + quiet, stimulus=sweep)
+    env.run(sweep.duration + quiet, stimulus=sweep)
 
     stream = env._stim_streams[0]
     last = stream["start_step"] + stream["n_steps"] - 1
