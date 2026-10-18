@@ -12,6 +12,9 @@ model = ReducedCalciumSomaDendrite()
 |--------|---------|---------|
 | `input_mode` | `None` | Override how the cell interprets a stimulus (`current_density`, `conductance`, `current`, `irradiance`). Only needed on the JAX backend, which bakes the choice into the compute graph |
 | `refractory_period` | `2.0` | Spike-detector dead time in ms |
+| `celsius` | `23.0` | Temperature (°C) of the NEURON and native backends, and of the opsin's Q10 scaling on every backend |
+| `opsin` | `"RhO3c"` | The opsin on each soma: `RhO3c` or `ChR2H134R`, see [Opsin configuration](#opsin-configuration) |
+| `opsin_params` | `None` | Overrides of the opsin mechanism's parameters, on every cell |
 | `short_term_depression` | `False` | Wire AMPA through `DepLinExp2Syn` (Tsodyks-Markram depression, per presynaptic stream) instead of `StdpLinExp2Syn` |
 
 ## Cell types
@@ -113,6 +116,18 @@ model = ReducedCalciumSomaDendrite()
 model.opsin_config()
 # {'mechanism': 'RhO3c', 'sections': ['soma'], 'wavelength': 473.0}
 ```
+
+`opsin="ChR2H134R"` selects the four-state ChR2(H134R) model of Williams et al. (2013), ported from ModelDB 244414. It is a density mechanism on the soma that reads irradiance (mW/mm²), with rates scaled by Q10 from 22 °C to `celsius`. Its conductance `gmax` is in S/cm² (default `4e-4`, the paper's 0.4 mS/cm²) and is a cell parameter, so expression can differ per cell:
+
+```python
+model = ReducedCalciumSomaDendrite(opsin="ChR2H134R", opsin_params={"tauChR2": 1.3})
+env = Env(system, model=model).init()
+env.cells[3].set_params({"soma.gmax_ChR2H134R": 1e-3})  # NEURON and native
+# diffrax: one value per cell in the module's `opsin_gmax`
+env = env.cells.set_params({"opsin_gmax": gmax})
+```
+
+The other parameters keep the `.mod`'s names (`EChR2`, `gamma`, `A`, `B`, `C`, `wavelength`, `hc_J_m`, `wloss`, `sigma_retinal_m2`, `tauChR2`, `temp`, `Q10_*`) and are cell parameters too (`soma.<name>_ChR2H134R`).
 
 Override in a subclass to customize or disable:
 

@@ -69,6 +69,17 @@ class _EnvCallback:
 _REGISTERED_CALLBACKS: list[_EnvCallback] = []
 
 
+def _is_density_mechanism(h, name: str) -> bool:
+    types = h.MechanismType(0)
+    ref = h.ref("")
+    for i in range(int(types.count())):
+        types.select(i)
+        types.selected(ref)
+        if ref[0] == name:
+            return True
+    return False
+
+
 def _register_callback(cvode, callback: _EnvCallback) -> None:
     cvode.extra_scatter_gather(0, callback)
     _REGISTERED_CALLBACKS.append(callback)
@@ -293,7 +304,10 @@ class Env(EnvProtocol):
         self._opsin_cb = _EnvCallback(self, "_update_opsin_phi", "_opsin_registered")
 
         # opsin (irradiance) stimulus block
-        self._opsin_refs: dict[tuple[int, int], object] = {}  # (gid, sec_id) -> pp
+        # (gid, sec_id) -> the point process, or each segment's mechanism
+        self._opsin_refs: dict[tuple[int, int], list] = {}
+        self._opsin_variable = "phi"
+        self._opsin_units = "photon_flux"
         self._opsin_pps: list = []
         self._opsin_block: np.ndarray | None = None
         self._opsin_dt: float | None = None
@@ -396,10 +410,14 @@ class Env(EnvProtocol):
         return self
 
     def _insert_opsins(self) -> None:
-        """Insert opsin point processes on the sections named by the model.
+        """Insert the opsin on the sections named by the model.
 
         Enabled when the model exposes ``neuron_opsin_config()`` though the opsins sit
-        idle (``phi = 0``) until an ``input_mode="irradiance"`` stimulus drives them.
+        idle (no light) until an ``input_mode="irradiance"`` stimulus drives them.
+        A point process (RhO3c) goes at the middle of each section, a density
+        mechanism (ChR2H134R) on every segment; either way the stimulus sets the
+        config's ``variable`` (default ``phi``) in its ``units`` (default
+        ``photon_flux``) every step.
         """
         if not hasattr(self.model, "neuron_opsin_config"):
             return
@@ -410,10 +428,13 @@ class Env(EnvProtocol):
         populations = cfg.get("populations", list(self.cells.keys()))
         target_sections = set(cfg.get("sections", ["soma"]))
         params = cfg.get("params", {})
-        mech = getattr(self._h, mech_name, None)
-        if mech is None:
+        density = _is_density_mechanism(self._h, mech_name)
+        mech = None if density else getattr(self._h, mech_name, None)
+        if mech is None and not density:
             logger.warning("opsin mechanism %s not available", mech_name)
             return
+        self._opsin_variable = cfg.get("variable", "phi")
+        self._opsin_units = cfg.get("units", "photon_flux")
 
         for pop in populations:
             for gid, cell in self.cells.get(pop, {}).items():
@@ -424,10 +445,15 @@ class Env(EnvProtocol):
                     sec_name = sec.name().split(".")[-1]
                     if sec_name not in target_sections:
                         continue
-                    pp = mech(sec(0.5))
-                    for pname, value in params.items():
-                        setattr(pp, pname, value)
-                    self._opsin_refs[(int(gid), sec_id)] = pp
+                    if density:
+                        sec.insert(mech_name)
+                        sites = [getattr(seg, mech_name) for seg in sec]
+                    else:
+                        sites = [mech(sec(0.5))]
+                    for site in sites:
+                        for pname, value in params.items():
+                            setattr(site, pname, value)
+                    self._opsin_refs[(int(gid), sec_id)] = sites
 
     def _index_plastic_synapses(self) -> None:
         """Precompute which mechanisms and rows are plastic / have a w_plastic slot"""
@@ -1304,7 +1330,7 @@ class Env(EnvProtocol):
                 "Stimulus has input_mode='irradiance' but no opsins are attached; "
                 "configure the model's neuron_opsin_config()."
             )
-        phi_stim = stimulus.convert_to("photon_flux")
+        phi_stim = stimulus.convert_to(self._opsin_units)
         if phi_stim.gids is None:
             phi_stim.gids = self.active_gids()
         if self._opsin_dt is None:
@@ -1317,10 +1343,10 @@ class Env(EnvProtocol):
         pending: list[tuple[object, np.ndarray]] = []
         for gid, section_id, series in phi_stim:
             gid, section_id = int(gid), int(section_id)
-            pp = self._opsin_refs.get((gid, section_id))
-            if pp is None:
-                continue
-            pending.append((pp, np.asarray(series, dtype=np.float64)))
+            values = np.asarray(series, dtype=np.float64)
+            pending.extend(
+                (site, values) for site in self._opsin_refs.get((gid, section_id), ())
+            )
 
         if not pending:
             return
@@ -1348,8 +1374,9 @@ class Env(EnvProtocol):
         if idx >= block.shape[1]:
             idx = block.shape[1] - 1
         col = block[:, idx]
-        for i, pp in enumerate(self._opsin_pps):
-            pp.phi = float(col[i])
+        variable = self._opsin_variable
+        for i, site in enumerate(self._opsin_pps):
+            setattr(site, variable, float(col[i]))
         self._opsin_step += 1
 
     def _find_cell(self, gid: int):
@@ -2042,6 +2069,8 @@ class Env(EnvProtocol):
         self._stim_dt = None
         self._stim_step = 0
         self._stim_last_key = None
+        for site in self._opsin_pps:
+            setattr(site, self._opsin_variable, 0.0)
         self._opsin_pps = []
         self._opsin_block = None
         self._opsin_dt = None

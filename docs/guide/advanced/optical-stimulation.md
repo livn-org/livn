@@ -57,6 +57,17 @@ C --Ga(φ)--> O --Gd--> D --Gr--> C
 
 where `Ga(φ) = ka · φᵖ / (φᵖ + φmᵖ)` depends on photon flux φ.
 
+### ChR2(H134R) (4-state)
+
+The four-state model of Williams et al. (2013), *Computational optogenetics: empirically-derived voltage- and light-sensitive channelrhodopsin-2 model*, PLoS Comput Biol 9(9): e1003220, as implemented for NEURON in ModelDB 244414. Two open states (O1, O2) and two closed states (C1, C2), with an activation variable `p` that follows the light with a 1.3 ms time constant:
+
+```
+C1 --ε1 F p--> O1 <--e12/e21--> O2 <--ε2 F p-- C2 --Gr--> C1
+     O1 --Gd1--> C1,            O2 --Gd2--> C2
+```
+
+The current is `gmax (A + B e^{V/C})/V (O1 + γ O2)(V − E)`, i.e. inwardly rectifying, with the closing rate `Gd1` and recovery `Gr` voltage dependent. All rates scale by Q10 from 22 °C to the model's `celsius`. It desensitizes, so the second of two pulses is weaker, which matters for pulse trains. Select it with `ReducedCalciumSomaDendrite(opsin="ChR2H134R")`; see [RCSD](/models/rcsd#opsin-configuration) for its parameters and per-cell expression. It is available on the NEURON, native and diffrax backends.
+
 ### RhO6c (6-state)
 
 An alternative six-state model (Grossman et al. 2011) available in the NEURON backend. It has two open states and two closed states, providing more accurate kinetics for sustained illumination:
@@ -140,16 +151,11 @@ The wavelength is read from `meta_data["wavelength"]` (default: 473.0 nm). When 
 
 ### NEURON
 
-Each opsin POINT_PROCESS:
-- Is attached to the specified cell section (e.g. soma at midpoint 0.5)
-- Receives photon flux (`phi`) via CVode scatter/gather callbacks each timestep
-- Injects photocurrent into the host section
-
-The irradiance stimulus is automatically converted to photon flux before delivery.
+RhO3c is a POINT_PROCESS at the midpoint of the section; ChR2H134R a density mechanism on every segment. Either receives the light each timestep through a CVode scatter/gather callback: RhO3c as photon flux (`phi`, converted from the irradiance), ChR2H134R as irradiance (`Irradiance`, mW/mm²).
 
 ### Diffrax
 
-In the Diffrax backend, the opsin dynamics are integrated directly into the ODE system. The RhO3c state variables (C, O) are appended to the neuron state vector and solved alongside the membrane dynamics. This makes the full optical stimulation pathway end-to-end differentiable.
+In the Diffrax backend, the opsin dynamics are integrated directly into the ODE system. The opsin's state variables (C, O for RhO3c; O1, O2, C1, p for ChR2H134R) are appended to the neuron state vector and solved alongside the membrane dynamics. The ChR2H134R conductance is one value per cell (`opsin_gmax`), differentiable like the light. This makes the full optical stimulation pathway end-to-end differentiable.
 
 ```python
 import os

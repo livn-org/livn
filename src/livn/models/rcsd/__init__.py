@@ -40,6 +40,8 @@ class ReducedCalciumSomaDendrite(Model):
         celsius: float = 23.0,
         weight_cv: float | dict[str, float] = 0.0,
         weight_seed: int = 20260926,
+        opsin: str = "RhO3c",
+        opsin_params: dict[str, float] | None = None,
     ):
         if input_mode is not None and input_mode not in {
             "current_density",
@@ -71,6 +73,13 @@ class ReducedCalciumSomaDendrite(Model):
         # projection ("EXC->EXC") or one value for all; see `weight_scales`
         self.weight_cv = weight_cv
         self.weight_seed = int(weight_seed)
+        if opsin not in self.OPSINS:
+            raise ValueError(
+                f"Unknown opsin {opsin!r}; expected one of {', '.join(self.OPSINS)}"
+            )
+        self.opsin = opsin
+        # overrides of the opsin mechanism's parameters, on every cell
+        self.opsin_params = dict(opsin_params) if opsin_params else None
         if isinstance(weight_cv, dict):
             bad = {k: v for k, v in weight_cv.items() if float(v) < 0}
         else:
@@ -215,12 +224,24 @@ class ReducedCalciumSomaDendrite(Model):
             return (-1000.0, 1000.0)
         return None
 
+    OPSINS: ClassVar[dict[str, dict]] = {
+        "RhO3c": {"wavelength": 473.0},
+        "ChR2H134R": {
+            "wavelength": 470.0,
+            "variable": "Irradiance",
+            "units": "mW/mm2",
+        },
+    }
+
     def opsin_config(self):
-        return {
-            "mechanism": "RhO3c",
+        config = {
+            "mechanism": self.opsin,
             "sections": ["soma"],
-            "wavelength": 473.0,
+            **self.OPSINS[self.opsin],
         }
+        if self.opsin_params:
+            config["params"] = dict(self.opsin_params)
+        return config
 
     def neuron_opsin_config(self):
         return self.opsin_config()
@@ -1096,9 +1117,17 @@ class ReducedCalciumSomaDendrite(Model):
     def diffrax_module(self, env, key):
         from livn.models.rcsd.diffrax.culture import MotoneuronCulture
 
+        params = self.params(self._exc_params_name())
+        if self.opsin != "RhO3c":
+            params = {
+                **params,
+                "opsin": self.opsin,
+                "opsin_params": self.opsin_params or {},
+                "opsin_celsius": self.celsius,
+            }
         return MotoneuronCulture(
             num_neurons=len(env.simulated_gids(everywhere=True)),
-            params=self.params(self._exc_params_name()),
+            params=params,
             key=key,
         )
 

@@ -276,6 +276,37 @@ RCSD_API int rcsd_opsin_set(RCSDSim* sim, int opsin, double g0, double E, double
 RCSD_API int rcsd_opsin_count(RCSDSim* sim);
 RCSD_API int rcsd_opsin_state(RCSDSim* sim, int opsin, double* C, double* O, double* phi);
 
+/* --- opsin (ChR2H134R), a density mechanism: one instance per segment ------ */
+/* the parameters of ChR2H134R.mod, addressed by id */
+enum {
+    RCSD_CHR2_GMAX = 0, /* S/cm2 */
+    RCSD_CHR2_E,        /* EChR2, mV */
+    RCSD_CHR2_GAMMA,
+    RCSD_CHR2_A,
+    RCSD_CHR2_B,
+    RCSD_CHR2_C,
+    RCSD_CHR2_WAVELENGTH,
+    RCSD_CHR2_HC,
+    RCSD_CHR2_WLOSS,
+    RCSD_CHR2_SIGMA,
+    RCSD_CHR2_TAU,
+    RCSD_CHR2_TEMP,
+    RCSD_CHR2_Q10_GD1,
+    RCSD_CHR2_Q10_GD2,
+    RCSD_CHR2_Q10_GR,
+    RCSD_CHR2_Q10_E12,
+    RCSD_CHR2_Q10_E21,
+    RCSD_CHR2_Q10_EPS1,
+    RCSD_CHR2_Q10_EPS2,
+    RCSD_CHR2_NPARAM
+};
+RCSD_API int rcsd_add_chr2(RCSDSim* sim, int cell, int section, double x);
+RCSD_API int rcsd_chr2_set(RCSDSim* sim, int index, int param, double value);
+RCSD_API double rcsd_chr2_get(RCSDSim* sim, int index, int param);
+RCSD_API int rcsd_chr2_count(RCSDSim* sim);
+/* O1, O2, C1, p and the irradiance (mW/mm2) of one instance */
+RCSD_API int rcsd_chr2_state(RCSDSim* sim, int index, double* out);
+
 /* --- stimulus --------------------------------------------------------------- */
 /* Declare the rows a mode is delivered on. For EXTRACELLULAR a row is a
  * (cell, section) whose field is sampled; for the others `section` names

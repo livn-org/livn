@@ -584,7 +584,17 @@ class NativeCell(Cell):
                 params[f"{sec_type}.{name}"] = float(
                     lib.rcsd_section_get(sim, section, param)
                 )
+            sites = self._chr2_sites(section)
+            if sites:
+                for name, param in L.CHR2.items():
+                    params[f"{sec_type}.{name}_ChR2H134R"] = float(
+                        lib.rcsd_chr2_get(sim, sites[0], param)
+                    )
         return params
+
+    def _chr2_sites(self, section: int) -> list[int]:
+        key = (self.gid, self._sections.index(section))
+        return self._env._chr2_sites.get(key, [])
 
     def _ra(self, section: int) -> float:
         lib, sim = self._lib()
@@ -618,6 +628,16 @@ class NativeCell(Cell):
                             sim, section, info[0], info[1], float(value)
                         ),
                         lib,
+                    )
+                continue
+            chr2 = name.removesuffix("_ChR2H134R")
+            if chr2 != name and chr2 in L.CHR2:
+                sites = [site for sec in sections for site in self._chr2_sites(sec)]
+                if not sites:
+                    raise self.unknown_param(key, self.get_params())
+                for site in sites:
+                    L.check(
+                        lib.rcsd_chr2_set(sim, site, L.CHR2[chr2], float(value)), lib
                     )
                 continue
             found = PARAMETER_NAMES.get(name)

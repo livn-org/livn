@@ -1,6 +1,9 @@
 /* RhO3c: the three-state rhodopsin (Nikolic et al. 2009) as a point process,
  * with the kinetic scheme advanced by implicit Euler under the conservation
  * constraint, which is what NEURON's `METHOD sparse` does.
+ *
+ * ChR2H134R: the four-state channelrhodopsin-2 (Williams et al. 2013) as a
+ * density mechanism, one instance per segment, advanced by mod2c's cnexp.
  */
 #include <math.h>
 #include <string.h>
@@ -133,5 +136,133 @@ void rcsd_opsin_state_step(RCSDSim* sim) {
         D1 = (a11 * b2 - a21 * b1) / det;
         op->O = O1;
         op->C = 1.0 - O1 - D1;
+    }
+}
+
+/* --- ChR2H134R ----------------------------------------------------------------- */
+/* the defaults NEURON holds, which nocmodl prints with %g: hc_J_m is the
+ * .mod's 1.986446e-25 to six digits */
+static const double chr2_defaults[RCSD_CHR2_NPARAM] = {
+    4e-4,         /* gmax, S/cm2 */
+    0.0,          /* EChR2 */
+    0.1,          /* gamma */
+    10.6408,      /* A */
+    -14.6408,     /* B */
+    -42.7671,     /* C */
+    470.0,        /* wavelength */
+    1.98645e-25,  /* hc_J_m */
+    1.3,          /* wloss */
+    12e-20,       /* sigma_retinal_m2 */
+    1.3,          /* tauChR2 */
+    22.0,         /* temp */
+    1.97,         /* Q10_Gd1 */
+    1.77,         /* Q10_Gd2 */
+    2.56,         /* Q10_Gr */
+    1.1,          /* Q10_e12dark */
+    1.95,         /* Q10_e21dark */
+    1.46,         /* Q10_epsilon1 */
+    2.77,         /* Q10_epsilon2 */
+};
+
+int rcsd_add_chr2(RCSDSim* sim, int cell, int section, double x) {
+    ChR2 ch;
+    int sec = rcsd_cell_section(sim, cell, section);
+    if (sec < 0) {
+        rcsd_set_error("cell %d has no section %d", cell, section);
+        return RCSD_ERROR;
+    }
+    memset(&ch, 0, sizeof ch);
+    ch.cell = cell;
+    ch.section = section;
+    ch.node = rcsd_section_node(sim, sec, x);
+    memcpy(ch.param, chr2_defaults, sizeof ch.param);
+    ch.C1 = 1.0;
+    DYN_PUSH(sim->chr2, ch);
+    sim->pp_dirty = 1;
+    return (int) sim->chr2.n - 1;
+}
+
+static ChR2* chr2_at(RCSDSim* sim, int index) {
+    if (index < 0 || (size_t) index >= sim->chr2.n) {
+        rcsd_set_error("no ChR2H134R %d", index);
+        return NULL;
+    }
+    return &sim->chr2.data[index];
+}
+
+int rcsd_chr2_set(RCSDSim* sim, int index, int param, double value) {
+    ChR2* ch = chr2_at(sim, index);
+    if (ch == NULL) {
+        return RCSD_ERROR;
+    }
+    if (param < 0 || param >= RCSD_CHR2_NPARAM) {
+        rcsd_set_error("no ChR2H134R parameter %d", param);
+        return RCSD_ERROR;
+    }
+    ch->param[param] = value;
+    return RCSD_OK;
+}
+
+double rcsd_chr2_get(RCSDSim* sim, int index, int param) {
+    ChR2* ch = chr2_at(sim, index);
+    if (ch == NULL || param < 0 || param >= RCSD_CHR2_NPARAM) {
+        return NAN;
+    }
+    return ch->param[param];
+}
+
+int rcsd_chr2_count(RCSDSim* sim) {
+    return (int) sim->chr2.n;
+}
+
+int rcsd_chr2_state(RCSDSim* sim, int index, double* out) {
+    ChR2* ch = chr2_at(sim, index);
+    if (ch == NULL) {
+        return RCSD_ERROR;
+    }
+    out[0] = ch->O1;
+    out[1] = ch->O2;
+    out[2] = ch->C1;
+    out[3] = ch->p;
+    out[4] = ch->irr;
+    return RCSD_OK;
+}
+
+/* INITIAL: Irradiance = 0, C1 = 1, O1 = O2 = p = 0 */
+void rcsd_chr2_init(RCSDSim* sim) {
+    size_t i;
+    for (i = 0; i < sim->chr2.n; ++i) {
+        ChR2* ch = &sim->chr2.data[i];
+        ch->irr = 0.0;
+        ch->C1 = 1.0;
+        ch->O1 = 0.0;
+        ch->O2 = 0.0;
+        ch->p = 0.0;
+        ch->cur = 0.0;
+        ch->dcur = 0.0;
+    }
+}
+
+/* nrn_cur: the current density and its numerical conductance */
+void rcsd_chr2_currents(RCSDSim* sim) {
+    size_t i;
+    for (i = 0; i < sim->chr2.n; ++i) {
+        ChR2* ch = &sim->chr2.data[i];
+        double v = sim->v[ch->node];
+        double i1 = chr2_current(v + .001, ch->param, ch->O1, ch->O2);
+        double i0 = chr2_current(v, ch->param, ch->O1, ch->O2);
+        ch->cur = i0;
+        ch->dcur = (i1 - i0) / .001;
+    }
+}
+
+/* nrn_state: rates at the new voltage and this step's irradiance */
+void rcsd_chr2_state_step(RCSDSim* sim) {
+    size_t i;
+    for (i = 0; i < sim->chr2.n; ++i) {
+        ChR2* ch = &sim->chr2.data[i];
+        ChR2Rates r;
+        chr2_rates(sim->v[ch->node], ch->irr, sim->celsius, ch->param, &r);
+        chr2_states(&ch->O1, &ch->O2, &ch->C1, &ch->p, &r, ch->param[RCSD_CHR2_TAU], sim->dt);
     }
 }

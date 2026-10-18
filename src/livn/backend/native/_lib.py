@@ -136,6 +136,30 @@ SS_N = len(SS_NAMES)
 # weight, g_unit, w_plastic, last_int, R, tlast
 NWEIGHT = 6
 
+# ChR2H134R.mod's parameters, in the order of rcsd.h's RCSD_CHR2_* ids
+CHR2_PARAMS = (
+    "gmax",
+    "EChR2",
+    "gamma",
+    "A",
+    "B",
+    "C",
+    "wavelength",
+    "hc_J_m",
+    "wloss",
+    "sigma_retinal_m2",
+    "tauChR2",
+    "temp",
+    "Q10_Gd1",
+    "Q10_Gd2",
+    "Q10_Gr",
+    "Q10_e12dark",
+    "Q10_e21dark",
+    "Q10_epsilon1",
+    "Q10_epsilon2",
+)
+CHR2 = {name: i for i, name in enumerate(CHR2_PARAMS)}
+
 STIM_EXTRACELLULAR, STIM_CURRENT, STIM_CURRENT_DENSITY, STIM_PHOTON_FLUX = range(4)
 STIM_MODES = {
     "extracellular": STIM_EXTRACELLULAR,
@@ -241,6 +265,11 @@ _SIGNATURES = {
         [c_void_p, c_int] + [c_double] * 10,
     ),
     "rcsd_opsin_count": (c_int, [c_void_p]),
+    "rcsd_add_chr2": (c_int, [c_void_p, c_int, c_int, c_double]),
+    "rcsd_chr2_set": (c_int, [c_void_p, c_int, c_int, c_double]),
+    "rcsd_chr2_get": (c_double, [c_void_p, c_int, c_int]),
+    "rcsd_chr2_count": (c_int, [c_void_p]),
+    "rcsd_chr2_state": (c_int, [c_void_p, c_int, _c_double_p]),
     "rcsd_opsin_state": (
         c_int,
         [c_void_p, c_int, _c_double_p, _c_double_p, _c_double_p],

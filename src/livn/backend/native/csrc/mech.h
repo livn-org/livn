@@ -11,6 +11,8 @@
 
 #include <math.h>
 
+#include "rcsd.h"
+
 /* --- Nas.mod ---------------------------------------------------------------- */
 static inline double nas_minf(double v, double vhalf, double slope) {
     return 1.0 / (1.0 + exp(-(v - vhalf) / slope));
@@ -212,6 +214,80 @@ static inline double rho3c_current(double v, double O, double g0, double E, doub
         fv = (1.0 - exp(-dv / v0)) * v1 / dv;
     }
     return g0 * O * fv * dv * (1e-6);
+}
+
+/* --- ChR2H134R.mod (Williams et al. 2013) ----------------------------------------
+ * Each expression is the one mod2c emits for the .mod: rates() at the new
+ * voltage, then the four cnexp updates in order, each reading the states
+ * already updated before it. P is indexed by RCSD_CHR2_*. */
+typedef struct {
+    double Gd1, Gd2, Gr, e12, e21, epsilon1, epsilon2, F, S0;
+} ChR2Rates;
+
+static inline void chr2_rates(double v, double irr, double celsius, const double* P,
+                              ChR2Rates* r) {
+    double e12dark, e21dark, logphi0, Ephoton, flux;
+    const double temp = P[RCSD_CHR2_TEMP];
+    e12dark = 0.011;
+    e21dark = 0.008;
+    r->epsilon1 = 0.8535;
+    r->epsilon2 = 0.14;
+    r->Gd1 = 0.075 + 0.043 * tanh(-(v + 20.0) / 20.0);
+    r->Gd2 = 0.05;
+    r->Gr = 0.0000434587 * exp(-0.0211539274 * v);
+    e12dark = e12dark * pow(P[RCSD_CHR2_Q10_E12], ((celsius - temp) / 10.0));
+    e21dark = e21dark * pow(P[RCSD_CHR2_Q10_E21], ((celsius - temp) / 10.0));
+    r->epsilon1 = r->epsilon1 * pow(P[RCSD_CHR2_Q10_EPS1], ((celsius - temp) / 10.0));
+    r->epsilon2 = r->epsilon2 * pow(P[RCSD_CHR2_Q10_EPS2], ((celsius - temp) / 10.0));
+    r->Gd1 = r->Gd1 * pow(P[RCSD_CHR2_Q10_GD1], ((celsius - temp) / 10.0));
+    r->Gd2 = r->Gd2 * pow(P[RCSD_CHR2_Q10_GD2], ((celsius - temp) / 10.0));
+    r->Gr = r->Gr * pow(P[RCSD_CHR2_Q10_GR], ((celsius - temp) / 10.0));
+    if (irr > 0.0) {
+        logphi0 = log(1.0 + irr / 0.024);
+    } else {
+        logphi0 = 0.0;
+    }
+    r->e12 = e12dark + 0.005 * logphi0;
+    r->e21 = e21dark + 0.004 * logphi0;
+    r->S0 = 0.5 * (1.0 + tanh(120.0 * (100.0 * irr - 0.1)));
+    Ephoton = 1e9 * P[RCSD_CHR2_HC] / P[RCSD_CHR2_WAVELENGTH];
+    flux = 1000.0 * irr / Ephoton;
+    r->F = flux * P[RCSD_CHR2_SIGMA] / (P[RCSD_CHR2_WLOSS] * 1000.0);
+}
+
+static inline void chr2_states(double* O1, double* O2, double* C1, double* p,
+                               const ChR2Rates* r, double tauChR2, double dt) {
+    const double Gd1 = r->Gd1, Gd2 = r->Gd2, Gr = r->Gr, e12 = r->e12, e21 = r->e21;
+    const double epsilon1 = r->epsilon1, epsilon2 = r->epsilon2, F = r->F, S0 = r->S0;
+    *O1 = *O1 + (1. - exp(dt * ((-(Gd1 + e12)) * (1.0)))) *
+                    (-((e21) * (*O2) + (((epsilon1) * (F)) * (*p)) * (*C1)) /
+                         ((-(Gd1 + e12)) * (1.0)) -
+                     *O1);
+    *O2 = *O2 + (1. - exp(dt * ((-(Gd2 + e21)) * (1.0) + (epsilon2 * F * *p) * (((-1.0)))))) *
+                    (-((e12) * (*O1) + (((epsilon2) * (F)) * (*p)) * ((1.0 - *C1 - *O1))) /
+                         ((-(Gd2 + e21)) * (1.0) + (((epsilon2) * (F)) * (*p)) * (((-1.0)))) -
+                     *O2);
+    *C1 = *C1 + (1. - exp(dt * ((-epsilon1 * F * *p) * (1.0) + (Gr) * (((-1.0)))))) *
+                    (-((Gd1) * (*O1) + (Gr) * ((1.0 - *O1 - *O2))) /
+                         ((((-epsilon1) * (F)) * (*p)) * (1.0) + (Gr) * (((-1.0)))) -
+                     *C1);
+    *p = *p + (1. - exp(dt * ((((-1.0))) / tauChR2))) *
+                  (-(((S0)) / tauChR2) / ((((-1.0))) / tauChR2) - *p);
+}
+
+/* BREAKPOINT: (A + B exp(v/C)) (1 - E/v) for (A + B exp(v/C))/v (v - E), with
+ * v held 1e-6 mV away from 0 */
+static inline double chr2_current(double v, const double* P, double O1, double O2) {
+    double vs = v;
+    if (fabs(v) < 1e-6) {
+        if (v < 0.0) {
+            vs = -1e-6;
+        } else {
+            vs = 1e-6;
+        }
+    }
+    return P[RCSD_CHR2_GMAX] * (P[RCSD_CHR2_A] + P[RCSD_CHR2_B] * exp(v / P[RCSD_CHR2_C])) *
+           (1.0 - P[RCSD_CHR2_E] / vs) * (O1 + P[RCSD_CHR2_GAMMA] * O2);
 }
 
 #endif

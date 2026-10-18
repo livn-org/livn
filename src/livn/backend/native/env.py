@@ -329,6 +329,8 @@ class Env(EnvProtocol):
         }
         self._stim_unbacked_warned = False
         self._opsin_refs: dict[tuple[int, int], int] = {}
+        # (gid, sec_id) -> the ChR2H134R instance of each segment
+        self._chr2_sites: dict[tuple[int, int], list[int]] = {}
 
     def __del__(self):
         with contextlib.suppress(Exception):
@@ -562,19 +564,47 @@ class Env(EnvProtocol):
         if not cfg:
             return
         mech_name = cfg.get("mechanism", "RhO3c")
-        if mech_name != "RhO3c":
+        if mech_name not in ("RhO3c", "ChR2H134R"):
             logger.warning(
                 "opsin mechanism %s not available in the native backend", mech_name
             )
             return
         populations = cfg.get("populations", list(self.cells.keys()))
         target_sections = set(cfg.get("sections", ["soma"]))
-        params = {**_OPSIN_DEFAULTS, **(cfg.get("params", {}) or {})}
         lib, sim = self._lib, self._sim
+        if mech_name == "ChR2H134R":
+            params = dict(cfg.get("params", {}) or {})
+            unknown = sorted(set(params) - set(L.CHR2))
+            if unknown:
+                raise KeyError(f"ChR2H134R has no parameter {', '.join(unknown)}")
+        else:
+            params = {**_OPSIN_DEFAULTS, **(cfg.get("params", {}) or {})}
         for pop in populations:
             for gid, cell in self.cells.get(pop, {}).items():
                 for sec_id, name in enumerate(cell.section_names):
                     if name not in target_sections:
+                        continue
+                    if mech_name == "ChR2H134R":
+                        # a density mechanism: one instance per segment
+                        nseg = cell.template.sections[sec_id].nseg
+                        sites = []
+                        for k in range(nseg):
+                            site = L.check(
+                                lib.rcsd_add_chr2(
+                                    sim, cell.index, sec_id, (k + 0.5) / nseg
+                                ),
+                                lib,
+                            )
+                            for pname, value in params.items():
+                                L.check(
+                                    lib.rcsd_chr2_set(
+                                        sim, site, L.CHR2[pname], float(value)
+                                    ),
+                                    lib,
+                                )
+                            sites.append(site)
+                        self._chr2_sites[(int(gid), sec_id)] = sites
+                        self._opsin_refs[(int(gid), sec_id)] = sites[0]
                         continue
                     opsin = L.check(
                         lib.rcsd_add_opsin(sim, cell.index, sec_id, 0.5), lib
@@ -850,10 +880,14 @@ class Env(EnvProtocol):
             wavelength = stimulus.extra.get("wavelength", None)
             if wavelength is None:
                 wavelength = self._opsin_config().get("wavelength", 473.0)
-            if stimulus.units == "photon_flux":
+            # the opsin reads photon flux (RhO3c) or irradiance (ChR2H134R)
+            reads = self._opsin_config().get("units", "photon_flux")
+            if stimulus.units == reads:
                 scale = 1.0
-            else:
+            elif reads == "photon_flux":
                 scale = 1.0 / (6.626e-34 * 3e8 / (wavelength * 1e-9) * 1e3)
+            else:
+                scale = 6.626e-34 * 3e8 / (wavelength * 1e-9) * 1e3
             installed = state.streams or state.block is not None
             if installed and abs(scale - state.scale) > 1e-9 * max(scale, state.scale):
                 raise ValueError(
@@ -1667,6 +1701,7 @@ class Env(EnvProtocol):
         self.__dict__.pop("_pop_code_cells", None)
         self._flucts.clear()
         self._opsin_refs.clear()
+        self._chr2_sites.clear()
         self._input_indices = {}
         self.v_recs.clear()
         self.v_sections.clear()

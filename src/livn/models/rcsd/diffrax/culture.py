@@ -8,6 +8,7 @@ class MotoneuronCulture(eqx.Module):
     neurons: BoothRinzelKiehn
     num_neurons: int = eqx.field(static=True)
     section_names: tuple[str, ...] = eqx.field(static=True)
+    opsin_gmax: jax.Array | None
 
     def __init__(self, num_neurons: int, params: dict | None = None, key=None):
         # if key is None:
@@ -20,6 +21,11 @@ class MotoneuronCulture(eqx.Module):
         # currently, we only support independent parallel simulation
         #  of individual neurons via vmap
         self.neurons = BoothRinzelKiehn(params)
+        self.opsin_gmax = (
+            jax.numpy.full((num_neurons,), self.neurons.chr2_gmax)
+            if self.neurons.opsin == "ChR2H134R"
+            else None
+        )
 
     @property
     def input_mode(self):
@@ -40,26 +46,28 @@ class MotoneuronCulture(eqx.Module):
     ):
         del record  # no auxiliary state to record selectively
 
-        def solve_single(I_stim, init_state):
-            t_arr, v_soma, v_dend, i_mem_soma, i_mem_dend, final_state = (
-                self.neurons.solve(
-                    t_dur=t1 - t0,
-                    I_stim_array=I_stim,
-                    dt=dt,
-                    dt_solver=dt_solver,
-                    y0=init_state,
-                    **kwargs,
-                )
+        def solve_single(I_stim, init_state, gmax=None):
+            neurons = self.neurons
+            if gmax is not None:
+                neurons = eqx.tree_at(lambda m: m.chr2_gmax, neurons, gmax)
+            t_arr, v_soma, v_dend, i_mem_soma, i_mem_dend, final_state = neurons.solve(
+                t_dur=t1 - t0,
+                I_stim_array=I_stim,
+                dt=dt,
+                dt_solver=dt_solver,
+                y0=init_state,
+                **kwargs,
             )
             v_both = jax.numpy.stack((v_soma, v_dend), axis=0)
             i_mem_both = jax.numpy.stack((i_mem_soma, i_mem_dend), axis=0)
             return t_arr, v_both, i_mem_both, final_state
 
+        gmax_axis = None if self.opsin_gmax is None else 0
         if y0 is None:
-            solve_many = jax.vmap(solve_single, in_axes=(0, None))
+            solve_many = jax.vmap(solve_single, in_axes=(0, None, gmax_axis))
             y0_arg = None
         else:
-            solve_many = jax.vmap(solve_single, in_axes=(0, 0))
+            solve_many = jax.vmap(solve_single, in_axes=(0, 0, gmax_axis))
             y0_arg = y0
 
         if input_current is None:
@@ -86,7 +94,7 @@ class MotoneuronCulture(eqx.Module):
         per_neuron_stimulus = jax.numpy.swapaxes(per_neuron_stimulus, 0, 1)
 
         _t_arr_batched, v_soma_dend, i_mem_soma_dend, yT = solve_many(
-            per_neuron_stimulus, y0_arg
+            per_neuron_stimulus, y0_arg, self.opsin_gmax
         )
 
         # no spike detection

@@ -153,6 +153,7 @@ void rcsd_destroy(RCSDSim* sim) {
     }
     DYN_FREE(sim->noise);
     DYN_FREE(sim->opsins);
+    DYN_FREE(sim->chr2);
     for (m = 0; m < RCSD_STIM_N; ++m) {
         rcsd_stimulus_free(&sim->stim[m]);
     }
@@ -618,6 +619,7 @@ static int pp_slot_instance_count(RCSDSim* sim, int slot) {
     switch (slot) {
     case PP_GFLUCT: return (int) sim->noise.n;
     case PP_RHO3C: return (int) sim->opsins.n;
+    case PP_CHR2: return (int) sim->chr2.n;
     case PP_ICLAMP: return 0;
     default: return (int) sim->synapses.n;
     }
@@ -629,6 +631,7 @@ static int pp_instance_node(RCSDSim* sim, int slot, int k) {
     switch (slot) {
     case PP_GFLUCT: return sim->noise.data[k].node;
     case PP_RHO3C: return sim->opsins.data[k].node;
+    case PP_CHR2: return sim->chr2.data[k].node;
     case PP_ICLAMP: return -1;
     default:
         return pp_slot_of_kind(sim->synapses.data[k].kind) == slot ? sim->synapses.data[k].node
@@ -690,6 +693,9 @@ static inline void pp_accumulate(RCSDSim* sim, int slot, int node, double* rhs, 
         } else if (slot == PP_RHO3C) {
             cur = sim->opsins.data[k].cur;
             dcur = sim->opsins.data[k].dcur;
+        } else if (slot == PP_CHR2) {
+            cur = sim->chr2.data[k].cur;
+            dcur = sim->chr2.data[k].dcur;
         } else {
             cur = sim->site_cur[k];
             dcur = sim->site_dcur[k];
@@ -700,11 +706,12 @@ static inline void pp_accumulate(RCSDSim* sim, int slot, int node, double* rhs, 
 }
 
 /* nrn_rhs and nrn_lhs for the membrane: every mechanism of a node in the
- * order of NEURON's type indices (pas 4, IClamp 7, CaL 27, CaN 28, constant
- * 30, Gfluct3 31, Ka_v1in 32, KCa 33, Kdr 37, LinExp2Syn 39, LinExp2SynNMDA
- * 40, Nas 44, RhO3c 45, StdpLinExp2SynInh 47, StdpLinExp2Syn 48,
- * StdpLinExp2SynNMDA 49), so that the sums round as
- * NEURON's do. The ion currents accumulate in the same order. */
+ * order of NEURON's type indices (pas 4, IClamp 7, CaL 27, CaN 28, ChR2H134R
+ * 30, constant 31, Gfluct3 32, Ka_v1in 33, KCa 34, Kdr 38, LinExp2Syn 40,
+ * LinExp2SynNMDA 41, Nas 45, RhO3c 46, StdpLinExp2SynInh 48, StdpLinExp2Syn
+ * 49, StdpLinExp2SynNMDA 50; `h.MechanismType(k).internal_type()`), so that
+ * the sums round as NEURON's do. The ion currents accumulate in the same
+ * order. */
 typedef struct {
     RCSDSim* sim;
     double celsius, fN, fL;
@@ -789,6 +796,7 @@ static void eval_membrane_range(void* vctx, int begin, int end) {
             rhs -= i0;
             dd += g;
         }
+        pp_accumulate(sim, PP_CHR2, i, &rhs, &dd);
         if (mech & RCSD_M_CONSTANT) {
             rhs -= PR(i, RCSD_P_IC);
         }
@@ -1095,6 +1103,7 @@ int rcsd_init(RCSDSim* sim) {
     rcsd_synapse_init_states(sim);
     rcsd_noise_init(sim);
     rcsd_opsin_init(sim);
+    rcsd_chr2_init(sim);
     rcsd_events_clear(sim);
     sim->step = 0;
     sim->t = 0.0;
@@ -1429,6 +1438,7 @@ static int advance(RCSDSim* sim) {
     PROF_MARK(2);
     rcsd_noise_currents(sim);
     rcsd_opsin_currents(sim);
+    rcsd_chr2_currents(sim);
     PROF_MARK(3);
     eval_membrane(sim);
     PROF_MARK(4);
@@ -1469,6 +1479,7 @@ static int advance(RCSDSim* sim) {
     PROF_MARK(7);
     rcsd_synapse_state_step(sim);
     rcsd_opsin_state_step(sim);
+    rcsd_chr2_state_step(sim);
     PROF_MARK(8);
 
     /* 7. spikes */

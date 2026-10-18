@@ -3,7 +3,8 @@
  * The timing mirrors the NEURON backend: an extracellular field is turned
  * into equivalent axial currents by a per-step callback that runs after the
  * voltage update, so the field sampled at step s drives step s + 1; a
- * photon flux set by the same callback enters the opsin kinetics of step s;
+ * photon flux (or, for ChR2H134R, irradiance) set by the same callback enters
+ * the opsin kinetics of step s;
  * a current-clamp amplitude is what Vector.play interpolates at the step
  * midpoint; a current density is held over its own sample.
  */
@@ -217,6 +218,9 @@ int rcsd_clear_stimulus(RCSDSim* sim, int mode) {
         for (o = 0; o < sim->opsins.n; ++o) {
             sim->opsins.data[o].phi = 0.0;
         }
+        for (o = 0; o < sim->chr2.n; ++o) {
+            sim->chr2.data[o].irr = 0.0;
+        }
     }
     return RCSD_OK;
 }
@@ -362,6 +366,9 @@ void rcsd_stimulus_after_update(RCSDSim* sim, long step) {
         for (o = 0; o < sim->opsins.n; ++o) {
             sim->opsins.data[o].phi = 0.0;
         }
+        for (o = 0; o < sim->chr2.n; ++o) {
+            sim->chr2.data[o].irr = 0.0;
+        }
         if (col != NULL) {
             int r;
             for (r = 0; r < phi->n_rows; ++r) {
@@ -369,6 +376,13 @@ void rcsd_stimulus_after_update(RCSDSim* sim, long step) {
                     Opsin* op = &sim->opsins.data[o];
                     if (op->cell == phi->cell[r] && op->section == phi->section[r]) {
                         op->phi = col[r];
+                    }
+                }
+                /* every segment of the section: the light is the section's */
+                for (o = 0; o < sim->chr2.n; ++o) {
+                    ChR2* ch = &sim->chr2.data[o];
+                    if (ch->cell == phi->cell[r] && ch->section == phi->section[r]) {
+                        ch->irr = col[r];
                     }
                 }
             }

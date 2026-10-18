@@ -89,13 +89,14 @@ typedef struct {
  * type at its position among the density mechanisms of mech.h. */
 enum {
     PP_ICLAMP = 0, /* IClamp (7): the current stimuli */
-    PP_GFLUCT,     /* Gfluct3 (31) */
-    PP_LINEXP2,    /* LinExp2Syn (39) */
-    PP_NMDA,       /* LinExp2SynNMDA (40) */
-    PP_RHO3C,      /* RhO3c (45) */
-    PP_STDP_INH,   /* StdpLinExp2SynInh (47) */
-    PP_STDP,       /* StdpLinExp2Syn (48) */
-    PP_STDP_NMDA,  /* StdpLinExp2SynNMDA (49) */
+    PP_GFLUCT,     /* Gfluct3 (32) */
+    PP_LINEXP2,    /* LinExp2Syn (40) */
+    PP_NMDA,       /* LinExp2SynNMDA (41) */
+    PP_RHO3C,      /* RhO3c (46) */
+    PP_CHR2,       /* ChR2H134R (30): a density mechanism, summed after CaN */
+    PP_STDP_INH,   /* StdpLinExp2SynInh (48) */
+    PP_STDP,       /* StdpLinExp2Syn (49) */
+    PP_STDP_NMDA,  /* StdpLinExp2SynNMDA (50) */
     PP_N
 };
 
@@ -157,6 +158,15 @@ typedef struct {
     double C, O, phi;
     double cur, dcur; /* this step's current and dI/dV, scaled by 1e2/area */
 } Opsin;
+
+/* --- opsin (ChR2H134R) -------------------------------------------------------------- */
+typedef struct {
+    int cell, section, node;
+    double param[RCSD_CHR2_NPARAM];
+    double O1, O2, C1, p;
+    double irr;       /* Irradiance, mW/mm2 */
+    double cur, dcur; /* this step's current density (mA/cm2) and dI/dV */
+} ChR2;
 
 /* --- stimulus ------------------------------------------------------------------------ */
 typedef struct {
@@ -263,6 +273,7 @@ struct RCSDSim {
     /* noise, opsins */
     DYN(Noise) noise;
     DYN(Opsin) opsins;
+    DYN(ChR2) chr2;
 
     /* stimulus */
     Stimulus stim[RCSD_STIM_N];
@@ -295,6 +306,9 @@ void rcsd_noise_currents(RCSDSim* sim);
 void rcsd_opsin_init(RCSDSim* sim);
 void rcsd_opsin_state_step(RCSDSim* sim);
 void rcsd_opsin_currents(RCSDSim* sim);
+void rcsd_chr2_init(RCSDSim* sim);
+void rcsd_chr2_state_step(RCSDSim* sim);
+void rcsd_chr2_currents(RCSDSim* sim);
 void rcsd_stimulus_free(Stimulus* s);
 int rcsd_stimulus_apply(RCSDSim* sim, long step, int* need_refill, int* need_mode);
 void rcsd_stimulus_after_update(RCSDSim* sim, long step);
