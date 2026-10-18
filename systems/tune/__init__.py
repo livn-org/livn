@@ -883,6 +883,20 @@ class Tune(Interface):
                         arrays["coordinates"] = np.asarray(
                             env.system.neuron_coordinates
                         )
+
+                    voltage = getattr(gathered, "voltage", None)
+                    voltage_ids = getattr(gathered, "voltage_ids", None)
+                    if voltage is not None and voltage_ids is not None:
+                        arrays["voltage"] = np.asarray(voltage, dtype=np.float32)
+                        arrays["voltage_ids"] = np.asarray(voltage_ids, dtype=np.int64)
+                        sections = getattr(gathered, "voltage_sections", None)
+                        if sections is not None:
+                            arrays["voltage_sections"] = np.asarray(
+                                [str(section) for section in sections]
+                            )
+                        dt = getattr(gathered, "voltage_dt", None)
+                        if dt is not None:
+                            arrays["voltage_dt"] = np.asarray(float(dt))
                     np.savez_compressed(
                         path,
                         **arrays,
