@@ -4,7 +4,7 @@ import math
 
 DEFAULTS = {
     "axon_segments": 0,
-    "axon_segment_um": 30.0,
+    "axon_segment_length": 30.0,
     "axon_diam": 2.0,
     "axon_cm": 0.2,
     "axon_Ra": 70.0,
@@ -79,7 +79,7 @@ def attach(template, soma, params: dict, e_pas: float, soma_gmax_na: float) -> l
 def configure(sections, params: dict, e_pas: float, soma_gmax_na: float) -> None:
     """Apply geometry and conductances to an existing axon."""
     for sec in sections:
-        sec.L = float(params["axon_segment_um"])
+        sec.L = float(params["axon_segment_length"])
         sec.diam = float(params["axon_diam"])
         sec.Ra = float(params["axon_Ra"])
         sec.cm = float(params["axon_cm"])
@@ -97,5 +97,5 @@ def configure(sections, params: dict, e_pas: float, soma_gmax_na: float) -> None
 def sampling_offsets(params: dict) -> list[float]:
     """Distance from the soma at which each axon link samples the field, in um."""
     n = int(params.get("axon_segments", 0) or 0)
-    spacing = float(params.get("axon_segment_um", DEFAULTS["axon_segment_um"]))
+    spacing = float(params.get("axon_segment_length", DEFAULTS["axon_segment_length"]))
     return [spacing * (i + 0.5) for i in range(n)]

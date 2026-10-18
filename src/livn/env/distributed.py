@@ -466,14 +466,14 @@ class DistributedEnv(EnvProtocol):
 
     def potential_recording(
         self,
-        membrane_currents: Float[Array, "timestep n_neurons"] | None,
+        membrane_currents_uA: Float[Array, "timestep n_neurons"] | None,
         gids=None,
         dt: float | None = None,
         key=None,
     ) -> Float[Array, "timestep n_channels"]:
         if _state["env"] is None:
             return
-        _state["env"].potential_recording(membrane_currents, gids, dt=dt, key=key)
+        _state["env"].potential_recording(membrane_currents_uA, gids, dt=dt, key=key)
 
     def clear(self, reseed: bool = True) -> Self:
         self._broadcast_to_workers("clear", (reseed,))

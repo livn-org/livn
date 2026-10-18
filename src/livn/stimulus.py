@@ -194,18 +194,18 @@ class Stimulus:
             return self._extent
         return self.array.shape[0] * self.dt
 
-    def window(self, start_ms: float, stop_ms: float):
-        """Values over `[start_ms, stop_ms)`, at this stimulus's own `dt`."""
+    def window(self, start: float, stop: float):
+        """Values over `[start, stop)`, at this stimulus's own `dt`."""
         if self._source is None:
-            lo = max(0, round(start_ms / self.dt))
-            hi = max(lo, round(stop_ms / self.dt))
+            lo = max(0, round(start / self.dt))
+            hi = max(lo, round(stop / self.dt))
             return np.asarray(self._array)[lo:hi]
 
-        rendered = np.asarray(self._source(float(start_ms), float(stop_ms)))
+        rendered = np.asarray(self._source(float(start), float(stop)))
         if rendered.ndim != 2 or rendered.shape[-1] != self.width:
             raise ValueError(
-                f"the source rendered {rendered.shape} for [{start_ms:g}, "
-                f"{stop_ms:g}) ms, but this stimulus has {self.width} columns. "
+                f"the source rendered {rendered.shape} for [{start:g}, "
+                f"{stop:g}) ms, but this stimulus has {self.width} columns. "
                 "Every window has to carry the same columns in the same order, "
                 "or a value lands on a compartment it was not meant for"
             )
@@ -266,7 +266,7 @@ class Stimulus:
                     "or call `env.cell_stimulus(policy())` to convert one by "
                     "hand"
                 )
-            extent = stimulus.extent_ms
+            extent = stimulus.extent
             if extent is not None and extent > duration + 1e-9:
                 raise ValueError(
                     f"a {duration:g} ms run cannot deliver a {extent:g} ms "
@@ -296,10 +296,8 @@ class Stimulus:
         dt = policy.dt
         layout = env.cell_stimulus(policy.window(0.0, dt, dt), dt=dt)
 
-        def source(start_ms: float, stop_ms: float, _env=env, _policy=policy, _dt=dt):
-            return _env.cell_stimulus(
-                _policy.window(start_ms, stop_ms, _dt), dt=_dt
-            ).array
+        def source(start: float, stop: float, _env=env, _policy=policy, _dt=dt):
+            return _env.cell_stimulus(_policy.window(start, stop, _dt), dt=_dt).array
 
         return cls(
             dt=dt,
@@ -411,7 +409,7 @@ class Stimulus:
 
         Args:
             irradiance: Light power density at each neuron, shape [timestep, n_gids].
-            **extra: Additional metadata, e.g. wavelength_nm=473.0.
+            **extra: Additional metadata, e.g. wavelength=473.0.
         """
         return cls(
             array=irradiance,
@@ -429,14 +427,14 @@ class Stimulus:
             "mW/mm2" -> "photon_flux"  (irradiance -> photons/s/mm^2)
             "photon_flux" -> "mW/mm2"  (photons/s/mm^2 -> irradiance)
 
-        Wavelength is read from extra["wavelength_nm"]
+        Wavelength is read from extra["wavelength"]
         """
         current_units = self.units
         if current_units == target_units:
             return self
 
-        wavelength_nm = self.extra.get("wavelength_nm", 473.0)
-        E_photon = 6.626e-34 * 3e8 / (wavelength_nm * 1e-9) * 1e3  # mW*s
+        wavelength = self.extra.get("wavelength", 473.0)
+        E_photon = 6.626e-34 * 3e8 / (wavelength * 1e-9) * 1e3  # mW*s
 
         if current_units == "mW/mm2" and target_units == "photon_flux":
             converted = self.array / E_photon

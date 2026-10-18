@@ -848,7 +848,7 @@ class Tune(Interface):
                     gathered = None if data is None else data.gather(comm=comm, root=0)
 
                 if root:
-                    simulated = getattr(target, "simulated_ms", None) or (
+                    simulated = getattr(target, "simulated", None) or (
                         float(target.warmup_duration) + float(target.recording_duration)
                     )
                     print(
@@ -908,8 +908,8 @@ class Tune(Interface):
                                 "ranks": P.size(comm=comm) if per_rank else None,
                                 "n_selected": int(selected.size),
                                 "system": str(picked["spec"]),
-                                "warmup_ms": float(target.warmup_duration),
-                                "duration_ms": float(target.recording_duration),
+                                "warmup": float(target.warmup_duration),
+                                "duration": float(target.recording_duration),
                                 "populations": {
                                     str(name): [int(start), int(count)]
                                     for name, (start, count) in (

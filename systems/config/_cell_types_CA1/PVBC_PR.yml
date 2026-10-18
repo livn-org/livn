@@ -12,7 +12,7 @@ mechanism file:
     dend_gmax_Ca: 0.6907804012298584
     dend_gmax_KCa: 0.9000998139381409
     e_pas: -62
-    gc: 14.589327812194824
+    gc_mS_per_cm2: 14.589327812194824
     global_cm: 3.0
     global_diam: 10.0
     ic_constant: 0.007034894544631243

@@ -23,7 +23,7 @@
       0.7684868421052632,
       1.436206896551724
     ],
-    "evoked_rate_hz": [
+    "evoked_rate": [
       -0.07964601769911506,
       0.795532233883059
     ],
@@ -55,15 +55,15 @@
       10.0,
       10.605936879081456
     ],
-    "pop_rate_hz": [
+    "pop_rate": [
       27.926666666666666,
       68.04000000000003
     ],
-    "pop_rate_per_unit_hz": [
+    "pop_rate_per_unit": [
       0.21817708333333333,
       0.5357480314960632
     ],
-    "response_duration_ms": [
+    "response_duration": [
       10.0,
       170.99999999999994
     ],
@@ -71,11 +71,11 @@
       0.5,
       5.54017094017094
     ],
-    "response_latency_ms": [
+    "response_latency": [
       5.0,
       145.0
     ],
-    "response_peak_hz": [
+    "response_peak": [
       0.8849557522123894,
       6.640068395554295
     ],
@@ -126,8 +126,8 @@
         "pop_autocorr_tau_band": 0.9510746002197266,
         "populations_active": 1.8307691812515259,
         "recruitment_miss": 1.2518510818481445,
-        "response_duration_ms_band": 0.9079523086547852,
-        "response_latency_ms_band": 0.9697674512863159,
+        "response_duration_band": 0.9079523086547852,
+        "response_latency_band": 0.9697674512863159,
         "synchrony": 0.9341470003128052,
         "unit_corr_median_band": 0.9875752925872803,
         "unit_rate_cv_band": 0.9912652969360352,
@@ -140,7 +140,7 @@
         "burst_rate": 0.0,
         "coefficient_of_variation": 0.5000520348548889,
         "coordination_excess": 1.1315789222717285,
-        "evoked_rate_hz": 0.1484375,
+        "evoked_rate": 0.1484375,
         "fano_factor": 1.0789744853973389,
         "isi_cv": 0.5756700038909912,
         "max_neuron_firing_rate": 3.5,
@@ -148,13 +148,13 @@
         "mean_channel_correlation": 0.0004444568185135722,
         "mfr": 0.5910958647727966,
         "pop_autocorr_tau": 10.599425315856934,
-        "pop_rate_hz": 43.150001525878906,
-        "pop_rate_per_unit_hz": 0.5076470375061035,
+        "pop_rate": 43.150001525878906,
+        "pop_rate_per_unit": 0.5076470375061035,
         "recruitment_miss": 1.1222233772277832,
-        "response_duration_ms": 10.0,
+        "response_duration": 10.0,
         "response_gain": 1.3663570880889893,
-        "response_latency_ms": 75.0,
-        "response_peak_hz": 2.734375,
+        "response_latency": 75.0,
+        "response_peak": 2.734375,
         "response_probability": 0.0078125,
         "unit_corr_median": -0.017629072070121765,
         "unit_rate_cv": 1.466939091682434,
@@ -178,7 +178,7 @@
         "EXC_INH-soma-GABA_A-weight": 0.05886756376087027,
         "INH_EXC-soma-AMPA-weight": 1.1315744475037166,
         "io-medium-electrical-stimulation_resistivity_ohm_m": 3.4510978064187894,
-        "leaders-bias": 5.467626094818115,
+        "leaders-bias_pA": 5.467626094818115,
         "leaders-by_input": 1.0,
         "leaders-delay_sd": 11.285737991333008,
         "leaders-efferent": 1.21007443489948,
@@ -216,8 +216,8 @@
         "pop_autocorr_tau_band": 0.949999988079071,
         "populations_active": 1.794615387916565,
         "recruitment_miss": 1.1317291259765625,
-        "response_duration_ms_band": 0.9079523086547852,
-        "response_latency_ms_band": 0.9093023538589478,
+        "response_duration_band": 0.9079523086547852,
+        "response_latency_band": 0.9093023538589478,
         "synchrony": 0.90899658203125,
         "unit_corr_median_band": 0.9960787296295166,
         "unit_rate_cv_band": 0.9627665877342224,
@@ -230,7 +230,7 @@
         "burst_rate": 0.0,
         "coefficient_of_variation": 0.534575343132019,
         "coordination_excess": 0.9795918464660645,
-        "evoked_rate_hz": 0.03515625,
+        "evoked_rate": 0.03515625,
         "fano_factor": 0.9501879811286926,
         "isi_cv": 0.6897667646408081,
         "max_neuron_firing_rate": 3.0999999046325684,
@@ -238,13 +238,13 @@
         "mean_channel_correlation": 0.00011709952377714217,
         "mfr": 0.4493243098258972,
         "pop_autocorr_tau": 10.0,
-        "pop_rate_hz": 33.25,
-        "pop_rate_per_unit_hz": 0.3911764621734619,
+        "pop_rate": 33.25,
+        "pop_rate_per_unit": 0.3911764621734619,
         "recruitment_miss": 1.3024064302444458,
-        "response_duration_ms": 10.0,
+        "response_duration": 10.0,
         "response_gain": 1.1008158922195435,
-        "response_latency_ms": 205.0,
-        "response_peak_hz": 1.5625,
+        "response_latency": 205.0,
+        "response_peak": 1.5625,
         "response_probability": 0.0078125,
         "unit_corr_median": -0.016469493508338928,
         "unit_rate_cv": 1.6156353950500488,
@@ -268,7 +268,7 @@
         "EXC_INH-soma-GABA_A-weight": 0.03409476674626726,
         "INH_EXC-soma-AMPA-weight": 0.0388723713220899,
         "io-medium-electrical-stimulation_resistivity_ohm_m": 0.6271252380828254,
-        "leaders-bias": 5.467626094818115,
+        "leaders-bias_pA": 5.467626094818115,
         "leaders-by_input": 1.0,
         "leaders-delay_sd": 11.285737991333008,
         "leaders-efferent": 1.21007443489948,

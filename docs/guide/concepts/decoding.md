@@ -46,7 +46,7 @@ Decodings are passed to `env()` (the callable interface) rather than `env.run()`
 from livn.decoding import MeanFiringRate
 
 result = env(decoding=MeanFiringRate(duration=1000))
-# result = {"rate_hz": 3.2, "total_spikes": 320, "n_units": 10, ...}
+# result = {"rate": 3.2, "total_spikes": 320, "n_units": 10, ...}
 ```
 
 ## Built-in decodings
@@ -96,7 +96,7 @@ Computes the population mean firing rate in Hz:
 from livn.decoding import MeanFiringRate
 
 result = env(decoding=MeanFiringRate(duration=5000))
-# {"rate_hz": 3.1, "total_spikes": 155, "n_units": 10, "duration_s": 5.0}
+# {"rate": 3.1, "total_spikes": 155, "n_units": 10, "duration": 5000.0}
 ```
 
 ### ActiveFraction

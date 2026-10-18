@@ -1144,7 +1144,12 @@ class Env(Protocol):
     def record_membrane_current(
         self, population: str | list | tuple | None = None, dt: float = 0.1
     ) -> Self:
-        """Enable membrane current recording for population"""
+        """Enable membrane current recording for population
+
+        The ``current`` channel of the run holds the membrane current per
+        cell in µA (the unit ``potential_recording`` takes as
+        ``membrane_currents_uA``), not the nA default of injected currents.
+        """
         return self.record("membrane_current", population, dt=dt)
 
     def _record_membrane_current(self, population: str, dt: float) -> Self: ...
@@ -1306,7 +1311,7 @@ class Env(Protocol):
 
     def potential_recording(
         self,
-        membrane_currents: Float[Array, "n_neurons timestep"] | None,
+        membrane_currents_uA: Float[Array, "n_neurons timestep"] | None,
         gids=None,
         dt: float | None = None,
         key=None,
@@ -1314,7 +1319,7 @@ class Env(Protocol):
         if dt is None and getattr(self.io, "needs_dt", False):
             dt = self.membrane_current_recording_dt
         return self.io.potential_recording(
-            self.recording_distances(gids), membrane_currents, dt=dt, key=key
+            self.recording_distances(gids), membrane_currents_uA, dt=dt, key=key
         )
 
     def clear_recordings(self) -> Self:

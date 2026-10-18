@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import numpy as np
 
-AMPLITUDE_RANGE_UM = 60.0
-STORED_RANGE_UM = 150.0
+AMPLITUDE_RANGE = 60.0
+STORED_RANGE = 150.0
 
 
 def measure(
     population: str = "EXC",
-    gap_um: float = 5.0,
+    gap: float = 5.0,
     sigma_s_per_m: float = 0.3,
-    band_hz: tuple[float, float] = (300.0, 3000.0),
-    max_distance_um: float = 400.0,
-    step_um: float = 2.5,
+    band: tuple[float, float] = (300.0, 3000.0),
+    max_distance: float = 400.0,
+    step: float = 2.5,
     directions: int = 72,
 ) -> dict:
     from scipy.signal import butter, sosfiltfilt
@@ -63,43 +63,43 @@ def measure(
     currents = np.array([np.asarray(r) for r in records])  # nA
     t = np.asarray(time)
     x = np.asarray(positions)
-    sos = butter(4, list(band_hz), btype="bandpass", fs=1000.0 / h.dt, output="sos")
+    sos = butter(4, list(band), btype="bandpass", fs=1000.0 / h.dt, output="sos")
     window = (t > 45.0) & (t < 75.0)
     filtered = sosfiltfilt(sos, currents, axis=1)[:, window]
     gain = 1000.0 / (4.0 * np.pi * sigma_s_per_m)  # uV per (nA / um)
-    distance = np.arange(0.0, max_distance_um + step_um / 2, step_um)
+    distance = np.arange(0.0, max_distance + step / 2, step)
     angles = np.linspace(0.0, 2.0 * np.pi, int(directions), endpoint=False)
     px = (distance[:, None] * np.cos(angles)[None, :]).ravel()
     py = (distance[:, None] * np.sin(angles)[None, :]).ravel()
-    d = np.sqrt((x[None, :] - px[:, None]) ** 2 + py[:, None] ** 2 + float(gap_um) ** 2)
+    d = np.sqrt((x[None, :] - px[:, None]) ** 2 + py[:, None] ** 2 + float(gap) ** 2)
     potential = gain * (1.0 / np.maximum(d, 5.0)) @ filtered  # points x samples
     trough = (-potential.min(axis=1)).reshape(len(distance), len(angles)).mean(axis=1)
     return {
-        "distance_um": distance.round(3).tolist(),
-        "trough_uv": trough.round(4).tolist(),
-        "gap_um": float(gap_um),
+        "distance": distance.round(3).tolist(),
+        "trough_uV": trough.round(4).tolist(),
+        "gap": float(gap),
         "sigma_s_per_m": float(sigma_s_per_m),
-        "band_hz": list(band_hz),
+        "band": list(band),
         "celsius": float(h.celsius),
         "population": population,
     }
 
 
 def amplitude_ratio(own: dict, reference: dict) -> float:
-    distance = np.asarray(reference["distance_um"], dtype=float)
-    near = distance <= AMPLITUDE_RANGE_UM
-    ratio = np.asarray(own["trough_uv"], dtype=float)[near] / np.maximum(
-        np.asarray(reference["trough_uv"], dtype=float)[near], 1e-9
+    distance = np.asarray(reference["distance"], dtype=float)
+    near = distance <= AMPLITUDE_RANGE
+    ratio = np.asarray(own["trough_uV"], dtype=float)[near] / np.maximum(
+        np.asarray(reference["trough_uV"], dtype=float)[near], 1e-9
     )
     return float(np.median(ratio))
 
 
 def constants(exc: dict, inh: dict) -> tuple[dict, dict]:
-    distance = np.asarray(exc["distance_um"], dtype=float)
-    keep = distance <= STORED_RANGE_UM
+    distance = np.asarray(exc["distance"], dtype=float)
+    keep = distance <= STORED_RANGE
     profile = {
-        "distance_um": tuple(float(v) for v in distance[keep]),
-        "trough_uv": tuple(float(v) for v in np.asarray(exc["trough_uv"])[keep]),
+        "distance": tuple(float(v) for v in distance[keep]),
+        "trough_uV": tuple(float(v) for v in np.asarray(exc["trough_uV"])[keep]),
     }
     return profile, {"EXC": 1.0, "INH": amplitude_ratio(inh, exc)}
 

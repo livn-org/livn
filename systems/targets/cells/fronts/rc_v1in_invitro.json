@@ -26,9 +26,8 @@
                 "Targets": {
                     "Rin": {
                         "current": [
-                            -50.0
+                            -0.05
                         ],
-                        "current_factor": 0.001,
                         "t": [
                             250.0,
                             1250.0
@@ -41,14 +40,13 @@
                             480.0
                         ],
                         "V_hold": null,
-                        "steady_ms": null,
+                        "steady": null,
                         "band": 0.2
                     },
                     "tau0": {
                         "current": [
                             -0.01
                         ],
-                        "current_factor": 1.0,
                         "t": [
                             250.0,
                             1250.0
@@ -61,7 +59,7 @@
                             22.0
                         ],
                         "V_hold": null,
-                        "steady_ms": null,
+                        "steady": null,
                         "band": 0.2
                     },
                     "threshold": -50.0,
@@ -75,15 +73,14 @@
                     },
                     "f_I": {
                         "current": [
-                            15.0,
-                            20.0,
-                            30.0,
-                            40.0,
-                            50.0,
-                            60.0,
-                            70.0
+                            0.015,
+                            0.02,
+                            0.03,
+                            0.04,
+                            0.05,
+                            0.06,
+                            0.07
                         ],
-                        "current_factor": 0.001,
                         "t": [
                             500.0,
                             1500.0
@@ -116,13 +113,12 @@
                             62.0
                         ],
                         "V_hold": null,
-                        "steady_ms": 500.0,
+                        "steady": 500.0,
                         "band": 0.2
                     },
                     "spike_amp": null,
                     "spike_adaptation": {
                         "current": [],
-                        "current_factor": 1.0,
                         "t": [
                             500.0,
                             1500.0
@@ -147,7 +143,7 @@
                             1.25
                         ],
                         "V_hold": null,
-                        "steady_ms": null,
+                        "steady": null,
                         "band": 0.2
                     },
                     "rheobase": null,
@@ -175,22 +171,22 @@
                 },
                 "Recruitment": {
                     "enabled": true,
-                    "radius_um": 50.0,
-                    "angle_deg": 180.0,
+                    "radius": 50.0,
+                    "angle": 180.0,
                     "electrode_z": 5.0,
-                    "phase_ms": 0.1,
-                    "threshold_ua": [
+                    "phase": 0.1,
+                    "threshold_uA": [
                         1.0,
                         100.0
                     ],
-                    "target_ua": [
+                    "target_uA": [
                         1.0,
                         50.0
                     ]
                 },
                 "Parameters": {
                     "axon_segments": 5.0,
-                    "axon_segment_um": 30.0,
+                    "axon_segment_length": 30.0,
                     "axon_Ra": 70.0,
                     "axon_gmax_K": 0.3
                 },
@@ -320,7 +316,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 1.0,
@@ -375,7 +371,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.9756409416742137,
@@ -430,7 +426,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.8852106115978247,
@@ -485,7 +481,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.9892927297495017,
@@ -540,7 +536,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.8918862841653934,
@@ -595,7 +591,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.9216954636902779,
@@ -650,7 +646,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 1.0,
@@ -705,7 +701,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.9855105375838732,
@@ -760,7 +756,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 1.0,
@@ -815,7 +811,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.549517920524535,
@@ -870,7 +866,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 1.0,
@@ -925,7 +921,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.453198760312726,
@@ -980,7 +976,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.4062910976577272,
@@ -1035,7 +1031,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.43077396612004687,
@@ -1090,7 +1086,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.4850734740139106,
@@ -1145,7 +1141,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.8469068455644269,
@@ -1200,7 +1196,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.6473870482745138,
@@ -1255,7 +1251,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.5986981018208054,
@@ -1310,7 +1306,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.9550995360723152,
@@ -1365,7 +1361,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.5597010568094731,
@@ -1420,7 +1416,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 1.0,
@@ -1475,7 +1471,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.4457050486772369,
@@ -1530,7 +1526,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.5593239403369941,
@@ -1585,7 +1581,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 1.0,
@@ -1640,7 +1636,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.44307056712676296,
@@ -1695,7 +1691,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.5845630806931744,
@@ -1750,7 +1746,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 1.0,
@@ -1805,7 +1801,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.8431848238203633,
@@ -1860,7 +1856,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.5556663884783982,
@@ -1915,7 +1911,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.9628433380483667,
@@ -1970,7 +1966,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.6679942826459828,
@@ -2025,7 +2021,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.4159656861959031,
@@ -2080,7 +2076,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.3968940292391294,
@@ -2135,7 +2131,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.39291030155082646,
@@ -2190,7 +2186,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.3834541234459972,
@@ -2245,7 +2241,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.5504024605859303,
@@ -2300,7 +2296,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.9243424938750576,
@@ -2355,7 +2351,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.38590272554480953,
@@ -2410,7 +2406,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.4745527147792033,
@@ -2465,7 +2461,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.45229258605177947,
@@ -2520,7 +2516,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.4158531502342296,
@@ -2575,7 +2571,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 1.0,
@@ -2630,7 +2626,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.9566628166546804,
@@ -2685,7 +2681,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.4626684776129972,
@@ -2740,7 +2736,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.4081914130640142,
@@ -2795,7 +2791,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.38572790738209245,
@@ -2850,7 +2846,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.38794933245792645,
@@ -2905,7 +2901,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 1.0,
@@ -2960,7 +2956,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.32986757967287617,
@@ -3015,7 +3011,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.45469128674003784,
@@ -3070,7 +3066,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.4703246410710329,
@@ -3125,7 +3121,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.7618252470308908,
@@ -3180,7 +3176,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.3206147304473721,
@@ -3235,7 +3231,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.44886985600360846,
@@ -3290,7 +3286,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.8550818883436184,
@@ -3345,7 +3341,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.4061372534106242,
@@ -3400,7 +3396,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.024087036248462357,
@@ -3455,7 +3451,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.4952406572961552,
@@ -3510,7 +3506,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.9843233997236376,
@@ -3565,7 +3561,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 1.0,
@@ -3620,7 +3616,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.4183109857106996,
@@ -3675,7 +3671,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.40430897715966657,
@@ -3730,7 +3726,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.6596345477857884,
@@ -3785,7 +3781,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.3649600598520405,
@@ -3840,7 +3836,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.4279174475545678,
@@ -3895,7 +3891,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.9803134610683705,
@@ -3950,7 +3946,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.13808473138436203,
@@ -4005,7 +4001,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.3435904474033072,
@@ -4060,7 +4056,7 @@
             "feasible": true,
             "params": {
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_Ra": 70.0,
                 "axon_gmax_K": 0.3,
                 "axon_cm": 0.09601904513002883,

@@ -4,7 +4,7 @@ import json
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-SCHEMA = 2
+SCHEMA = 3
 
 DEFAULT = "spontaneous"
 
@@ -31,12 +31,12 @@ class Threshold(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     censored: str | None = None
-    below_mv: float | None = None
-    above_mv: float | None = None
-    highest_tested_mv: float
-    amplitudes_mv: list[float]
+    below: float | None = None
+    above: float | None = None
+    highest_tested: float
+    amplitudes: list[float]
 
-    @field_validator("amplitudes_mv")
+    @field_validator("amplitudes")
     @classmethod
     def _one_rung_brackets_nothing(cls, v: list[float]) -> list[float]:
         if len(v) < 2:
@@ -45,7 +45,7 @@ class Threshold(BaseModel):
 
     @model_validator(mode="after")
     def _a_crossing_names_its_bracket(self):
-        if self.censored is None and self.above_mv is None:
+        if self.censored is None and self.above is None:
             raise ValueError("Amplitude missing")
         return self
 
@@ -53,7 +53,7 @@ class Threshold(BaseModel):
 class AmplitudeRow(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    amplitude_mv: float
+    amplitude: float
     n_windows: int = 0
 
 
@@ -61,8 +61,8 @@ class Summary(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     condition: str | None = None
-    window_ms: float
-    onsets_ms: list[float] | None = None
+    window: float
+    onsets: list[float] | None = None
     n_windows: int = 0
     recordings: list[str] = Field(default_factory=list)
     features: dict[str, Stat | None] = Field(default_factory=dict)
@@ -106,13 +106,13 @@ class Measured(BaseModel):
     response: dict
     threshold: Threshold | None
     by_amplitude: dict[str, AmplitudeRow] | None
-    window_ms: float
-    onsets_ms: list[float] | None
+    window: float
+    onsets: list[float] | None
 
     @property
-    def amplitudes_mv(self) -> tuple[float, ...]:
+    def amplitudes(self) -> tuple[float, ...]:
         rows = (self.by_amplitude or {}).values()
-        return tuple(sorted(float(row.amplitude_mv) for row in rows))
+        return tuple(sorted(float(row.amplitude) for row in rows))
 
 
 def read_target(file: str, condition: str = DEFAULT) -> Measured:
@@ -146,8 +146,8 @@ def read_target(file: str, condition: str = DEFAULT) -> Measured:
         )
 
     summary = pooled.summary
-    if condition in STIMULATED and not summary.onsets_ms:
-        raise ValueError(f"the {condition!r} block of {file!r} records no `onsets_ms`")
+    if condition in STIMULATED and not summary.onsets:
+        raise ValueError(f"the {condition!r} block of {file!r} records no `onsets`")
 
     return Measured(
         condition=condition,
@@ -156,6 +156,6 @@ def read_target(file: str, condition: str = DEFAULT) -> Measured:
         response=pooled.response,
         threshold=pooled.threshold,
         by_amplitude=summary.by_amplitude,
-        window_ms=summary.window_ms,
-        onsets_ms=summary.onsets_ms,
+        window=summary.window,
+        onsets=summary.onsets,
     )

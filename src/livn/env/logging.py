@@ -16,7 +16,7 @@ except Exception:  # pragma: no cover
     _tqdm = None
 
 
-DEFAULT_TICK_MS = 100.0
+DEFAULT_TICK = 100.0
 
 
 def _interval_from_env(default: float) -> float:
@@ -36,7 +36,7 @@ class _NeuronTimingLogger:
         self,
         env: Env,
         log_interval_sim: float = 10_000.0,
-        log_interval_wall: float = 10.0,
+        log_interval_wall_s: float = 10.0,
         tick_dt: float | None = None,
         progress: bool = True,
     ) -> None:
@@ -50,11 +50,11 @@ class _NeuronTimingLogger:
         comm = getattr(env, "comm", None)
         self._sole_domain = comm is None or P.size(comm=comm) == P.size()
         self.log_interval_sim = float(log_interval_sim)
-        self.log_interval_wall = _interval_from_env(float(log_interval_wall))
+        self.log_interval_wall_s = _interval_from_env(float(log_interval_wall_s))
         self.tick_dt = (
             float(tick_dt)
             if tick_dt is not None
-            else min(DEFAULT_TICK_MS, self.log_interval_sim)
+            else min(DEFAULT_TICK, self.log_interval_sim)
         )
         self.use_tqdm = (
             progress and _tqdm is not None and self.rank == 0 and self._sole_domain
@@ -133,18 +133,18 @@ class _NeuronTimingLogger:
     def update(
         self,
         log_interval_sim: float | None = None,
-        log_interval_wall: float | None = None,
+        log_interval_wall_s: float | None = None,
         tick_dt: float | None = None,
         progress: bool | None = None,
     ) -> None:
         if log_interval_sim is not None:
             self.log_interval_sim = float(log_interval_sim)
-        if log_interval_wall is not None:
-            self.log_interval_wall = float(log_interval_wall)
+        if log_interval_wall_s is not None:
+            self.log_interval_wall_s = float(log_interval_wall_s)
         if tick_dt is not None:
             self.tick_dt = float(tick_dt)
         elif log_interval_sim is not None:
-            self.tick_dt = min(DEFAULT_TICK_MS, self.log_interval_sim)
+            self.tick_dt = min(DEFAULT_TICK, self.log_interval_sim)
         if progress is not None:
             new_use_tqdm = (
                 bool(progress)
@@ -193,7 +193,7 @@ class _NeuronTimingLogger:
 
         if self.rank == 0 and self._pbar is None and sim_t > 0.0:
             sim_due = (sim_t - self._last_log_sim) >= self.log_interval_sim
-            wall_due = (wt - self._last_log_wall) >= self.log_interval_wall
+            wall_due = (wt - self._last_log_wall) >= self.log_interval_wall_s
             if sim_due or wall_due:
                 print(self._progress_line(sim_t, wt), file=sys.stderr, flush=True)
                 self._last_log_sim = sim_t
@@ -209,7 +209,7 @@ class _NeuronTimingLogger:
 def with_progress_logging(
     env: Env,
     log_interval_sim: float = 10_000.0,
-    log_interval_wall: float = 10.0,
+    log_interval_wall_s: float = 10.0,
     tick_dt: float | None = None,
     progress: bool = True,
 ) -> Env:
@@ -218,17 +218,17 @@ def with_progress_logging(
     For the NEURON backend this installs a periodic status handler that
     reports how far into the current ``run()`` this rank has got, at what
     rate, and when it is due to finish. A line is emitted once
-    ``log_interval_sim`` ms of simulated time or ``log_interval_wall``
+    ``log_interval_sim`` ms of simulated time or ``log_interval_wall_s``
     seconds of wall clock have passed, whichever comes first, and goes to
     stderr so it lands in a batch job's output log.
 
-    ``LIVN_PROGRESS_INTERVAL`` overrides ``log_interval_wall`` in seconds,
+    ``LIVN_PROGRESS_INTERVAL`` overrides ``log_interval_wall_s`` in seconds,
     which is how a scheduled job turns the cadence down (100 workers each
     reporting every 10 s is a lot of log) or off, with ``0``.
 
     ``tick_dt`` controls how often the underlying ``cvode.event`` callback
     fires, in ms of simulated time. It bounds how precisely the wall-clock
-    interval can be honoured, so it defaults to ``DEFAULT_TICK_MS`` rather
+    interval can be honoured, so it defaults to ``DEFAULT_TICK`` rather
     than to ``log_interval_sim`` -- a tick measured in tens of thousands of
     simulated ms is hours of wall clock on a real network, and the reporter
     never wakes.
@@ -245,7 +245,7 @@ def with_progress_logging(
     if isinstance(existing, _NeuronTimingLogger):
         existing.update(
             log_interval_sim=log_interval_sim,
-            log_interval_wall=log_interval_wall,
+            log_interval_wall_s=log_interval_wall_s,
             tick_dt=tick_dt,
             progress=progress,
         )
@@ -254,7 +254,7 @@ def with_progress_logging(
     env._timing_logger = _NeuronTimingLogger(
         env,
         log_interval_sim=log_interval_sim,
-        log_interval_wall=log_interval_wall,
+        log_interval_wall_s=log_interval_wall_s,
         tick_dt=tick_dt,
         progress=progress,
     )
@@ -265,7 +265,7 @@ _streams: list = []
 
 
 def enable_diagnostic_logging(
-    every: float | None = None,
+    every_s: float | None = None,
     directory: str | None = None,
     label: str = "livn",
     rank: int | None = None,
@@ -276,7 +276,7 @@ def enable_diagnostic_logging(
     covered too.
 
     Args:
-        every: Dump period in seconds. ``None`` or non-positive registers
+        every_s: Dump period in seconds. ``None`` or non-positive registers
             ``SIGUSR1`` but arms no timer.
         directory: Write dumps to ``<directory>/rank-NNNN.txt`` rather than
             stderr.
@@ -294,7 +294,7 @@ def enable_diagnostic_logging(
             lambda *_: faulthandler.dump_traceback(file=sys.stderr, all_threads=True),
         )
 
-    if every is None or every <= 0:
+    if every_s is None or every_s <= 0:
         return False
 
     if rank is None:
@@ -311,10 +311,10 @@ def enable_diagnostic_logging(
         _streams.append(stream)
 
     print(
-        f"[livn] watchdog {label} rank={rank} pid={os.getpid()} every {every:g}s",
+        f"[livn] watchdog {label} rank={rank} pid={os.getpid()} every {every_s:g}s",
         file=sys.stderr,
         flush=True,
     )
 
-    faulthandler.dump_traceback_later(every, repeat=True, file=stream, exit=False)
+    faulthandler.dump_traceback_later(every_s, repeat=True, file=stream, exit=False)
     return True

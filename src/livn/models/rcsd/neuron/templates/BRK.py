@@ -49,7 +49,7 @@ class BRK:
     def set_default_parameters(self):
         self.pp = 0.5  # proportion of area taken up by soma
         self.Ltotal = 400 / np.pi  # total length of compartments
-        self.gc = 10.5  # mS/cm2; Ra in ohm-cm
+        self.gc_mS_per_cm2 = 10.5  # mS/cm2; Ra in ohm-cm
 
         self.global_e_pas = -60
         self.soma_g_pas = 0.0001
@@ -85,7 +85,7 @@ class BRK:
         self.axon_params = _axon.axon_parameters(params)
         self.pp = params.get("pp", self.pp)
         self.Ltotal = params.get("Ltotal", self.Ltotal)
-        self.gc = params.get("gc", self.gc)
+        self.gc_mS_per_cm2 = params.get("gc_mS_per_cm2", self.gc_mS_per_cm2)
 
         self.global_diam = params.get("global_diam", self.global_diam)
         self.global_cm = params.get("global_cm", self.global_cm)
@@ -170,7 +170,8 @@ class BRK:
         for sec in [self.soma, self.dend]:
             sec.Ra = 1
             sec.Ra = (
-                1e-6 / (self.gc / self.pp * (h.area(0.5, sec=sec) * 1e-8) * 1e-3)
+                1e-6
+                / (self.gc_mS_per_cm2 / self.pp * (h.area(0.5, sec=sec) * 1e-8) * 1e-3)
             ) / (2 * h.ri(0.5, sec=sec))
             sec.cm = self.global_cm
 

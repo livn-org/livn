@@ -111,7 +111,7 @@ RCSD includes built-in opsin (channelrhodopsin) support for [optical stimulation
 ```python
 model = ReducedCalciumSomaDendrite()
 model.opsin_config()
-# {'mechanism': 'RhO3c', 'sections': ['soma'], 'wavelength_nm': 473.0}
+# {'mechanism': 'RhO3c', 'sections': ['soma'], 'wavelength': 473.0}
 ```
 
 Override in a subclass to customize or disable:

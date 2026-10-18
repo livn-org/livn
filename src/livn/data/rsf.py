@@ -75,7 +75,7 @@ def store(
     stimulus: Mapping | Policy | None = None,
     inputs: np.ndarray | None = None,
     inputs_dt: float | None = None,
-    gain_uv: float = DEFAULT_GAIN_UV,
+    gain_uV: float = DEFAULT_GAIN_UV,
     label: str | None = None,
 ) -> str | None:
     """Write ``run`` as an RSF session directory at ``path``.
@@ -105,7 +105,7 @@ def store(
             IO's channels, starting at the run's ``t0``. It is stored at the traces' frame rate
             (zero-order hold; zero past its end) so :meth:`RsfRecording.inputs` can serve it
         inputs_dt: Sampling interval of ``inputs`` in ms; defaults to the policy's ``dt``
-        gain_uv: uV per LSB of the stored traces; a sample outside int16 is an error
+        gain_uV: uV per LSB of the stored traces; a sample outside int16 is an error
         label: Free text for people; defaults to the system's name
 
     Returns:
@@ -125,7 +125,7 @@ def store(
         stimulus=stimulus,
         inputs=inputs,
         inputs_dt=inputs_dt,
-        gain_uv=gain_uv,
+        gain_uV=gain_uV,
         label=label,
     )
     _write(plan)
@@ -143,7 +143,7 @@ def _prepare(
     stimulus,
     inputs,
     inputs_dt,
-    gain_uv,
+    gain_uV,
     label,
 ):
     path = os.fspath(path)
@@ -154,10 +154,10 @@ def _prepare(
     io, operator, stimulates = _observation(env)
     channel_ids = [_id_str(c) for c in np.asarray(operator.electrode_coordinates)[:, 0]]
 
-    gain_uv = float(gain_uv)
-    if not gain_uv > 0 or not math.isfinite(gain_uv):
+    gain_uV = float(gain_uV)
+    if not gain_uV > 0 or not math.isfinite(gain_uV):
         raise RSFError(
-            f"gain_uv must be a positive number of µV per LSB, not {gain_uv}"
+            f"gain_uV must be a positive number of µV per LSB, not {gain_uV}"
         )
 
     # the channel signal, (n_channels, T) in uV
@@ -210,7 +210,7 @@ def _prepare(
         raise RSFError(
             "withhold dropped every channel; a session needs at least one row"
         )
-    traces = _quantize(uv, gain_uv)
+    traces = _quantize(uv, gain_uV)
 
     stimulus, delivered = _stimulus(stimulus, inputs, inputs_dt)
     if delivered is not None:
@@ -267,7 +267,7 @@ def _prepare(
     observe = _observe_document(io, operator, stimulates, masked)
     source_document: dict[str, Any] = {"ids": sources}
     if "source_positions" not in masked:
-        source_document["coordinates_um"] = _source_coordinates(env, sources)
+        source_document["coordinates"] = _source_coordinates(env, sources)
     simulation = {
         "simulator": {"name": simulator, "version": _version()},
         "spec": spec,
@@ -280,7 +280,7 @@ def _prepare(
         simulation["inputs"] = {
             "channels": delivered["ids"],
             "units": delivered["units"],
-            "source_dt_ms": delivered["source_dt"],
+            "source_dt": delivered["source_dt"],
         }
     if projected is not None:
         simulation["trace_sections"] = projected["contributing"]
@@ -329,7 +329,7 @@ def _prepare(
         "n_frames": n_frames,
         "row_ids": row_ids,
         "traces": traces,
-        "gain_uv": gain_uv,
+        "gain_uV": gain_uV,
         "tick0": int(tick0),
         "spikes": spikes,
         "sources": sources,
@@ -431,7 +431,7 @@ def _write(plan: dict) -> None:
     _array(
         root,
         "properties/gain_to_uV",
-        np.full(n_rows, plan["gain_uv"], dtype=np.float64),
+        np.full(n_rows, plan["gain_uV"], dtype=np.float64),
     )
     _array(root, "properties/offset_to_uV", np.zeros(n_rows, dtype=np.float64))
     _strings(root, "properties/channel", plan["row_ids"])
@@ -451,7 +451,7 @@ def _write(plan: dict) -> None:
             mode="w",
             attributes={
                 "units": plan["inputs"]["units"],
-                "source_dt_ms": plan["inputs"]["source_dt"],
+                "source_dt": plan["inputs"]["source_dt"],
             },
         )
         _strings(delivered, "channel_ids", plan["inputs"]["ids"])
@@ -546,7 +546,7 @@ def _stack_stages(io) -> list[dict]:
             transform = {
                 "noise": {
                     "distribution": "gaussian",
-                    "params": {"sigma_uv": float(document["sigma_uv"])},
+                    "params": {"sigma_uV": float(document["sigma_uV"])},
                     "seed": int(document["seed"]),
                 }
             }
@@ -729,8 +729,8 @@ def _withhold_stages(withhold, row_ids) -> tuple[list[dict], set[str]]:
     return stages, masked
 
 
-def _quantize(uv: np.ndarray, gain_uv: float) -> np.ndarray:
-    scaled = np.round(uv / gain_uv)
+def _quantize(uv: np.ndarray, gain_uV: float) -> np.ndarray:
+    scaled = np.round(uv / gain_uV)
     if scaled.size:
         peak = float(np.max(np.abs(uv)))
         if not np.all(np.isfinite(scaled)):
@@ -738,7 +738,7 @@ def _quantize(uv: np.ndarray, gain_uv: float) -> np.ndarray:
         if scaled.max() > _INT16.max or scaled.min() < _INT16.min:
             raise RSFError(
                 f"the channel signal peaks at {peak:.6g} µV, beyond the int16 range at "
-                f"{gain_uv} µV/LSB; pass gain_uv >= {peak / _INT16.max:.6g}"
+                f"{gain_uV} µV/LSB; pass gain_uV >= {peak / _INT16.max:.6g}"
             )
     return np.ascontiguousarray(scaled.astype(np.int16).T)
 
@@ -839,23 +839,23 @@ def _observe_document(io, operator, stimulates: bool, masked: set[str]) -> dict:
     if "electrode_positions" in masked:
         document["electrode_ids"] = [_id_value(c) for c in coordinates[:, 0]]
     else:
-        document["electrode_coordinates_um"] = [
+        document["electrode_coordinates"] = [
             [_id_value(row[0]), float(row[1]), float(row[2]), float(row[3])]
             for row in coordinates
         ]
-    document["output_radius_um"] = float(operator.output_radius)
+    document["output_radius"] = float(operator.output_radius)
     document["detection_threshold"] = float(operator.detection_threshold)
     if plain_point_source:
         document["recording_gain"] = float(electrical.recording_gain)
-        document["min_distance_um"] = float(electrical.min_distance_um)
+        document["min_distance"] = float(electrical.min_distance)
     if stimulates:
-        document["input_radius_um"] = float(operator.input_radius)
-        document["electrode_radius_um"] = float(operator.electrode_radius_um)
+        document["input_radius"] = float(operator.input_radius)
+        document["electrode_radius"] = float(operator.electrode_radius)
         if plain_point_source:
             document["stimulation_gain"] = float(
-                electrical.stimulation_gain(operator.electrode_radius_um)
+                electrical.stimulation_gain(operator.electrode_radius)
             )
-            document["culture_height_um"] = float(electrical.height_um)
+            document["culture_height"] = float(electrical.height)
     document["livn"] = {
         "medium": medium.serialize(),
         "transfers": [t.serialize() for t in _transfers(io)],
@@ -866,7 +866,7 @@ def _observe_document(io, operator, stimulates: bool, masked: set[str]) -> dict:
 def _probe(operator, row_ids: list[str]) -> dict:
     coordinates = np.asarray(operator.electrode_coordinates, dtype=np.float64)
     position = {_id_str(row[0]): (float(row[1]), float(row[2])) for row in coordinates}
-    radius = float(operator.electrode_radius_um)
+    radius = float(operator.electrode_radius)
     n = len(row_ids)
     return {
         "specification": "probeinterface",
@@ -1122,7 +1122,7 @@ class RsfRecording:
             "record": self.record,
             "simulation": self.simulation,
             "label": group_attrs.get("label"),
-            "gain_uv": float(self._gain[0]) if len(self._gain) else None,
+            "gain_uV": float(self._gain[0]) if len(self._gain) else None,
         }
 
     def __getstate__(self) -> dict:
@@ -1362,10 +1362,10 @@ def _read_operator(path: str):
         document = json.load(f)
     if (
         document.get("kind") not in (POINT_SOURCE, LIVN_IO)
-        or "electrode_coordinates_um" not in document
+        or "electrode_coordinates" not in document
     ):
         return None
-    coordinates = document["electrode_coordinates_um"]
+    coordinates = document["electrode_coordinates"]
     if not all(isinstance(row[0], int) for row in coordinates):
         return None  # livn's MEA numbers its electrodes
     livn = document.get("livn")
@@ -1374,10 +1374,10 @@ def _read_operator(path: str):
         medium = Medium(**{k: v for k, v in livn["medium"].items() if k != "cls"})
         transfers = livn["transfers"]
     else:
-        radius = document.get("electrode_radius_um", 15.0)
-        height = document.get("culture_height_um", 50.0)
+        radius = document.get("electrode_radius", 15.0)
+        height = document.get("culture_height", 50.0)
         sigma = 1e6 / (
-            4.0 * math.pi * document["recording_gain"] * document["min_distance_um"]
+            4.0 * math.pi * document["recording_gain"] * document["min_distance"]
         )
         rho = None
         if "stimulation_gain" in document:
@@ -1386,21 +1386,21 @@ def _read_operator(path: str):
         medium = Medium(
             electrical=PointSource(
                 sigma_s_per_m=sigma,
-                height_um=height,
-                min_distance_um=document["min_distance_um"],
+                height=height,
+                min_distance=document["min_distance"],
                 stimulation_resistivity_ohm_m=rho,
             )
         )
     kwargs: dict[str, Any] = {
         "electrode_coordinates": np.asarray(coordinates, dtype=np.float64),
-        "output_radius": document["output_radius_um"],
+        "output_radius": document["output_radius"],
         "medium": medium,
         "detection_threshold": document.get("detection_threshold", 0.0),
     }
-    if "input_radius_um" in document:
-        kwargs["input_radius"] = document["input_radius_um"]
-    if "electrode_radius_um" in document:
-        kwargs["electrode_radius_um"] = document["electrode_radius_um"]
+    if "input_radius" in document:
+        kwargs["input_radius"] = document["input_radius"]
+    if "electrode_radius" in document:
+        kwargs["electrode_radius"] = document["electrode_radius"]
     mea = MEA(**kwargs)
     if not transfers:
         return mea

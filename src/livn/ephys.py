@@ -342,12 +342,12 @@ def measure_ISI(cur_steps_amp, spk_infos):
     return ISI_array
 
 
-def spike_shape(v, t, onset: float, crossing_mv: float = -20.0) -> dict:
+def spike_shape(v, t, onset: float, crossing: float = -20.0) -> dict:
     """What a trace did after ``onset``, as numbers and no verdict.
 
-    Returns ``finite`` (no NaN or inf anywhere), ``peak_mV`` (maximum after
-    ``onset``), ``end_mV`` (the last sample) and ``n_crossings`` (upward crossings
-    of ``crossing_mv`` after ``onset``). A trace that is not finite reports NaN for
+    Returns ``finite`` (no NaN or inf anywhere), ``peak`` (maximum after
+    ``onset``), ``end`` (the last sample) and ``n_crossings`` (upward crossings
+    of ``crossing`` after ``onset``). A trace that is not finite reports NaN for
     the voltages and -1 crossings, so a caller can tell a failed solve from a
     quiet cell.
     """
@@ -356,18 +356,18 @@ def spike_shape(v, t, onset: float, crossing_mv: float = -20.0) -> dict:
     if not np.all(np.isfinite(v)):
         return {
             "finite": False,
-            "peak_mV": float("nan"),
-            "end_mV": float("nan"),
+            "peak": float("nan"),
+            "end": float("nan"),
             "n_crossings": -1,
         }
     after = v[t >= onset]
     if after.size == 0:
         raise ValueError(f"the trace ends at {t[-1]:g} ms, before onset {onset:g} ms")
-    up = (after[:-1] < crossing_mv) & (after[1:] >= crossing_mv)
+    up = (after[:-1] < crossing) & (after[1:] >= crossing)
     return {
         "finite": True,
-        "peak_mV": float(after.max()),
-        "end_mV": float(v[-1]),
+        "peak": float(after.max()),
+        "end": float(v[-1]),
         "n_crossings": int(up.sum()),
     }
 
@@ -449,9 +449,9 @@ def _current_stimulus(env, gid: int, u: np.ndarray, dt: float):
     )
 
 
-def _run(env, duration_ms: float, stimulus, dt: float):
+def _run(env, duration: float, stimulus, dt: float):
     try:
-        run = env.run(duration_ms, stimulus, dt=dt)
+        run = env.run(duration, stimulus, dt=dt)
     except ValueError as error:
         if "compiled for" not in str(error):
             raise
@@ -483,10 +483,10 @@ def _soma_row(run, gid: int, series: str = "voltage") -> int:
 def current_step(
     env,
     gid: int,
-    amplitude_nA: float,
-    t0_ms: float,
-    t1_ms: float,
-    duration_ms: float,
+    amplitude: float,
+    t0: float,
+    t1: float,
+    duration: float,
     *,
     dt: float,
     record_dt: float,
@@ -505,9 +505,9 @@ def current_step(
     env = _prepare(env, record_dt=record_dt, isolate=isolate, gid=gid, current=False)
     # the stimulus is sampled at the integration step: diffrax takes an array as
     # given, where NEURON and brian2 resample it onto their own grid
-    t_stim = np.arange(round(duration_ms / dt)) * dt
-    u = square_step(t_stim, t0_ms, t1_ms, amplitude_nA)
-    run = _run(env, duration_ms, _current_stimulus(env, gid, u, dt), dt)
+    t_stim = np.arange(round(duration / dt)) * dt
+    u = square_step(t_stim, t0, t1, amplitude)
+    run = _run(env, duration, _current_stimulus(env, gid, u, dt), dt)
     if run is None:
         return None, None
 
@@ -520,10 +520,10 @@ def current_step(
 def spike_template(
     env,
     gid: int,
-    amplitude_nA: float,
-    pulse_tau_ms: float,
-    pre_ms: float,
-    post_ms: float,
+    amplitude: float,
+    pulse_tau: float,
+    pre: float,
+    post: float,
     *,
     dt: float,
     record_dt: float | None = None,
@@ -535,9 +535,9 @@ def spike_template(
     """
     record_dt = dt if record_dt is None else record_dt
     env = _prepare(env, record_dt=record_dt, isolate=isolate, gid=gid, current=True)
-    duration = pre_ms + post_ms
+    duration = pre + post
     t = np.arange(round(duration / dt)) * dt
-    u = alpha_pulse(t, pre_ms, pulse_tau_ms, amplitude_nA)
+    u = alpha_pulse(t, pre, pulse_tau, amplitude)
     run = _run(env, duration, _current_stimulus(env, gid, u, dt), dt)
     if run is None:
         return None

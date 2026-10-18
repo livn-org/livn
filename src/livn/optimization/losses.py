@@ -25,14 +25,14 @@ def _per_cell(value, like):
     return value
 
 
-def log_intensity(voltage, threshold, sigma, tau_s):
+def log_intensity(voltage, threshold, sigma, tau):
     """Reconstruct ``log lambda(t)`` from a recorded run, in log(1/ms).
 
     Args:
         voltage: ``(..., cells, times)`` membrane potential in mV
         threshold: ``(..., cells, times)`` threshold in mV, i.e. the ``threshold`` channel
         sigma: escape-noise width in mV, scalar or one per cell
-        tau_s: escape time constant in ms, scalar or one per cell
+        tau: escape time constant in ms, scalar or one per cell
 
     Returns:
         ``(..., cells, times)`` log intensity
@@ -40,16 +40,14 @@ def log_intensity(voltage, threshold, sigma, tau_s):
     voltage = jnp.asarray(voltage)
     threshold = jnp.asarray(threshold)
     sigma = _per_cell(sigma, voltage)
-    tau_s = _per_cell(tau_s, voltage)
+    tau = _per_cell(tau, voltage)
     sigma = jnp.where(sigma > 0, sigma, 1e-12)
-    return (voltage - threshold) / sigma - jnp.log(tau_s)
+    return (voltage - threshold) / sigma - jnp.log(tau)
 
 
-def intensity(voltage, threshold, sigma, tau_s):
+def intensity(voltage, threshold, sigma, tau):
     """The escape-rate intensity ``lambda(t)`` in 1/ms"""
-    return jnp.exp(
-        jnp.minimum(log_intensity(voltage, threshold, sigma, tau_s), EXP_CAP)
-    )
+    return jnp.exp(jnp.minimum(log_intensity(voltage, threshold, sigma, tau), EXP_CAP))
 
 
 def refractory_mask(spike_times, times, t_ref, *, ids=None, n_cells=None):
@@ -322,7 +320,7 @@ def shape_logmag(
 def smoothness(
     currents: Float[Array, "*batch time unit"],
     dt: float,
-    sigma_ms: float = 0.75,
+    sigma: float = 0.75,
     scale: float = 1.0,
     warmup_samples: int = 0,
 ):
@@ -331,7 +329,7 @@ def smoothness(
     Args:
         currents: ``(*batch, time, unit)`` trace
         dt: sample interval in ms
-        sigma_ms: Gaussian width of the lowpass
+        sigma: Gaussian width of the lowpass
         scale: normalisation, the loss is divided by ``max(scale**2, 1e-8)``
         warmup_samples: leading samples dropped before the lowpass, as for the other trace losses
 
@@ -339,10 +337,10 @@ def smoothness(
         Scalar loss.
     """
     x = jnp.asarray(currents)[..., warmup_samples:, :]
-    sigma = max(float(sigma_ms) / max(float(dt), 1e-9), 1e-6)
-    radius = max(1, round(3.0 * sigma))
+    sigma_samples = max(float(sigma) / max(float(dt), 1e-9), 1e-6)
+    radius = max(1, round(3.0 * sigma_samples))
     offsets = jnp.arange(-radius, radius + 1, dtype=x.dtype)
-    kernel = jnp.exp(-0.5 * (offsets / sigma) ** 2)
+    kernel = jnp.exp(-0.5 * (offsets / sigma_samples) ** 2)
     kernel = kernel / jnp.maximum(jnp.sum(kernel), 1e-12)
 
     pad = [(0, 0)] * (x.ndim - 2) + [(radius, radius), (0, 0)]
@@ -361,7 +359,7 @@ def events_to_mask(
     events: Float[Array, "*batch unit spike"],
     shape: tuple[int, int],
     dt: float,
-    window_ms: float,
+    window: float,
     channel_radius: int = 0,
     channels: Int[Array, "unit ..."] | None = None,
 ) -> Bool[Array, "*batch time channel"]:
@@ -369,7 +367,7 @@ def events_to_mask(
 
     Fixed shapes and no host round trip, so it can sit inside the jitted loss. A spike at ``t``
     marks samples ``s - h .. s + h`` (inclusive) with ``s = round(t / dt)`` and
-    ``h = max(1, round(window_ms / dt / 2))``, on channels ``c - channel_radius .. c +
+    ``h = max(1, round(window / dt / 2))``, on channels ``c - channel_radius .. c +
     channel_radius`` clipped to the array, for each channel ``c`` of its unit.
 
     Args:
@@ -377,7 +375,7 @@ def events_to_mask(
             ``inf``-padded (the ``livn.optimization.data`` batch format)
         shape: ``(time, channel)`` of the trace the mask is applied to
         dt: sample interval in ms
-        window_ms: total window width in ms
+        window: total window width in ms
         channel_radius: channels either side of the unit's channel to include
         channels: ``(unit,)`` channel index per unit, or ``(unit, m)`` with ``-1`` padding for
             units seen on several channels. Defaults to unit ``u`` on channel ``u``.
@@ -388,7 +386,7 @@ def events_to_mask(
     T, C = shape
     events = jnp.asarray(events)
     U = events.shape[-2]
-    half = max(1, round(window_ms / max(dt, 1e-9) / 2))
+    half = max(1, round(window / max(dt, 1e-9) / 2))
     if channels is None:
         channels = jnp.arange(U)
     channels = jnp.asarray(channels)

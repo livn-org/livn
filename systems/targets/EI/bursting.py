@@ -17,7 +17,7 @@ class BurstingCulture(Culture):
 
     LEADER_RANGES: ClassVar[dict | None] = {
         "fraction": [0.02, 0.3],
-        "bias": [0.0, 20.0],
+        "bias_pA": [0.0, 20.0],
         "rest_noise": [0.0, 1.0],
         "efferent": [1.0, 12.0, "log"],
         "delay_sd": [0.0, 30.0],
@@ -27,31 +27,31 @@ class BurstingCulture(Culture):
     LEADER_SELECTION: ClassVar[str] = "input"
     UNIT_FEATURES: ClassVar[tuple] = (
         "unit_participation",
-        "unit_between_rate_hz",
-        "order_spread_ms",
+        "unit_between_rate",
+        "order_spread",
         "unit_spikes_per_burst",
         "unit_active_between_fraction",
         "between_time_rho",
     )
     SEARCH_OBJECTIVES: ClassVar[tuple] = (
         "unit_participation",
-        "order_spread_ms",
+        "order_spread",
         "mean_channel_correlation",
         "pop_autocorr_tau",
     )
     GATED_FEATURES: ClassVar[tuple] = (
         "isi_cv",
         "unit_participation",
-        "unit_between_rate_hz",
-        "order_spread_ms",
+        "unit_between_rate",
+        "order_spread",
         "unit_spikes_per_burst",
         "unit_active_between_fraction",
         "between_time_rho",
     )
-    GATED_RESPONSE: ClassVar[tuple] = ("response_latency_ms", "response_duration_ms")
+    GATED_RESPONSE: ClassVar[tuple] = ("response_latency", "response_duration")
     MAX_RECRUITMENT_MISS = 1.5
     THRESHOLD_SIGMA = 5.0
-    DEAD_TIME_MS = 3.0
+    DEAD_TIME = 3.0
 
     def _measure(self, observation, condition: str) -> None:
         super()._measure(observation, condition)
@@ -99,7 +99,7 @@ class BurstingCulture(Culture):
 
         block = read_target(observation, "evoked")
         self.stimulus = Protocol.from_block(
-            block, repeats=repeats, trial_ms=float(block.window_ms)
+            block, repeats=repeats, trial=float(block.window)
         )
 
     def _build_gate_bands(self) -> None:
@@ -189,21 +189,21 @@ class BurstingCulture(Culture):
         return [n for n in dict.fromkeys(names) if n not in objectives]
 
     @property
-    def noise_uv(self) -> float:
-        cached = getattr(self, "_noise_uv", None)
+    def noise_uV(self) -> float:
+        cached = getattr(self, "_noise_uV", None)
         if cached is None:
-            stated = read_unit_targets(self.config.observation).noise_uv
+            stated = read_unit_targets(self.config.observation).noise_uV
             if not stated:
                 raise ValueError(
-                    f"{self.config.observation}'s unit targets state no `noise_uv`"
+                    f"{self.config.observation}'s unit targets state no `noise_uV`"
                 )
-            cached = self._noise_uv = float(stated)
+            cached = self._noise_uV = float(stated)
         return cached
 
     def readout_radius(self, profile: dict) -> float:
-        threshold = self.THRESHOLD_SIGMA * self.noise_uv
-        distances = np.asarray(profile["distance_um"], dtype=float)
-        troughs = np.asarray(profile["trough_uv"], dtype=float)
+        threshold = self.THRESHOLD_SIGMA * self.noise_uV
+        distances = np.asarray(profile["distance"], dtype=float)
+        troughs = np.asarray(profile["trough_uV"], dtype=float)
         above = np.flatnonzero(troughs >= threshold)
         if not len(above):
             return float(distances[1])
@@ -227,10 +227,10 @@ class BurstingCulture(Culture):
         kwargs.update(
             output_radius=self.readout_radius(profile),
             threshold_sigma=float(self.THRESHOLD_SIGMA),
-            dead_time_ms=float(self.DEAD_TIME_MS),
+            dead_time=float(self.DEAD_TIME),
         )
 
-        return ComposedIO(None, [MEA(**kwargs), Noise(self.noise_uv)])
+        return ComposedIO(None, [MEA(**kwargs), Noise(self.noise_uV)])
 
     def _units(self, env) -> dict[int, int]:
         key = id(env.io)
@@ -305,7 +305,7 @@ class BurstingCulture(Culture):
         curve = {
             float(a): float(p) / scale
             for a, p in zip(
-                simulated["amplitudes_mv"], simulated["probabilities"], strict=True
+                simulated["amplitudes"], simulated["probabilities"], strict=True
             )
         }
         counted = recruitment_threshold(

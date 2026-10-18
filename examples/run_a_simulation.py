@@ -18,15 +18,15 @@ env = Env(Monolayer(total_cells=650)).init().apply_model_defaults()
 env = env.record_spikes()
 
 policy = PulseSweepPolicy(
-    amplitudes=(50.0, 200.0),
+    amplitudes_uA=(50.0, 200.0),
     repeats=1,
-    trial_ms=20.0,
-    onset_ms=10.0,
-    pulse_ms=1.0,
+    trial=20.0,
+    onset=10.0,
+    pulse=1.0,
     dt=0.1,
 ).for_array(len(env.io.channel_ids), channels=[ELECTRODE])
 
-run = env.run(policy.extent_ms, stimulus=policy)
+run = env.run(policy.extent, stimulus=policy)
 
 ids = np.asarray(run.spike_ids)
 times = np.asarray(run.spike_times)
@@ -51,7 +51,7 @@ for pulse, amplitude in policy.schedule():
     )
 ax.set_xlabel("time (ms)")
 ax.set_ylabel("cell")
-ax.set_xlim(0, policy.extent_ms)
+ax.set_xlim(0, policy.extent)
 
 fig.tight_layout()
 fig.savefig("stimulus_sweep.png", dpi=150)

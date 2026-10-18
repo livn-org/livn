@@ -333,12 +333,12 @@ class OrientedTrainableSystem(eqx.Module):
     Arguments:
         base: The inner TrainableSystem
         orientation: Learnable per-neuron orientation, indexed by gid
-        dipole_length_um: Soma-to-dendrite distance in um
+        dipole_length: Soma-to-dendrite distance in um
     """
 
     base: TrainableSystem
     orientation: LearnableOrientation
-    dipole_length_um: float = eqx.field(static=True)
+    dipole_length: float = eqx.field(static=True)
 
     @classmethod
     def from_parameterization(
@@ -349,7 +349,7 @@ class OrientedTrainableSystem(eqx.Module):
         origins=None,
         uri: str | None = None,
         orient_init=None,
-        dipole_length_um: float = 108.0,
+        dipole_length: float = 108.0,
     ):
         if orient_init is None:
             orient_init = np.tile(
@@ -366,7 +366,7 @@ class OrientedTrainableSystem(eqx.Module):
             orientation=LearnableOrientation(
                 raw=np.asarray(orient_init, dtype=np.float32)
             ),
-            dipole_length_um=float(dipole_length_um),
+            dipole_length=float(dipole_length),
         )
 
     @property
@@ -456,6 +456,6 @@ class OrientedTrainableSystem(eqx.Module):
         soma = rows[:, 0]
         unit = self.orientation.unit[soma[:, 0].astype(np.int32)]
         dend = np.concatenate(
-            [soma[:, :1], soma[:, 1:4] + self.dipole_length_um * unit], axis=-1
+            [soma[:, :1], soma[:, 1:4] + self.dipole_length * unit], axis=-1
         )
         return rows.at[:, 1].set(dend).reshape(-1, 4)

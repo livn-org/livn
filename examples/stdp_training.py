@@ -18,9 +18,9 @@ import numpy as np
 
 from livn.env import Env
 
-BASELINE_MS = 200  # no learning warmup
-TRAINING_MS = 1000
-EVAL_MS = 200  # frozen weights
+BASELINE = 200  # no learning warmup
+TRAINING = 1000
+EVAL = 200  # frozen weights
 WEIGHT_REC_DT = 1.0
 
 
@@ -30,17 +30,17 @@ env = env.record_spikes()
 env = env.record_voltage()
 env.record_weights(dt=WEIGHT_REC_DT)
 
-print(f"Phase 1: Baseline ({BASELINE_MS} ms, no plasticity)")
-it_base, t_base, iv_base, v_base, *_ = env.run(BASELINE_MS)
+print(f"Phase 1: Baseline ({BASELINE} ms, no plasticity)")
+it_base, t_base, iv_base, v_base, *_ = env.run(BASELINE)
 
 weights_before = env.get_weights()
 print(f" {len(weights_before)} STDP-capable synapses")
 
-print(f"Phase 2: Training ({TRAINING_MS} ms, STDP + synaptic scaling)")
+print(f"Phase 2: Training ({TRAINING} ms, STDP + synaptic scaling)")
 env.enable_plasticity()
 
 training = None
-remaining = TRAINING_MS
+remaining = TRAINING
 while remaining > 0:
     chunk = min(100, remaining)
     run = env.run(chunk)
@@ -53,10 +53,10 @@ t_train = training.spike_times
 
 weights_after_training = env.get_weights()
 
-print(f"Phase 3: Evaluation ({EVAL_MS} ms, plasticity frozen)")
+print(f"Phase 3: Evaluation ({EVAL} ms, plasticity frozen)")
 env.disable_plasticity()
 
-it_eval, t_eval, iv_eval, v_eval, *_ = env.run(EVAL_MS)
+it_eval, t_eval, iv_eval, v_eval, *_ = env.run(EVAL)
 
 weights_final = env.get_weights()
 
@@ -92,9 +92,9 @@ ax.set_xlabel("Time (ms)")
 ax.set_ylabel("Weight multiplier (w)")
 ax.set_title(f"Weight evolution (first {n_traces} synapses, scaled every 100 ms)")
 ax.axhline(y=1.0, color="k", linestyle="--", alpha=0.3, label="initial w=1")
-ax.axvline(x=BASELINE_MS, color="red", linestyle="-", alpha=0.3, label="STDP on")
+ax.axvline(x=BASELINE, color="red", linestyle="-", alpha=0.3, label="STDP on")
 ax.axvline(
-    x=BASELINE_MS + TRAINING_MS,
+    x=BASELINE + TRAINING,
     color="orange",
     linestyle="-",
     alpha=0.3,
@@ -122,8 +122,8 @@ total_offset = 0
 
 for phase_label, it_data, t_data, t_offset, color in [
     ("Baseline", it_base, t_base, 0, "gray"),
-    ("Training", it_train, t_train, BASELINE_MS, "tab:blue"),
-    ("Eval", it_eval, t_eval, BASELINE_MS + TRAINING_MS, "tab:green"),
+    ("Training", it_train, t_train, BASELINE, "tab:blue"),
+    ("Eval", it_eval, t_eval, BASELINE + TRAINING, "tab:green"),
 ]:
     if len(it_data) > 0 and len(t_data) > 0:
         ax.scatter(
@@ -135,9 +135,9 @@ for phase_label, it_data, t_data, t_offset, color in [
             label=phase_label,
         )
 
-ax.axvline(x=BASELINE_MS, color="red", linestyle="-", alpha=0.5, label="STDP on")
+ax.axvline(x=BASELINE, color="red", linestyle="-", alpha=0.5, label="STDP on")
 ax.axvline(
-    x=BASELINE_MS + TRAINING_MS,
+    x=BASELINE + TRAINING,
     color="orange",
     linestyle="-",
     alpha=0.5,

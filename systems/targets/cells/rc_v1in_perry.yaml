@@ -34,8 +34,7 @@ Drive:
 Targets:
   Rin:
     # Perry 2015: 233.1 +/- 11 MOhm (P0-P11; age-dependent ~155-245)
-    I: [-50.0]
-    I_factor: 1.0e-3
+    I_pA: [-50.0]
     upper: [270.0]
     lower: [200.0]
     t: [250, 1250]
@@ -64,14 +63,13 @@ Targets:
     # so the sweeps are held at RMP (V_hold below). 150 pA -> 26.4 Hz is explicit;
     # the other points are read from Fig 6C. The bands below are +/-8 Hz
     # absolute, which is +/-40% at the 20 Hz point and +/-22% at the 36 Hz one
-    I: [50, 100, 150, 200, 250]
-    I_factor: 1.0e-3
+    I_pA: [50, 100, 150, 200, 250]
     mean:  [20.0, 26.0, 26.0, 31.0, 36.0]
     lower: [12.0, 18.0, 18.0, 22.0, 27.0]
     upper: [28.0, 34.0, 34.0, 40.0, 45.0]
     t: [500, 1500]
     # Perry 2015 measured over "the last 500 ms of traces from ... 1000-ms-duration pulses".
-    steady_ms: 500
+    steady: 500
     V_hold: -50.5      # RMP -- Perry stepped f-I from rest
   spike_amp:
     # Perry 2015 AP amplitude 69.7 +/- 2.0 mV (n=58)
@@ -89,7 +87,7 @@ Recruitment:
   enabled: True
 Parameters:
   axon_segments: 5
-  axon_segment_um: 30.0
+  axon_segment_length: 30.0
   axon_Ra: 70.0
   axon_gmax_K: 0.3
 

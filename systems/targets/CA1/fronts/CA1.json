@@ -24,7 +24,7 @@
       "block_cells": 20,
       "block_dt": 0.1,
       "block_threshold": -45.0,
-      "block_min_ms": 15.0
+      "block_min": 15.0
     }
   ],
   "source": "CA1.dmosopt.h5",

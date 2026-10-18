@@ -75,7 +75,7 @@ class MyModel(ReducedCalciumSomaDendrite):
         return {
             "mechanism": "RhO6c",
             "sections": ["soma"],
-            "wavelength_nm": 473.0,
+            "wavelength": 473.0,
         }
 ```
 
@@ -96,8 +96,8 @@ fibers = np.array([
 light = LightArray(
     fiber_coordinates=fibers,
     numerical_aperture=0.37,
-    fiber_radius_um=100.0,
-    wavelength_nm=473.0,
+    fiber_radius=100.0,
+    wavelength=473.0,
     # tissue: Medium(optical=KubelkaMunk(scattering_per_mm=11.2, refractive_index=1.36))
 )
 
@@ -134,7 +134,7 @@ stim_flux = stim.convert_to("photon_flux")
 stim_irr = stim_flux.convert_to("mW/mm2")
 ```
 
-The wavelength is read from `meta_data["wavelength_nm"]` (default: 473.0 nm). When using `LightArray`, the wavelength propagates automatically.
+The wavelength is read from `meta_data["wavelength"]` (default: 473.0 nm). When using `LightArray`, the wavelength propagates automatically.
 
 ## Backend details
 

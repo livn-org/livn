@@ -1247,10 +1247,10 @@ class Env(EnvProtocol):
 
         stimulus = stream["stimulus"]
         first = max(idx, stream["start_step"])
-        start_ms = (first - stream["start_step"]) * stimulus.dt
-        stop_ms = min(start_ms + stream["chunk_steps"] * stimulus.dt, stimulus.duration)
+        start = (first - stream["start_step"]) * stimulus.dt
+        stop = min(start + stream["chunk_steps"] * stimulus.dt, stimulus.duration)
 
-        rendered = np.asarray(stimulus.window(start_ms, stop_ms))
+        rendered = np.asarray(stimulus.window(start, stop))
         check_bounds(rendered, self._stim_bounds, stimulus.input_mode, stimulus.units)
         if rendered.shape[0] == 0:
             stream["chunk"] = None

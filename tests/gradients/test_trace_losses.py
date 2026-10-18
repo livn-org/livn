@@ -98,7 +98,7 @@ def test_smoothness_ignores_slow_and_penalises_fast_content():
 def test_events_to_mask_hand_built():
     # dt 1 ms, window 4 ms -> half-width 2 samples; spike at 5 ms marks samples 3..7
     events = jnp.asarray([[5.0, INF], [INF, INF]])
-    mask = np.asarray(events_to_mask(events, (12, 4), dt=1.0, window_ms=4.0))
+    mask = np.asarray(events_to_mask(events, (12, 4), dt=1.0, window=4.0))
     expected = np.zeros((12, 4), bool)
     expected[3:8, 0] = True
     np.testing.assert_array_equal(mask, expected)
@@ -110,7 +110,7 @@ def test_events_to_mask_hand_built():
             events,
             (12, 4),
             dt=1.0,
-            window_ms=4.0,
+            window=4.0,
             channel_radius=1,
             channels=jnp.asarray([0, 3]),
         )
@@ -123,9 +123,7 @@ def test_events_to_mask_hand_built():
 
 def test_events_to_mask_overlap_multi_channel_and_minimum_width():
     # a window narrower than one sample still marks 2*1+1 samples, as the CPU builder does
-    mask = np.asarray(
-        events_to_mask(jnp.asarray([[4.0]]), (10, 2), dt=1.0, window_ms=0.1)
-    )
+    mask = np.asarray(events_to_mask(jnp.asarray([[4.0]]), (10, 2), dt=1.0, window=0.1))
     assert mask[:, 0].nonzero()[0].tolist() == [3, 4, 5]
 
     # a unit seen on two channels (-1 padded), overlapping spikes do not double count

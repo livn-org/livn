@@ -4,7 +4,7 @@ import numpy as np
 
 DEFAULTS = {
     "fraction": 0.0,
-    "bias": 0.0,
+    "bias_pA": 0.0,
     "rest_noise": 1.0,
     "efferent": 1.0,
     "delay_sd": 0.0,
@@ -33,8 +33,8 @@ def apply(env, values: dict) -> dict:
         chosen = exc[np.asarray(model.leader_units(exc)) < state["fraction"]]
     leaders = {int(g) for g in chosen}
 
-    bias = state["bias"] * 1e-3
-    env.set_holding_current(dict.fromkeys(leaders, bias) if bias != 0.0 else {})
+    bias_pA = state["bias_pA"] * 1e-3
+    env.set_holding_current(dict.fromkeys(leaders, bias_pA) if bias_pA != 0.0 else {})
 
     rest = state["rest_noise"]
     env.set_noise_scale(

@@ -31,9 +31,8 @@
       "Targets": {
         "Rin": {
           "current": [
-            -100.0
+            -0.1
           ],
-          "current_factor": 0.001,
           "t": [
             250.0,
             1250.0
@@ -46,14 +45,13 @@
             598.0
           ],
           "V_hold": null,
-          "steady_ms": null,
+          "steady": null,
           "band": 0.2
         },
         "tau0": {
           "current": [
             -0.1
           ],
-          "current_factor": 1.0,
           "t": [
             250.0,
             1250.0
@@ -66,7 +64,7 @@
             19.375
           ],
           "V_hold": null,
-          "steady_ms": null,
+          "steady": null,
           "band": 0.2
         },
         "threshold": -37.0,
@@ -80,15 +78,14 @@
         },
         "f_I": {
           "current": [
-            25.0,
-            30.0,
-            40.0,
-            50.0,
-            60.0,
-            70.0,
-            80.0
+            0.025,
+            0.03,
+            0.04,
+            0.05,
+            0.06,
+            0.07,
+            0.08
           ],
-          "current_factor": 0.001,
           "t": [
             500.0,
             1500.0
@@ -105,14 +102,13 @@
           "lower": null,
           "upper": null,
           "V_hold": null,
-          "steady_ms": 500.0,
+          "steady": 500.0,
           "band": 0.3
         },
         "spike_amp": null,
         "spike_adaptation": null,
         "rheobase": {
           "current": [],
-          "current_factor": 1.0,
           "t": null,
           "mean": [
             25.0
@@ -124,7 +120,7 @@
             30.0
           ],
           "V_hold": null,
-          "steady_ms": null,
+          "steady": null,
           "band": 0.2
         },
         "shunted_rheobase": null
@@ -152,15 +148,15 @@
       },
       "Recruitment": {
         "enabled": true,
-        "radius_um": 50.0,
-        "angle_deg": 180.0,
+        "radius": 50.0,
+        "angle": 180.0,
         "electrode_z": 5.0,
-        "phase_ms": 0.1,
-        "threshold_ua": [
+        "phase": 0.1,
+        "threshold_uA": [
           1.0,
           100.0
         ],
-        "target_ua": [
+        "target_uA": [
           1.0,
           50.0
         ]
@@ -168,7 +164,7 @@
       "Parameters": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -336,7 +332,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -367,7 +363,7 @@
         "dend_gmax_KCa": 0.0009922740237276542,
         "dend_g_pas": 1.9455674310791587e-05,
         "cm_ratio": 3.8424175861046432,
-        "gc": 5.696863516961854
+        "gc_mS_per_cm2": 5.696863516961854
       }
     },
     {
@@ -402,7 +398,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -433,7 +429,7 @@
         "dend_gmax_KCa": 0.0012201169559606434,
         "dend_g_pas": 7.606102375980806e-05,
         "cm_ratio": 10.350418375469118,
-        "gc": 8.40061821668004
+        "gc_mS_per_cm2": 8.40061821668004
       }
     },
     {
@@ -468,7 +464,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -499,7 +495,7 @@
         "dend_gmax_KCa": 0.0010198691265621055,
         "dend_g_pas": 1.786259460451516e-05,
         "cm_ratio": 8.691101348107615,
-        "gc": 7.833784919345899
+        "gc_mS_per_cm2": 7.833784919345899
       }
     },
     {
@@ -534,7 +530,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -565,7 +561,7 @@
         "dend_gmax_KCa": 0.000993830469183913,
         "dend_g_pas": 4.1957849881718364e-05,
         "cm_ratio": 13.070551335639273,
-        "gc": 5.7424761747059065
+        "gc_mS_per_cm2": 5.7424761747059065
       }
     },
     {
@@ -600,7 +596,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -631,7 +627,7 @@
         "dend_gmax_KCa": 0.0008864052360063877,
         "dend_g_pas": 1.2757030888619055e-05,
         "cm_ratio": 6.175580480984995,
-        "gc": 7.788652506952861
+        "gc_mS_per_cm2": 7.788652506952861
       }
     },
     {
@@ -666,7 +662,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -697,7 +693,7 @@
         "dend_gmax_KCa": 0.0010836296424193029,
         "dend_g_pas": 5.492239049283311e-05,
         "cm_ratio": 11.300079852403327,
-        "gc": 5.526595722939613
+        "gc_mS_per_cm2": 5.526595722939613
       }
     },
     {
@@ -732,7 +728,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -763,7 +759,7 @@
         "dend_gmax_KCa": 0.0004781259364328304,
         "dend_g_pas": 0.00010404482812944837,
         "cm_ratio": 7.820806453842854,
-        "gc": 4.535008650309394
+        "gc_mS_per_cm2": 4.535008650309394
       }
     },
     {
@@ -798,7 +794,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -829,7 +825,7 @@
         "dend_gmax_KCa": 0.0008538038306877539,
         "dend_g_pas": 2.039562103621144e-05,
         "cm_ratio": 6.379286085954524,
-        "gc": 8.45697345944331
+        "gc_mS_per_cm2": 8.45697345944331
       }
     },
     {
@@ -864,7 +860,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -895,7 +891,7 @@
         "dend_gmax_KCa": 0.0010017676260681589,
         "dend_g_pas": 4.376780492281623e-05,
         "cm_ratio": 13.595440628948134,
-        "gc": 5.643211590771246
+        "gc_mS_per_cm2": 5.643211590771246
       }
     },
     {
@@ -930,7 +926,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -961,7 +957,7 @@
         "dend_gmax_KCa": 0.0009422432944040158,
         "dend_g_pas": 1.6350588983000203e-05,
         "cm_ratio": 8.301561125361108,
-        "gc": 7.525608766535956
+        "gc_mS_per_cm2": 7.525608766535956
       }
     },
     {
@@ -996,7 +992,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -1027,7 +1023,7 @@
         "dend_gmax_KCa": 0.0010049122126957802,
         "dend_g_pas": 1.56179839899789e-05,
         "cm_ratio": 10.53087924838438,
-        "gc": 4.432370730078476
+        "gc_mS_per_cm2": 4.432370730078476
       }
     },
     {
@@ -1062,7 +1058,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -1093,7 +1089,7 @@
         "dend_gmax_KCa": 0.0014236822070429437,
         "dend_g_pas": 1e-05,
         "cm_ratio": 12.243437832460248,
-        "gc": 3.467885810032225
+        "gc_mS_per_cm2": 3.467885810032225
       }
     },
     {
@@ -1128,7 +1124,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -1159,7 +1155,7 @@
         "dend_gmax_KCa": 0.0009489397849059274,
         "dend_g_pas": 5.2242708464107243e-05,
         "cm_ratio": 11.38215421162015,
-        "gc": 5.512598410607005
+        "gc_mS_per_cm2": 5.512598410607005
       }
     },
     {
@@ -1194,7 +1190,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -1225,7 +1221,7 @@
         "dend_gmax_KCa": 0.0004126702950953348,
         "dend_g_pas": 0.0001179246213113904,
         "cm_ratio": 8.270443671986984,
-        "gc": 4.990999674626649
+        "gc_mS_per_cm2": 4.990999674626649
       }
     },
     {
@@ -1260,7 +1256,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -1291,7 +1287,7 @@
         "dend_gmax_KCa": 0.003121146785452604,
         "dend_g_pas": 3.958067152006898e-05,
         "cm_ratio": 10.73623379365257,
-        "gc": 7.579830984080899
+        "gc_mS_per_cm2": 7.579830984080899
       }
     },
     {
@@ -1326,7 +1322,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -1357,7 +1353,7 @@
         "dend_gmax_KCa": 0.000793325646324226,
         "dend_g_pas": 5.134485154025625e-05,
         "cm_ratio": 6.586099857816451,
-        "gc": 6.288857410448262
+        "gc_mS_per_cm2": 6.288857410448262
       }
     },
     {
@@ -1392,7 +1388,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -1423,7 +1419,7 @@
         "dend_gmax_KCa": 0.0008032627643638386,
         "dend_g_pas": 7.950334104107906e-05,
         "cm_ratio": 6.042725049932914,
-        "gc": 7.889545664839964
+        "gc_mS_per_cm2": 7.889545664839964
       }
     },
     {
@@ -1458,7 +1454,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -1489,7 +1485,7 @@
         "dend_gmax_KCa": 0.0009565184255091739,
         "dend_g_pas": 5.4496326173588994e-05,
         "cm_ratio": 11.839240582887408,
-        "gc": 5.413333826672341
+        "gc_mS_per_cm2": 5.413333826672341
       }
     },
     {
@@ -1524,7 +1520,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -1555,7 +1551,7 @@
         "dend_gmax_KCa": 0.0016745520422148377,
         "dend_g_pas": 1.3377448601548487e-05,
         "cm_ratio": 8.272339464670532,
-        "gc": 8.34034936160062
+        "gc_mS_per_cm2": 8.34034936160062
       }
     },
     {
@@ -1590,7 +1586,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -1621,7 +1617,7 @@
         "dend_gmax_KCa": 0.0024348955245013892,
         "dend_g_pas": 1e-05,
         "cm_ratio": 7.134637599019658,
-        "gc": 2.420250425639286
+        "gc_mS_per_cm2": 2.420250425639286
       }
     },
     {
@@ -1656,7 +1652,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -1687,7 +1683,7 @@
         "dend_gmax_KCa": 0.0007783104449518071,
         "dend_g_pas": 2.0508392004724025e-05,
         "cm_ratio": 9.33139990026872,
-        "gc": 7.1101824984758055
+        "gc_mS_per_cm2": 7.1101824984758055
       }
     },
     {
@@ -1722,7 +1718,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -1753,7 +1749,7 @@
         "dend_gmax_KCa": 0.0009074586668321079,
         "dend_g_pas": 2.0437562410677428e-05,
         "cm_ratio": 9.665235608756271,
-        "gc": 7.040853369460624
+        "gc_mS_per_cm2": 7.040853369460624
       }
     },
     {
@@ -1788,7 +1784,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -1819,7 +1815,7 @@
         "dend_gmax_KCa": 0.0007801828813423061,
         "dend_g_pas": 3.142034717871562e-05,
         "cm_ratio": 7.086670341955124,
-        "gc": 7.833127970816331
+        "gc_mS_per_cm2": 7.833127970816331
       }
     },
     {
@@ -1854,7 +1850,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -1885,7 +1881,7 @@
         "dend_gmax_KCa": 0.0012347023397164937,
         "dend_g_pas": 1.0493993253053177e-05,
         "cm_ratio": 8.27640496372097,
-        "gc": 8.800734243585042
+        "gc_mS_per_cm2": 8.800734243585042
       }
     },
     {
@@ -1920,7 +1916,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -1951,7 +1947,7 @@
         "dend_gmax_KCa": 0.0009891211989582853,
         "dend_g_pas": 1.3741777955826545e-05,
         "cm_ratio": 13.769692475098127,
-        "gc": 3.661146318470991
+        "gc_mS_per_cm2": 3.661146318470991
       }
     },
     {
@@ -1986,7 +1982,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -2017,7 +2013,7 @@
         "dend_gmax_KCa": 0.0012708855044984053,
         "dend_g_pas": 1.1892235481729445e-05,
         "cm_ratio": 6.482711139393941,
-        "gc": 7.6934036842951015
+        "gc_mS_per_cm2": 7.6934036842951015
       }
     },
     {
@@ -2052,7 +2048,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -2083,7 +2079,7 @@
         "dend_gmax_KCa": 0.0009639575368659766,
         "dend_g_pas": 1e-05,
         "cm_ratio": 9.219286287681644,
-        "gc": 7.893583695558544
+        "gc_mS_per_cm2": 7.893583695558544
       }
     },
     {
@@ -2118,7 +2114,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -2149,7 +2145,7 @@
         "dend_gmax_KCa": 0.0008770274594955067,
         "dend_g_pas": 1e-05,
         "cm_ratio": 8.372329601542019,
-        "gc": 7.674287789204122
+        "gc_mS_per_cm2": 7.674287789204122
       }
     },
     {
@@ -2184,7 +2180,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -2215,7 +2211,7 @@
         "dend_gmax_KCa": 0.0009510801660584341,
         "dend_g_pas": 1.9019250624041504e-05,
         "cm_ratio": 8.595290258315734,
-        "gc": 7.423052178179002
+        "gc_mS_per_cm2": 7.423052178179002
       }
     },
     {
@@ -2250,7 +2246,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -2281,7 +2277,7 @@
         "dend_gmax_KCa": 0.000802360596685558,
         "dend_g_pas": 1.1562816180653816e-05,
         "cm_ratio": 4.107419691401259,
-        "gc": 7.471418016680344
+        "gc_mS_per_cm2": 7.471418016680344
       }
     },
     {
@@ -2316,7 +2312,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -2347,7 +2343,7 @@
         "dend_gmax_KCa": 0.0009871395826517746,
         "dend_g_pas": 1.3135333533034294e-05,
         "cm_ratio": 5.8987404128254175,
-        "gc": 7.961604736934166
+        "gc_mS_per_cm2": 7.961604736934166
       }
     },
     {
@@ -2382,7 +2378,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -2413,7 +2409,7 @@
         "dend_gmax_KCa": 0.0010132504392656883,
         "dend_g_pas": 9.545198526201328e-05,
         "cm_ratio": 8.524409431536158,
-        "gc": 6.316592547706075
+        "gc_mS_per_cm2": 6.316592547706075
       }
     },
     {
@@ -2448,7 +2444,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -2479,7 +2475,7 @@
         "dend_gmax_KCa": 0.002404298355883504,
         "dend_g_pas": 1.704168551138084e-05,
         "cm_ratio": 13.083046190598008,
-        "gc": 3.423764720762449
+        "gc_mS_per_cm2": 3.423764720762449
       }
     },
     {
@@ -2514,7 +2510,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -2545,7 +2541,7 @@
         "dend_gmax_KCa": 0.0013980734405719944,
         "dend_g_pas": 1.4030935246169407e-05,
         "cm_ratio": 12.5291122043888,
-        "gc": 2.7975216362676183
+        "gc_mS_per_cm2": 2.7975216362676183
       }
     },
     {
@@ -2580,7 +2576,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -2611,7 +2607,7 @@
         "dend_gmax_KCa": 0.0008764195740108587,
         "dend_g_pas": 1.7291684966103813e-05,
         "cm_ratio": 7.47956692453378,
-        "gc": 7.573963954434761
+        "gc_mS_per_cm2": 7.573963954434761
       }
     },
     {
@@ -2646,7 +2642,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -2677,7 +2673,7 @@
         "dend_gmax_KCa": 0.0009862052149227907,
         "dend_g_pas": 1.3801459109663427e-05,
         "cm_ratio": 8.544672104952063,
-        "gc": 7.509701123401823
+        "gc_mS_per_cm2": 7.509701123401823
       }
     },
     {
@@ -2712,7 +2708,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -2743,7 +2739,7 @@
         "dend_gmax_KCa": 0.0008890729889329661,
         "dend_g_pas": 1.7865948636519072e-05,
         "cm_ratio": 8.842500747305387,
-        "gc": 7.486072761660821
+        "gc_mS_per_cm2": 7.486072761660821
       }
     },
     {
@@ -2778,7 +2774,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -2809,7 +2805,7 @@
         "dend_gmax_KCa": 0.00037917528102836403,
         "dend_g_pas": 0.00010914364106422381,
         "cm_ratio": 8.19297553505838,
-        "gc": 4.637599126947166
+        "gc_mS_per_cm2": 4.637599126947166
       }
     },
     {
@@ -2844,7 +2840,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -2875,7 +2871,7 @@
         "dend_gmax_KCa": 0.0017879753868246535,
         "dend_g_pas": 2.8941984142858017e-05,
         "cm_ratio": 5.882721358783719,
-        "gc": 6.488253150069925
+        "gc_mS_per_cm2": 6.488253150069925
       }
     },
     {
@@ -2910,7 +2906,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -2941,7 +2937,7 @@
         "dend_gmax_KCa": 0.0010118152107296307,
         "dend_g_pas": 3.165751615421558e-05,
         "cm_ratio": 7.096520951671242,
-        "gc": 7.282281712017096
+        "gc_mS_per_cm2": 7.282281712017096
       }
     },
     {
@@ -2976,7 +2972,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -3007,7 +3003,7 @@
         "dend_gmax_KCa": 0.0010737686754973988,
         "dend_g_pas": 3.685171878546215e-05,
         "cm_ratio": 11.169104037274519,
-        "gc": 6.485627292424848
+        "gc_mS_per_cm2": 6.485627292424848
       }
     },
     {
@@ -3042,7 +3038,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -3073,7 +3069,7 @@
         "dend_gmax_KCa": 0.0001,
         "dend_g_pas": 1e-05,
         "cm_ratio": 3.4683729242541013,
-        "gc": 9.548945849866664
+        "gc_mS_per_cm2": 9.548945849866664
       }
     },
     {
@@ -3108,7 +3104,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -3139,7 +3135,7 @@
         "dend_gmax_KCa": 0.0007000695246589041,
         "dend_g_pas": 9.317252653845896e-05,
         "cm_ratio": 7.04067968124721,
-        "gc": 6.485384749157852
+        "gc_mS_per_cm2": 6.485384749157852
       }
     },
     {
@@ -3174,7 +3170,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -3205,7 +3201,7 @@
         "dend_gmax_KCa": 0.004548069984760036,
         "dend_g_pas": 1.0543423315660701e-05,
         "cm_ratio": 12.000222555832796,
-        "gc": 3.2371695530422326
+        "gc_mS_per_cm2": 3.2371695530422326
       }
     },
     {
@@ -3240,7 +3236,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -3271,7 +3267,7 @@
         "dend_gmax_KCa": 0.0010104779790875602,
         "dend_g_pas": 3.1282828589351425e-05,
         "cm_ratio": 7.134371263856244,
-        "gc": 7.290368424056798
+        "gc_mS_per_cm2": 7.290368424056798
       }
     },
     {
@@ -3306,7 +3302,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -3337,7 +3333,7 @@
         "dend_gmax_KCa": 0.001003005776870106,
         "dend_g_pas": 2.7739616484826194e-05,
         "cm_ratio": 7.122001562355152,
-        "gc": 7.238041045527866
+        "gc_mS_per_cm2": 7.238041045527866
       }
     },
     {
@@ -3372,7 +3368,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -3403,7 +3399,7 @@
         "dend_gmax_KCa": 0.0016440299290353501,
         "dend_g_pas": 1.1396719553800948e-05,
         "cm_ratio": 8.14087553521193,
-        "gc": 8.681128945266991
+        "gc_mS_per_cm2": 8.681128945266991
       }
     },
     {
@@ -3438,7 +3434,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -3469,7 +3465,7 @@
         "dend_gmax_KCa": 0.0010128944996992888,
         "dend_g_pas": 1.3192829904506316e-05,
         "cm_ratio": 5.94664026285009,
-        "gc": 7.793823858605649
+        "gc_mS_per_cm2": 7.793823858605649
       }
     },
     {
@@ -3504,7 +3500,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -3535,7 +3531,7 @@
         "dend_gmax_KCa": 0.0009013047388893742,
         "dend_g_pas": 1.809260598369781e-05,
         "cm_ratio": 6.8379523291469635,
-        "gc": 7.543177903666754
+        "gc_mS_per_cm2": 7.543177903666754
       }
     },
     {
@@ -3570,7 +3566,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -3601,7 +3597,7 @@
         "dend_gmax_KCa": 0.0013201081791231707,
         "dend_g_pas": 1.477746739920077e-05,
         "cm_ratio": 8.175107408330078,
-        "gc": 4.434209411371986
+        "gc_mS_per_cm2": 4.434209411371986
       }
     },
     {
@@ -3636,7 +3632,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -3667,7 +3663,7 @@
         "dend_gmax_KCa": 0.0007940663745112688,
         "dend_g_pas": 8.712324613197561e-05,
         "cm_ratio": 6.220453530957192,
-        "gc": 6.751258645141335
+        "gc_mS_per_cm2": 6.751258645141335
       }
     },
     {
@@ -3702,7 +3698,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -3733,7 +3729,7 @@
         "dend_gmax_KCa": 0.001264902988200852,
         "dend_g_pas": 1.3608149633566187e-05,
         "cm_ratio": 9.334602164106592,
-        "gc": 3.172562029781552
+        "gc_mS_per_cm2": 3.172562029781552
       }
     },
     {
@@ -3768,7 +3764,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -3799,7 +3795,7 @@
         "dend_gmax_KCa": 0.0007328470786762788,
         "dend_g_pas": 5.933769725939485e-05,
         "cm_ratio": 5.44718966615511,
-        "gc": 5.5005700073899035
+        "gc_mS_per_cm2": 5.5005700073899035
       }
     },
     {
@@ -3834,7 +3830,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -3865,7 +3861,7 @@
         "dend_gmax_KCa": 0.0007478029338535738,
         "dend_g_pas": 9.022027485007242e-05,
         "cm_ratio": 5.940869653027289,
-        "gc": 7.056480223982266
+        "gc_mS_per_cm2": 7.056480223982266
       }
     },
     {
@@ -3900,7 +3896,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -3931,7 +3927,7 @@
         "dend_gmax_KCa": 0.0009984207376179286,
         "dend_g_pas": 2.1074170817052765e-05,
         "cm_ratio": 8.747378150616804,
-        "gc": 7.710870188346851
+        "gc_mS_per_cm2": 7.710870188346851
       }
     },
     {
@@ -3966,7 +3962,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -3997,7 +3993,7 @@
         "dend_gmax_KCa": 0.0009261137117337404,
         "dend_g_pas": 3.0552272976961946e-05,
         "cm_ratio": 7.110406636384337,
-        "gc": 7.214298431868674
+        "gc_mS_per_cm2": 7.214298431868674
       }
     },
     {
@@ -4032,7 +4028,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -4063,7 +4059,7 @@
         "dend_gmax_KCa": 0.000973081922570135,
         "dend_g_pas": 1.446364798621756e-05,
         "cm_ratio": 13.94819523939282,
-        "gc": 3.995068366454747
+        "gc_mS_per_cm2": 3.995068366454747
       }
     },
     {
@@ -4098,7 +4094,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -4129,7 +4125,7 @@
         "dend_gmax_KCa": 0.00021394105457542536,
         "dend_g_pas": 5.366716716770721e-05,
         "cm_ratio": 2.5628666323085976,
-        "gc": 6.46789839625591
+        "gc_mS_per_cm2": 6.46789839625591
       }
     },
     {
@@ -4164,7 +4160,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -4195,7 +4191,7 @@
         "dend_gmax_KCa": 0.0009428383448400412,
         "dend_g_pas": 3.3784575896813704e-05,
         "cm_ratio": 6.4238308108082265,
-        "gc": 6.877631433138684
+        "gc_mS_per_cm2": 6.877631433138684
       }
     },
     {
@@ -4230,7 +4226,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -4261,7 +4257,7 @@
         "dend_gmax_KCa": 0.0007509645072326084,
         "dend_g_pas": 2.8734559315881943e-05,
         "cm_ratio": 7.320329384640588,
-        "gc": 8.10934457010538
+        "gc_mS_per_cm2": 8.10934457010538
       }
     },
     {
@@ -4296,7 +4292,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -4327,7 +4323,7 @@
         "dend_gmax_KCa": 0.0005075771153438084,
         "dend_g_pas": 6.684493015147945e-05,
         "cm_ratio": 5.733270164317074,
-        "gc": 5.97018993001545
+        "gc_mS_per_cm2": 5.97018993001545
       }
     },
     {
@@ -4362,7 +4358,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -4393,7 +4389,7 @@
         "dend_gmax_KCa": 0.0011281862444879214,
         "dend_g_pas": 2.053709918909406e-05,
         "cm_ratio": 12.712225332257491,
-        "gc": 5.971491239998852
+        "gc_mS_per_cm2": 5.971491239998852
       }
     },
     {
@@ -4428,7 +4424,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -4459,7 +4455,7 @@
         "dend_gmax_KCa": 0.0009338688566861351,
         "dend_g_pas": 3.247502340980624e-05,
         "cm_ratio": 7.101363185938413,
-        "gc": 7.269476298932677
+        "gc_mS_per_cm2": 7.269476298932677
       }
     },
     {
@@ -4494,7 +4490,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -4525,7 +4521,7 @@
         "dend_gmax_KCa": 0.0009184864987445611,
         "dend_g_pas": 3.1109103580774854e-05,
         "cm_ratio": 7.072848483873258,
-        "gc": 7.081505267011259
+        "gc_mS_per_cm2": 7.081505267011259
       }
     },
     {
@@ -4560,7 +4556,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -4591,7 +4587,7 @@
         "dend_gmax_KCa": 0.0021427639957626596,
         "dend_g_pas": 1.135445372039409e-05,
         "cm_ratio": 12.495913826300892,
-        "gc": 4.587719934648162
+        "gc_mS_per_cm2": 4.587719934648162
       }
     },
     {
@@ -4626,7 +4622,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -4657,7 +4653,7 @@
         "dend_gmax_KCa": 0.0009076659316358589,
         "dend_g_pas": 2.7983085496167217e-05,
         "cm_ratio": 6.979800076644339,
-        "gc": 7.108667208204956
+        "gc_mS_per_cm2": 7.108667208204956
       }
     },
     {
@@ -4692,7 +4688,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -4723,7 +4719,7 @@
         "dend_gmax_KCa": 0.0010470411282609328,
         "dend_g_pas": 2.269769870513061e-05,
         "cm_ratio": 15.946099913821328,
-        "gc": 6.579082456790758
+        "gc_mS_per_cm2": 6.579082456790758
       }
     },
     {
@@ -4758,7 +4754,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -4789,7 +4785,7 @@
         "dend_gmax_KCa": 0.00019199604984134687,
         "dend_g_pas": 6.554287073673417e-05,
         "cm_ratio": 7.241444289577791,
-        "gc": 5.321166416977505
+        "gc_mS_per_cm2": 5.321166416977505
       }
     },
     {
@@ -4824,7 +4820,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -4855,7 +4851,7 @@
         "dend_gmax_KCa": 0.0008966040939389915,
         "dend_g_pas": 1.8047885804807487e-05,
         "cm_ratio": 6.967924059221085,
-        "gc": 7.603806942759437
+        "gc_mS_per_cm2": 7.603806942759437
       }
     },
     {
@@ -4890,7 +4886,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -4921,7 +4917,7 @@
         "dend_gmax_KCa": 0.0009798324306188287,
         "dend_g_pas": 5.494524989062265e-05,
         "cm_ratio": 10.033692579707989,
-        "gc": 7.51063111465112
+        "gc_mS_per_cm2": 7.51063111465112
       }
     },
     {
@@ -4956,7 +4952,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -4987,7 +4983,7 @@
         "dend_gmax_KCa": 0.0010473757174402634,
         "dend_g_pas": 4.043737105994699e-05,
         "cm_ratio": 10.50937481642751,
-        "gc": 5.187543957476651
+        "gc_mS_per_cm2": 5.187543957476651
       }
     },
     {
@@ -5022,7 +5018,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -5053,7 +5049,7 @@
         "dend_gmax_KCa": 0.0008090874456513779,
         "dend_g_pas": 4.867563763241191e-05,
         "cm_ratio": 6.651483747992267,
-        "gc": 7.865430764210078
+        "gc_mS_per_cm2": 7.865430764210078
       }
     },
     {
@@ -5088,7 +5084,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -5119,7 +5115,7 @@
         "dend_gmax_KCa": 0.00089722991990155,
         "dend_g_pas": 1.9988416439635084e-05,
         "cm_ratio": 8.6071551885931,
-        "gc": 7.57940689645238
+        "gc_mS_per_cm2": 7.57940689645238
       }
     },
     {
@@ -5154,7 +5150,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -5185,7 +5181,7 @@
         "dend_gmax_KCa": 0.0010310510130055604,
         "dend_g_pas": 1.247631990826359e-05,
         "cm_ratio": 5.127567734364431,
-        "gc": 7.714406672509324
+        "gc_mS_per_cm2": 7.714406672509324
       }
     },
     {
@@ -5220,7 +5216,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -5251,7 +5247,7 @@
         "dend_gmax_KCa": 0.0009959884431556675,
         "dend_g_pas": 3.485445229806921e-05,
         "cm_ratio": 4.69597600549106,
-        "gc": 6.4343770771076185
+        "gc_mS_per_cm2": 6.4343770771076185
       }
     },
     {
@@ -5286,7 +5282,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -5317,7 +5313,7 @@
         "dend_gmax_KCa": 0.0009093716828325365,
         "dend_g_pas": 1.936097495684014e-05,
         "cm_ratio": 7.758598233422212,
-        "gc": 7.490038658753087
+        "gc_mS_per_cm2": 7.490038658753087
       }
     },
     {
@@ -5352,7 +5348,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -5383,7 +5379,7 @@
         "dend_gmax_KCa": 0.0009360148104152221,
         "dend_g_pas": 2.4551016869298536e-05,
         "cm_ratio": 7.372623860634905,
-        "gc": 7.837044487842266
+        "gc_mS_per_cm2": 7.837044487842266
       }
     },
     {
@@ -5418,7 +5414,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -5449,7 +5445,7 @@
         "dend_gmax_KCa": 0.00025795550456390713,
         "dend_g_pas": 6.315613085596314e-05,
         "cm_ratio": 7.07844782126483,
-        "gc": 6.228666014296425
+        "gc_mS_per_cm2": 6.228666014296425
       }
     },
     {
@@ -5484,7 +5480,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -5515,7 +5511,7 @@
         "dend_gmax_KCa": 0.0014901244538455967,
         "dend_g_pas": 3.7261101043842274e-05,
         "cm_ratio": 16.637307555431654,
-        "gc": 6.158418512871081
+        "gc_mS_per_cm2": 6.158418512871081
       }
     },
     {
@@ -5550,7 +5546,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -5581,7 +5577,7 @@
         "dend_gmax_KCa": 0.0010115469565224668,
         "dend_g_pas": 3.2773366110176605e-05,
         "cm_ratio": 8.276145984108089,
-        "gc": 7.381272284995433
+        "gc_mS_per_cm2": 7.381272284995433
       }
     },
     {
@@ -5616,7 +5612,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -5647,7 +5643,7 @@
         "dend_gmax_KCa": 0.0006343452987170084,
         "dend_g_pas": 5.7364302831300396e-05,
         "cm_ratio": 6.84401285762569,
-        "gc": 6.2253202727431205
+        "gc_mS_per_cm2": 6.2253202727431205
       }
     },
     {
@@ -5682,7 +5678,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -5713,7 +5709,7 @@
         "dend_gmax_KCa": 0.000944466042769414,
         "dend_g_pas": 7.243717582034994e-05,
         "cm_ratio": 8.860398612735828,
-        "gc": 8.062082037203803
+        "gc_mS_per_cm2": 8.062082037203803
       }
     },
     {
@@ -5748,7 +5744,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -5779,7 +5775,7 @@
         "dend_gmax_KCa": 0.000494706775420634,
         "dend_g_pas": 3.5403214935193836e-05,
         "cm_ratio": 5.157258660509563,
-        "gc": 7.8939501731096735
+        "gc_mS_per_cm2": 7.8939501731096735
       }
     },
     {
@@ -5814,7 +5810,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -5845,7 +5841,7 @@
         "dend_gmax_KCa": 0.00039601797705320253,
         "dend_g_pas": 1.7150329961527638e-05,
         "cm_ratio": 6.224029103487016,
-        "gc": 7.695914321785395
+        "gc_mS_per_cm2": 7.695914321785395
       }
     },
     {
@@ -5880,7 +5876,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -5911,7 +5907,7 @@
         "dend_gmax_KCa": 0.0009095958629423851,
         "dend_g_pas": 2.9425979393978685e-05,
         "cm_ratio": 8.001487015923011,
-        "gc": 7.488923250195886
+        "gc_mS_per_cm2": 7.488923250195886
       }
     },
     {
@@ -5946,7 +5942,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -5977,7 +5973,7 @@
         "dend_gmax_KCa": 0.0013133653472095907,
         "dend_g_pas": 1.401633854435517e-05,
         "cm_ratio": 12.654603711930852,
-        "gc": 5.265497653959943
+        "gc_mS_per_cm2": 5.265497653959943
       }
     },
     {
@@ -6012,7 +6008,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -6043,7 +6039,7 @@
         "dend_gmax_KCa": 0.0002153679840225536,
         "dend_g_pas": 5.104452438065944e-05,
         "cm_ratio": 8.924140744561116,
-        "gc": 6.106679338073482
+        "gc_mS_per_cm2": 6.106679338073482
       }
     },
     {
@@ -6078,7 +6074,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -6109,7 +6105,7 @@
         "dend_gmax_KCa": 0.0008380229655881433,
         "dend_g_pas": 4.2540564952229945e-05,
         "cm_ratio": 13.407128961343563,
-        "gc": 7.359331559639155
+        "gc_mS_per_cm2": 7.359331559639155
       }
     },
     {
@@ -6144,7 +6140,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -6175,7 +6171,7 @@
         "dend_gmax_KCa": 0.000880601933072845,
         "dend_g_pas": 1.7020330874811988e-05,
         "cm_ratio": 6.403836485482141,
-        "gc": 7.508334941566571
+        "gc_mS_per_cm2": 7.508334941566571
       }
     },
     {
@@ -6210,7 +6206,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -6241,7 +6237,7 @@
         "dend_gmax_KCa": 0.0010682289670502349,
         "dend_g_pas": 1.5179175701183996e-05,
         "cm_ratio": 6.093123597292612,
-        "gc": 7.936046679659742
+        "gc_mS_per_cm2": 7.936046679659742
       }
     },
     {
@@ -6276,7 +6272,7 @@
       "params": {
         "Nas_s_on": 1.0,
         "axon_segments": 5.0,
-        "axon_segment_um": 30.0,
+        "axon_segment_length": 30.0,
         "axon_Ra": 70.0,
         "axon_gmax_K": 0.3,
         "e_pas": -62.0,
@@ -6307,7 +6303,7 @@
         "dend_gmax_KCa": 0.0006772623024051321,
         "dend_g_pas": 1.8746085562547302e-05,
         "cm_ratio": 10.951134408711964,
-        "gc": 7.1757006482538905
+        "gc_mS_per_cm2": 7.1757006482538905
       }
     }
   ]

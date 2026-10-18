@@ -6,7 +6,7 @@ import warnings
 
 import numpy as np
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from livn import ephys
 from livn.env import Env
@@ -15,21 +15,32 @@ from livn.stimulus import Stimulus
 from livn.utils import import_object_by_path
 from systems.targets.protocol import Target
 
-ENA_MV = 60.6
+ENA = 60.6
 
 
 class StepTarget(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     current: list[float] = Field(default_factory=list, alias="I")
-    current_factor: float = Field(1.0, alias="I_factor")
+    """Step currents in nA"""
+    current_pA: list[float] | None = Field(None, alias="I_pA")
+    """The same, written in pA instead"""
     t: list[float] | None = None
     mean: list[float | None] | None = None
     lower: list[float | None] | None = None
     upper: list[float | None] | None = None
     V_hold: float | None = None
-    steady_ms: float | None = None
+    steady: float | None = None
     band: float = Field(0.2, ge=0.0)
+
+    @model_validator(mode="after")
+    def _currents_in_nA(self):
+        if self.current_pA is not None:
+            if self.current:
+                raise ValueError("give the step currents as I (nA) or I_pA, not both")
+            self.current = [float(x) * 1e-3 for x in self.current_pA]
+            self.current_pA = None
+        return self
 
 
 class HoldTarget(BaseModel):
@@ -61,18 +72,18 @@ class RecruitmentTarget(BaseModel):
     enabled: bool = False
     """Score how well an extracellular field recruits this cell."""
 
-    radius_um: float = 50.0
-    angle_deg: float = 180.0
+    radius: float = 50.0
+    angle: float = 180.0
     """Where the contact sits relative to the way the cell points."""
 
     electrode_z: float = 5.0
-    phase_ms: float = 0.1
+    phase: float = 0.1
     """Half of the 200 us biphasic pulse the array delivers."""
 
-    threshold_ua: list[float] = [1.0, 100.0]
+    threshold_uA: list[float] = [1.0, 100.0]
     """What an array can actually deliver. A guard, not a target."""
 
-    target_ua: list[float] = [1.0, 50.0]
+    target_uA: list[float] = [1.0, 50.0]
     """Where the recruitment threshold should sit."""
 
 
@@ -241,7 +252,7 @@ class SingleCell(Target):
         )
 
         rin = tc.Rin
-        self.rin_amp = float(rin.current[0]) * float(rin.current_factor)
+        self.rin_amp = float(rin.current[0])
         self.rin_t = (float(rin.t[0]), float(rin.t[1]))
         self.target_rn = (float(rin.lower[0]), float(rin.upper[0]))
 
@@ -249,13 +260,13 @@ class SingleCell(Target):
         self.target_tau = (float(tau0.lower[0]), float(tau0.upper[0]))
 
         fI = tc.f_I
-        self.fI_amps = np.asarray(fI.current, dtype=float) * float(fI.current_factor)
+        self.fI_amps = np.asarray(fI.current, dtype=float)
         self.fI_t = (float(fI.t[0]), float(fI.t[1]))
 
         # optional holding potential for the f-I sweeps (default: v_hold). Set to
         # the RMP when the f-I data was recorded from rest rather than a clamp.
         self.fI_hold = float(fI.V_hold if fI.V_hold is not None else self.v_hold)
-        self.fI_steady_ms = fI.steady_ms
+        self.fI_steady = fI.steady
         self.fI_mean = np.asarray(fI.mean or [], dtype=float)
         self.fI_lb, self.fI_ub = _bands(fI.lower, fI.upper, fI.mean, fI.band)
 
@@ -369,7 +380,7 @@ class SingleCell(Target):
 
         if self.recruitment.enabled:
             bands["recruitment_error"] = tuple(
-                float(v) for v in self.recruitment.target_ua
+                float(v) for v in self.recruitment.target_uA
             )
 
         if self.spike_threshold_lb.size:
@@ -414,7 +425,7 @@ class SingleCell(Target):
             "ISI_adaptation_error": max(isi_w, 1.0),
         }
         if self.recruitment.enabled:
-            lo, hi = (float(v) for v in self.recruitment.target_ua)
+            lo, hi = (float(v) for v in self.recruitment.target_uA)
             widths["recruitment_error"] = max(hi - lo, 1.0)
 
         if self.spike_threshold_lb.size:
@@ -550,7 +561,7 @@ class SingleCell(Target):
 
     @staticmethod
     def _couple_from_axial_resistance(decoded: dict) -> dict:
-        if "Ra" not in decoded or "gc" in decoded:
+        if "Ra" not in decoded or "gc_mS_per_cm2" in decoded:
             return decoded
 
         import math
@@ -565,7 +576,9 @@ class SingleCell(Target):
         area_soma = math.pi * diam * (pp * total) * 1e-8  # cm2
         area_dend = math.pi * diam * ((1.0 - pp) * total) * 1e-8
         decoded = dict(decoded)
-        decoded["gc"] = pp / 2e3 * (1.0 / area_soma + 1.0 / area_dend) / r_axial
+        decoded["gc_mS_per_cm2"] = (
+            pp / 2e3 * (1.0 / area_soma + 1.0 / area_dend) / r_axial
+        )
         return decoded
 
     def set_params(self, params: dict) -> dict:
@@ -668,7 +681,7 @@ class SingleCell(Target):
         cell,
         v_target=None,
         bracket=(-0.5, 0.5),
-        settle_ms=600.0,
+        settle=600.0,
         n_iter=10,
     ):
         """Solve for the steady-state holding current at ``v_target`` (default
@@ -676,7 +689,7 @@ class SingleCell(Target):
         if v_target is None:
             v_target = self.v_hold
         soma = cell._template.soma
-        n = round(settle_ms / self.record_dt)
+        n = round(settle / self.record_dt)
         zeros = np.zeros((n, 1), dtype=np.float32)
         gid_arr = np.array([gid], dtype=np.int32)
         tail = max(1, round(300.0 / self.record_dt))
@@ -685,7 +698,7 @@ class SingleCell(Target):
             cell.init_ic = lambda v=None, _x=ic_val: setattr(soma, "ic_constant", _x)
             env.clear(reseed=False)
             stim = Stimulus.from_current(zeros, dt=self.record_dt, gids=gid_arr)
-            _s, _t, vid, v, _c, _cc = env.run(settle_ms, stim, dt=self.sim_dt)
+            _s, _t, vid, v, _c, _cc = env.run(settle, stim, dt=self.sim_dt)
             vid = np.asarray(vid)
             v = np.asarray(v)
             trace = v[int(np.where(vid == gid)[0][0])]
@@ -729,9 +742,9 @@ class SingleCell(Target):
         )
 
     def _rate_window(self) -> tuple[float, float]:
-        if self.fI_steady_ms:
+        if self.fI_steady:
             return (
-                max(self.fI_t[0], self.fI_t[1] - float(self.fI_steady_ms)),
+                max(self.fI_t[0], self.fI_t[1] - float(self.fI_steady)),
                 self.fI_t[1],
             )
         return self.fI_t[0], self.fI_t[1]
@@ -757,13 +770,11 @@ class SingleCell(Target):
             )
         return ephys.measure_fI(counts, start, stop, self.fI_amps)
 
-    def _spike_count(self, env, gid, amp, step_ms=500.0) -> int:
+    def _spike_count(self, env, gid, amp, step=500.0) -> int:
         onset = 100.0
-        t, v = self._run_step(
-            env, gid, amp, onset, onset + step_ms, onset + step_ms + 100.0
-        )
+        t, v = self._run_step(env, gid, amp, onset, onset + step, onset + step + 100.0)
         _pre, count, _info, _th, _amp = ephys.measure_spike_features(
-            [{"t": t, "v": v}], onset, onset + step_ms + 2.0
+            [{"t": t, "v": v}], onset, onset + step + 2.0
         )
         return int(count[0, 0])
 
@@ -835,7 +846,7 @@ class SingleCell(Target):
         from livn.io import MEA
 
         r = self.recruitment
-        angle = math.radians(float(r.angle_deg))
+        angle = math.radians(float(r.angle))
         xyz = _np.asarray(env.active_neuron_coordinates())
         row = xyz[_np.flatnonzero(xyz[:, 0].astype(int) == 0)[0]] if len(xyz) else None
         origin = row[1:4] if row is not None else _np.zeros(3)
@@ -844,8 +855,8 @@ class SingleCell(Target):
             [
                 [
                     0,
-                    float(origin[0]) + r.radius_um * math.cos(angle),
-                    float(origin[1]) + r.radius_um * math.sin(angle),
+                    float(origin[0]) + r.radius * math.cos(angle),
+                    float(origin[1]) + r.radius * math.sin(angle),
                     float(origin[2]) + r.electrode_z,
                 ]
             ],
@@ -856,7 +867,7 @@ class SingleCell(Target):
         coordinates = _np.asarray(env.stimulus_coordinates())
         distances = _np.asarray(mea.distances(coordinates))
         gains = _np.asarray(
-            mea.electrical.field_gain(distances[:, -1], mea.electrode_radius_um)
+            mea.electrical.field_gain(distances[:, -1], mea.electrode_radius)
         )
         if len(gains) != len(cell.sections):
             raise ValueError(
@@ -865,18 +876,18 @@ class SingleCell(Target):
             )
         return gains
 
-    def _pulse(self, env, gid, gains, microamps, pre_ms=50.0, post_ms=25.0):
+    def _pulse(self, env, gid, gains, microamps, pre=50.0, post=25.0):
         """One charge-balanced pulse of `microamps`; spikes it produced."""
         from livn.stimulus import Stimulus
 
         r = self.recruitment
         dt = self.record_dt
-        total = pre_ms + 2.0 * r.phase_ms + post_ms
+        total = pre + 2.0 * r.phase + post
         n = round(total / dt)
         field = np.zeros((n, len(gains)), dtype=np.float32)
-        start = round(pre_ms / dt)
-        mid = start + max(1, round(r.phase_ms / dt))
-        end = mid + max(1, round(r.phase_ms / dt))
+        start = round(pre / dt)
+        mid = start + max(1, round(r.phase / dt))
+        end = mid + max(1, round(r.phase / dt))
         field[start:mid] = -microamps * gains
         field[mid:end] = microamps * gains
 
@@ -913,7 +924,7 @@ class SingleCell(Target):
         from livn.stimulus import Stimulus  # noqa: F401  (import cost only)
 
         def over(microamps):
-            return self._pulse_peak(env, gid, gains, microamps) > ENA_MV
+            return self._pulse_peak(env, gid, gains, microamps) > ENA
 
         if not over(hi):
             return None
@@ -925,16 +936,16 @@ class SingleCell(Target):
                 lo = mid
         return float(hi)
 
-    def _pulse_peak(self, env, gid, gains, microamps, pre_ms=50.0, post_ms=25.0):
+    def _pulse_peak(self, env, gid, gains, microamps, pre=50.0, post=25.0):
         """Highest soma potential one pulse produces, from its onset."""
         r = self.recruitment
         dt = self.record_dt
-        total = pre_ms + 2.0 * r.phase_ms + post_ms
+        total = pre + 2.0 * r.phase + post
         n = round(total / dt)
         field = np.zeros((n, len(gains)), dtype=np.float32)
-        start = round(pre_ms / dt)
-        mid = start + max(1, round(r.phase_ms / dt))
-        end = mid + max(1, round(r.phase_ms / dt))
+        start = round(pre / dt)
+        mid = start + max(1, round(r.phase / dt))
+        end = mid + max(1, round(r.phase / dt))
         field[start:mid] = -microamps * gains
         field[mid:end] = microamps * gains
 
@@ -958,7 +969,7 @@ class SingleCell(Target):
         where = np.flatnonzero(ids == gid)
         if not len(where):
             return float("nan")
-        return float(traces[int(where[0])][round(pre_ms / dt) :].max())
+        return float(traces[int(where[0])][round(pre / dt) :].max())
 
     def model_stimulus_bounds(self):
         """What extracellular potentials the model is defined over, if it says."""
@@ -981,9 +992,9 @@ class SingleCell(Target):
         threshold = self._recruitment_threshold(env, gid, gains, hi=cap)
         peak = self._pulse_peak(env, gid, gains, cap)
         return {
-            "threshold_ua": threshold,
-            "cap_ua": cap,
-            "peak_at_cap_mv": peak,
+            "threshold_uA": threshold,
+            "cap_uA": cap,
+            "peak_at_cap": peak,
         }
 
     NOISE_KEYS = ("g_e0", "g_i0", "std_e", "std_i")
@@ -1089,12 +1100,10 @@ class SingleCell(Target):
         if self.fI_hold != self.v_hold:
             self._hold_at(env, gid, cell, self.fI_hold)
         # only need to simulate a little past the step end (not the full tstop)
-        fI_run_ms = self.fI_t[1] + 100.0
+        fI_run = self.fI_t[1] + 100.0
         iclamp_results = []
         for amp in self.fI_amps:
-            ti, vi = self._run_step(
-                env, gid, amp, self.fI_t[0], self.fI_t[1], fI_run_ms
-            )
+            ti, vi = self._run_step(env, gid, amp, self.fI_t[0], self.fI_t[1], fI_run)
             iclamp_results.append({"t": ti, "v": vi})
 
         pre_spk_cnt, spk_cnt, spk_infos, thresholds, spk_amps = (
@@ -1202,10 +1211,10 @@ class SingleCell(Target):
         )
 
         recruitment = m["recruitment"]
-        found = recruitment.get("threshold_ua")
+        found = recruitment.get("threshold_uA")
         recruitment_obj = None
         if self.recruitment.enabled:
-            lo, hi = (float(v) for v in self.recruitment.target_ua)
+            lo, hi = (float(v) for v in self.recruitment.target_uA)
             # not recruitable at all is the worst case, not a free pass
             miss = hi if found is None else range_distance(found, lo, hi)
             recruitment_obj = (
@@ -1275,19 +1284,19 @@ class SingleCell(Target):
 
         recruit_constr = 1.0
         if self.recruitment.enabled:
-            lo, hi = (float(v) for v in self.recruitment.threshold_ua)
-            peak = recruitment.get("peak_at_cap_mv", float("nan"))
+            lo, hi = (float(v) for v in self.recruitment.threshold_uA)
+            peak = recruitment.get("peak_at_cap", float("nan"))
             reachable = found is not None and lo <= found <= hi
             # and it must still be a spike at the hardest the array can drive it
-            physiological = not np.isnan(peak) and peak <= ENA_MV
+            physiological = not np.isnan(peak) and peak <= ENA
             recruit_constr = 1.0 if (reachable and physiological) else -1.0
 
-        lowest_pa = float(self.fI_amps[0]) * 1e3 if self.fI_amps.size else None
+        lowest_pA = float(self.fI_amps[0]) * 1e3 if self.fI_amps.size else None
         fires_at_lowest = bool(self.fI_mean.size and self.fI_mean[0] > 0.0)
-        if lowest_pa is None or not fires_at_lowest or np.isnan(rheobase):
+        if lowest_pA is None or not fires_at_lowest or np.isnan(rheobase):
             rheobase_bound_constr = 1.0
         else:
-            rheobase_bound_constr = 1.0 if rheobase <= lowest_pa else -1.0
+            rheobase_bound_constr = 1.0 if rheobase <= lowest_pA else -1.0
         shunted = m["shunted_rheobase"]
         if self.shunted_lb.size and np.isfinite(shunted):
             shunted_constr = (
@@ -1318,7 +1327,7 @@ class SingleCell(Target):
             "regenerative_constr": (regenerative_constr, 0.0),
             "recruitment_constr": (
                 recruit_constr,
-                _finite(recruitment.get("threshold_ua") or float("nan")),
+                _finite(recruitment.get("threshold_uA") or float("nan")),
             ),
             "rheobase_bound_constr": (rheobase_bound_constr, _finite(rheobase)),
             "shunted_rheobase_constr": (shunted_constr, _finite(shunted)),
@@ -1474,13 +1483,13 @@ class SingleCell(Target):
         plt.close(fig)
         return save_path
 
-    def _extra_steps(self, env, amps_pa):
+    def _extra_steps(self, env, amps_pA):
         """Simulate additional current steps (pA) beyond the f-I target sweeps,
         held the same way (fI_hold). Returns (traces, rates). Reuses the env state
         left by _measure (params applied, cell pinned at fI_hold)."""
         gid, _cell = self._cell(env)
         results = []
-        for pa in amps_pa:
+        for pa in amps_pA:
             ti, vi = self._run_step(
                 env,
                 gid,
@@ -1514,14 +1523,14 @@ class SingleCell(Target):
             )
         )
         fI = ephys.measure_fI(
-            counts, start, stop, np.asarray(amps_pa, dtype=float) / 1e3
+            counts, start, stop, np.asarray(amps_pA, dtype=float) / 1e3
         )
         return results, list(np.asarray(fI["frequency"], dtype=float))
 
-    def plot_traces(self, env, save_path: str, title: str = "", extra_pa=None) -> str:
+    def plot_traces(self, env, save_path: str, title: str = "", extra_pA=None) -> str:
         """Re-simulate the currently-stashed params and plot the raw membrane
         voltage: the passive (Rin) step on top, then each f-I current step stacked
-        below (colored by current, annotated with the resulting rate). ``extra_pa``
+        below (colored by current, annotated with the resulting rate). ``extra_pA``
         is an optional list of additional step amplitudes (pA) to probe beyond the
         f-I target range (e.g. [500, 1000]). Returns the path written to."""
         import matplotlib
@@ -1535,11 +1544,11 @@ class SingleCell(Target):
         rates = list(m["rates"])
         n_fI = len(traces)
 
-        extra_pa = [float(a) for a in (extra_pa or [])]
-        if extra_pa:
-            ex_traces, ex_rates = self._extra_steps(env, extra_pa)
+        extra_pA = [float(a) for a in (extra_pA or [])]
+        if extra_pA:
+            ex_traces, ex_rates = self._extra_steps(env, extra_pA)
             traces += ex_traces
-            amps += extra_pa
+            amps += extra_pA
             rates += ex_rates
 
         pw = m["passive_trace"]
@@ -1599,7 +1608,7 @@ class SingleCell(Target):
         suptitle = (
             title or self.template_path.rsplit(".", 1)[-1]
         ) + " — voltage traces"
-        if extra_pa:
+        if extra_pA:
             suptitle += "   (* beyond f-I target range)"
         fig.suptitle(suptitle, fontsize=12)
         fig.tight_layout(rect=(0, 0, 1, 0.98))

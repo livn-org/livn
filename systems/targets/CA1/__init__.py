@@ -30,12 +30,12 @@ SOURCES = {
     "std_fraction_active_per_bin": "density",
     "rate_cv": "density",
     "block_fraction": "block",
-    "rate_hz": "rates",
+    "rate": "rates",
     "mean_active_fraction": "active_fraction",
     "std_active_fraction": "active_fraction",
     "peak_active_fraction": "active_fraction",
     "participation_ratio": "active_fraction",
-    "tail_rate_hz": "tail_rates",
+    "tail_rate": "tail_rates",
 }
 
 OBJECTIVES = {
@@ -61,7 +61,7 @@ OBJECTIVES = {
     ),
     "steady_firing": ("rate_cv", lambda x: x),
     "log_rate": (
-        "rate_hz",
+        "rate",
         lambda x, target, eps=1e-3: float(
             np.log((max(x, 0.0) + eps) / (target + eps)) ** 2
         ),
@@ -69,12 +69,12 @@ OBJECTIVES = {
 }
 
 
-def depolarization_block_ms(
+def depolarization_block(
     voltage,
     spike_times,
     dt: float,
     threshold: float = -45.0,
-    min_ms: float = 15.0,
+    minimum: float = 15.0,
 ) -> float:
     import numpy as _np
 
@@ -87,7 +87,7 @@ def depolarization_block_ms(
     total = 0.0
     for a, b in itertools.pairwise(edges):
         i0, i1 = int(a / dt), min(int(b / dt), v.size)
-        if (i1 - i0) * dt < min_ms:
+        if (i1 - i0) * dt < minimum:
             continue
         hot = v[i0:i1] > threshold
         if not hot.any():
@@ -98,7 +98,7 @@ def depolarization_block_ms(
         stops = _np.flatnonzero(pad[:-1] & ~pad[1:])
         runs = (stops - starts) * dt
         longest = float(runs.max()) if runs.size else 0.0
-        if longest >= min_ms:
+        if longest >= minimum:
             total += longest
     return total
 
@@ -157,7 +157,7 @@ CONSTRAINTS = {
         lambda x, max: max - x,
         "mean_fraction_active_per_bin",
     ),
-    "rate_floor": ("rate_hz", lambda x, min: 1.0 if x > min else -1.0 - (min - x)),
+    "rate_floor": ("rate", lambda x, min: 1.0 if x > min else -1.0 - (min - x)),
     "fraction_active_band": (
         "mean_active_fraction",
         lambda x, target, tolerance: tolerance - abs(x - target),
@@ -169,7 +169,7 @@ CONSTRAINTS = {
         "mean_active_fraction",
     ),
     "tail_rate_bound": (
-        "tail_rate_hz",
+        "tail_rate",
         lambda x, max: 1.0 if x <= max else -1.0 - (x - max) / 10.0,
     ),
 }
@@ -192,7 +192,7 @@ FACTOR_BANDS = {
         "min": reference / k,
         "max": np.minimum(reference * k, 1.0),
     },
-    "rate_hz": lambda reference, k: {"min": reference / k, "max": reference * k},
+    "rate": lambda reference, k: {"min": reference / k, "max": reference * k},
     "rate_cv": lambda reference, k: {"max": reference * k},
     "participation_ratio": lambda reference, k: {"max": reference * k},
 }
@@ -200,7 +200,7 @@ FACTOR_BANDS = {
 TARGET_BASIS = {
     "mean_rate": "firing_rate",
     "mean_rate_population": "firing_rate",
-    "rate_hz": "firing_rate",
+    "rate": "firing_rate",
     "mean_fraction_active_per_bin": "mean_fraction_active",
     "mean_active_fraction": "mean_fraction_active",
 }
@@ -319,7 +319,7 @@ class CA1(Target):
         block_cells: int = 20
         block_dt: float = 0.1
         block_threshold: float = -45.0
-        block_min_ms: float = 15.0
+        block_min: float = 15.0
 
     def version_problem(self, name: str):
         return {"problem": name}
@@ -332,7 +332,7 @@ class CA1(Target):
         self.block_cells = int(config.get("block_cells", 20))
         self.block_dt = float(config.get("block_dt", 0.1))
         self.block_threshold = float(config.get("block_threshold", -45.0))
-        self.block_min_ms = float(config.get("block_min_ms", 15.0))
+        self.block_min = float(config.get("block_min", 15.0))
         self._selected: dict | None = None
         self._block_sample: dict = {}
         problem = config["problem"]
@@ -472,13 +472,13 @@ class CA1(Target):
             raise ValueError(f"selection={selection!r} is not a name")
 
         self._durations: tuple[float, float] | None = None
-        self._warmup_duration = float(network.get("warmup_ms", 250.0))
-        stop = network.get("stop_ms")
+        self._warmup_duration = float(network.get("warmup", 250.0))
+        stop = network.get("stop")
         if stop is not None:
             self._recording_duration = float(stop) - self.warmup_duration
             if self._recording_duration <= 0:
                 raise ValueError(
-                    f"stop_ms={stop} leaves nothing to score after a "
+                    f"stop={stop} leaves nothing to score after a "
                     f"{self.warmup_duration} ms warmup"
                 )
         else:
@@ -765,8 +765,8 @@ class CA1(Target):
             meta=json.dumps(
                 {
                     "key": key,
-                    "warmup_ms": float(self.warmup_duration),
-                    "duration_ms": float(self.recording_duration),
+                    "warmup": float(self.warmup_duration),
+                    "duration": float(self.recording_duration),
                     "parameters": {k: float(v) for k, v in params.items()},
                     "objectives": {k: float(v[0]) for k, v in objectives.items()},
                     "constraints": {k: float(v[0]) for k, v in constraints.items()},
@@ -864,12 +864,12 @@ class CA1(Target):
                 if sections is not None and str(sections[row]) != "soma":
                     continue
                 trace = np.asarray(voltage[row])
-                blocked[population] += depolarization_block_ms(
+                blocked[population] += depolarization_block(
                     trace,
                     spikes.get(int(gid), ()),
                     self.block_dt,
                     self.block_threshold,
-                    self.block_min_ms,
+                    self.block_min,
                 )
                 seen[population] += trace.size * self.block_dt
 
@@ -906,7 +906,7 @@ class CA1(Target):
         rates = PopulationFiringRates(duration=int(self.recording_duration))(
             self._window(env), env
         )
-        return {"rate_hz": rates["rates_hz"]}
+        return {"rate": rates["rates"]}
 
     def _measure_active_fraction(self, env) -> dict:
         return PopulationActiveFraction(
@@ -918,7 +918,7 @@ class CA1(Target):
         stop = self.warmup_duration + self.recording_duration
         tail = Slice(start=stop - window, stop=stop)(self.response_data)
         rates = PopulationFiringRates(duration=int(window))(tail, env)
-        return {"tail_rate_hz": rates["rates_hz"]}
+        return {"tail_rate": rates["rates"]}
 
     def _score(self, scorers: list[Scorer], env) -> dict:
         result = {}

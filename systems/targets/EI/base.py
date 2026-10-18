@@ -128,32 +128,58 @@ def _band_constraint(value, lo, hi, edge_slope=2.0, inside_penalty=0.1):
 
 class Protocol(PulseSweepPolicy):
     amplitudes: tuple[float, ...] = (300.0, 400.0, 500.0, 600.0)
-    """Recruitment curve."""
+    """Recruitment curve, as the commanded input in mV.
 
-    trial_ms: float = Field(default=6000.0, gt=0)
+    The core sweep's ``amplitudes_uA`` is derived from it through
+    ``uA_per_mV``, so the two stay one description."""
+
+    trial: float = Field(default=6000.0, gt=0)
     """Spacing between pulses."""
 
-    pre_ms: float = Field(default=1000.0, gt=0)
+    pre: float = Field(default=1000.0, gt=0)
     """Baseline taken from this long before each pulse."""
 
-    post_ms: float = Field(default=500.0, gt=0)
+    post: float = Field(default=500.0, gt=0)
     """The response proper, over which gain and latency are measured."""
 
-    recovery_ms: float = Field(default=3500.0, ge=0)
+    recovery: float = Field(default=3500.0, ge=0)
     """Quiet time required between one response ending and the next baseline."""
 
     electrode: int | None = None
     """Driving channels"""
 
-    uA_per_mv: float = Field(default=1.0, gt=0)
+    uA_per_mV: float = Field(default=1.0, gt=0)
     """Microamps the electrode delivers per millivolt of input."""
 
-    def _render(self, start_ms: float, stop_ms: float, dt: float, strict: bool):
-        return super()._render(start_ms, stop_ms, dt, strict) * self.uA_per_mv
+    @model_validator(mode="before")
+    @classmethod
+    def _amplitudes_uA_follow_the_mV_command(cls, data):
+        if isinstance(data, dict) and "amplitudes" in data:
+            scale = float(data.get("uA_per_mV", 1.0))
+            data = {
+                **data,
+                "amplitudes_uA": tuple(float(a) * scale for a in data["amplitudes"]),
+            }
+        return data
+
+    def schedule(self, start: float | None = None):
+        """`(pulse time, commanded mV)` per trial, in order."""
+        start = self.start if start is None else start
+        order = self.order or tuple(
+            i % len(self.amplitudes) for i in range(self.n_trials)
+        )
+        return [
+            (start + trial * self.trial + self.onset, self.amplitudes[index])
+            for trial, index in enumerate(order)
+        ]
+
+    def _render(self, start: float, stop: float, dt: float, strict: bool):
+        # the core renders the commanded mV schedule; the electrode turns it into uA
+        return super()._render(start, stop, dt, strict) * self.uA_per_mV
 
     @staticmethod
-    def _extended(amplitudes: tuple, probe_to_mv: float | None) -> tuple:
-        if probe_to_mv is None or probe_to_mv <= amplitudes[-1]:
+    def _extended(amplitudes: tuple, probe_to: float | None) -> tuple:
+        if probe_to is None or probe_to <= amplitudes[-1]:
             return amplitudes
 
         step = amplitudes[-1] - amplitudes[-2]
@@ -164,21 +190,21 @@ class Protocol(PulseSweepPolicy):
             )
         extra = []
         at = amplitudes[-1] + step
-        while at <= probe_to_mv + 1e-9:
+        while at <= probe_to + 1e-9:
             extra.append(float(at))
             at += step
         return (*amplitudes, *extra)
 
     @classmethod
     def from_block(
-        cls, block, probe_to_mv: float | None = None, **overrides
+        cls, block, probe_to: float | None = None, **overrides
     ) -> "Protocol":
-        amplitudes = block.amplitudes_mv
+        amplitudes = block.amplitudes
         if len(amplitudes) < 2:
             raise ValueError(
                 f"{block.condition!r} block carries {len(amplitudes)} < 2 amplitude(s)"
             )
-        if not block.onsets_ms:
+        if not block.onsets:
             raise ValueError(
                 f"{block.condition!r} block records no pulse times, so "
                 "there is nowhere to put the stimulus"
@@ -189,11 +215,11 @@ class Protocol(PulseSweepPolicy):
             )
 
         # the array's calibration: a 300 mV command drives 8 uA
-        overrides.setdefault("uA_per_mv", 8.0 / 300.0)
+        overrides.setdefault("uA_per_mV", 8.0 / 300.0)
 
         return cls(
-            amplitudes=cls._extended(tuple(amplitudes), probe_to_mv),
-            onset_ms=float(block.onsets_ms[0]),
+            amplitudes=cls._extended(tuple(amplitudes), probe_to),
+            onset=float(block.onsets[0]),
             **overrides,
         )
 
@@ -201,33 +227,33 @@ class Protocol(PulseSweepPolicy):
     def _the_measurement_fits_the_trial(self):
         if self.electrode is not None and not self.channels:
             self.channels = [self.electrode]
-        if self.onset_ms < self.pre_ms:
+        if self.onset < self.pre:
             raise ValueError(
-                f"the pulse falls {self.onset_ms:g} ms into its trial but the "
-                f"baseline is {self.pre_ms:g} ms, so there is not enough before "
+                f"the pulse falls {self.onset:g} ms into its trial but the "
+                f"baseline is {self.pre:g} ms, so there is not enough before "
                 "it to measure the response against"
             )
-        if self.onset_ms + self.post_ms > self.trial_ms:
+        if self.onset + self.post > self.trial:
             raise ValueError(
-                f"a {self.post_ms:g} ms response after a pulse at "
-                f"{self.onset_ms:g} ms runs past the {self.trial_ms:g} ms trial"
+                f"a {self.post:g} ms response after a pulse at "
+                f"{self.onset:g} ms runs past the {self.trial:g} ms trial"
             )
-        if self.recovery_ms and self.quiet_ms < self.recovery_ms:
+        if self.recovery and self.quiet < self.recovery:
             raise ValueError(
-                f"a {self.trial_ms:g} ms trial leaves {self.quiet_ms:g} ms "
+                f"a {self.trial:g} ms trial leaves {self.quiet:g} ms "
                 f"between the end of one response and the start of the next "
-                f"pulse's baseline, and the network needs {self.recovery_ms:g} "
+                f"pulse's baseline, and the network needs {self.recovery:g} "
                 f"ms to be back where it started. Give the trial at least "
-                f"{self.pre_ms + self.post_ms + self.recovery_ms:g} ms, or "
-                "lower `recovery_ms` if this preparation really does settle "
+                f"{self.pre + self.post + self.recovery:g} ms, or "
+                "lower `recovery` if this preparation really does settle "
                 "faster"
             )
         return self
 
     @property
-    def quiet_ms(self) -> float:
+    def quiet(self) -> float:
         """Undriven time between a response ending and the next baseline."""
-        return self.trial_ms - self.pre_ms - self.post_ms
+        return self.trial - self.pre - self.post
 
 
 RECRUITED = 0.5
@@ -275,9 +301,9 @@ def recruitment_miss(measured: dict, simulated: dict) -> float:
     if not measured or not simulated:
         return float("nan")
 
-    m_amplitudes = [float(a) for a in measured.get("amplitudes_mv") or ()]
+    m_amplitudes = [float(a) for a in measured.get("amplitudes") or ()]
     m_probabilities = [float(p) for p in measured.get("probabilities") or ()]
-    s_amplitudes = [float(a) for a in simulated.get("amplitudes_mv") or ()]
+    s_amplitudes = [float(a) for a in simulated.get("amplitudes") or ()]
     s_probabilities = [float(p) for p in simulated.get("probabilities") or ()]
     if len(m_amplitudes) != len(m_probabilities) or not m_amplitudes:
         return float("nan")
@@ -302,7 +328,7 @@ def threshold_miss(measured: dict, simulated: dict) -> float:
         return float("nan")
 
     def point(bracket: dict) -> float:
-        amplitudes = [float(a) for a in bracket.get("amplitudes_mv") or ()]
+        amplitudes = [float(a) for a in bracket.get("amplitudes") or ()]
         step = (
             amplitudes[-1] / amplitudes[-2]
             if len(amplitudes) >= 2 and amplitudes[-2] > 0
@@ -312,11 +338,11 @@ def threshold_miss(measured: dict, simulated: dict) -> float:
         censored = bracket.get("censored")
         if censored == "above":
             past = _past_the_end(bracket, amplitudes, step, above=True)
-            return float(bracket["highest_tested_mv"]) * 10.0**past
+            return float(bracket["highest_tested"]) * 10.0**past
         if censored == "below":
             past = _past_the_end(bracket, amplitudes, step, above=False)
-            return float(bracket["above_mv"]) / 10.0**past
-        return math.sqrt(float(bracket["below_mv"]) * float(bracket["above_mv"]))
+            return float(bracket["above"]) / 10.0**past
+        return math.sqrt(float(bracket["below"]) * float(bracket["above"]))
 
     difference = math.log10(point(simulated)) - math.log10(point(measured))
     censored = measured.get("censored")
@@ -347,15 +373,15 @@ class Culture(Target):
     ANATOMY_FEATURES: ClassVar[tuple] = measure.ANATOMY_FEATURES
     RESPONSE_FEATURES: ClassVar[tuple] = (
         "response_gain",
-        "evoked_rate_hz",
-        "response_peak_hz",
-        "response_latency_ms",
+        "evoked_rate",
+        "response_peak",
+        "response_latency",
         "response_probability",
-        "response_duration_ms",
+        "response_duration",
     )
     RESPONSE_OBJECTIVES: ClassVar[tuple] = (
-        "response_latency_ms",
-        "response_duration_ms",
+        "response_latency",
+        "response_duration",
     )
     MEASURED_FEATURES: ClassVar[tuple] = (
         "mfr",
@@ -364,8 +390,8 @@ class Culture(Target):
         "mean_channel_correlation",
         "max_synchronous_peak",
         "max_neuron_firing_rate",
-        "pop_rate_hz",
-        "pop_rate_per_unit_hz",
+        "pop_rate",
+        "pop_rate_per_unit",
         "pop_autocorr_tau",
         "burst_rate",
         "branching_ratio",
@@ -403,14 +429,14 @@ class Culture(Target):
             }
         }
     }
-    ELECTRODE_RADIUS_UM = 50.0
-    ELECTRODE_HEIGHT_UM = 5.0
+    ELECTRODE_RADIUS = 50.0
+    ELECTRODE_HEIGHT = 5.0
     OBJECTIVES: ClassVar[tuple] = (
         "fano_factor",
         "burst_rate",
         "pop_autocorr_tau",
         "max_synchronous_peak",
-        "burst_width_ms",
+        "burst_width",
         "spikes_per_unit_per_burst",
         "burst_onset_peak",
         "burst_interval_cv",
@@ -433,47 +459,47 @@ class Culture(Target):
         "pop_autocorr_tau",
         "burst_rate",
         "max_synchronous_peak",
-        "burst_width_ms",
+        "burst_width",
         "spikes_per_unit_per_burst",
         "burst_onset_peak",
         "burst_interval_cv",
         "units_recruited_per_burst",
     )
     MEASURED_GATES: ClassVar[tuple] = (
-        "MAX_NEURON_RATE_HZ",
-        "MIN_MEAN_RATE_HZ",
-        "MAX_MEAN_RATE_HZ",
+        "MAX_NEURON_RATE",
+        "MIN_MEAN_RATE",
+        "MAX_MEAN_RATE",
         "SYNCHRONY_BAND",
         "MAX_SYNC_PEAK",
         "MIN_SYNC_PEAK",
         "MIN_ACTIVE_FRACTION",
-        "POP_TAU_BAND_MS",
-        "MAX_BURST_RATE_HZ",
-        "MIN_BURST_RATE_HZ",
+        "POP_TAU_BAND",
+        "MAX_BURST_RATE",
+        "MIN_BURST_RATE",
         "BRANCHING_RATIO_BAND",
         "MIN_AVALANCHE_R2",
-        "MAX_POP_RATE_PER_UNIT_HZ",
-        "MIN_POP_RATE_PER_UNIT_HZ",
+        "MAX_POP_RATE_PER_UNIT",
+        "MIN_POP_RATE_PER_UNIT",
     )
-    max_neuron_rate_hz = 50.0
-    min_mean_rate_hz = 0.2
-    max_mean_rate_hz = 15.0
+    max_neuron_rate = 50.0
+    min_mean_rate = 0.2
+    max_mean_rate = 15.0
     synchrony_band = (0.02, 0.25)
     max_sync_peak = 0.2
     min_sync_peak = 0.0
     min_active_fraction = 0.5
-    pop_tau_band_ms = (10.0, 500.0)
-    max_burst_rate_hz = 0.2
-    min_burst_rate_hz = 0.0
+    pop_tau_band = (10.0, 500.0)
+    max_burst_rate = 0.2
+    min_burst_rate = 0.0
     branching_ratio_band = (0.5, 1.5)
     min_avalanche_r2 = 0.5
-    max_pop_rate_per_unit_hz = 20.0
-    min_pop_rate_per_unit_hz = 0.05
+    max_pop_rate_per_unit = 20.0
+    min_pop_rate_per_unit = 0.05
 
     LIVENESS: ClassVar[tuple] = ("not_runaway", "not_quiescent", "is_stable")
     MIN_POPULATION_ACTIVE = 0.05
     STABILITY_MARGIN = 5.0
-    STABILITY_TAIL_MS = 5000.0
+    STABILITY_TAIL = 5000.0
 
     BURST_MIN_FLOOR_FRACTION = measure.BURST_MIN_FLOOR_FRACTION
     NOISE_STD = 0.0003
@@ -650,8 +676,8 @@ class Culture(Target):
         if spec.sigma is not None:
             connectivity["sigma"] = float(spec.sigma)
 
-        z = float(self.ELECTRODE_HEIGHT_UM)
-        radius = float(self.ELECTRODE_RADIUS_UM)
+        z = float(self.ELECTRODE_HEIGHT)
+        radius = float(self.ELECTRODE_RADIUS)
         mea = {
             "electrode_coordinates": [
                 [float(i), float(x), float(y), z]
@@ -749,7 +775,7 @@ class Culture(Target):
         self.stimulus = None
         self.stimulus_threshold: dict = {}
         self.response_kwargs: dict = {}
-        self.response_blank_ms = (0.0, 0.0)
+        self.response_blank = (0.0, 0.0)
         self.skip_objectives: tuple[str, ...] = tuple(self.config.skip_objectives)
         self.recording_duration = 20_000.0
         self.warmup_duration = 1_000.0
@@ -862,16 +888,14 @@ class Culture(Target):
         if "max_synchronous_peak" in bands:
             self.min_sync_peak, self.max_sync_peak = widened("max_synchronous_peak")
         if "pop_autocorr_tau" in bands:
-            self.pop_tau_band_ms = widened("pop_autocorr_tau")
+            self.pop_tau_band = widened("pop_autocorr_tau")
         if "burst_rate" in bands:
-            self.min_burst_rate_hz, self.max_burst_rate_hz = widened("burst_rate")
+            self.min_burst_rate, self.max_burst_rate = widened("burst_rate")
         if "mfr" in bands:
-            self.min_mean_rate_hz, self.max_mean_rate_hz = widened("mfr")
-            self.min_pop_rate_per_unit_hz, self.max_pop_rate_per_unit_hz = widened(
-                "mfr"
-            )
+            self.min_mean_rate, self.max_mean_rate = widened("mfr")
+            self.min_pop_rate_per_unit, self.max_pop_rate_per_unit = widened("mfr")
         if "max_neuron_firing_rate" in bands:
-            self.max_neuron_rate_hz = widened("max_neuron_firing_rate")[1]
+            self.max_neuron_rate = widened("max_neuron_firing_rate")[1]
         if "branching_ratio" in bands:
             self.branching_ratio_band = widened("branching_ratio")
         if "active_fraction" in bands:
@@ -962,9 +986,7 @@ class Culture(Target):
             )
             return
 
-        self.stimulus = Protocol.from_block(
-            block, repeats=1, trial_ms=float(block.window_ms)
-        )
+        self.stimulus = Protocol.from_block(block, repeats=1, trial=float(block.window))
         self.stimulus_threshold = block.threshold.model_dump()
         self._targets.setdefault("stimulus_threshold", 0.0)
         self._adopt_response(block)
@@ -976,11 +998,11 @@ class Culture(Target):
         stated = config.get("response") or {}
         self.response_kwargs = {
             name: float(stated[name])
-            for name in ("pre_ms", "post_ms", "bin_size", "tail_ms", "threshold_k")
+            for name in ("pre", "post", "bin_size", "tail", "threshold_k")
             if stated.get(name) is not None
         }
         blank = config.get("blank") or (0.0, 0.0)
-        self.response_blank_ms = (float(blank[0]), float(blank[1]))
+        self.response_blank = (float(blank[0]), float(blank[1]))
 
         for name in self.RESPONSE_FEATURES:
             spec = (block.response or {}).get(name) or {}
@@ -998,7 +1020,7 @@ class Culture(Target):
         self.metrics: dict = {}
         self.objectives: dict = {}
         self.curve: dict[float, float] = {}
-        self.simulated_ms: int = 0
+        self.simulated: int = 0
         self.evoked_recorded: bool = False
 
     DETECTION_THRESHOLD = 0.2
@@ -1305,7 +1327,7 @@ class Culture(Target):
         if not bounds:
             return hi
 
-        peak = max(self.stimulus.amplitudes) * self.stimulus.uA_per_mv
+        peak = max(self.stimulus.amplitudes) * self.stimulus.uA_per_mV
         if peak <= 0:
             return hi
         allowed = min(abs(float(b)) for b in bounds) / peak
@@ -1726,7 +1748,7 @@ class Culture(Target):
                         for k, v in constraints.items()
                     },
                     "feasible": bool(feasible),
-                    "simulated_ms": float(self.simulated_ms or 0.0),
+                    "simulated": float(self.simulated or 0.0),
                     "n_cells": 0 if gids is None else len(gids),
                 }
             ),
@@ -1745,7 +1767,7 @@ class Culture(Target):
 
         if return_data:
             return GatherAndMerge(
-                duration=self.simulated_ms, voltages=False, membrane_currents=False
+                duration=self.simulated, voltages=False, membrane_currents=False
             )(self.response_data, env)
         return None
 
@@ -1756,7 +1778,7 @@ class Culture(Target):
         env = env.record_spikes()
         t0 = time.time()
         self.response_data = env.run(duration, root_only=False)
-        self.simulated_ms = duration
+        self.simulated = duration
         self._log_simulated("free-running", duration, t0)
 
     def record_evoked(self, env):
@@ -1764,7 +1786,7 @@ class Culture(Target):
         if self.stimulus is None:
             return
 
-        evoked_duration = math.ceil(self.stimulus.duration_ms)
+        evoked_duration = math.ceil(self.stimulus.duration)
         t0 = time.time()
 
         electrode = self.stimulus.electrode
@@ -1783,33 +1805,33 @@ class Culture(Target):
                 electrode = int(found[0]) if found.size else 0
 
         dt = 0.1
-        trial_ms = float(self.stimulus.trial_ms)
-        for _at, amplitude in self.stimulus.schedule(start_ms=0.0):
-            trial = self.stimulus.for_array(
+        trial = float(self.stimulus.trial)
+        for _at, amplitude in self.stimulus.schedule(start=0.0):
+            sweep = self.stimulus.for_array(
                 len(env.io.channel_ids),
                 [electrode],
-                start_ms=0.0,
-                total_ms=trial_ms,
+                start=0.0,
+                total=trial,
                 amplitudes=(float(amplitude),),
                 repeats=1,
                 order=(),
                 dt=dt,
             )
-            piece = env.run(trial_ms, stimulus=trial, root_only=False)
+            piece = env.run(trial, stimulus=sweep, root_only=False)
             self.response_data = (
                 piece
                 if self.response_data is None
                 else self.response_data.concat(piece)
             )
 
-        remainder = evoked_duration - self.stimulus.duration_ms
+        remainder = evoked_duration - self.stimulus.duration
         if remainder > 1e-9:
             self.response_data = self.response_data.concat(
                 env.run(remainder, root_only=False)
             )
 
         self.evoked_recorded = True
-        self.simulated_ms += evoked_duration
+        self.simulated += evoked_duration
         self._log_simulated("evoked", evoked_duration, t0)
 
     def _log_simulated(self, phase: str, duration: float, started: float):
@@ -1883,17 +1905,17 @@ class Culture(Target):
         n_units = max(len(gids) if gids is not None else 0, 1)
         stability_result = Stability(
             duration=d,
-            tail_window=float(self.STABILITY_TAIL_MS),
-            max_rate_hz=self.max_pop_rate_per_unit_hz * n_units * self.STABILITY_MARGIN,
-            min_rate_hz=self.min_pop_rate_per_unit_hz * n_units / self.STABILITY_MARGIN,
+            tail=float(self.STABILITY_TAIL),
+            max_rate=self.max_pop_rate_per_unit * n_units * self.STABILITY_MARGIN,
+            min_rate=self.min_pop_rate_per_unit * n_units / self.STABILITY_MARGIN,
         )(recording_data, env)
         self.metrics["stability_result"] = stability_result
         self.metrics["is_stable"] = (
             bool(stability_result["is_stable"]) if stability_result else False
         )
-        pop_rate = float((stability_result or {}).get("global_mean_hz", 0.0))
-        self.metrics["pop_rate_hz"] = pop_rate
-        self.metrics["pop_rate_per_unit_hz"] = pop_rate / n_units
+        pop_rate = float((stability_result or {}).get("global_mean", 0.0))
+        self.metrics["pop_rate"] = pop_rate
+        self.metrics["pop_rate_per_unit"] = pop_rate / n_units
 
         isi_cv = float(self.metrics["isi_cv"])
         result["isi_cv"] = ((isi_cv - float(targets["isi_cv"])) ** 2, isi_cv)
@@ -1955,18 +1977,18 @@ class Culture(Target):
             network,
             Slice(
                 start=self.stimulus_start,
-                stop=self.stimulus_start + self.stimulus.duration_ms,
+                stop=self.stimulus_start + self.stimulus.duration,
             )(self.response_data),
         )
         schedule = self.stimulus.schedule(0.0)
         blanked = self._blanked(stimulated, [float(at) for at, _ in schedule])
 
-        duration = int(self.stimulus.duration_ms)
+        duration = int(self.stimulus.duration)
         measured = [
             one
             for one in (
                 StimulusResponse(
-                    duration=duration, onset_ms=float(at), **self.response_kwargs
+                    duration=duration, onset=float(at), **self.response_kwargs
                 )(blanked, proxy)
                 for at, _amplitude in schedule
             )
@@ -1990,7 +2012,7 @@ class Culture(Target):
 
     def _blanked(self, data, onsets: list[float]):
         """The recording without the artefact window around each pulse."""
-        lo, hi = self.response_blank_ms
+        lo, hi = self.response_blank
         times = np.asarray(getattr(data, "spike_times", ()), dtype=float)
         if hi <= lo or times.size == 0:
             return data
@@ -2015,16 +2037,16 @@ class Culture(Target):
             network,
             Slice(
                 start=self.stimulus_start,
-                stop=self.stimulus_start + self.stimulus.duration_ms,
+                stop=self.stimulus_start + self.stimulus.duration,
             )(self.response_data),
         )
 
         simulated = (
             RecruitmentCurve(
-                duration=int(self.stimulus.duration_ms),
+                duration=int(self.stimulus.duration),
                 schedule=self.stimulus.schedule(0.0),
-                pre_ms=float(self.stimulus.pre_ms),
-                post_ms=float(self.stimulus.post_ms),
+                pre=float(self.stimulus.pre),
+                post=float(self.stimulus.post),
             )(stimulated, proxy)
             or {}
         )
@@ -2066,9 +2088,9 @@ class Culture(Target):
         stability_result = m.get("stability_result")
 
         if stability_result:
-            tail_mean = stability_result["tail_mean_hz"]
-            max_rate = stability_result.get("max_rate_hz", 20.0)
-            min_rate = stability_result.get("min_rate_hz", 0.05)
+            tail_mean = stability_result["tail_mean"]
+            max_rate = stability_result.get("max_rate", 20.0)
+            min_rate = stability_result.get("min_rate", 0.05)
 
             if stability_result["is_runaway"]:
                 runaway_c = -1.0 - (tail_mean - max_rate) / 10.0
@@ -2092,7 +2114,7 @@ class Culture(Target):
 
         max_neuron_rate = m.get("max_neuron_firing_rate", float("nan"))
         result["max_firing_rate"] = (
-            float(_max_constraint(max_neuron_rate, self.max_neuron_rate_hz)),
+            float(_max_constraint(max_neuron_rate, self.max_neuron_rate)),
             float(max_neuron_rate),
         )
 
@@ -2117,11 +2139,11 @@ class Culture(Target):
 
         mean_rate = m.get("mfr", float("nan"))
         result["min_mean_firing_rate"] = (
-            float(_min_constraint(mean_rate, self.min_mean_rate_hz)),
+            float(_min_constraint(mean_rate, self.min_mean_rate)),
             float(mean_rate),
         )
         result["max_mean_firing_rate"] = (
-            float(_max_constraint(mean_rate, self.max_mean_rate_hz)),
+            float(_max_constraint(mean_rate, self.max_mean_rate)),
             float(mean_rate),
         )
 
@@ -2142,16 +2164,14 @@ class Culture(Target):
 
         pop_tau = m.get("pop_autocorr_tau", float("nan"))
         result["pop_autocorr_tau_band"] = (
-            float(_band_constraint(pop_tau, *self.pop_tau_band_ms)),
+            float(_band_constraint(pop_tau, *self.pop_tau_band)),
             float(pop_tau),
         )
 
         burst_rate = m.get("burst_rate", float("nan"))
         result["burst_rate_band"] = (
             float(
-                _band_constraint(
-                    burst_rate, self.min_burst_rate_hz, self.max_burst_rate_hz
-                )
+                _band_constraint(burst_rate, self.min_burst_rate, self.max_burst_rate)
             ),
             float(burst_rate),
         )

@@ -129,7 +129,7 @@ def test_orientation_moves_only_the_dendrite_rows():
         _parameterization(),
         n_neurons=N,
         orient_init=np.tile([0.0, 0.0, 1.0], (N, 1)),
-        dipole_length_um=100.0,
+        dipole_length=100.0,
     )
 
     plain = np.asarray(base.transform_coordinates(model.recording_coordinates))

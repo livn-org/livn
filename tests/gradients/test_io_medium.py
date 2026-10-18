@@ -78,7 +78,7 @@ def test_a_fitted_sigma_reaches_stimulation_only_when_the_override_is_none():
     )
     grad = jax.grad(induction)(tied).medium.electrical
     _finite_and_nonzero(grad.sigma_s_per_m)
-    assert float(grad.height_um) != 0.0
+    assert float(grad.height) != 0.0
 
 
 def test_the_optical_medium_differentiates_in_scattering():
@@ -105,7 +105,7 @@ def test_the_dispersive_width_differentiates():
         return ((device.potential_recording(d, currents, dt=DT) - target) ** 2).mean()
 
     grad = jax.grad(loss)(mea).medium.electrical
-    _finite_and_nonzero(grad.tissue_alpha_ms_per_um)
+    _finite_and_nonzero(grad.tissue_alpha)
     _finite_and_nonzero(grad.sigma_s_per_m)
 
 
@@ -120,7 +120,7 @@ def test_an_anchored_blur_width_stops_the_distances_from_moving_it():
     pinned = MEA(
         electrodes,
         output_radius=500.0,
-        medium=Medium(electrical=DispersivePointSource(mean_distance_um=mean)),
+        medium=Medium(electrical=DispersivePointSource(mean_distance=mean)),
     )
 
     same = pinned.potential_recording(d, currents, dt=DT)
@@ -141,7 +141,7 @@ def test_an_anchored_blur_width_stops_the_distances_from_moving_it():
         mea.electrical.potential_gain(np.asarray(d)[:, -1])
     )
     assert np.all(sigma_free < 1.0)  # farther cells are weaker in both
-    assert pinned.medium.serialize()["electrical"]["mean_distance_um"] == pytest.approx(
+    assert pinned.medium.serialize()["electrical"]["mean_distance"] == pytest.approx(
         mean.tolist()
     )
 

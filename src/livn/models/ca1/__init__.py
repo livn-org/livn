@@ -28,7 +28,7 @@ class PinskyRinzel(Model):
             # soma.wholetree() for the PyramidalCellBilash topology with
             # lengths from PyramidalCellBilash.geom()
             section_tree = [
-                # (name, length_um, parent_index)
+                # (name, length, parent_index)
                 ("soma", 10, -1),  # 0  (-1 = root)
                 ("hillock", 20, 0),  # 1
                 ("ais", 10, 1),  # 2
@@ -545,7 +545,7 @@ class PinskyRinzel(Model):
                     "dend_gmax_Ca": 0.881352961063385,
                     "dend_gmax_KCa": 0.9146328568458557,
                     "e_pas": -62,
-                    "gc": 31.347007751464844,
+                    "gc_mS_per_cm2": 31.347007751464844,
                     "global_cm": 3.0,
                     "global_diam": 10.0,
                     "ic_constant": -0.02939414605498314,
@@ -567,7 +567,7 @@ class PinskyRinzel(Model):
                     "dend_gmax_Ca": 0.7672075629234314,
                     "dend_gmax_KCa": 0.449164479970932,
                     "e_pas": -62,
-                    "gc": 7.503277778625488,
+                    "gc_mS_per_cm2": 7.503277778625488,
                     "global_cm": 3.0,
                     "global_diam": 10.0,
                     "ic_constant": -0.0005428391741588712,
@@ -592,7 +592,7 @@ class PinskyRinzel(Model):
                     "dend_gmax_KAHP": 0.1770450323820114,
                     "dend_gmax_KCa": 0.031563084572553635,
                     "e_pas": -62,
-                    "gc": 40.024681091308594,
+                    "gc_mS_per_cm2": 40.024681091308594,
                     "global_cm": 3.0,
                     "global_diam": 10.0,
                     "ic_constant": 0.009580999666592493,
@@ -617,7 +617,7 @@ class PinskyRinzel(Model):
                     "dend_gmax_KAHP": 0.24445414543151855,
                     "dend_gmax_KCa": 0.02163669839501381,
                     "e_pas": -72.0,
-                    "gc": 50.0,
+                    "gc_mS_per_cm2": 50.0,
                     "global_cm": 3.0,
                     "global_diam": 10.0,
                     "ic_constant": 0.00891246646642685,
@@ -642,7 +642,7 @@ class PinskyRinzel(Model):
                     "dend_gmax_KAHP": 0.6957618594169617,
                     "dend_gmax_KCa": 0.8945456743240356,
                     "e_pas": -62,
-                    "gc": 1.2968807220458984,
+                    "gc_mS_per_cm2": 1.2968807220458984,
                     "global_cm": 3.0,
                     "global_diam": 10.0,
                     "ic_constant": -0.008129703172385774,
@@ -664,7 +664,7 @@ class PinskyRinzel(Model):
                     "dend_gmax_Ca": 0.7583686113357544,
                     "dend_gmax_KCa": 1.0,
                     "e_pas": -62,
-                    "gc": 12.292240142822266,
+                    "gc_mS_per_cm2": 12.292240142822266,
                     "global_cm": 3.0,
                     "global_diam": 10.0,
                     "ic_constant": -0.0005428391741588712,
@@ -686,7 +686,7 @@ class PinskyRinzel(Model):
                     "dend_gmax_Ca": 0.6601570844650269,
                     "dend_gmax_KCa": 0.9620280861854553,
                     "e_pas": -62,
-                    "gc": 48.11438751220703,
+                    "gc_mS_per_cm2": 48.11438751220703,
                     "global_cm": 3.0,
                     "global_diam": 10.0,
                     "ic_constant": -0.01663380116224289,
@@ -708,7 +708,7 @@ class PinskyRinzel(Model):
                     "dend_gmax_Ca": 0.6907804012298584,
                     "dend_gmax_KCa": 0.9000998139381409,
                     "e_pas": -62,
-                    "gc": 14.589327812194824,
+                    "gc_mS_per_cm2": 14.589327812194824,
                     "global_cm": 3.0,
                     "global_diam": 10.0,
                     "ic_constant": 0.007034894544631243,
@@ -730,7 +730,7 @@ class PinskyRinzel(Model):
                     "dend_gmax_Ca": 0.8999999761581421,
                     "dend_gmax_KCa": 0.7960770130157471,
                     "e_pas": -62,
-                    "gc": 50.0,
+                    "gc_mS_per_cm2": 50.0,
                     "global_cm": 3.0,
                     "global_diam": 10.0,
                     "ic_constant": -0.018395932391285896,

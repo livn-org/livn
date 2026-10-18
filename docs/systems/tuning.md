@@ -98,7 +98,7 @@ class MyTarget(Target):
         # Compute objectives: dict of name -> [(objective_value, feature_value)]
         recording = Slice(start=self.warmup, stop=total)(data)
         mfr = MeanFiringRate(duration=self.duration)(recording, env)
-        rate = mfr["rate_hz"] if mfr else 0.0
+        rate = mfr["rate"] if mfr else 0.0
         objectives = {"mfr": [((rate - self.target_mfr) ** 2, rate)]}
 
         # Compute constraints: dict of name -> [(constraint_value, feature_value)]
@@ -288,7 +288,7 @@ class OrganoidMatch(Target):
         recording = Slice(start=self.warmup, stop=total)(data)
         # Mean firing rate objective
         mfr_result = MeanFiringRate(duration=self.duration)(recording, env)
-        rate = mfr_result["rate_hz"] if mfr_result else 0.0
+        rate = mfr_result["rate"] if mfr_result else 0.0
         mfr_obj = (rate - self.recording_mfr) ** 2
 
         objectives = {

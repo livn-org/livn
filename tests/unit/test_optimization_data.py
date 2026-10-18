@@ -44,7 +44,7 @@ def _same(a, b):
 @pytest.fixture
 def make_pipe(make_recording):
     def make(rec=None, **kw):
-        kw = {"context_ms": 5.0, "batch_size": 12, "per_segment": 6, "threads": 2} | kw
+        kw = {"context": 5.0, "batch_size": 12, "per_segment": 6, "threads": 2} | kw
         return windows(rec if rec is not None else make_recording(), **kw)
 
     return make
@@ -69,9 +69,7 @@ def test_every_epoch_redraws_the_starts(make_pipe):
 
 
 def test_batches_are_fixed_shape_float32(make_pipe):
-    pipe = make_pipe(
-        context_ms=5.0, gap_ms=1.0, prediction_ms=2.0, fs=5000.0, spikes=True
-    )
+    pipe = make_pipe(context=5.0, gap=1.0, prediction=2.0, fs=5000.0, spikes=True)
     batch = pipe.batch(0)
     assert (
         batch["context"].shape == (12, 25, C) and batch["context"].dtype == np.float32
@@ -158,7 +156,7 @@ def test_spikes_are_window_relative_ms_and_inf_padded_per_unit(
 
 
 def test_spikes_beyond_capacity_keep_the_earliest(make_pipe):
-    pipe = make_pipe(context_ms=100.0, spikes=True, max_spikes=2, batch_size=2)
+    pipe = make_pipe(context=100.0, spikes=True, max_spikes=2, batch_size=2)
     row = pipe.batch(0)["spikes"][0]
     assert (np.diff(row[np.isfinite(row).all(axis=1)], axis=1) >= 0).all()
 
@@ -223,7 +221,7 @@ def test_splits_select_recordings_and_segments(make_pipe, make_recording):
 
 def test_a_window_longer_than_the_segment_is_refused(make_pipe):
     with pytest.raises(ValueError, match="fewer than one window"):
-        make_pipe(context_ms=5000.0)
+        make_pipe(context=5000.0)
 
 
 def test_decimation_keeps_a_sine_and_is_zero_phase_to_the_edges(
@@ -234,7 +232,7 @@ def test_decimation_keeps_a_sine_and_is_zero_phase_to_the_edges(
     wave = np.sin(2 * np.pi * f * t).astype(np.float32)
     rec = make_recording(signal=np.stack([wave] * C))
     pipe = make_pipe(
-        rec, context_ms=20.0, fs=2500.0, starts="grid", per_segment=4, batch_size=4
+        rec, context=20.0, fs=2500.0, starts="grid", per_segment=4, batch_size=4
     )
     batch = pipe.batch(0)
     for i in range(4):  # includes the first and last window, which touch the edges
@@ -276,7 +274,7 @@ def test_preprocessing_at_the_target_rate_filters_the_decimated_window(
     pre = (Bandpass(300.0, 3000.0), CMR())
     kw = {
         "fs": 5000.0,
-        "context_ms": 10.0,
+        "context": 10.0,
         "starts": "grid",
         "per_segment": 3,
         "batch_size": 3,

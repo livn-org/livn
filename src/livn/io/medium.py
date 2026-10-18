@@ -21,37 +21,33 @@ _PI = 3.141592653589793
 _DEFAULT = object()
 
 
-def _induction_shape(distances_um, electrode_radius_um, culture_height_um):
+def _induction_shape(distances, electrode_radius, culture_height):
     """1 at the electrode surface, falling as 1/sqrt(r^2 + h^2)."""
-    xp = (
-        _np
-        if not is_traced(distances_um, electrode_radius_um, culture_height_um)
-        else np
-    )
-    h_eff = (electrode_radius_um**2 + culture_height_um**2) ** 0.5
-    return h_eff / xp.sqrt(distances_um**2 + h_eff**2)
+    xp = _np if not is_traced(distances, electrode_radius, culture_height) else np
+    h_eff = (electrode_radius**2 + culture_height**2) ** 0.5
+    return h_eff / xp.sqrt(distances**2 + h_eff**2)
 
 
-def _source_shape(distances_um, min_distance_um):
+def _source_shape(distances, min_distance):
     """1 at the electrode surface, falling as 1/r with a floor on r."""
-    return min_distance_um / (distances_um + min_distance_um)
+    return min_distance / (distances + min_distance)
 
 
 @runtime_checkable
 class ElectricalMedium(Protocol):
     needs_dt: bool
 
-    def potential_gain(self, distances_um):
+    def potential_gain(self, distances):
         """uV per uA at each source-channel distance (recording)."""
 
-    def field_gain(self, distances_um, electrode_radius_um):
+    def field_gain(self, distances, electrode_radius):
         """mV per uA at each channel-cell distance (stimulation)."""
 
     def project(
-        self, gain, distances_um, membrane_currents, dt=None, output_radius_um=None
+        self, gain, distances, membrane_currents_uA, dt=None, output_radius=None
     ):
         """Channel potentials `[C, T]` from the masked `gain` `[C, N]`, the
-        distances `[C, N]` and `membrane_currents` `[N, T]`."""
+        distances `[C, N]` and `membrane_currents_uA` `[N, T]`."""
 
     def serialize(self) -> dict: ...
 
@@ -60,7 +56,7 @@ class ElectricalMedium(Protocol):
 
 @runtime_checkable
 class OpticalMedium(Protocol):
-    def irradiance_gain(self, offsets_um, numerical_aperture, fiber_radius_um):
+    def irradiance_gain(self, offsets, numerical_aperture, fiber_radius):
         """Irradiance per unit source power from fiber-to-cell offsets `[F, N, 3]`."""
 
     def serialize(self) -> dict: ...
@@ -72,8 +68,8 @@ class PointSource(Component):
     """Point current sources in a homogeneous conductor."""
 
     sigma_s_per_m: float = 0.3
-    height_um: float = 50.0
-    min_distance_um: float = 5.0
+    height: float = 50.0
+    min_distance: float = 5.0
     stimulation_resistivity_ohm_m: float | None = 3.5
 
     needs_dt = False
@@ -81,68 +77,69 @@ class PointSource(Component):
     @property
     def recording_gain(self):
         sigma_per_mm = self.sigma_s_per_m / 1000.0
-        return 1000.0 / (4.0 * _PI * sigma_per_mm * self.min_distance_um)
+        return 1000.0 / (4.0 * _PI * sigma_per_mm * self.min_distance)
 
-    def stimulation_gain(self, electrode_radius_um):
+    def stimulation_gain(self, electrode_radius):
+        """Field at the electrode, in mV per uA of stimulation current."""
         rho = self.stimulation_resistivity_ohm_m
         if rho is None:
             rho = 1.0 / self.sigma_s_per_m
-        h_eff = (electrode_radius_um**2 + self.height_um**2) ** 0.5
+        h_eff = (electrode_radius**2 + self.height**2) ** 0.5
         return 1000.0 * rho / (4.0 * _PI * h_eff)
 
-    def potential_gain(self, distances_um):
-        return self.recording_gain * _source_shape(distances_um, self.min_distance_um)
+    def potential_gain(self, distances):
+        return self.recording_gain * _source_shape(distances, self.min_distance)
 
-    def field_gain(self, distances_um, electrode_radius_um):
-        return self.stimulation_gain(electrode_radius_um) * _induction_shape(
-            distances_um, electrode_radius_um, self.height_um
+    def field_gain(self, distances, electrode_radius):
+        return self.stimulation_gain(electrode_radius) * _induction_shape(
+            distances, electrode_radius, self.height
         )
 
     def project(
-        self, gain, distances_um, membrane_currents, dt=None, output_radius_um=None
+        self, gain, distances, membrane_currents_uA, dt=None, output_radius=None
     ):
-        return np.matmul(gain, membrane_currents)
+        return np.matmul(gain, membrane_currents_uA)
 
 
 class DispersivePointSource(PointSource):
     """A point source whose tissue also low-passes."""
 
-    tissue_alpha_ms_per_um: float = 0.001
-    min_sigma_ms: float = static_field(0.0)
-    max_sigma_ms: float = static_field(2.0)
+    tissue_alpha: float = 0.001
+    min_sigma: float = static_field(0.0)
+    max_sigma: float = static_field(2.0)
     kernel_sigma_ratio: int = static_field(3)
     per_pair: bool = static_field(False)
-    mean_distance_um: Any = None
+    mean_distance: Any = None
 
     needs_dt = True
 
     def project(
-        self, gain, distances_um, membrane_currents, dt=None, output_radius_um=None
+        self, gain, distances, membrane_currents_uA, dt=None, output_radius=None
     ):
         if dt is None:
             raise ValueError(
                 "DispersivePointSource filters in time, pass a dt to potential_recording"
             )
         gain = np.asarray(gain)
-        currents = np.asarray(membrane_currents)
-        d = np.asarray(distances_um)
+        currents = np.asarray(membrane_currents_uA)
+        d = np.asarray(distances)
         if self.per_pair:
             return self._project_per_pair(gain, d, currents, dt)
 
         v = np.matmul(gain, currents)
-        if self.mean_distance_um is not None:
-            mean = np.asarray(self.mean_distance_um)
-        elif output_radius_um is None:
+        if self.mean_distance is not None:
+            mean = np.asarray(self.mean_distance)
+        elif output_radius is None:
             mean = d.mean(axis=1)
         else:
-            inside = d <= output_radius_um
+            inside = d <= output_radius
             counts = inside.sum(axis=1)
             sums = np.where(inside, d, 0.0).sum(axis=1)
             mean = np.where(
-                counts > 0, sums / np.maximum(counts, 1), float(output_radius_um)
+                counts > 0, sums / np.maximum(counts, 1), float(output_radius)
             )
-        sigma_ms = np.maximum(self.tissue_alpha_ms_per_um * mean, self.min_sigma_ms)
-        half = int(self.kernel_sigma_ratio * (self.max_sigma_ms / dt)) + 1
+        sigma = np.maximum(self.tissue_alpha * mean, self.min_sigma)
+        half = int(self.kernel_sigma_ratio * (self.max_sigma / dt)) + 1
         x = np.arange(-half, half + 1, dtype=np.float32)
 
         def blur(v_ch, sigma):
@@ -151,17 +148,15 @@ class DispersivePointSource(PointSource):
             return full[half : half + v_ch.shape[-1]]
 
         if _USES_JAX:
-            return jax.vmap(blur)(v, sigma_ms)
-        return np.stack([blur(a, b) for a, b in zip(v, sigma_ms, strict=True)])
+            return jax.vmap(blur)(v, sigma)
+        return np.stack([blur(a, b) for a, b in zip(v, sigma, strict=True)])
 
     def _project_per_pair(self, gain, d, currents, dt):
         n_time = currents.shape[-1]
-        n_fft = n_time + math.ceil(4.0 * self.max_sigma_ms / dt) + 1
+        n_fft = n_time + math.ceil(4.0 * self.max_sigma / dt) + 1
         spectrum = np.fft.rfft(currents, n=n_fft, axis=-1)
         freqs = np.fft.rfftfreq(n_fft, d=dt)
-        sigma_ms = np.clip(
-            self.tissue_alpha_ms_per_um * d, self.min_sigma_ms, self.max_sigma_ms
-        )
+        sigma = np.clip(self.tissue_alpha * d, self.min_sigma, self.max_sigma)
 
         def channel(args):
             g, s = args
@@ -170,8 +165,8 @@ class DispersivePointSource(PointSource):
             return np.fft.irfft(mixed, n=n_fft)[:n_time]
 
         if _USES_JAX:
-            return jax.lax.map(channel, (gain, sigma_ms))
-        return np.stack([channel((g, s)) for g, s in zip(gain, sigma_ms, strict=True)])
+            return jax.lax.map(channel, (gain, sigma))
+        return np.stack([channel((g, s)) for g, s in zip(gain, sigma, strict=True)])
 
 
 class KubelkaMunk(Component):
@@ -186,16 +181,16 @@ class KubelkaMunk(Component):
     scattering_per_mm: float = 11.2
     refractive_index: float = 1.36
 
-    def irradiance_gain(self, offsets_um, numerical_aperture, fiber_radius_um):
+    def irradiance_gain(self, offsets, numerical_aperture, fiber_radius):
         NA = numerical_aperture
         n_tissue = self.refractive_index
         mu_s = self.scattering_per_mm
-        fiber_r_mm = fiber_radius_um / 1000.0
+        fiber_r_mm = fiber_radius / 1000.0
 
         # z0: distance from fiber tip where cone area equals fiber area
         z0 = fiber_r_mm * n_tissue / NA
 
-        diff_mm = offsets_um / 1000.0
+        diff_mm = offsets / 1000.0
 
         r = np.sqrt(diff_mm[..., 0] ** 2 + diff_mm[..., 1] ** 2)
         z = np.abs(diff_mm[..., 2])

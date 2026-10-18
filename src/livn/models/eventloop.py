@@ -86,7 +86,7 @@ class SolverConfig:
     dt_solver: float = 0.01
     points_per_segment: int = 64
     max_segment_span: float | None = None
-    max_rate: float = 0.2
+    max_rate_per_ms: float = 0.2
     max_steps: int | None = None
     solver: Any = dataclasses.field(default_factory=diffrax.Euler)
     stepsize_controller: Any = dataclasses.field(
@@ -177,7 +177,7 @@ def loop_budget(
         raise ValueError(f"max_segment_span must be positive, got {span}")
     unbounded = math.isinf(span)
 
-    events = math.ceil(duration * float(config.max_rate)) + 1
+    events = math.ceil(duration * float(config.max_rate_per_ms)) + 1
     segments = 1 if unbounded else math.ceil(duration / span) + 1
 
     max_steps = config.max_steps
@@ -456,8 +456,8 @@ def event_solve(
             checked,
             saturated,
             f"event budget exhausted before t1: the run needs more than "
-            f"{n_events} events (max_rate={config.max_rate}/ms over "
-            f"{duration} ms). Raise SolverConfig.max_rate, or set throw=False "
+            f"{n_events} events (max_rate_per_ms={config.max_rate_per_ms} over "
+            f"{duration} ms). Raise SolverConfig.max_rate_per_ms, or set throw=False "
             f"to receive the saturation flag instead of an error.",
         )
 

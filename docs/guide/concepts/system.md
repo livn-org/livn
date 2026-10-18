@@ -214,7 +214,7 @@ env = make("./runs/bursting/env.json")    # or one of your own
 {
   "system": {"cls": "livn.system.Monolayer", "kwargs": {"total_cells": 2600, "...": "..."}},
   "model":  {"cls": "livn.models.rcsd.ReducedCalciumSomaDendrite", "kwargs": {"size_cv": 0.2, "weight_cv": 0.7}},
-  "io":     {"cls": "livn.io.ComposedIO", "kwargs": {"outputs": ["MEA document", {"cls": "livn.io.Noise", "sigma_uv": 3.56}], "medium": {"...": "..."}}},
+  "io":     {"cls": "livn.io.ComposedIO", "kwargs": {"outputs": ["MEA document", {"cls": "livn.io.Noise", "sigma_uV": 3.56}], "medium": {"...": "..."}}},
   "selection": null,
   "params": {"EXC_EXC-dend-AMPA-weight": 1.70, "noise-g_e0": 0.0001, "...": "..."},
   "meta":   {"source": "EI", "row": 1031, "scale": 1.0}

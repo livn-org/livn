@@ -219,7 +219,7 @@ class ReducedCalciumSomaDendrite(Model):
         return {
             "mechanism": "RhO3c",
             "sections": ["soma"],
-            "wavelength_nm": 473.0,
+            "wavelength": 473.0,
         }
 
     def neuron_opsin_config(self):
@@ -345,7 +345,7 @@ class ReducedCalciumSomaDendrite(Model):
                 "e_pas": -62.0,
                 "pp": 0.1,
                 "Ra": 190.0,
-                "gc": 8.255338188577891,
+                "gc_mS_per_cm2": 8.255338188577891,
                 "cm_ratio": 8.192411084109766,
                 "global_cm": 1.2959372997283936,
                 "global_diam": 8.13117790222168,
@@ -365,7 +365,7 @@ class ReducedCalciumSomaDendrite(Model):
                 "dend_alpha_Caconc": 0.6776084695609715,
                 "dend_kCa_Caconc": 3.3313010601193564,
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_diam": 2.5669692667650583,
                 "axon_Ra": 70.0,
                 "axon_cm": 0.07990137878575652,
@@ -381,7 +381,7 @@ class ReducedCalciumSomaDendrite(Model):
                 "e_pas": -62.0,
                 "pp": 0.1,
                 "Ra": 190.0,
-                "gc": 5.977336484321611,
+                "gc_mS_per_cm2": 5.977336484321611,
                 "cm_ratio": 8.629566159318266,
                 "global_cm": 0.8999999761581421,
                 "global_diam": 5.887437343597412,
@@ -401,7 +401,7 @@ class ReducedCalciumSomaDendrite(Model):
                 "dend_alpha_Caconc": 0.29306756876935247,
                 "dend_kCa_Caconc": 5.118716103286291,
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_diam": 2.8238298892974854,
                 "axon_Ra": 70.0,
                 "axon_cm": 0.13383914666265867,
@@ -417,7 +417,7 @@ class ReducedCalciumSomaDendrite(Model):
                 "e_pas": -62.0,
                 "pp": 0.1,
                 "Ra": 190.0,
-                "gc": 4.637599126947166,
+                "gc_mS_per_cm2": 4.637599126947166,
                 "cm_ratio": 8.19297553505838,
                 "global_cm": 1.169988751411438,
                 "global_diam": 4.567849636077881,
@@ -433,7 +433,7 @@ class ReducedCalciumSomaDendrite(Model):
                 "axon_g_pas": 1.1356747827642139e-06,
                 "axon_gmax_K": 0.3,
                 "axon_gmax_Na_ratio": 0.47127913493042084,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_segments": 5.0,
                 "dend_alpha_Caconc": 0.7256314617735905,
                 "dend_f_Caconc": 0.013908888545727159,
@@ -463,7 +463,7 @@ class ReducedCalciumSomaDendrite(Model):
                 "dend_gmax_CaN": 0.001,
                 "dend_gmax_KCa": 0.0004750438852334796,
                 "dend_kCa_Caconc": 15.900063160386765,
-                "gc": 7.206964498910834,
+                "gc_mS_per_cm2": 7.206964498910834,
                 "global_cm": 1.0312566757202148,
                 "global_diam": 7.0965752601623535,
                 "soma_alpha_Caconc": 3.2002168327027687,
@@ -486,7 +486,7 @@ class ReducedCalciumSomaDendrite(Model):
                 "dend_g_pas": 0.0004252658982295543,
                 "dend_gmax_Ca": 0.8048859238624573,
                 "dend_gmax_KCa": 1.0,
-                "gc": 23.3135986328125,
+                "gc_mS_per_cm2": 23.3135986328125,
                 "pp": 0.10000000149011612,
                 "soma_g_pas": 0.0016516740433871746,
                 "soma_gmax_K": 0.0010000000474974513,
@@ -529,7 +529,7 @@ class ReducedCalciumSomaDendrite(Model):
                 "soma_alpha_Caconc": 5.0000001782354415,
                 "soma_kCa_Caconc": 6.199637067638542,
                 "axon_segments": 5.0,
-                "axon_segment_um": 30.0,
+                "axon_segment_length": 30.0,
                 "axon_diam": 1.5779502391815186,
                 "axon_Ra": 70.0,
                 "axon_cm": 1.0,
@@ -578,7 +578,7 @@ class ReducedCalciumSomaDendrite(Model):
         return float(params.get("Ltotal") or params["global_diam"])
 
     EXTRACELLULAR_PROFILE: ClassVar[dict] = {
-        "distance_um": (
+        "distance": (
             0.0,
             2.5,
             5.0,
@@ -641,7 +641,7 @@ class ReducedCalciumSomaDendrite(Model):
             147.5,
             150.0,
         ),
-        "trough_uv": (
+        "trough_uV": (
             105.4806,
             104.6938,
             100.6306,
@@ -1197,12 +1197,12 @@ class ReducedCalciumSomaDendrite(Model):
         p = params
 
         # Geometry: coupling conductance
-        # In NEURON: Ra is set so that the coupling between soma and dend gives gc
-        # gc is in mS/cm2, we convert to brian2 units in the equations
-        # gc_coupling = gc / (p * (1-p)) between compartments
+        # In NEURON: Ra is set so that the coupling between soma and dend gives gc_mS_per_cm2
+        # gc_mS_per_cm2 is in mS/cm2, we convert to brian2 units in the equations
+        # gc_coupling = gc_mS_per_cm2 / (p * (1-p)) between compartments
         pp = p["pp"]
         Ltotal = p["Ltotal"]
-        gc = p["gc"]
+        gc_mS_per_cm2 = p["gc_mS_per_cm2"]
         cm = p["global_cm"]
         cm_ratio = p["cm_ratio"]
         diam = p["global_diam"]
@@ -1215,9 +1215,9 @@ class ReducedCalciumSomaDendrite(Model):
         area_dend = math.pi * diam * L_dend  # um^2
 
         # Axial resistance: same formula as in BRK.py biophys()
-        # Ra is set so coupling effective conductance = gc (mS/cm2)
-        # The coupling current: I_coupling = gc/(p*(1-p)) * (V_other - V_self) in mS/cm2 * mV = uA/cm2
-        # Convert to nA: I_nA = I_mA_per_cm2 * area_cm2 * 1000
+        # Ra is set so coupling effective conductance = gc_mS_per_cm2 (mS/cm2)
+        # The coupling current: I_coupling = gc_mS_per_cm2/(p*(1-p)) * (V_other - V_self) in mS/cm2 * mV = uA/cm2
+        # Convert to nA: I = I_mA_per_cm2 * area_cm2 * 1000
         # But in brian2 we work with mV directly in the ODE
         # dV/dt = ... / (cm * area) where cm is uF/cm2
         # The voltage equation: C * dV/dt = -I_ionic + I_coupling + I_stim (all in mA/cm2 or equivalent)
@@ -1239,8 +1239,8 @@ class ReducedCalciumSomaDendrite(Model):
         # the section's own half-segment resistance -- so the half-section
         # conductance is `1/ri`, twice that. Halving it here would double the
         # separation between the compartments under load.
-        g_half_s = 2.0 * (gc / pp) * area_soma_cm2 * 1e3  # uS
-        g_half_d = 2.0 * (gc / pp) * area_dend_cm2 * 1e3  # uS
+        g_half_s = 2.0 * (gc_mS_per_cm2 / pp) * area_soma_cm2 * 1e3  # uS
+        g_half_d = 2.0 * (gc_mS_per_cm2 / pp) * area_dend_cm2 * 1e3  # uS
         g_coup = 1.0 / (1.0 / g_half_s + 1.0 / g_half_d)  # uS
         gc_soma = g_coup * 1e-6 / area_soma_cm2  # S/cm2
         gc_dend = g_coup * 1e-6 / area_dend_cm2  # S/cm2

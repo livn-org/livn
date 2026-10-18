@@ -72,10 +72,10 @@ class ElectrodeStimulus(Encoding):
             channels = [int(np.asarray(env.channel_reach()).sum(axis=1).argmax())]
 
         overrides = {}
-        if "total_ms" in type(policy).model_fields:
+        if "total" in type(policy).model_fields:
             # fill the run, so the quiet stretch before the first pulse is part
             # of the same command rather than a separate call
-            overrides["total_ms"] = float(t_end)
+            overrides["total"] = float(t_end)
 
         self._resolved = policy.for_array(n_channels, channels, **overrides)
         return self._resolved

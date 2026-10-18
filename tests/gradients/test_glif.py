@@ -253,7 +253,7 @@ def _chain(n=3, weight=800.0):
 
 def _chain_module(mechanism="hard", n=3, **kwargs):
     return GLIF(
-        mechanism=mechanism, config=SolverConfig(max_rate=1.0), **kwargs
+        mechanism=mechanism, config=SolverConfig(max_rate_per_ms=1.0), **kwargs
     ).diffrax_module(_FakeEnv(n, _chain(n)))
 
 
@@ -288,7 +288,7 @@ def test_the_shared_loop_reproduces_the_independent_one():
 
     coupled = np.asarray(module.solve(stimulus, 0.0, duration, dt).spike_times[0])
 
-    alone = GlifNeurons(1, config=SolverConfig(max_rate=1.0))
+    alone = GlifNeurons(1, config=SolverConfig(max_rate_per_ms=1.0))
     independent = np.asarray(
         alone.solve(stimulus[:, :1], 0.0, duration, dt).spike_times[0]
     )
@@ -306,7 +306,7 @@ def test_the_sign_of_a_weight_is_the_sign_of_its_effect():
     def spikes_of_cell_1(weight):
         connectivity = np.zeros((2, 2), dtype=np.float32)
         connectivity[0, 1] = weight
-        module = GLIF(config=SolverConfig(max_rate=1.0)).diffrax_module(
+        module = GLIF(config=SolverConfig(max_rate_per_ms=1.0)).diffrax_module(
             _FakeEnv(2, connectivity)
         )
         train = np.asarray(module.solve(stimulus, 0.0, duration, dt).spike_times[1])
@@ -583,7 +583,9 @@ def test_jit_and_vmap_over_cells():
 
 def test_a_run_past_the_spike_budget_fails_loudly():
     neurons = GlifNeurons(
-        1, {"t_ref": 0.5}, config=SolverConfig(max_rate=0.1, points_per_segment=16)
+        1,
+        {"t_ref": 0.5},
+        config=SolverConfig(max_rate_per_ms=0.1, points_per_segment=16),
     )
     stimulus = _driven(neurons, amplitude=6.0, duration=60.0)
 
@@ -594,7 +596,7 @@ def test_a_run_past_the_spike_budget_fails_loudly():
     lenient = GlifNeurons(
         1,
         {"t_ref": 0.5},
-        config=SolverConfig(max_rate=0.1, points_per_segment=16, throw=False),
+        config=SolverConfig(max_rate_per_ms=0.1, points_per_segment=16, throw=False),
     )
     solution = lenient.solve(stimulus, 0.0, 60.0, 0.1)
     assert bool(solution.saturated[0])
@@ -710,11 +712,11 @@ def test_the_standalone_api_reports_a_dict():
         "AScurrents",
         "spike_times",
         "n_spikes",
-        "duration_s",
+        "duration",
     }
     assert out["n_spikes"] == len(out["spike_times"])
-    assert out["duration_s"] == pytest.approx(0.06)
-    assert np.all(np.asarray(out["spike_times"]) < out["duration_s"])
+    assert out["duration"] == pytest.approx(60.0)  # ms
+    assert np.all(np.asarray(out["spike_times"]) < out["duration"])
     assert out["AScurrents"].shape == (out["times"].shape[0], 2)
 
 
@@ -726,7 +728,7 @@ def test_placing_events_on_step_boundaries_accumulates_lateness():
     hz = 10_000.0
     found = SolverConfig(
         dt_solver=step,
-        max_rate=1.0,
+        max_rate_per_ms=1.0,
         max_segment_span=float("inf"),
         points_per_segment=50,
     )
@@ -742,8 +744,8 @@ def test_placing_events_on_step_boundaries_accumulates_lateness():
         )
         exact = GlifNeuronJAX.from_dict(config, config=found).run(stimulus, hz, dt=0.1)
 
-        late_spikes = np.asarray(late["spike_times"]) * 1e3
-        exact_spikes = np.asarray(exact["spike_times"]) * 1e3
+        late_spikes = np.asarray(late["spike_times"])
+        exact_spikes = np.asarray(exact["spike_times"])
         assert len(late_spikes) == len(exact_spikes), f"{cell} L{level}"
         if len(late_spikes):
             drift = late_spikes - exact_spikes
@@ -976,7 +978,7 @@ def test_a_run_through_env_on_a_connected_system(mechanism):
         model=GLIF(
             level=1,
             mechanism=mechanism,
-            config=SolverConfig(max_rate=20.0),
+            config=SolverConfig(max_rate_per_ms=20.0),
         ),
     )
     env = env.set_weights({"EXC_EXC": 400.0, "EXC_INH": 400.0, "INH_EXC": 400.0}).init()
@@ -996,7 +998,7 @@ def test_a_run_through_env_on_a_connected_system(mechanism):
 
 
 def test_a_forced_run_spikes_exactly_when_told_and_never_on_its_own():
-    neurons = GlifNeurons(1, {"t_ref": 2.0}, config=SolverConfig(max_rate=1.0))
+    neurons = GlifNeurons(1, {"t_ref": 2.0}, config=SolverConfig(max_rate_per_ms=1.0))
     duration, dt = 60.0, 0.1
     stimulus = _driven(neurons, amplitude=3.0, duration=duration, dt=dt)
 
@@ -1030,7 +1032,7 @@ def test_a_forced_run_with_no_spikes_is_the_free_subthreshold_trajectory():
 
 
 def test_a_forced_run_is_differentiable_and_batched_over_cells():
-    neurons = GlifNeurons(2, {"t_ref": 2.0}, config=SolverConfig(max_rate=1.0))
+    neurons = GlifNeurons(2, {"t_ref": 2.0}, config=SolverConfig(max_rate_per_ms=1.0))
     duration, dt = 40.0, 0.1
     stimulus = _driven(neurons, amplitude=3.0, duration=duration, dt=dt)
     told = jnp.array([[10.0, 20.0, jnp.inf], [15.0, jnp.inf, jnp.inf]])

@@ -33,7 +33,7 @@ NLL = ∫ λ dt − Σ_i log λ(t_i)
 from livn.optimization.losses import log_intensity, spike_nll
 
 sol = neurons.solve(..., record=frozenset({"voltage", "threshold", "spikes", "segments"}))
-rate = log_intensity(v_at_nodes, threshold_at_nodes, sigma, tau_s)
+rate = log_intensity(v_at_nodes, threshold_at_nodes, sigma, tau)
 nll = spike_nll(rate, sol.segment_ts, recorded_spike_times)
 ```
 
@@ -110,11 +110,11 @@ shape, logmag = shape_logmag(pred, target, mask, return_terms=True)
 Builds the mask for `shape_logmag` from spike times, on device and jittable:
 
 ```python
-mask = events_to_mask(batch["spikes"], (T, C), dt=0.1, window_ms=1.0, channel_radius=1, channels=peak_channel)
+mask = events_to_mask(batch["spikes"], (T, C), dt=0.1, window=1.0, channel_radius=1, channels=peak_channel)
 ```
 
-`events` is the `livn.optimization.data` batch format, `(*batch, unit, spike)` in ms relative to the window start, `inf`-padded. Each spike marks `±window_ms/2` (at least ±1 sample, inclusive) on its unit's channel and `channel_radius` neighbours either side. `channels` is `(unit,)`, or `(unit, m)` padded with `-1` for units seen on several channels; by default unit `u` is on channel `u`.
+`events` is the `livn.optimization.data` batch format, `(*batch, unit, spike)` in ms relative to the window start, `inf`-padded. Each spike marks `±window/2` (at least ±1 sample, inclusive) on its unit's channel and `channel_radius` neighbours either side. `channels` is `(unit,)`, or `(unit, m)` padded with `-1` for units seen on several channels; by default unit `u` is on channel `u`.
 
 ## `smoothness`
 
-High-pass energy `mean((x − lowpass(x))²) / scale²` of a `(*batch, time, unit)` trace, with a Gaussian lowpass of `sigma_ms`. It suppresses sample-scale ringing in a fitted current while leaving slow structure alone.
+High-pass energy `mean((x − lowpass(x))²) / scale²` of a `(*batch, time, unit)` trace, with a Gaussian lowpass of `sigma`. It suppresses sample-scale ringing in a fitted current while leaving slow structure alone.

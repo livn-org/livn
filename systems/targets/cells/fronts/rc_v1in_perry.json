@@ -22,9 +22,8 @@
                 "Targets": {
                     "Rin": {
                         "current": [
-                            -50.0
+                            -0.05
                         ],
-                        "current_factor": 0.001,
                         "t": [
                             250.0,
                             1250.0
@@ -42,7 +41,6 @@
                         "current": [
                             -0.01
                         ],
-                        "current_factor": 1.0,
                         "t": [
                             250.0,
                             1250.0
@@ -65,13 +63,12 @@
                     },
                     "f_I": {
                         "current": [
-                            50.0,
-                            100.0,
-                            150.0,
-                            200.0,
-                            250.0
+                            0.05,
+                            0.1,
+                            0.15,
+                            0.2,
+                            0.25
                         ],
-                        "current_factor": 0.001,
                         "t": [
                             500.0,
                             1500.0
@@ -101,7 +98,6 @@
                     },
                     "spike_amp": {
                         "current": [],
-                        "current_factor": 1.0,
                         "t": null,
                         "mean": null,
                         "lower": [
@@ -122,7 +118,6 @@
                     },
                     "spike_adaptation": {
                         "current": [],
-                        "current_factor": 1.0,
                         "t": [
                             500.0,
                             1500.0

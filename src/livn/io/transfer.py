@@ -50,41 +50,41 @@ class ElectrodeRC(Component):
     """The electrode-electrolyte interface as a first-order RC low-pass."""
 
     log_r_seal: object
-    c_pf: float = 100.0
+    c_pF: float = 100.0
 
     needs_dt = True
 
-    def __init__(self, r_seal_mohm=50.0, c_pf: float = 100.0):
-        self.log_r_seal = np.log(np.asarray(r_seal_mohm, dtype=np.float32))
-        self.c_pf = float(c_pf)
+    def __init__(self, r_seal=50.0, c_pF: float = 100.0):
+        self.log_r_seal = np.log(np.asarray(r_seal, dtype=np.float32))
+        self.c_pF = float(c_pF)
 
     def serialize(self) -> dict:
         return {
             "cls": class_path(self),
-            "r_seal_mohm": _plain(np.exp(self.log_r_seal)),
-            "c_pf": float(self.c_pf),
+            "r_seal": _plain(np.exp(self.log_r_seal)),
+            "c_pF": float(self.c_pF),
         }
 
     def set_params(self, params: dict) -> ElectrodeRC:
-        unknown = sorted(set(params) - {"r_seal_mohm", "log_r_seal", "c_pf"})
+        unknown = sorted(set(params) - {"r_seal", "log_r_seal", "c_pF"})
         if unknown:
             raise KeyError(
                 f"{unknown} are not parameters of ElectrodeRC; they are "
-                "['c_pf', 'log_r_seal', 'r_seal_mohm']"
+                "['c_pF', 'log_r_seal', 'r_seal']"
             )
         fields = {}
-        if "r_seal_mohm" in params:
-            fields["log_r_seal"] = np.log(np.asarray(params["r_seal_mohm"], np.float32))
+        if "r_seal" in params:
+            fields["log_r_seal"] = np.log(np.asarray(params["r_seal"], np.float32))
         if "log_r_seal" in params:
             fields["log_r_seal"] = np.asarray(params["log_r_seal"], np.float32)
-        if "c_pf" in params:
-            fields["c_pf"] = float(params["c_pf"])
+        if "c_pF" in params:
+            fields["c_pF"] = float(params["c_pF"])
         return with_fields(self, **fields)
 
     def __call__(self, x, *, dt=None, key=None):
         dt = _require_dt(dt, "ElectrodeRC")
         x = np.asarray(x)
-        tau = np.exp(self.log_r_seal) * (self.c_pf * 1e-3)  # ms
+        tau = np.exp(self.log_r_seal) * (self.c_pF * 1e-3)  # ms
         beta = np.broadcast_to(np.atleast_1d(np.exp(-dt / tau)), (x.shape[0],))
         if _USES_JAX:
 
@@ -169,8 +169,8 @@ def _set_first(taps):
 class Bandpass(Component):
     """A causal Butterworth band-pass."""
 
-    low_hz: float = static_field(300.0)
-    high_hz: float = static_field(3000.0)
+    low: float = static_field(300.0)
+    high: float = static_field(3000.0)
     order: int = static_field(4)
 
     needs_dt = True
@@ -179,13 +179,13 @@ class Bandpass(Component):
         from scipy.signal import butter
 
         fs = 1000.0 / dt
-        if not 0.0 < self.low_hz < self.high_hz < fs / 2.0:
+        if not 0.0 < self.low < self.high < fs / 2.0:
             raise ValueError(
-                f"a band of [{self.low_hz}, {self.high_hz}] Hz needs "
+                f"a band of [{self.low}, {self.high}] Hz needs "
                 f"0 < low < high < Nyquist ({fs / 2.0} Hz at dt={dt} ms)"
             )
         return butter(
-            self.order, [self.low_hz, self.high_hz], btype="band", fs=fs, output="sos"
+            self.order, [self.low, self.high], btype="band", fs=fs, output="sos"
         )
 
     def __call__(self, x, *, dt=None, key=None):
@@ -212,9 +212,9 @@ class Bandpass(Component):
 
 
 class Noise(Component):
-    """Additive Gaussian noise of standard deviation `sigma_uv`."""
+    """Additive Gaussian noise of standard deviation `sigma_uV`."""
 
-    sigma_uv: float = 0.0
+    sigma_uV: float = 0.0
     seed: int = static_field(0)
 
     needs_dt = False
@@ -224,18 +224,18 @@ class Noise(Component):
             return x
         x = np.asarray(x)
         if _USES_JAX:
-            return x + self.sigma_uv * jax.random.normal(key, x.shape, x.dtype)
+            return x + self.sigma_uV * jax.random.normal(key, x.shape, x.dtype)
         rng = (
             key
             if isinstance(key, _np.random.Generator)
             else _np.random.default_rng(key)
         )
-        return x + rng.normal(0.0, float(self.sigma_uv), size=x.shape)
+        return x + rng.normal(0.0, float(self.sigma_uV), size=x.shape)
 
     def apply_seeded(self, x):
         rng = _np.random.default_rng(int(self.seed))
         x = _np.asarray(x)
-        return x + rng.normal(0.0, float(self.sigma_uv), size=x.shape)
+        return x + rng.normal(0.0, float(self.sigma_uV), size=x.shape)
 
 
 __all__ = ["FIR", "Bandpass", "ElectrodeRC", "Noise", "Transfer", "stage_key"]

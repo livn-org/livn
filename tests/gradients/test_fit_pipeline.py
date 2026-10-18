@@ -26,8 +26,8 @@ def _pipeline(run_recording):
     )
     return windows(
         run_recording(run),
-        context_ms=2.0,
-        prediction_ms=0.5,
+        context=2.0,
+        prediction=0.5,
         normalize=Standardize({"median": 0.0, "scale": 1.0}),
         batch_size=4,
         per_segment=8,

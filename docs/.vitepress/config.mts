@@ -38,6 +38,7 @@ export default defineConfig({
                 {
                     text: "Concepts",
                     items: [
+                        { text: "Units", link: "/guide/concepts/units" },
                         { text: "Environment", link: "/guide/concepts/env" },
                         { text: "Systems", link: "/guide/concepts/system" },
                         { text: "Models", link: "/guide/concepts/model" },

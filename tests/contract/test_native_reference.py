@@ -33,10 +33,10 @@ def test_a_current_step_reproduces_the_neuron_trace(population):
 
     ref = np.load(os.path.join(DATA, f"native_{population.lower()}_current_step.npz"))
     dt = float(ref["dt"][0])
-    duration = float(ref["duration_ms"][0])
+    duration = float(ref["duration"][0])
     steps = round(duration / dt)
     current = np.zeros((steps, 1))
-    current[round(float(ref["onset_ms"][0]) / dt) :, 0] = float(ref["amplitude_nA"][0])
+    current[round(float(ref["onset"][0]) / dt) :, 0] = float(ref["amplitude"][0])
 
     env = Env({population: 1}).init()
     try:
@@ -87,7 +87,7 @@ def test_the_noisy_test_graph_reproduces_neurons_spikes():
         env.set_noise(NOISE)
         env.record_spikes()
         env.record_voltage(dt=0.1)
-        run = env.run(float(ref["duration_ms"][0]))
+        run = env.run(float(ref["duration"][0]))
 
         order = np.lexsort((run.spike_ids, run.spike_times))
         ref_order = np.lexsort((ref["spike_ids"], ref["spike_times"]))

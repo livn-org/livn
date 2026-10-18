@@ -42,7 +42,7 @@ def _ramp(slope=1.0, threshold=1.0, hold=0.0):
 
 def _solve(t1=5.0, dt=0.1, config=None, **kwargs):
     config = config or SolverConfig(
-        dt_solver=0.005, points_per_segment=16, max_rate=2.0
+        dt_solver=0.005, points_per_segment=16, max_rate_per_ms=2.0
     )
     return event_solve(
         y0=jnp.array([0.0]), t0=0.0, t1=t1, dt=dt, config=config, **_ramp(**kwargs)
@@ -84,7 +84,7 @@ def test_a_refractory_hold_delays_the_next_event():
 
 
 def test_exceeding_the_event_budget_fails_loudly():
-    config = SolverConfig(dt_solver=0.005, points_per_segment=16, max_rate=0.4)
+    config = SolverConfig(dt_solver=0.005, points_per_segment=16, max_rate_per_ms=0.4)
 
     with pytest.raises(Exception, match="event budget exhausted"):
         jax.block_until_ready(_solve(config=config).event_times)
@@ -92,7 +92,7 @@ def test_exceeding_the_event_budget_fails_loudly():
 
 def test_saturation_is_reported_when_it_is_not_raised():
     config = SolverConfig(
-        dt_solver=0.005, points_per_segment=16, max_rate=0.4, throw=False
+        dt_solver=0.005, points_per_segment=16, max_rate_per_ms=0.4, throw=False
     )
 
     solution = _solve(config=config)
@@ -103,7 +103,7 @@ def test_saturation_is_reported_when_it_is_not_raised():
 
 def test_a_failed_inner_solve_is_not_returned_silently():
     config = SolverConfig(
-        dt_solver=0.005, points_per_segment=16, max_rate=2.0, max_steps=3
+        dt_solver=0.005, points_per_segment=16, max_rate_per_ms=2.0, max_steps=3
     )
 
     with pytest.raises(Exception, match="inner solve failed"):
@@ -156,7 +156,10 @@ def test_resample_handles_repeated_sample_times():
 
 def test_an_unbounded_segment_runs_to_the_next_event():
     config = SolverConfig(
-        dt_solver=0.005, points_per_segment=16, max_rate=2.0, max_segment_span=math.inf
+        dt_solver=0.005,
+        points_per_segment=16,
+        max_rate_per_ms=2.0,
+        max_segment_span=math.inf,
     )
 
     solution = _solve(t1=5.0, config=config)
@@ -177,7 +180,7 @@ def test_the_brownian_path_survives_reverse_mode():
                 t1=5.0,
                 dt=0.1,
                 config=SolverConfig(
-                    dt_solver=0.01, points_per_segment=16, max_rate=2.0
+                    dt_solver=0.01, points_per_segment=16, max_rate_per_ms=2.0
                 ),
                 extra_terms=[
                     diffrax.ControlTerm(lambda t, y, args: jnp.array([[0.2]]), path)

@@ -14,7 +14,7 @@ def array_to_dict(params: Sequence) -> Mapping[str, float]:
     order = [
         "pp",
         "Ltotal",
-        "gc",
+        "gc_mS_per_cm2",
         "global_diam",
         "global_cm",
         "soma_gmax_Na",
@@ -54,7 +54,7 @@ class BoothRinzelKiehn(eqx.Module):
 
     C: float
     cm_ratio: float  # soma cm = C * cm_ratio
-    gc: float
+    gc_mS_per_cm2: float
     p: float
     Kd: float
     f: float
@@ -122,7 +122,7 @@ class BoothRinzelKiehn(eqx.Module):
     input_mode: str = eqx.field(static=True)
 
     # RhO3c 3-state opsin parameters (Nikolic et al. 2009)
-    opsin_g0: float = eqx.field(static=True)  # pS
+    opsin_g0_pS: float = eqx.field(static=True)  # pS
     opsin_E_rev: float = eqx.field(static=True)  # mV
     opsin_k_a: float = eqx.field(static=True)  # activation rate scaling (/ms)
     opsin_k_r: float = eqx.field(static=True)  # recovery rate scaling (/ms)
@@ -149,7 +149,7 @@ class BoothRinzelKiehn(eqx.Module):
 
         self.C = 3.0  # uF/cm^2 - global_cm
         self.cm_ratio = 1.0  # NEURON BRK soma scale: soma.cm = C * cm_ratio
-        self.gc = 10.5  # coupling conductance (mS/cm^2)
+        self.gc_mS_per_cm2 = 10.5  # coupling conductance (mS/cm^2)
         self.p = 0.5  # proportion of area taken up by soma (pp)
 
         # Calcium-activated K channel affinity.
@@ -228,7 +228,7 @@ class BoothRinzelKiehn(eqx.Module):
         self.input_mode = "conductance"
 
         # RhO3c 3-state opsin defaults (Nikolic et al. 2009)
-        self.opsin_g0 = 1.0  # pS
+        self.opsin_g0_pS = 1.0  # pS
         self.opsin_E_rev = 0.0  # mV
         self.opsin_k_a = 0.28  # /ms
         self.opsin_k_r = 0.28  # /ms
@@ -239,8 +239,8 @@ class BoothRinzelKiehn(eqx.Module):
         self.opsin_phi_m = 1e16  # photons/s·mm²
         self.opsin_v0 = 43.0  # mV
         self.opsin_v1 = 17.1  # mV (auto-calc: (70+E)/(exp((70+E)/v0)-1))
-        wavelength_nm = 473.0
-        self.opsin_E_photon = 6.626e-34 * 3e8 / (wavelength_nm * 1e-9) * 1e3
+        wavelength = 473.0
+        self.opsin_E_photon = 6.626e-34 * 3e8 / (wavelength * 1e-9) * 1e3
 
     def set_parameters(self, params: Mapping[str, Any]) -> None:
         """
@@ -251,7 +251,7 @@ class BoothRinzelKiehn(eqx.Module):
         params : dict
             - pp -> p
             - Ltotal -> Ltotal
-            - gc -> gc
+            - gc_mS_per_cm2 -> gc_mS_per_cm2
             - global_diam -> global_diam
             - global_cm -> C
             - e_pas, global_e_pas -> Eleak
@@ -274,8 +274,8 @@ class BoothRinzelKiehn(eqx.Module):
             self.p = float(get("pp"))
         if get("Ltotal") is not None:
             self.Ltotal = float(get("Ltotal"))
-        if get("gc") is not None:
-            self.gc = float(get("gc"))
+        if get("gc_mS_per_cm2") is not None:
+            self.gc_mS_per_cm2 = float(get("gc_mS_per_cm2"))
         if get("global_diam") is not None:
             self.global_diam = float(get("global_diam"))
         if get("global_cm") is not None:
@@ -445,8 +445,8 @@ class BoothRinzelKiehn(eqx.Module):
         area_s = self.p * area_total
         area_d = (1.0 - self.p) * area_total
 
-        g_c_s = 2.0 * self.gc * (1.0 - self.p) / self.p * 1e-3
-        g_c_d = 2.0 * self.gc * 1e-3
+        g_c_s = 2.0 * self.gc_mS_per_cm2 * (1.0 - self.p) / self.p * 1e-3
+        g_c_d = 2.0 * self.gc_mS_per_cm2 * 1e-3
 
         return area_s, area_d, g_c_s, g_c_d
 
@@ -464,8 +464,8 @@ class BoothRinzelKiehn(eqx.Module):
     def _opsin_current(self, O, V):  # noqa: E741
         """Opsin photocurrent in nA, matching NEURON RhO3c.mod exactly.
 
-        Uses g0 in pS, same formula and units as the .mod file:
-            i = g0 * fphi * fv * (v - E) * 1e-6   [nA]
+        Uses g0_pS in pS, same formula and units as the .mod file:
+            i = g0_pS * fphi * fv * (v - E) * 1e-6   [nA]
         """
         fphi = O
         fv = (
@@ -473,7 +473,7 @@ class BoothRinzelKiehn(eqx.Module):
             * (1 - jnp.exp(-(V - self.opsin_E_rev) / self.opsin_v0))
             / (V - self.opsin_E_rev)
         )
-        return self.opsin_g0 * fphi * fv * (V - self.opsin_E_rev) * 1e-6  # nA
+        return self.opsin_g0_pS * fphi * fv * (V - self.opsin_E_rev) * 1e-6  # nA
 
     def _calculate_membrane_currents(self, t, y, args=None):
         """Calculate per-compartment transmembrane currents in microamperes.
@@ -578,8 +578,8 @@ class BoothRinzelKiehn(eqx.Module):
             C = y[11]
             O = y[12]  # noqa: E741
 
-            i_opsin_nA = self._opsin_current(O, Vs)
-            Iapp_density_soma = -i_opsin_nA * 1e-6 / area_s  # nA → mA/cm²
+            i_opsin = self._opsin_current(O, Vs)
+            Iapp_density_soma = -i_opsin * 1e-6 / area_s  # nA → mA/cm²
             Iapp_density_dend = 0.0
 
         elif self.input_mode == "current_density":
@@ -599,9 +599,9 @@ class BoothRinzelKiehn(eqx.Module):
                 g_exc_soma = jnp.maximum(0.0, g_input)
                 g_inh_soma = jnp.maximum(0.0, -g_input)
 
-                I_exc_nA = g_exc_soma * (Vs - self.E_syn_exc) / 1000.0
-                I_inh_nA = g_inh_soma * (Vs - self.E_syn_inh) / 1000.0
-                Iapp_density_soma = -(I_exc_nA + I_inh_nA) * 1e-6 / area_s
+                I_exc = g_exc_soma * (Vs - self.E_syn_exc) / 1000.0
+                I_inh = g_inh_soma * (Vs - self.E_syn_inh) / 1000.0
+                Iapp_density_soma = -(I_exc + I_inh) * 1e-6 / area_s
                 Iapp_density_dend = 0.0
             else:
                 g_soma = jnp.interp(t, t_array, I_stim_array[:, 0])
@@ -612,25 +612,25 @@ class BoothRinzelKiehn(eqx.Module):
                 g_exc_dend = jnp.maximum(0.0, g_dend)
                 g_inh_dend = jnp.maximum(0.0, -g_dend)
 
-                I_exc_soma_nA = g_exc_soma * (Vs - self.E_syn_exc) / 1000.0
-                I_inh_soma_nA = g_inh_soma * (Vs - self.E_syn_inh) / 1000.0
-                I_exc_dend_nA = g_exc_dend * (Vd - self.E_syn_exc) / 1000.0
-                I_inh_dend_nA = g_inh_dend * (Vd - self.E_syn_inh) / 1000.0
+                I_exc_soma = g_exc_soma * (Vs - self.E_syn_exc) / 1000.0
+                I_inh_soma = g_inh_soma * (Vs - self.E_syn_inh) / 1000.0
+                I_exc_dend = g_exc_dend * (Vd - self.E_syn_exc) / 1000.0
+                I_inh_dend = g_inh_dend * (Vd - self.E_syn_inh) / 1000.0
 
-                Iapp_density_soma = -(I_exc_soma_nA + I_inh_soma_nA) * 1e-6 / area_s
-                Iapp_density_dend = -(I_exc_dend_nA + I_inh_dend_nA) * 1e-6 / area_d
+                Iapp_density_soma = -(I_exc_soma + I_inh_soma) * 1e-6 / area_s
+                Iapp_density_dend = -(I_exc_dend + I_inh_dend) * 1e-6 / area_d
 
         elif self.input_mode == "current":
             # direct current in nA
             if I_stim_array.ndim == 1:
-                I_nA = jnp.interp(t, t_array, I_stim_array)
-                Iapp_density_soma = I_nA * 1e-6 / area_s
+                I_app = jnp.interp(t, t_array, I_stim_array)
+                Iapp_density_soma = I_app * 1e-6 / area_s
                 Iapp_density_dend = 0.0
             else:
-                I_soma_nA = jnp.interp(t, t_array, I_stim_array[:, 0])
-                I_dend_nA = jnp.interp(t, t_array, I_stim_array[:, 1])
-                Iapp_density_soma = I_soma_nA * 1e-6 / area_s
-                Iapp_density_dend = I_dend_nA * 1e-6 / area_d
+                I_soma = jnp.interp(t, t_array, I_stim_array[:, 0])
+                I_dend = jnp.interp(t, t_array, I_stim_array[:, 1])
+                Iapp_density_soma = I_soma * 1e-6 / area_s
+                Iapp_density_dend = I_dend * 1e-6 / area_d
         else:
             raise ValueError(f"Unknown input_mode: {self.input_mode}")
 
