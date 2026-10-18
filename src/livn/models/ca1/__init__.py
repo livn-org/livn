@@ -195,8 +195,9 @@ class PinskyRinzel(Model):
         for k in celltypes:
             if "template" in celltypes[k] and celltypes[k]["template"] != "VecStim":
                 del celltypes[k]["template"]
-            if k in params:
-                celltypes[k]["mechanism"] = params[k]
+            key = self.cell_config_key(k)
+            if key in params:
+                celltypes[k]["mechanism"] = params[key]
 
     def neuron_synapse_mechanisms(self):
         return {

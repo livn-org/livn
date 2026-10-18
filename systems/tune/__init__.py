@@ -733,8 +733,14 @@ class Tune(Interface):
             )
 
         io = target.io() if callable(getattr(target, "io", None)) else None
+        described = _described(spec, system)
+        uri = (described.get("kwargs") or {}).get("uri")
+        if isinstance(uri, str) and not os.path.isabs(uri) and os.path.isdir(uri):
+            described["kwargs"]["uri"] = os.path.relpath(
+                os.path.abspath(uri), os.path.abspath(directory)
+            )
         document = {
-            "system": _described(spec, system),
+            "system": described,
             "model": _described(meta.get("model") or self.model_ref()),
             "io": None if io is None else describe_io(system, io),
             "selection": selection or None,
