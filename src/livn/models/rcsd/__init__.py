@@ -354,6 +354,13 @@ class ReducedCalciumSomaDendrite(Model):
             neuron_coordinates, population=population, gids=gids
         )
 
+    def recording_section_names(self, population: str) -> tuple[str, ...]:
+        return (
+            "soma",
+            *(("dend",) if self._has_dendrite(population) else ()),
+            *(f"ais{i}" for i in range(len(self._axon_offsets(population)))),
+        )
+
     def expand_stimulus_currents(
         self,
         currents: types.Float[types.Array, "batch timestep n_neurons"],

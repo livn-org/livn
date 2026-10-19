@@ -312,6 +312,7 @@ The conditions can provide the following dependencies:
 | `membrane_currents_uA`, `dt` | the run's currents `[n_neurons, T]` and their interval (ms) | the caller (`dt`: the env's recording interval when unset) |
 | `inputs`, `inputs_dt`, `stim_markers` | the stimulating device's commands `[T_in, n_input_channels]` on their own grid, and marker times (ms) | the caller |
 | `neuron_coordinates`, `gids` | the recording coordinate of each current row (`gids` selects them, a cell with several sections repeating) | the env |
+| `sections` | the section of each current row | the caller |
 | `t0`, `segment`, `start` | where the window is | the caller (a `Window` of `livn.optimization.data`) |
 
 ```python

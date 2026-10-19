@@ -609,6 +609,7 @@ class Run:
         return cls(
             membrane_currents_uA=self.current,
             gids=self.current_ids,
+            sections=self.current_sections,
             dt=self.current_dt,
             **fields,
         )

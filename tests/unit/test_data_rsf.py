@@ -715,10 +715,14 @@ def test_inputs_must_fit_the_stimulating_channels(tmp_path):
     assert not os.path.exists(tmp_path / "a") and not os.path.exists(tmp_path / "b")
 
 
-def _physical(tmp_path, name="physical", **kwargs):
-    from testing.rsf_session import physical_session
+@pytest.fixture
+def physical(tmp_path, physical_session):
+    """``physical(name="physical", **kwargs)``: a hand-written session under ``tmp_path``, opened."""
 
-    return rsf.RsfRecording(physical_session(str(tmp_path / name), **kwargs))
+    def make(name="physical", **kwargs):
+        return rsf.RsfRecording(physical_session(str(tmp_path / name), **kwargs))
+
+    return make
 
 
 def test_a_livn_session_states_its_clock_losses_and_clips(tmp_path):
@@ -778,11 +782,9 @@ def test_int32_traces_hold_what_int16_cannot(tmp_path):
     np.testing.assert_allclose(recording.read(0, 0, N_FRAMES).T, uv, atol=gain)
 
 
-def test_rows_read_through_their_own_gains_at_either_width(tmp_path):
+def test_rows_read_through_their_own_gains_at_either_width(physical):
     raw = np.asarray([[100_000, -3], [-70_000, 4]], dtype=np.int32)
-    recording = _physical(
-        tmp_path, traces=raw, gains=[0.0596, 0.5], dtype="int32", clipped=[0, 2]
-    )
+    recording = physical(traces=raw, gains=[0.0596, 0.5], dtype="int32", clipped=[0, 2])
     np.testing.assert_allclose(
         recording.read(0, 0, 2), raw * np.asarray([0.0596, 0.5]), rtol=1e-6
     )
@@ -790,13 +792,13 @@ def test_rows_read_through_their_own_gains_at_either_width(tmp_path):
     np.testing.assert_array_equal(recording.row_property("band"), ["wide", "wide"])
     assert recording.row_property("impedance") is None
     # a store that does not count its clips says nothing about them
-    assert _physical(tmp_path, "uncounted").clipped_samples is None
+    assert physical("uncounted").clipped_samples is None
 
 
-def test_ticks_and_frames_on_a_device_clock_of_another_rate(tmp_path):
+def test_ticks_and_frames_on_a_device_clock_of_another_rate(physical):
     # 25 kHz ticks at 10 kHz frames: a frame spans 2.5 ticks
     t0 = 912_384_050
-    recording = _physical(tmp_path, tick_rate=25_000.0, anchors=[(0, t0)])
+    recording = physical(tick_rate=25_000.0, anchors=[(0, t0)])
     np.testing.assert_allclose(recording.tick_at([0, 1, 10]), [t0, t0 + 2.5, t0 + 25])
     np.testing.assert_allclose(recording.frame_at([t0, t0 + 5, t0 + 6]), [0, 2, 2.4])
     assert np.isnan(recording.frame_at([t0 - 1])[0])  # before the first anchor
@@ -807,20 +809,18 @@ def test_ticks_and_frames_on_a_device_clock_of_another_rate(tmp_path):
     np.testing.assert_allclose(recording.elapsed([0, 10]), [0.0, 0.001])
 
 
-def test_ticks_beyond_float_precision_keep_their_differences(tmp_path):
+def test_ticks_beyond_float_precision_keep_their_differences(physical):
     t0 = 2**62 + 1  # past 2^53, where a float64 tick loses digits
-    recording = _physical(tmp_path, anchors=[(0, t0), (600, t0 + 700)])
+    recording = physical(anchors=[(0, t0), (600, t0 + 700)])
     marker = np.asarray([t0 + 750], dtype=np.uint64)
     np.testing.assert_array_equal(recording.frame_at(marker), [650])
     np.testing.assert_allclose(recording.elapsed([650]), [0.075])
 
 
-def test_a_gap_cuts_the_frames_and_moves_time(tmp_path):
+def test_a_gap_cuts_the_frames_and_moves_time(physical):
     # the clock states the jump: frames 0..599, then 100 frames lost, then 600..999
     t0 = 1_000
-    recording = _physical(
-        tmp_path, anchors=[(0, t0), (600, t0 + 700)], gaps=[(600, 100)]
-    )
+    recording = physical(anchors=[(0, t0), (600, t0 + 700)], gaps=[(600, 100)])
     np.testing.assert_array_equal(recording.valid_spans(0), [[0, 600], [600, 1000]])
     np.testing.assert_allclose(
         recording.elapsed([599, 600, 601]), [0.0599, 0.07, 0.0701]
@@ -835,7 +835,7 @@ def test_a_gap_cuts_the_frames_and_moves_time(tmp_path):
     )
 
     # without a clock the gap is the only statement that time jumped
-    unclocked = _physical(tmp_path, "unclocked", anchors=None, gaps=[(600, 100)])
+    unclocked = physical("unclocked", anchors=None, gaps=[(600, 100)])
     assert unclocked.first_sample_tick is None and np.isnan(unclocked.tick_at([0])[0])
     np.testing.assert_array_equal(unclocked.valid_spans(0), [[0, 600], [600, 1000]])
     np.testing.assert_allclose(unclocked.elapsed([599, 600]), [0.0599, 0.07])
@@ -844,8 +844,8 @@ def test_a_gap_cuts_the_frames_and_moves_time(tmp_path):
     )
 
 
-def test_dropped_spans_leave_the_other_rows_whole(tmp_path):
-    recording = _physical(tmp_path, dropped=[(100, 50, "a-001"), (900, 0, "a-000")])
+def test_dropped_spans_leave_the_other_rows_whole(physical):
+    recording = physical(dropped=[(100, 50, "a-001"), (900, 0, "a-000")])
     np.testing.assert_array_equal(recording.valid_spans(0), [[0, 100], [150, 1000]])
     np.testing.assert_array_equal(
         recording.valid_spans(0, channels=["a-000"]), [[0, 1000]]
@@ -855,10 +855,9 @@ def test_dropped_spans_leave_the_other_rows_whole(tmp_path):
     )
 
 
-def test_stim_markers_are_placed_on_frames(tmp_path):
+def test_stim_markers_are_placed_on_frames(physical):
     t0 = 5_000
-    recording = _physical(
-        tmp_path,
+    recording = physical(
         tick_rate=20_000.0,
         anchors=[(0, t0)],
         markers=[(t0 + 40, "hs0-070"), (t0 + 3, "din-0"), (t0 - 2, "hs0-070")],
@@ -869,9 +868,7 @@ def test_stim_markers_are_placed_on_frames(tmp_path):
     np.testing.assert_array_equal(markers.channel, ["hs0-070", "din-0", "hs0-070"])
 
 
-def test_the_current_name_description_and_notes(tmp_path):
-    from testing.rsf_session import note
-
+def test_the_current_name_description_and_notes(physical, rsf_note):
     item, other = "5b1f0c3e9a7d4e2b8c64d0a1f3e79b52", "0123456789abcdef0123456789abcdef"
     uid = "{:032x}".format
     notes = {
@@ -879,52 +876,54 @@ def test_the_current_name_description_and_notes(tmp_path):
             # the later instant wins though it sorts earlier as text
             (
                 f"20261004T100541.207311Z-{uid(1)}.json",
-                note("session", "2026-10-04T10:05:41.207311Z", "Slice 3"),
+                rsf_note("session", "2026-10-04T10:05:41.207311Z", "Slice 3"),
             ),
             (
                 f"20261004T103000.000000Z-{uid(2)}.json",
-                note(
+                rsf_note(
                     "session", "2026-10-04T12:30:00.000000+02:00", "Slice 3, baseline"
                 ),
             ),
             # one instant, and the greater key wins the tie
             (
                 f"20261004T103000.000000Z-{uid(3)}.json",
-                note("session", "2026-10-04T10:30:00Z", "Slice 3, wash"),
+                rsf_note("session", "2026-10-04T10:30:00Z", "Slice 3, wash"),
             ),
         ],
         "description": [
             (
                 f"20261004T100600.500000Z-{uid(4)}.json",
-                note("session", "2026-10-04T10:06:00.5Z", "Cortical culture, DIV 21"),
+                rsf_note(
+                    "session", "2026-10-04T10:06:00.5Z", "Cortical culture, DIV 21"
+                ),
             ),
-            ("not-a-key.json", note("session", "2026-10-04T11:00:00Z", "skipped")),
+            ("not-a-key.json", rsf_note("session", "2026-10-04T11:00:00Z", "skipped")),
         ],
         "note": [
             (
                 f"20261004T091250.100000Z-{uid(5)}.json",
-                note(item, "2026-10-04T09:12:50.100000Z", "drug", frame=120),
+                rsf_note(item, "2026-10-04T09:12:50.100000Z", "drug", frame=120),
             ),
             (
                 f"20261004T091251.000000Z-{uid(6)}.json",
-                note(item, "2026-10-04T09:12:51Z", "drug added", frame=120),
+                rsf_note(item, "2026-10-04T09:12:51Z", "drug added", frame=120),
             ),
             (
                 f"20261004T091300.000000Z-{uid(7)}.json",
-                note(other, "2026-10-04T09:13:00Z", "washed out", frame=300),
+                rsf_note(other, "2026-10-04T09:13:00Z", "washed out", frame=300),
             ),
             (
                 f"20261004T100000.000000Z-{uid(8)}.json",
-                note(other, "2026-10-04T10:00:00Z", "", removed=True, frame=300),
+                rsf_note(other, "2026-10-04T10:00:00Z", "", removed=True, frame=300),
             ),
             # an item that does not suit its kind is skipped
             (
                 f"20261004T100100.000000Z-{uid(9)}.json",
-                note("session", "2026-10-04T10:01:00Z", "x"),
+                rsf_note("session", "2026-10-04T10:01:00Z", "x"),
             ),
         ],
     }
-    recording = _physical(tmp_path, notes=notes, label="started as")
+    recording = physical(notes=notes, label="started as")
     assert recording.label == "Slice 3, wash"
     assert recording.metadata["label"] == "Slice 3, wash"
     assert recording.description == "Cortical culture, DIV 21"
@@ -932,25 +931,23 @@ def test_the_current_name_description_and_notes(tmp_path):
         (item, "drug added", 120)
     ]
     # no versions: the name is the attribute, the description empty
-    plain = _physical(tmp_path, "plain", label="started as")
+    plain = physical("plain", label="started as")
     assert (plain.label, plain.description, plain.notes) == ("started as", "", [])
     # a removed name falls back to the attribute
     removed = {
         "label": [
             (
                 f"20261004T100541.207311Z-{uid(1)}.json",
-                note("session", "2026-10-04T10:05:41.207311Z", "", removed=True),
+                rsf_note("session", "2026-10-04T10:05:41.207311Z", "", removed=True),
             )
         ]
     }
-    assert _physical(tmp_path, "removed", notes=removed, label="first").label == "first"
+    assert physical("removed", notes=removed, label="first").label == "first"
 
 
-def test_what_livn_cannot_read_is_refused(tmp_path):
-    from testing.rsf_session import physical_session
-
+def test_what_livn_cannot_read_is_refused(tmp_path, physical, physical_session):
     with pytest.raises(RSFError, match="not sorted"):
-        _physical(tmp_path, "unsorted", gaps=[(600, 10), (300, 5)])
+        physical("unsorted", gaps=[(600, 10), (300, 5)])
     path = physical_session(str(tmp_path / "format2"))
     node = os.path.join(path, "traces.zarr", "rsf", "zarr.json")
     meta = _doc(node)
@@ -960,17 +957,17 @@ def test_what_livn_cannot_read_is_refused(tmp_path):
     with pytest.raises(RSFError, match="format 2"):
         rsf.RsfRecording(path)
     with pytest.raises(RSFError, match="no tick anchor"):
-        _physical(tmp_path, "markers", anchors=None, markers=[(5, "x")]).stim_markers()
+        physical("markers", anchors=None, markers=[(5, "x")]).stim_markers()
 
 
-def test_stimulation_records_are_read_as_written_and_not_interpreted(tmp_path):
+def test_stimulation_records_are_read_as_written_and_not_interpreted(physical):
     """RSF defines a record's ``started_at`` only; the rest is the producer's, so the records
     come back raw and are not rendered as inputs."""
     written = [
         {"started_at": "2026-10-04T09:12:34Z", "program": {"segments": [[1, 5]]}},
         {"started_at": "2026-10-04T09:13:00Z"},
     ]
-    recording = _physical(tmp_path, "records", stimulation=written)
+    recording = physical("records", stimulation=written)
     assert recording.stimulation_records() == [
         {**record, "index": i} for i, record in enumerate(written)
     ]
@@ -978,7 +975,7 @@ def test_stimulation_records_are_read_as_written_and_not_interpreted(tmp_path):
         Missing, match="neutral representation of the delivered stimulus"
     ):
         recording.inputs(0, 0, 10)
-    assert _physical(tmp_path, "none").stimulation_records() == []
+    assert physical("none").stimulation_records() == []
 
 
 def test_the_rsf_conformance_fixtures_read(tmp_path):

@@ -40,14 +40,19 @@ class _Env:
     potential_recording = Env.potential_recording
     fill_conditions = Env.fill_conditions
     recording_rows = Env.recording_rows
+    placed_rows = Env.placed_rows
     recording_distances = Env.recording_distances
     membrane_current_recording_dt = DT
 
-    def __init__(self, io):
+    def __init__(self, io, sections=None):
         self.io = io
+        self.sections = sections
 
     def recording_coordinates(self):
         return CELLS
+
+    def recording_sections(self):
+        return self.sections
 
 
 class Offset:
@@ -406,6 +411,45 @@ def test_the_env_projects_the_rows_its_gids_name():
 
     want = io.outputs.potential_recording(io.distances(CELLS[[2, 0]]), currents)
     np.testing.assert_array_equal(np.asarray(got), np.asarray(want))
+
+
+def test_rows_pair_by_section_and_a_section_without_a_coordinate_is_left_out():
+    from livn.types import place_rows
+
+    owners, names = [0, 0, 1], ["soma", "dend", "soma"]
+    # gid 1 records a dend the model places nowhere
+    picked, kept, unplaced = place_rows(
+        owners, names, [1, 0, 1, 0], ["soma", "dend", "dend", "soma"]
+    )
+    assert (picked, kept, unplaced) == ([2, 1, 0], [0, 1, 3], ["dend"])
+    # in order without names, and a gid with more rows than coordinates refuses
+    assert place_rows(owners, None, [0, 1, 0], None)[:2] == ([0, 2, 1], [0, 1, 2])
+    with pytest.raises(ValueError, match="more membrane-current rows"):
+        place_rows(owners, None, [1, 1], None)
+
+
+def test_the_env_leaves_out_rows_recorded_at_a_section_it_cannot_place():
+    io = _stack_io()
+    env = _Env(io, sections=np.asarray(["soma", "soma", "soma"]))
+    currents = _currents()
+    extra = np.random.default_rng(3).normal(size=(1, N)) * 1e-3
+
+    got = env.potential_recording(
+        conditions=Conditions(
+            membrane_currents_uA=np.concatenate([currents, extra]),
+            gids=[0, 1, 2, 1],
+            sections=["soma", "soma", "soma", "dend"],
+        )
+    )
+
+    # the dend row of gid 1 has no coordinate: the projection is the soma rows' alone
+    want = io.outputs.potential_recording(io.distances(CELLS), currents)
+    np.testing.assert_array_equal(np.asarray(got), np.asarray(want))
+
+
+def test_sections_are_a_static_tuple():
+    conditions = Conditions(sections=np.asarray(["soma", "dend"]))
+    assert conditions.sections == ("soma", "dend")
 
 
 def test_without_currents_the_neural_block_says_so_and_the_empty_dish_records():

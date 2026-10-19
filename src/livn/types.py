@@ -321,6 +321,49 @@ class Capability(StrEnum):
     """``run_many()`` solves its replicates together rather than one by one."""
 
 
+def place_rows(owners, names, gids, sections=None):
+    owners = [int(g) for g in owners]
+    gids = [int(g) for g in gids]
+    picked, kept, unplaced = [], [], []
+    if names is not None and sections is not None:
+        at = {
+            (gid, str(name)): row
+            for row, (gid, name) in enumerate(zip(owners, names, strict=True))
+        }
+        for r, (gid, section) in enumerate(zip(gids, sections, strict=True)):
+            row = at.get((gid, str(section)))
+            if row is None:
+                unplaced.append(str(section))
+                continue
+            picked.append(row)
+            kept.append(r)
+        return picked, kept, list(dict.fromkeys(unplaced))
+
+    coordinates_of: dict[int, list[int]] = {}
+    for row, gid in enumerate(owners):
+        coordinates_of.setdefault(gid, []).append(row)
+    taken: dict[int, int] = {}
+    for r, gid in enumerate(gids):
+        own = coordinates_of.get(gid, [])
+        k = taken.get(gid, 0)
+        if k >= len(own):
+            raise ValueError(
+                f"gid {gid} has more membrane-current rows than the {len(own)} recording "
+                "coordinate(s) the env places it at, so its signal cannot be projected; "
+                "name the rows' sections to pair them by section"
+            )
+        picked.append(own[k])
+        kept.append(r)
+        taken[gid] = k + 1
+    return picked, kept, []
+
+
+def _take(values, rows):
+    import numpy as _np
+
+    return None if values is None else values[_np.asarray(rows, dtype=_np.int64)]
+
+
 def supports(env_or_class, *capabilities) -> bool:
     """Whether an env (or env class) declares every one of `capabilities`."""
     declared = getattr(env_or_class, "capabilities", frozenset())
@@ -1264,6 +1307,22 @@ class Env(Protocol):
 
         return self._at_simulated_gids(coordinates)
 
+    def recording_sections(self):
+        import numpy as _np
+
+        names = []
+        for population in self.active_populations():
+            own = self.model.recording_section_names(population)
+            if own is None:
+                return None
+            names.append(
+                _np.tile(
+                    _np.asarray(own, dtype=str),
+                    len(self.system.coordinate_array(population)),
+                )
+            )
+        return _np.concatenate(names) if names else _np.empty(0, dtype=str)
+
     def recording_sections_per_cell(self, population: str) -> int:
         """How many sections of a `population` cell carry a recording coordinate."""
         coordinates = self.system.coordinate_array(population)
@@ -1278,30 +1337,35 @@ class Env(Protocol):
         return self.io.distances(self.recording_rows(gids))
 
     def recording_rows(self, gids=None):
-        """The recording coordinate of each membrane-current row, `[gid, x, y, z]`."""
+        """The recording coordinate of each membrane-current row, `[gid, x, y, z]`,
+        paired in order within each gid."""
+        if gids is None:
+            return self.recording_coordinates()
+        return self.placed_rows(gids)[0]
+
+    def placed_rows(self, gids, sections=None):
         import numpy as _np
 
         coordinates = self.recording_coordinates()
-        if gids is None:
-            return coordinates
-        coordinates = _np.asarray(coordinates)
         gids = _np.asarray(gids).ravel().astype(_np.int64)
-        owners = coordinates[:, 0].astype(_np.int64)
-        if len(gids) != len(coordinates) or not _np.array_equal(gids, owners):
-            sections: dict[int, list[int]] = {}
-            for row, gid in enumerate(owners):
-                sections.setdefault(int(gid), []).append(row)
-            taken: dict[int, int] = {}
-            picked = []
-            for gid in gids:
-                own = sections.get(int(gid))
-                if not own:
-                    raise ValueError(f"no recording coordinate for gid {int(gid)}")
-                k = taken.get(int(gid), 0)
-                picked.append(own[min(k, len(own) - 1)])
-                taken[int(gid)] = k + 1
-            coordinates = coordinates[_np.asarray(picked, dtype=_np.int64)]
-        return coordinates
+        array = _np.asarray(coordinates)
+        owners = array[:, 0].astype(_np.int64)
+        if (
+            sections is None
+            and len(gids) == len(owners)
+            and _np.array_equal(gids, owners)
+        ):
+            return coordinates, _np.arange(len(gids)), []
+        names = self.recording_sections() if sections is not None else None
+        picked, kept, unplaced = place_rows(owners, names, gids, sections)
+        if not picked:
+            raise ValueError("no membrane-current row has a recording coordinate")
+        picked = _np.asarray(picked, dtype=_np.int64)
+        if len(picked) == len(array) and _np.array_equal(
+            picked, _np.arange(len(array))
+        ):
+            return coordinates, _np.asarray(kept, dtype=_np.int64), unplaced
+        return array[picked], _np.asarray(kept, dtype=_np.int64), unplaced
 
     def source_gain(
         self,
@@ -1345,7 +1409,20 @@ class Env(Protocol):
         if conditions.dt is None:
             conditions = conditions.replace(dt=self.membrane_current_recording_dt)
         if located or conditions.neuron_coordinates is not None:
-            rows = self.recording_rows(conditions.gids)
+            if conditions.gids is None:
+                rows = self.recording_coordinates()
+            else:
+                rows, kept, unplaced = self.placed_rows(
+                    conditions.gids, conditions.sections
+                )
+                if unplaced:
+                    conditions = conditions.replace(
+                        membrane_currents_uA=_take(
+                            conditions.membrane_currents_uA, kept
+                        ),
+                        gids=_np.asarray(conditions.gids).ravel()[kept],
+                        sections=tuple(conditions.sections[k] for k in kept),
+                    )
             facts = {"neuron_coordinates": rows}
             if conditions.gids is None and not is_traced(rows):
                 facts["gids"] = _np.asarray(rows)[:, 0].astype(_np.int64)
@@ -1399,6 +1476,9 @@ class Model(Protocol):
         gids: Int[Array, " n_coords"] | None = None,
     ) -> Float[Array, "n_stim_coords ixyz=4"]:
         return neuron_coordinates
+
+    def recording_section_names(self, population: str) -> tuple[str, ...] | None:
+        return None
 
     def reduce_source_gain(
         self,

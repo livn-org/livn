@@ -60,6 +60,7 @@ dev = [
     "pytest-xdist>=3.8.0",
     "pytest-timeout>=2.4.0",
     "ty==0.0.74",
+    "zarr>=3",
 ]
 
 [tool.uv]

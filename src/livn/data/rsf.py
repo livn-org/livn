@@ -678,6 +678,7 @@ def _project(
 ) -> tuple[np.ndarray, dict[str, list[str]] | None]:
     from livn.conditions import Conditions
     from livn.io.recording import Chain, apply, as_composition, fill
+    from livn.types import place_rows
 
     recording = io.recording if recording is None else as_composition(recording)
     dt = run.current_dt if dt is None else dt
@@ -693,37 +694,13 @@ def _project(
     coordinates = np.asarray(env.recording_coordinates())
     owners = coordinates[:, 0].astype(np.int64).tolist()
     names = getattr(env, "recording_sections", lambda: None)()
-    by_name = row_sections is not None and names is not None
-    if by_name:
+    if names is not None:
         names = [str(n) for n in np.asarray(names).ravel()]
-        at = {
-            (gid, name): row
-            for row, (gid, name) in enumerate(zip(owners, names, strict=True))
-        }
-    coordinates_of: dict[int, list[int]] = {}
-    for row, gid in enumerate(owners):
-        coordinates_of.setdefault(gid, []).append(row)
-
-    picked, kept, unplaced, taken = [], [], [], {}
-    for r, gid in enumerate(ids.tolist()):
-        if by_name:
-            row = at.get((gid, row_sections[r]))
-            if row is None:
-                unplaced.append(row_sections[r])
-                continue
-            picked.append(row)
-            kept.append(r)
-            continue
-        k = taken.get(gid, 0)
-        own = coordinates_of.get(gid, [])
-        if k >= len(own):
-            raise RSFError(
-                f"gid {gid} has more membrane-current rows than the {len(own)} recording "
-                "coordinate(s) the env places it at, so its signal cannot be projected"
-            )
-        picked.append(own[k])
-        kept.append(r)
-        taken[gid] = k + 1
+    by_name = row_sections is not None and names is not None
+    try:
+        picked, kept, unplaced = place_rows(owners, names, ids, row_sections)
+    except ValueError as error:
+        raise RSFError(str(error)) from None
 
     if not picked:
         raise RSFError("no membrane-current row has a recording coordinate")

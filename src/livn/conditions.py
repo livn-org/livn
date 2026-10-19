@@ -6,6 +6,8 @@ import os
 import sys
 from typing import TYPE_CHECKING, Any
 
+import numpy as _np
+
 if TYPE_CHECKING:
     from livn.types import Array, Float, Int
 
@@ -50,6 +52,7 @@ class Conditions:
     # run
     membrane_currents_uA: Float[Array, "n_neurons timestep"] | None = None
     dt: float | None = static()  # of membrane_currents_uA and the signal
+    sections: tuple[str, ...] | None = static()
     # inputs
     inputs: Float[Array, "timestep n_input_channels"] | None = None
     inputs_dt: float | None = static()
@@ -68,6 +71,9 @@ class Conditions:
         _register(cls)
 
     def __post_init__(self):
+        if self.sections is not None and not isinstance(self.sections, tuple):
+            names = tuple(str(n) for n in _np.asarray(self.sections).ravel())
+            object.__setattr__(self, "sections", names)
         for f in dataclasses.fields(self):
             if f.metadata.get("static"):
                 value = getattr(self, f.name)
