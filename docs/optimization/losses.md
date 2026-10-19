@@ -110,10 +110,10 @@ shape, logmag = shape_logmag(pred, target, mask, return_terms=True)
 Builds the mask for `shape_logmag` from spike times, on device and jittable:
 
 ```python
-mask = events_to_mask(batch["spikes"], (T, C), dt=0.1, window=1.0, channel_radius=1, channels=peak_channel)
+mask = events_to_mask(window.spikes, (T, C), dt=0.1, window=1.0, channel_radius=1, channels=peak_channel)
 ```
 
-`events` is the `livn.optimization.data` batch format, `(*batch, unit, spike)` in ms relative to the window start, `inf`-padded. Each spike marks `±window/2` (at least ±1 sample, inclusive) on its unit's channel and `channel_radius` neighbours either side. `channels` is `(unit,)`, or `(unit, m)` padded with `-1` for units seen on several channels; by default unit `u` is on channel `u`.
+`events` is `Window.spikes` of `livn.optimization.data`, `(*batch, unit, spike)` in ms relative to the window start, `inf`-padded. Each spike marks `±window/2` (at least ±1 sample, inclusive) on its unit's channel and `channel_radius` neighbours either side. `channels` is `(unit,)`, or `(unit, m)` padded with `-1` for units seen on several channels; by default unit `u` is on channel `u`.
 
 ## `smoothness`
 

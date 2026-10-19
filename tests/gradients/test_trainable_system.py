@@ -53,7 +53,7 @@ def _stimulus():
 
 def _loss(env):
     run = env.run(DURATION, stimulus=_stimulus(), dt=DT, dt_solver=0.05)
-    return jnp.sum(env.potential_recording(run.current) ** 2)
+    return jnp.sum(env.potential_recording(conditions=run.conditions()) ** 2)
 
 
 def _grad(env):

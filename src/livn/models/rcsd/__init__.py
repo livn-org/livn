@@ -30,7 +30,7 @@ class ReducedCalciumSomaDendrite(Model):
 
     def __init__(
         self,
-        input_mode: str | None = None,
+        input_mode: str | tuple[str, ...] | None = None,
         refractory_period: float = 2.0,
         dendrite_offset: float = 60.0,
         dendrite_orientation: str = "random",
@@ -43,17 +43,24 @@ class ReducedCalciumSomaDendrite(Model):
         opsin: str = "RhO3c",
         opsin_params: dict[str, float] | None = None,
     ):
-        if input_mode is not None and input_mode not in {
-            "current_density",
-            "conductance",
-            "current",
-            "irradiance",
-        }:
+        modes = (
+            (input_mode,) if isinstance(input_mode, str) else tuple(input_mode or ())
+        )
+        if input_mode is not None and (
+            not modes
+            or any(
+                mode not in {"current_density", "conductance", "current", "irradiance"}
+                for mode in modes
+            )
+        ):
             raise ValueError(
                 f"Unknown input_mode {input_mode!r}; expected one of "
-                f"'current_density', 'conductance', 'current', 'irradiance'."
+                f"'current_density', 'conductance', 'current', 'irradiance', "
+                "or a tuple of them."
             )
-        self.input_mode = input_mode
+        self.input_mode = (
+            input_mode if input_mode is None or isinstance(input_mode, str) else modes
+        )
         if refractory_period < 0:
             raise ValueError(f"refractory_period must be >= 0, got {refractory_period}")
         self.refractory_period = float(refractory_period)

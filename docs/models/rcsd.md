@@ -10,7 +10,7 @@ model = ReducedCalciumSomaDendrite()
 
 | Option | Default | Meaning |
 |--------|---------|---------|
-| `input_mode` | `None` | Override how the cell interprets a stimulus (`current_density`, `conductance`, `current`, `irradiance`). Only needed on the JAX backend, which bakes the choice into the compute graph |
+| `input_mode` | `None` | Override how the cell interprets a stimulus (`current_density`, `conductance`, `current`, `irradiance`), or a tuple of them that a run delivers together (`("current", "irradiance")`, for `drive + light`). Only needed on the JAX backend, which bakes the choice into the compute graph |
 | `refractory_period` | `2.0` | Spike-detector dead time in ms |
 | `celsius` | `23.0` | Temperature (°C) of the NEURON and native backends, and of the opsin's Q10 scaling on every backend |
 | `opsin` | `"RhO3c"` | The opsin on each soma: `RhO3c` or `ChR2H134R`, see [Opsin configuration](#opsin-configuration) |

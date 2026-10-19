@@ -19,11 +19,11 @@ else:
 
 @runtime_checkable
 class Transfer(Protocol):
-    """Channel to channel: `__call__(x[C, T], *, dt, key=None) -> x[C, T]`."""
+    """Channel to channel: `__call__(signal[C, T], *, dt, key=None) -> [C, T]`."""
 
     needs_dt: bool
 
-    def __call__(self, x, *, dt=None, key=None): ...
+    def __call__(self, signal, *, dt=None, key=None): ...
 
     def serialize(self) -> dict: ...
 
@@ -81,9 +81,9 @@ class ElectrodeRC(Component):
             fields["c_pF"] = float(params["c_pF"])
         return with_fields(self, **fields)
 
-    def __call__(self, x, *, dt=None, key=None):
+    def __call__(self, signal, *, dt=None, key=None):
         dt = _require_dt(dt, "ElectrodeRC")
-        x = np.asarray(x)
+        x = np.asarray(signal)
         tau = np.exp(self.log_r_seal) * (self.c_pF * 1e-3)  # ms
         beta = np.broadcast_to(np.atleast_1d(np.exp(-dt / tau)), (x.shape[0],))
         if _USES_JAX:
@@ -135,8 +135,8 @@ class FIR(Component):
         taps = taps.at[..., 0].set(1.0) if _USES_JAX else _set_first(taps)
         return cls(taps, per_channel=n_channels is not None)
 
-    def __call__(self, x, *, dt=None, key=None):
-        x = np.asarray(x)
+    def __call__(self, signal, *, dt=None, key=None):
+        x = np.asarray(signal)
         if self.per_channel and self.taps.shape[0] != x.shape[0]:
             raise ValueError(
                 f"{self.taps.shape[0]} per-channel responses for {x.shape[0]} channels"
@@ -188,9 +188,9 @@ class Bandpass(Component):
             self.order, [self.low, self.high], btype="band", fs=fs, output="sos"
         )
 
-    def __call__(self, x, *, dt=None, key=None):
+    def __call__(self, signal, *, dt=None, key=None):
         sos = self.sos(_require_dt(dt, "Bandpass"))
-        x = np.asarray(x)
+        x = np.asarray(signal)
         if not _USES_JAX:
             from scipy.signal import sosfilt
 
@@ -219,10 +219,10 @@ class Noise(Component):
 
     needs_dt = False
 
-    def __call__(self, x, *, dt=None, key=None):
+    def __call__(self, signal, *, dt=None, key=None):
         if key is None:
-            return x
-        x = np.asarray(x)
+            return signal
+        x = np.asarray(signal)
         if _USES_JAX:
             return x + self.sigma_uV * jax.random.normal(key, x.shape, x.dtype)
         rng = (

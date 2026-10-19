@@ -656,8 +656,16 @@ class Env(EnvProtocol):
 
         b2.defaultclock.dt = dt * b2.ms
 
+        stimulus = Stimulus.from_arg(stimulus, env=self, duration=duration)
+
+        stimuli = {} if stimulus is None else stimulus.groups()
+        if len(stimuli) > 1:
+            raise NotImplementedError(
+                f"the brian2 backend delivers one stimulus mode per run, not "
+                f"{', '.join(map(repr, stimuli))} together."
+            )
+        stimulus = next(iter(stimuli.values()), None)
         if stimulus is not None:
-            stimulus = Stimulus.from_arg(stimulus, env=self, duration=duration)
             stimulus = self.model.prepare_stimulus(stimulus)
             if stimulus.input_mode not in STIMULUS_TERMS:
                 raise ValueError(

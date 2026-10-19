@@ -1275,11 +1275,15 @@ class Env(Protocol):
 
     def recording_distances(self, gids=None):
         """Distances for the coordinates the membrane currents are recorded at."""
+        return self.io.distances(self.recording_rows(gids))
+
+    def recording_rows(self, gids=None):
+        """The recording coordinate of each membrane-current row, `[gid, x, y, z]`."""
         import numpy as _np
 
         coordinates = self.recording_coordinates()
         if gids is None:
-            return self.io.distances(coordinates)
+            return coordinates
         coordinates = _np.asarray(coordinates)
         gids = _np.asarray(gids).ravel().astype(_np.int64)
         owners = coordinates[:, 0].astype(_np.int64)
@@ -1297,7 +1301,7 @@ class Env(Protocol):
                 picked.append(own[min(k, len(own) - 1)])
                 taken[int(gid)] = k + 1
             coordinates = coordinates[_np.asarray(picked, dtype=_np.int64)]
-        return self.io.distances(coordinates)
+        return coordinates
 
     def source_gain(
         self,
@@ -1310,17 +1314,43 @@ class Env(Protocol):
         return self.model.reduce_source_gain(self.source_gain())
 
     def potential_recording(
-        self,
-        membrane_currents_uA: Float[Array, "n_neurons timestep"] | None,
-        gids=None,
-        dt: float | None = None,
-        key=None,
+        self, recording=None, conditions=None, key=None
     ) -> Float[Array, "n_channels timestep"]:
-        if dt is None and getattr(self.io, "needs_dt", False):
-            dt = self.membrane_current_recording_dt
-        return self.io.potential_recording(
-            self.recording_distances(gids), membrane_currents_uA, dt=dt, key=key
+        """The channel signal of a recording composition under `conditions`."""
+        from livn.conditions import Conditions
+        from livn.io.recording import as_composition
+
+        if self.io is None:
+            raise ValueError("potential_recording needs an io on the env")
+        recording = (
+            self.io.recording if recording is None else as_composition(recording)
         )
+        conditions = Conditions() if conditions is None else conditions
+        return self.io.observe(
+            self.fill_conditions(conditions, recording), recording, key=key
+        )
+
+    def fill_conditions(self, conditions, recording=None):
+        import numpy as _np
+
+        from livn.io.recording import as_composition, fill
+        from livn.utils import is_traced
+
+        recording = (
+            self.io.recording if recording is None else as_composition(recording)
+        )
+        located = recording.reads_everything() or bool(
+            recording.requires() & {"neuron_coordinates", "gids"}
+        )
+        if conditions.dt is None:
+            conditions = conditions.replace(dt=self.membrane_current_recording_dt)
+        if located or conditions.neuron_coordinates is not None:
+            rows = self.recording_rows(conditions.gids)
+            facts = {"neuron_coordinates": rows}
+            if conditions.gids is None and not is_traced(rows):
+                facts["gids"] = _np.asarray(rows)[:, 0].astype(_np.int64)
+            conditions = fill(conditions, "env", **facts)
+        return conditions
 
     def clear_recordings(self) -> Self:
         """Clear recording buffers

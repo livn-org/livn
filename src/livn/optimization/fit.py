@@ -496,7 +496,7 @@ def _kind(data):
     if data is None:
         return "none"
     if hasattr(data, "iterate"):
-        return "pipeline"
+        return "windows"
     if isinstance(
         data, (list, tuple, dict, np.ndarray, np.generic, jax.Array, int, float)
     ):
@@ -514,7 +514,7 @@ class _Source:
         self.data = data
         self.mesh = mesh
         self._cached = None
-        if self.kind == "pipeline":
+        if self.kind == "windows":
             process, processes = (
                 (jax.process_index(), jax.process_count()) if mesh else (None, None)
             )
@@ -653,10 +653,11 @@ def fit(
         data: what ``model`` is called on and ``loss`` compares against, as ``batch``.
 
             - ``None``
-            - a fixed pytree (list, tuple, dict, array...): used every step
+            - a fixed pytree (list, tuple, dict, array, a ``Window``...): used every step
             - a ``callable(step) -> batch``
-            - a step-addressed pipeline exposing ``iterate(start_step, process, processes)``
-              (:class:`livn.optimization.data.Pipeline`): it yields the batches of steps
+            - step-addressed batches exposing ``iterate(start_step, process, processes)``
+              (:class:`livn.optimization.data.Windows`, whose batches are
+              :class:`~livn.optimization.data.Window` conditions): it yields the batches of steps
               ``start_step``, ``start_step + 1``, ... as pure functions of ``(seed, step)``, only
               the ``process`` slice of each global batch (as numpy) when a mesh is given, so
               resuming needs no iterator state

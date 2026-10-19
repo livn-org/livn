@@ -3,6 +3,7 @@ import os
 import numpy as np
 import pytest
 
+from livn.conditions import Conditions
 from testing import (
     backend_supports,
     livn_test_mea,
@@ -147,7 +148,11 @@ def test_membrane_currents_line_up_with_the_recording_gain():
         "membrane current were recorded; potential_recording() cannot multiply them"
     )
 
-    potential = np.asarray(env.potential_recording(currents, ids))
+    potential = np.asarray(
+        env.potential_recording(
+            conditions=Conditions(membrane_currents_uA=currents, gids=ids)
+        )
+    )
     assert potential.shape == (env.io.num_channels, currents.shape[1])
     assert np.isfinite(potential).all()
 

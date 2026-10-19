@@ -656,17 +656,20 @@ def store(
 
     columns: dict[str, Any] = {}
     fs = None
+    given = None
+    if stimulus is not None or inputs is not None:
+        from livn.data import rsf
+
+        _, given = rsf._stimulus(stimulus, inputs, inputs_dt)
 
     potential = run.potential
     if potential is None and env is not None and run.current is not None:
-        # the same projection as an rsf session: rows paired with coordinates by section
-        # name, the IO's transfers applied
         from livn.data import rsf
         from livn.run import Series
 
         dt = float(run.current_dt)
         try:
-            values, _ = rsf._project(run, env, io, dt)
+            values, _ = rsf._project(run, env, io, dt, delivered=given)
         except rsf.RSFError as e:
             raise ArrowError(str(e)) from e
         operator = getattr(io, "outputs", io)
@@ -702,7 +705,7 @@ def store(
             pa.float64(),
         )
 
-    if stimulus is not None or inputs is not None:
+    if given is not None:
         from livn.data import rsf
 
         if io is None:
@@ -711,7 +714,6 @@ def store(
             raise ArrowError(
                 "inputs are on the frame grid of a channel signal; the run has none"
             )
-        _, given = rsf._stimulus(stimulus, inputs, inputs_dt)
         delivered = rsf._delivered(io, given, 1000.0 / fs, n_frames)
         columns["in"] = _nested(list(delivered["values"].T), pa.float32())
 

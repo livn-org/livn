@@ -179,6 +179,19 @@ Pass a stimulus to `env.run()`:
 it, t, *_ = env.run(duration=100, stimulus=stim)
 ```
 
+### Several stimuli in one run
+
+A run can deliver several stimuli together, for instance a drive as current and light as irradiance:
+
+```python
+drive = Stimulus.from_current(current, dt=0.1, gids=gids)      # nA
+light = Stimulus.from_irradiance(irradiance, dt=0.1, gids=gids)  # mW/mm²
+
+run = env.run(100, stimulus=drive + light)      # or ComposedStimulus(drive, light)
+```
+
+### Encodings
+
 Or use it with the [encoding](/guide/concepts/encoding) interface for structured input pipelines:
 
 ```python

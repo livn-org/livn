@@ -372,7 +372,7 @@ def events_to_mask(
 
     Args:
         events: ``(*batch, unit, spike)`` spike times in ms relative to the window start,
-            ``inf``-padded (the ``livn.optimization.data`` batch format)
+            ``inf``-padded (``Window.spikes`` of ``livn.optimization.data``)
         shape: ``(time, channel)`` of the trace the mask is applied to
         dt: sample interval in ms
         window: total window width in ms

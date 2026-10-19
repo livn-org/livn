@@ -63,11 +63,6 @@ CHR2_DEFAULTS: dict[str, float] = {
 CHR2_INITIAL = (0.0, 0.0, 1.0, 0.0)  # O1, O2, C1, p
 
 
-def _soma_column(stimulus):
-    """The soma's series of a [time] or [time, (soma, dendrite)] stimulus."""
-    return stimulus if stimulus.ndim == 1 else stimulus[:, 0]
-
-
 def chr2_derivatives(states, V, irradiance, P: Mapping[str, float], celsius: float):
     """d(O1, O2, C1, p)/dt of ChR2H134R at membrane potential V (mV)."""
     O1, O2, C1, p = states
@@ -184,7 +179,7 @@ class BoothRinzelKiehn(eqx.Module):
     E_syn_exc: float
     E_syn_inh: float
 
-    input_mode: str = eqx.field(static=True)
+    input_mode: str | tuple[str, ...] = eqx.field(static=True)
 
     # RhO3c 3-state opsin parameters (Nikolic et al. 2009)
     opsin_g0_pS: float = eqx.field(static=True)  # pS
@@ -443,12 +438,14 @@ class BoothRinzelKiehn(eqx.Module):
         # Input mode
         if get("input_mode") is not None:
             mode = get("input_mode")
-            if mode not in ("current_density", "conductance", "current", "irradiance"):
+            modes = (mode,) if isinstance(mode, str) else tuple(mode)
+            known = ("current_density", "conductance", "current", "irradiance")
+            if not modes or any(m not in known for m in modes):
                 raise ValueError(
                     f"input_mode must be 'current_density', 'conductance', "
-                    f"'current', or 'irradiance', got {mode}"
+                    f"'current', or 'irradiance', or a tuple of them, got {mode}"
                 )
-            self.input_mode = mode
+            self.input_mode = mode if isinstance(mode, str) else modes
 
     def __init__(self, params: Any | None = None, key=None):
         self.set_default_parameters()
@@ -546,8 +543,13 @@ class BoothRinzelKiehn(eqx.Module):
     def _opsin_derivatives(self, C, O, phi):  # noqa: E741
         """RhO3c 3-state Markov derivatives (Nikolic et al. 2009)"""
         D = 1.0 - C - O
+        # phi**p has an infinite slope at 0, which a dark interval would turn
+        # into a NaN gradient; the value at 0 is 0 either way
+        lit = phi > 0.0
+        phi = jnp.where(lit, phi, 1.0)
         Hp = phi**self.opsin_p / (phi**self.opsin_p + self.opsin_phi_m**self.opsin_p)
         Hq = phi**self.opsin_q / (phi**self.opsin_q + self.opsin_phi_m**self.opsin_q)
+        Hp, Hq = jnp.where(lit, Hp, 0.0), jnp.where(lit, Hq, 0.0)
         Ga = self.opsin_k_a * Hp
         Gr = self.opsin_Gr0 + self.opsin_k_r * Hq
         dC = Gr * D - Ga * C
@@ -640,49 +642,38 @@ class BoothRinzelKiehn(eqx.Module):
 
         return I_mem_soma_uA, I_mem_dend_uA
 
-    def __call__(self, t, y: Array, args) -> Array:
-        """Vector field for the Booth-Rinzel-Kiehn model
+    @property
+    def input_modes(self) -> tuple[str, ...]:
+        if isinstance(self.input_mode, str):
+            return (self.input_mode,)
+        return tuple(self.input_mode)
 
-        State vector: [Vs, Vd, h, n, mnS, hnS, mnD, hnD, ml, CaS, CaD, ...opsin_states]
+    @staticmethod
+    def _soma_series(t, t_array, I_stim_array):
+        column = I_stim_array if I_stim_array.ndim == 1 else I_stim_array[:, 0]
+        return jnp.interp(t, t_array, column)
 
-        When input_mode='irradiance', the state vector is extended with opsin
-        Markov states (2 extra for RhO3c: C, O).
+    def _opsin_initial(self) -> Array:
+        if self.opsin == "ChR2H134R":
+            return jnp.array(CHR2_INITIAL)
+        return jnp.array([1.0, 0.0])  # RhO3c: C=1, O=0
 
-        Args:
-            t: time
-            y: state vector (11 neural + n_opsin_states)
-            args: (I_stim_array, t_array) for array stimulus
-        """
-
-        area_s, area_d, g_c_s, g_c_d = self._geometry()
-
-        # Split neural and opsin states
-        y_neural = y[:11]
-        Vs, Vd, h, n, mnS, hnS, mnD, hnD, ml, CaS, CaD = y_neural
-
-        I_stim_array, t_array = args
-
-        if self.input_mode == "irradiance" and self.opsin == "ChR2H134R":
-            Irr = jnp.interp(t, t_array, _soma_column(I_stim_array))
-            chr2 = y[11:15]
+    def _opsin(self, states, Vs, irradiance, area_s):
+        if self.opsin == "ChR2H134R":
             P = dict(self.chr2_params)
-            Iapp_density_soma = -chr2_current(chr2, Vs, self.chr2_gmax, P)
-            Iapp_density_dend = 0.0
+            chr2 = states[:4]
+            return (
+                -chr2_current(chr2, Vs, self.chr2_gmax, P),
+                chr2_derivatives(chr2, Vs, irradiance, P, self.opsin_celsius),
+            )
+        phi = irradiance / self.opsin_E_photon
+        C, O = states[0], states[1]  # noqa: E741
+        i_opsin = self._opsin_current(O, Vs)
+        dC, dO = self._opsin_derivatives(C, O, phi)
+        return -i_opsin * 1e-6 / area_s, jnp.array([dC, dO])  # nA -> mA/cm2
 
-        elif self.input_mode == "irradiance":
-            # I_stim_array is irradiance in mW/mm²
-            Irr = jnp.interp(t, t_array, _soma_column(I_stim_array))
-            phi = Irr / self.opsin_E_photon
-
-            # Unpack RhO3c opsin states from extended state vector
-            C = y[11]
-            O = y[12]  # noqa: E741
-
-            i_opsin = self._opsin_current(O, Vs)
-            Iapp_density_soma = -i_opsin * 1e-6 / area_s  # nA → mA/cm²
-            Iapp_density_dend = 0.0
-
-        elif self.input_mode == "current_density":
+    def _applied(self, mode, t, t_array, I_stim_array, Vs, Vd, area_s, area_d):
+        if mode == "current_density":
             # direct current density in mA/cm2
             if I_stim_array.ndim == 1:
                 Iapp_density_soma = jnp.interp(t, t_array, I_stim_array)
@@ -691,7 +682,7 @@ class BoothRinzelKiehn(eqx.Module):
                 Iapp_density_soma = jnp.interp(t, t_array, I_stim_array[:, 0])
                 Iapp_density_dend = jnp.interp(t, t_array, I_stim_array[:, 1])
 
-        elif self.input_mode == "conductance":
+        elif mode == "conductance":
             # synaptic conductance in uS (positive = excitatory, negative = inhibitory)
             if I_stim_array.ndim == 1:
                 g_input = jnp.interp(t, t_array, I_stim_array)
@@ -720,7 +711,7 @@ class BoothRinzelKiehn(eqx.Module):
                 Iapp_density_soma = -(I_exc_soma + I_inh_soma) * 1e-6 / area_s
                 Iapp_density_dend = -(I_exc_dend + I_inh_dend) * 1e-6 / area_d
 
-        elif self.input_mode == "current":
+        elif mode == "current":
             # direct current in nA
             if I_stim_array.ndim == 1:
                 I_app = jnp.interp(t, t_array, I_stim_array)
@@ -732,10 +723,32 @@ class BoothRinzelKiehn(eqx.Module):
                 Iapp_density_soma = I_soma * 1e-6 / area_s
                 Iapp_density_dend = I_dend * 1e-6 / area_d
         else:
-            raise ValueError(f"Unknown input_mode: {self.input_mode}")
+            raise ValueError(f"Unknown input_mode: {mode}")
+        return Iapp_density_soma, Iapp_density_dend
 
-        Isoma = Iapp_density_soma
-        Idend = Iapp_density_dend
+    def __call__(self, t, y: Array, args) -> Array:
+        area_s, area_d, g_c_s, g_c_d = self._geometry()
+
+        # split neural and opsin states
+        y_neural = y[:11]
+        Vs, Vd, h, n, mnS, hnS, mnD, hnD, ml, CaS, CaD = y_neural
+
+        stimuli, t_array = args
+        if isinstance(self.input_mode, str):
+            stimuli = {self.input_mode: stimuli}
+
+        Isoma = Idend = d_opsin = None
+        for mode in self.input_modes:
+            if mode == "irradiance":
+                irradiance = self._soma_series(t, t_array, stimuli[mode])
+                soma, d_opsin = self._opsin(y[11:], Vs, irradiance, area_s)
+                dend = 0.0
+            else:
+                soma, dend = self._applied(
+                    mode, t, t_array, stimuli[mode], Vs, Vd, area_s, area_d
+                )
+            Isoma = soma if Isoma is None else Isoma + soma
+            Idend = dend if Idend is None else Idend + dend
 
         Tauh = 30.0 / (jnp.exp((Vs + 50.0) / 15.0) + jnp.exp(-(Vs + 50.0) / 16.0))
         Taun = 7.0 / (jnp.exp((Vs + 40.0) / 40.0) + jnp.exp(-(Vs + 40.0) / 50.0))
@@ -817,13 +830,8 @@ class BoothRinzelKiehn(eqx.Module):
             [dVs, dVd, dh, dn, dmnS, dhnS, dmnD, dhnD, dml, dCaS, dCaD]
         )
 
-        if self.input_mode == "irradiance" and self.opsin == "ChR2H134R":
-            d_chr2 = chr2_derivatives(chr2, Vs, Irr, P, self.opsin_celsius)
-            return jnp.concatenate([dy_neural, d_chr2])
-
-        if self.input_mode == "irradiance":
-            dC, dO = self._opsin_derivatives(C, O, phi)
-            return jnp.concatenate([dy_neural, jnp.array([dC, dO])])
+        if d_opsin is not None:
+            return jnp.concatenate([dy_neural, d_opsin])
 
         return dy_neural
 
@@ -852,7 +860,10 @@ class BoothRinzelKiehn(eqx.Module):
                     Positive values = excitatory (→ E_syn_exc = 0 mV)
                     Negative values = inhibitory (→ E_syn_inh = -75 mV)
             - "current": Direct current injection in nA
-            - "irradiance": Light intensity in mW/mm^2
+            - "irradiance": Light intensity in mW/mm^2, read at the soma
+
+            With several input modes (``input_mode=("current", "irradiance")``)
+            it is a dict of one such array per mode, and the currents add.
 
             Shape can be either:
             - 1D array [n_time_points] for soma-only stimulation
@@ -898,12 +909,10 @@ class BoothRinzelKiehn(eqx.Module):
                 ]
             )
 
-        # Extend y0 with the opsin's initial states for irradiance mode:
-        # RhO3c C=1, O=0; ChR2H134R O1=O2=p=0, C1=1
-        if self.input_mode == "irradiance" and self.opsin == "ChR2H134R":
-            y0 = jnp.concatenate([y0, jnp.array(CHR2_INITIAL)])
-        elif self.input_mode == "irradiance":
-            y0 = jnp.concatenate([y0, jnp.array([1.0, 0.0])])
+        # the opsin's states follow the neural ones while light is a mode; a
+        # y0 carried over from a previous run holds them already
+        if "irradiance" in self.input_modes and y0.shape[-1] == 11:
+            y0 = jnp.concatenate([y0, self._opsin_initial()])
 
         term = diffrax.ODETerm(self)
 

@@ -3,6 +3,7 @@ from livn.io.base import (
     IO,
     MAX_STIMULUS_GB_ENV,
     ComposedIO,
+    InputDevices,
     calculate_cell_stimulus,
     calculate_distances,
     channel_recording,
@@ -20,12 +21,14 @@ from livn.io.mea import (
 from livn.io.medium import (
     DispersivePointSource,
     ElectricalMedium,
+    GaussianBlur,
     KubelkaMunk,
     Medium,
     OpticalMedium,
     PointSource,
 )
-from livn.io.optical import LightArray
+from livn.io.optical import LightArray, PatternedLight
+from livn.io.recording import Chain, ExtracellularPotential, LightArtifact, Sum
 from livn.io.transfer import FIR, Bandpass, ElectrodeRC, Noise, Transfer
 
 __all__ = [
@@ -35,16 +38,23 @@ __all__ = [
     "MAX_STIMULUS_GB_ENV",
     "MEA",
     "Bandpass",
+    "Chain",
     "ComposedIO",
     "DispersivePointSource",
     "ElectricalMedium",
     "ElectrodeRC",
+    "ExtracellularPotential",
+    "GaussianBlur",
+    "InputDevices",
     "KubelkaMunk",
     "LightArray",
+    "LightArtifact",
     "Medium",
     "Noise",
     "OpticalMedium",
+    "PatternedLight",
     "PointSource",
+    "Sum",
     "Transfer",
     "calculate_cell_stimulus",
     "calculate_distances",

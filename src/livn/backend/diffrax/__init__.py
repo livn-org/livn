@@ -447,37 +447,33 @@ class Env(EnvProtocol):
         dt: float = 0.1,
         **kwargs,
     ):
-        compartments = None
-        if stimulus is not None:
-            stimulus = Stimulus.from_arg(stimulus, env=self, duration=duration)
+        expected = getattr(self.module, "input_mode", None)
+        modes = (expected,) if isinstance(expected, str) else tuple(expected or ())
+        readable = {"current", "current_density", "conductance", "irradiance"}
+        stimulus = Stimulus.from_arg(stimulus, env=self, duration=duration)
+        stimuli = {} if stimulus is None else stimulus.groups()
+        if len(stimuli) > 1 and not isinstance(expected, tuple):
+            raise ValueError(
+                f"{', '.join(map(repr, stimuli))} stimuli together on a module "
+                f"compiled for {expected!r} input alone. Build the model with "
+                f"input_mode={tuple(stimuli)!r} to deliver them in one run"
+            )
+        inputs = {}
+        for mode, stimulus in stimuli.items():
             stimulus = self.model.prepare_stimulus(stimulus)
-
-            readable = {"current", "current_density", "conductance", "irradiance"}
-            expected = getattr(self.module, "input_mode", None)
-            if (
-                expected is not None
-                and stimulus.input_mode != expected
-                and stimulus.input_mode in readable
-            ):
+            if modes and mode not in modes and mode in readable:
                 raise ValueError(
-                    f"a {stimulus.input_mode!r} stimulus on a module compiled for "
+                    f"a {mode!r} stimulus on a module compiled for "
                     f"{expected!r} input: the module would read the array in its own "
-                    "units. Build the model with "
-                    f"input_mode={stimulus.input_mode!r}, or the stimulus in "
-                    f"{expected!r}"
+                    f"units. Build the model with input_mode={mode!r} (or a tuple "
+                    f"of modes that includes it), or the stimulus in {expected!r}"
                 )
-            if stimulus.gids is not None:
-                stimulus = stimulus.expand(*self._stimulus_labels())
-                compartments = self._compartment_columns()
+            inputs[mode] = self._module_input(stimulus, duration, dt)
 
-        input_current = None
-        if stimulus is not None:
-            arr = stimulus.to_array(duration, dt)
-            input_current = jnp.array(arr)
-            if compartments is not None:
-                index, mask = compartments
-                if input_current.shape[-1] > len(index):
-                    input_current = input_current[:, index] * mask
+        if isinstance(expected, tuple):
+            input_current = inputs
+        else:
+            input_current = next(iter(inputs.values()), None)
 
         dt_solver = kwargs.pop("dt_solver", 0.01)
         t0 = kwargs.pop("t0", 0.0)
@@ -517,6 +513,19 @@ class Env(EnvProtocol):
             run = run.add(name, as_gid(ids), values, dt=dt, kind="series")
 
         return run
+
+    def _module_input(self, stimulus: Stimulus, duration, dt):
+        compartments = None
+        if stimulus.gids is not None:
+            stimulus = stimulus.expand(*self._stimulus_labels())
+            compartments = self._compartment_columns()
+
+        input_current = jnp.array(stimulus.to_array(duration, dt))
+        if compartments is not None:
+            index, mask = compartments
+            if input_current.shape[-1] > len(index):
+                input_current = input_current[:, index] * mask
+        return input_current
 
     def _row_sections(self, ids):
         names = getattr(self.module, "section_names", None)

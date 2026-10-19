@@ -76,7 +76,8 @@ class MockEnv:
             1: tt[~mask_even],
         }
 
-    def potential_recording(self, m, gids=None, dt=None, key=None):
+    def potential_recording(self, recording=None, conditions=None, key=None):
+        m = None if conditions is None else conditions.membrane_currents_uA
         if m is None:
             return None
         n_samples = m.shape[1]

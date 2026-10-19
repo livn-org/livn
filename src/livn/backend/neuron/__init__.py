@@ -649,8 +649,9 @@ class Env(EnvProtocol):
             if not self._stim_clamps:
                 self._prearm_stim_drives()
 
-        if stimulus is not None:
-            stimulus = Stimulus.from_arg(stimulus, env=self, duration=duration)
+        stimulus = Stimulus.from_arg(stimulus, env=self, duration=duration)
+        stimuli = {} if stimulus is None else stimulus.groups()
+        for stimulus in stimuli.values():
             stimulus = self.model.prepare_stimulus(stimulus)
             if stimulus.input_mode == "irradiance":
                 self._setup_opsin_stimulus(stimulus, current_time)

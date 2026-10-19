@@ -14,6 +14,7 @@ import numpy as np
 
 os.environ["LIVN_BACKEND"] = "neuron"
 
+from livn.conditions import Conditions
 from livn.env import Env
 from livn.env.logging import with_progress_logging
 from livn.io import MEA, electrode_array_coordinates_for_area
@@ -48,7 +49,9 @@ stimulus = env.cell_stimulus(inputs)
 it, t, iv, v, im, mm = with_progress_logging(env).run(t_end, stimulus=stimulus)
 
 # per-rank electrode potential, sum-reduced
-p = P.reduce_sum(env.potential_recording(mm), all=True)
+p = P.reduce_sum(
+    env.potential_recording(conditions=Conditions(membrane_currents_uA=mm)), all=True
+)
 
 it, t = it[t >= warmup], t[t >= warmup] - warmup
 t_end = t_end - warmup

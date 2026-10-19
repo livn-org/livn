@@ -223,6 +223,8 @@ Under MPI, gather first, e.g. `store(run.gather(env.comm), path, env)` writes on
 
 To keep what drove the run, pass the channel-space `stimulus=policy` (its spec is recorded and its rendered array is stored) or `inputs=array, inputs_dt=ms`. The delivered input is stored on the traces' frame grid (each row held until the next, zero past the end) and read back with `recording.inputs(segment, start, length)`. A session saved without it raises `livn.data.Missing` rather than returning zeros.
 
+The channel signal is projected through the env's [recording composition](/guide/concepts/io#recording-compositions) (`env.io.recording`, or `store(..., recording=Chain(...))`), with the delivered inputs as its `inputs`, so a `LightArtifact` is in the traces. A plain point-source stack is stored in the RSF point-source document, any other composition in livn's own (`livn.io/1`), and `session.io` rebuilds it. `session.conditions()` gives the stored run's conditions (the ground-truth currents and their gids when saved with `currents=True`, the inputs, `dt`) to project it again: `env.potential_recording(session.io.recording, session.conditions())`.
+
 ### Opening recordings lazily
 
 `load` reads nothing until asked. For windowed access, open the location with `livn.data.open`, which returns a `Recording` (one object whatever the format): `read(segment, start, length, channels=None)` gives float32 `[t, c]` in uV, `spikes`, `inputs`, `ground_truth` and `to_run(segment, start, length)` follow. A recording is safe to read from several threads and pickles by reference.
@@ -264,6 +266,8 @@ it, t, *_ = env.run(100, stimulus=stim)
 ```
 
 See the [Optical Stimulation](/guide/advanced/optical-stimulation) guide for full details.
+
+Use a `ComposedStimulus` for several stimuli in one run: `env.run(100, stimulus=drive + light)`, see [Several stimuli in one run](/guide/concepts/stimulus#several-stimuli-in-one-run).
 
 ### Continuing simulation
 

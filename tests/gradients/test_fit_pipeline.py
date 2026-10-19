@@ -41,7 +41,7 @@ class _Model(eqx.Module):
 
     def __call__(self, batch):
         # predict the first prediction sample's channel 0 from the context's mean over time
-        return batch["context"].mean(axis=1) @ self.w
+        return batch.context.mean(axis=1) @ self.w
 
 
 def _model():
@@ -49,7 +49,7 @@ def _model():
 
 
 def _loss(pred, batch):
-    return jnp.mean((pred - batch["prediction"][:, 0, 0]) ** 2)
+    return jnp.mean((pred - batch.prediction[:, 0, 0]) ** 2)
 
 
 def _run(run_recording, steps, **kw):

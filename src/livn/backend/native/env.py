@@ -747,8 +747,9 @@ class Env(EnvProtocol):
             L.check(self._lib.rcsd_set_v_init(self._sim, self._v_init), self._lib)
 
         self._prune_streams(current_time)
-        if stimulus is not None:
-            stimulus = Stimulus.from_arg(stimulus, env=self, duration=duration)
+        stimulus = Stimulus.from_arg(stimulus, env=self, duration=duration)
+        stimuli = {} if stimulus is None else stimulus.groups()
+        for stimulus in stimuli.values():
             stimulus = self.model.prepare_stimulus(stimulus)
             if stimulus.input_mode not in SUPPORTED_MODES:
                 raise ValueError(

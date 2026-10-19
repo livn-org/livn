@@ -45,6 +45,28 @@ def test_named_access_matches_positions():
     assert list(run[:2]) == [run.spike_ids, run.spike_times]
 
 
+def test_a_run_gives_the_conditions_of_its_membrane_currents():
+    from livn.conditions import Conditions
+
+    run = _run(dt=0.5)
+
+    conditions = run.conditions()
+    assert type(conditions) is Conditions
+    assert conditions.membrane_currents_uA is run.current
+    assert conditions.gids is run.current_ids
+    assert conditions.dt == 0.5
+
+    inputs = np.zeros((20, 2), np.float32)
+
+    class RigConditions(Conditions):
+        temperature: float | None = None
+
+    rig = run.conditions(RigConditions, inputs=inputs, temperature=36.0)
+    assert type(rig) is RigConditions
+    assert rig.inputs is inputs and rig.temperature == 36.0
+    assert rig.membrane_currents_uA is run.current
+
+
 def test_tuple_unpacking_forms():
     run = _run()
 

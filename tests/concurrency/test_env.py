@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from livn.backend import backend
+from livn.conditions import Conditions
 from livn.utils import P
 from testing import livn_test_env, livn_test_mea
 from testing.capabilities import backend_supports
@@ -173,7 +174,11 @@ def _continued_matches_single(comm, subworld, inputs, split):
     single_potential = None
     if single_outputs[5] is not None:
         single_potential = P.reduce_sum(
-            env_single.potential_recording(single_outputs[5], single_outputs[4]),
+            env_single.potential_recording(
+                conditions=Conditions(
+                    membrane_currents_uA=single_outputs[5], gids=single_outputs[4]
+                )
+            ),
             all=True,
             comm=comm,
         )
@@ -206,7 +211,12 @@ def _continued_matches_single(comm, subworld, inputs, split):
     continued_potential = None
     if continued_outputs[5] is not None:
         continued_potential = P.reduce_sum(
-            env.potential_recording(continued_outputs[5], continued_outputs[4]),
+            env.potential_recording(
+                conditions=Conditions(
+                    membrane_currents_uA=continued_outputs[5],
+                    gids=continued_outputs[4],
+                )
+            ),
             all=True,
             comm=comm,
         )

@@ -6,11 +6,32 @@ import json
 import os
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-__all__ = ["CMR", "Bandpass", "Pipeline", "Standardize", "Stats", "windows"]
+from livn.conditions import Conditions, _register_pending
+
+if TYPE_CHECKING:
+    from jaxtyping import Array, Bool, Float, Int
+
+__all__ = [
+    "CMR",
+    "Bandpass",
+    "Standardize",
+    "Stats",
+    "Window",
+    "Windows",
+    "windows",
+]
+
+
+class Window(Conditions):
+    context: Float[Array, "*batch timestep n_channels"] | None = None
+    prediction: Float[Array, "*batch timestep n_channels"] | None = None
+    spikes: Float[Array, "*batch n_units max_spikes"] | None = None
+    channel_mask: Bool[Array, "*batch n_channels"] | None = None
+    recording: Int[Array, " *batch"] | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -292,7 +313,7 @@ class _Windower:
             out[row, : len(mine)] = mine
         return out
 
-    def draw(self, element: dict, rng: np.random.Generator) -> dict:
+    def draw(self, element: dict, rng: np.random.Generator) -> Window:
         item = self.item(element, rng)
         x = self.signal(item)
         rec = self.recordings[item["recording"]]
@@ -315,12 +336,10 @@ class _Windower:
         out["recording"] = np.int32(item["recording"])
         out["segment"] = np.int32(item["segment"])
         out["start"] = np.int64(item["start"])
-        return out
+        return Window(**out)
 
 
-class Pipeline:
-    """A step-addressed pipeline of fixed-shape batches (for ``livn.optimization.fit``)."""
-
+class Windows:
     def __init__(
         self, dataset, windower, batch_size, threads, processes, unit_ids, epoch_steps
     ):
@@ -337,7 +356,7 @@ class Pipeline:
         """The normalisation applied (``median`` / ``scale`` ``None`` when there is none)"""
         return self._windower.stats
 
-    def batch(self, step: int) -> dict:
+    def batch(self, step: int) -> Window:
         """The full global batch of ``step``"""
         return self._dataset.batch(self.batch_size)[int(step)]
 
@@ -544,8 +563,8 @@ def windows(
     processes: int = 0,
     window_policy: Callable | None = None,
     preprocess_at: str = "native",
-) -> Pipeline:
-    """Windows of one or several recordings as a step-addressed :class:`Pipeline`.
+) -> Windows:
+    """Windows of one or several recordings as step-addressed batches, :class:`Windows`.
 
     A window is ``context``, then ``gap`` and ``prediction`` of signal, read at the
     recording's rate, preprocessed there, decimated to ``fs`` (zero-phase FIR, with the read
@@ -553,8 +572,8 @@ def windows(
 
     Args:
         recording: A :class:`livn.data.Recording` or a list of them (same channels and rate)
-        context, gap, prediction: Window layout; ``prediction`` is in the batch only
-            when ``prediction > 0``
+        context, gap, prediction: Window layout; ``Window.prediction`` is set only when
+            ``prediction > 0``
         fs: Target rate in Hz; the recording's rate must be an integer multiple
         preprocess: Callables ``f(x[T, C] float64, fs, good[C]) -> x`` applied in order at the
             native rate, e.g. ``(Bandpass(300, 3000), CMR())``. ``margin(fs)`` and
@@ -568,15 +587,16 @@ def windows(
         starts: ``"random"`` draws every window's start from ``(seed, index)`` (fresh each
             epoch, order shuffled); ``"grid"`` spreads ``per_segment`` starts evenly over each
             segment; ``"head"`` / ``"tail"`` take the first / last window of each segment (one
-            slot). The deterministic modes are not shuffled, so ``Pipeline.epoch_steps``
+            slot). The deterministic modes are not shuffled, so ``Windows.epoch_steps``
             steps are one pass in order.
         per_segment: Window slots per segment (the epoch length is segments x slots)
         split: Which segments to use: recordings whose ``metadata["split"]`` differs are
             skipped, and ``metadata["segment_split"]`` (one name per segment) selects segments.
             ``None`` takes everything.
-        spikes: Add ``spikes``, ``(U, max_spikes)`` per unit of the recordings' spikes, ``U`` =
-            the union of unit ids over the selected segments (``Pipeline.unit_ids``)
-        inputs: Add the delivered input series (strided to the target rate, not filtered).
+        spikes: Set ``Window.spikes``, ``(U, max_spikes)`` per unit of the recordings' spikes,
+            ``U`` = the union of unit ids over the selected segments (``Windows.unit_ids``)
+        inputs: Set ``Window.inputs``, the delivered input series (strided to the target rate,
+            not filtered), on the window's grid.
             Raises :class:`livn.data.Missing` here if a recording has none.
         max_spikes: Capacity of a unit's row in a window
         mask_bad_channels: Zero the recording's bad channels and exclude them from ``CMR``;
@@ -598,8 +618,11 @@ def windows(
             the chain's sampling rate argument is ``fs``)
     """
     import grain
+    import jax  # noqa: F401  (grain batches windows as jax pytrees)
 
     from livn.data import Recording
+
+    _register_pending()
 
     recordings = [recording] if isinstance(recording, Recording) else list(recording)
     if not recordings:
@@ -696,7 +719,7 @@ def windows(
         dataset = dataset.shuffle()
     dataset = dataset.repeat(None).random_map(windower.draw)
 
-    return Pipeline(
+    return Windows(
         dataset,
         windower,
         batch_size,

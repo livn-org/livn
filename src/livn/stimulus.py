@@ -252,6 +252,9 @@ class Stimulus:
         if stimulus is None:
             return None
 
+        if isinstance(stimulus, ComposedStimulus):
+            return stimulus.resolved(env, duration)
+
         if isinstance(stimulus, cls):
             return stimulus
 
@@ -288,6 +291,23 @@ class Stimulus:
 
         raise ValueError("Invalid stimulus", stimulus)
 
+    def groups(self) -> dict[str, Stimulus]:
+        return {self.input_mode: self}
+
+    def __add__(self, other) -> ComposedStimulus:
+        if isinstance(other, int) and other == 0:
+            return ComposedStimulus(self)
+        if not _is_part(other):
+            return NotImplemented
+        return ComposedStimulus(self, other)
+
+    def __radd__(self, other):
+        if isinstance(other, int) and other == 0:
+            return ComposedStimulus(self)
+        if not _is_part(other):
+            return NotImplemented
+        return ComposedStimulus(other, self)
+
     @classmethod
     def from_policy(cls, policy, env, duration: float) -> Stimulus:
         """A deferred stimulus that renders the policy window by window."""
@@ -295,6 +315,8 @@ class Stimulus:
         policy = policy.as_input_units(getattr(io, "input_units", None))
         dt = policy.dt
         layout = env.cell_stimulus(policy.window(0.0, dt, dt), dt=dt)
+        if isinstance(layout, ComposedStimulus):
+            return _deferred_parts(layout, env, policy, dt, duration)
 
         def source(start: float, stop: float, _env=env, _policy=policy, _dt=dt):
             return _env.cell_stimulus(_policy.window(start, stop, _dt), dt=_dt).array
@@ -655,6 +677,279 @@ class Stimulus:
         return stimulus
 
 
+def _is_part(value) -> bool:
+    from livn.policy import Policy
+
+    return isinstance(value, Stimulus | Policy)
+
+
+def _key(part: Stimulus):
+    return part.input_mode
+
+
+def _wavelength(part: Stimulus):
+    wavelength = part.extra.get("wavelength")
+    return None if wavelength is None else float(wavelength)
+
+
+def _labels(part: Stimulus):
+    import numpy as _np
+
+    gids = _np.asarray(part.gids).astype(_np.int64)
+    sections = (
+        _np.asarray(part.sections)
+        if part.sections is not None
+        else section_positions(gids)
+    )
+    return list(zip(gids.tolist(), _np.asarray(sections).tolist(), strict=True))
+
+
+def _summed(mode: str, parts: list[Stimulus]) -> Stimulus:
+    import numpy as _np
+
+    if len(parts) == 1:
+        return parts[0]
+    dts = sorted({float(p.dt) for p in parts})
+    if len(dts) > 1:
+        raise ValueError(
+            f"{len(parts)} {mode!r} stimuli at dt {dts} ms cannot be added sample "
+            "by sample; put them on one grid first (Stimulus.resample)"
+        )
+    units = {p.units for p in parts}
+    if len(units) > 1:
+        raise ValueError(
+            f"{mode!r} stimuli in {sorted(map(str, units))} cannot be added; "
+            "convert them to one unit first (convert_to)"
+        )
+    extra = dict(parts[0].extra)
+    if mode == "irradiance":
+        wavelengths = sorted({w for w in map(_wavelength, parts) if w is not None})
+        if len(wavelengths) > 1:
+            raise ValueError(
+                "one opsin, one wavelength: light at "
+                f"{' and '.join(f'{w:g}' for w in wavelengths)} nm cannot be "
+                "added into one irradiance"
+            )
+        if wavelengths:
+            extra["wavelength"] = wavelengths[0]
+
+    named = [p.gids is not None for p in parts]
+    if not any(named):
+        widths = {p.width for p in parts}
+        if len(widths) > 1:
+            raise ValueError(
+                f"{mode!r} stimuli of {sorted(widths)} columns and no gids cannot "
+                "be added; pass `gids` so their cells can be matched"
+            )
+        columns, union = None, None
+    elif not all(named):
+        raise ValueError(
+            f"{mode!r} stimuli with and without `gids` cannot be added: name the "
+            "cells of each"
+        )
+    else:
+        union: dict[tuple[int, int], int] = {}
+        for part in parts:
+            for label in _labels(part):
+                union.setdefault(label, len(union))
+        columns = [
+            _np.asarray([union[label] for label in _labels(p)], dtype=_np.int64)
+            for p in parts
+        ]
+
+    width = parts[0].width if union is None else len(union)
+
+    def add(windows):
+        rows = max(int(w.shape[0]) for w in windows)
+        dtype = np.result_type(*windows)
+        total = np.zeros((rows, width), dtype=dtype)
+        for k, w in enumerate(windows):
+            # a part is zero past its end
+            cols = _np.arange(width) if columns is None else columns[k]
+            n = int(w.shape[0])
+            if _USES_JAX:
+                total = total.at[:n, cols].add(w)
+            else:
+                _np.add.at(total, (slice(0, n), cols), w)
+        return total
+
+    gids = sections = None
+    if union is not None:
+        labels = list(union)
+        gids = _np.asarray([g for g, _ in labels], dtype=_np.int64)
+        sections = _np.asarray([s for _, s in labels], dtype=_np.int64)
+    common = {
+        "dt": dts[0],
+        "gids": gids,
+        "sections": sections,
+        "input_mode": mode,
+        "units": parts[0].units,
+        **extra,
+    }
+    if any(p.deferred for p in parts):
+
+        def source(start, stop, _parts=tuple(parts)):
+            return add([np.asarray(p.window(start, stop)) for p in _parts])
+
+        return Stimulus(source=source, extent=max(p.duration for p in parts), **common)
+    return Stimulus(add([np.asarray(p.array) for p in parts]), **common)
+
+
+class ComposedStimulus(Stimulus):
+    """Stimuli delivered together in one run."""
+
+    def __init__(self, *parts):
+        flat: list = []
+        for part in parts:
+            if isinstance(part, ComposedStimulus):
+                flat.extend(part.parts)
+            elif _is_part(part):
+                flat.append(part)
+            else:
+                raise TypeError(
+                    "a ComposedStimulus adds stimuli (or Policies), not "
+                    f"{type(part).__name__}"
+                )
+        if not flat:
+            raise ValueError("a ComposedStimulus needs at least one part")
+        self.parts = tuple(flat)
+
+    def resolved(self, env=None, duration=None) -> ComposedStimulus:
+        """Its Policy parts as the stimuli they render for `env` over `duration`."""
+        if all(isinstance(p, Stimulus) for p in self.parts):
+            return self
+        return ComposedStimulus(
+            *(Stimulus.from_arg(p, env=env, duration=duration) for p in self.parts)
+        )
+
+    def groups(self) -> dict[str, Stimulus]:
+        unresolved = [
+            type(p).__name__ for p in self.parts if not isinstance(p, Stimulus)
+        ]
+        if unresolved:
+            raise ValueError(
+                f"the {', '.join(unresolved)} parts command channels, not cells: "
+                "pass the composite to env.run, which renders them"
+            )
+        grouped: dict[str, list[Stimulus]] = {}
+        for part in self.parts:
+            grouped.setdefault(_key(part), []).append(part)
+        return {mode: _summed(mode, parts) for mode, parts in grouped.items()}
+
+    def _single(self) -> Stimulus:
+        groups = self.groups()
+        if len(groups) != 1:
+            raise TypeError(
+                f"a stimulus of {', '.join(map(repr, groups))} together has no one "
+                "array; it is delivered by mode (groups())"
+            )
+        return next(iter(groups.values()))
+
+    @property
+    def input_mode(self) -> str:
+        modes = list(dict.fromkeys(p.input_mode for p in self.parts))
+        if len(modes) == 1:
+            return modes[0]
+        return "+".join(modes)
+
+    @property
+    def deferred(self) -> bool:
+        return any(p.deferred for p in self.parts)
+
+    @property
+    def duration(self) -> float:
+        return max(p.duration for p in self.parts)
+
+    @property
+    def dt(self):
+        return min(float(p.dt) for p in self.parts)
+
+    # a composite of one mode reads like its summed stimulus
+    @property
+    def array(self):
+        return self._single().array
+
+    @property
+    def gids(self):
+        return self._single().gids
+
+    @property
+    def sections(self):
+        return self._single().sections
+
+    @property
+    def units(self):
+        return self._single().units
+
+    @property
+    def extra(self):
+        return self._single().extra
+
+    @property
+    def width(self) -> int:
+        return self._single().width
+
+    def __len__(self):
+        return len(self._single())
+
+    def __iter__(self):
+        return iter(self._single())
+
+    def window(self, start: float, stop: float):
+        return self._single().window(start, stop)
+
+    def columns(self):
+        return self._single().columns()
+
+    def expand(self, gids, sections=None) -> Stimulus:
+        return self._single().expand(gids, sections)
+
+    def to_array(self, duration: float, dt: float):
+        return self._single().to_array(duration, dt)
+
+    def __repr__(self) -> str:
+        inner = ", ".join(
+            f"{p.input_mode}[{p.width}]@{float(p.dt):g}ms"
+            if isinstance(p, Stimulus)
+            else type(p).__name__
+            for p in self.parts
+        )
+        return f"ComposedStimulus({inner})"
+
+
+def _deferred_parts(layout, env, policy, dt, duration) -> ComposedStimulus:
+    rendered: dict = {}
+
+    def window(start, stop):
+        key = (float(start), float(stop))
+        if key not in rendered:
+            rendered.clear()
+            rendered[key] = env.cell_stimulus(policy.window(start, stop, dt), dt=dt)
+        return rendered[key]
+
+    def part_source(k):
+        def source(start: float, stop: float):
+            return window(start, stop).parts[k].array
+
+        return source
+
+    return ComposedStimulus(
+        *(
+            Stimulus(
+                dt=dt,
+                gids=part.gids,
+                sections=part.sections,
+                input_mode=part.input_mode,
+                units=part.units,
+                source=part_source(k),
+                extent=float(duration),
+                **part.extra,
+            )
+            for k, part in enumerate(layout.parts)
+        )
+    )
+
+
 if _USES_JAX:
     try:
         import jax
@@ -663,6 +958,11 @@ if _USES_JAX:
             Stimulus,
             Stimulus.tree_flatten,
             Stimulus.tree_unflatten,
+        )
+        jax.tree_util.register_pytree_node(
+            ComposedStimulus,
+            lambda composed: (composed.parts, None),
+            lambda _aux, parts: ComposedStimulus(*parts),
         )
     except ImportError:
         pass

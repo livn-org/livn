@@ -36,7 +36,7 @@ See the [worked example](/examples/fitting) for a runnable version.
 |---|---|
 | `model` | the callable pytree being fitted, e.g. a partial of an `Env`, an inverse model, an IO stack. It holds the trainable leaves |
 | `loss` | `loss(output, batch) -> scalar` or `(scalar, aux_dict)`; `output` is what `model` returned. `aux` reaches callbacks and the history |
-| `data` | `None`; a fixed pytree (used every step); a `callable(step)`; an object with `iterate(start_step, process, processes)` (a step-addressed pipeline, e.g. `livn.optimization.data.windows`: it yields the batches of steps `start_step`, `start_step + 1`, ... as pure functions of `(seed, step)`, sliced per process under a mesh); or any other iterable of batches |
+| `data` | `None`; a fixed pytree (used every step); a `callable(step)`; an object with `iterate(start_step, process, processes)` (step-addressed batches, e.g. the `Windows` of `livn.optimization.data.windows`, whose batches are `Window` conditions: it yields the batches of steps `start_step`, `start_step + 1`, ... as pure functions of `(seed, step)`, sliced per process under a mesh); or any other iterable of batches |
 | `params` | see [Parameters](#parameters) |
 | `transform` | see [Transforms](#transforms) |
 | `prior` | `callable(theta) -> scalar` on the constrained theta, e.g. `functools.partial(losses.param_prior, reference=..., weights=...)`. A prior that differs per problem also takes the batch, see [Priors](#priors) |
@@ -50,6 +50,19 @@ See the [worked example](/examples/fitting) for a runnable version.
 | `jit` | compile the step; `False` to debug the objective |
 
 `Fit` carries `.model`, `.theta` (constrained; `{group: value}` for groups), `.history`, `.state` and `.best` (the `Best` callback you passed, else `None`), and for batched fits `.problem(i)`. See [History](#history) for what `.history` holds.
+
+## Windows of a recording
+
+`livn.optimization.data.windows(recording, context=..., batch_size=...)` returns `Windows` which are step-addressed batches for `data=`, each a `Window`. 
+
+A `Window` provides `window.context` `(B, T, C)`, `window.prediction` (with `prediction > 0`), `window.spikes` (with `spikes=True`), `window.inputs` (with `inputs=True`), `window.channel_mask`, `window.recording`, `window.segment` and `window.start`:
+
+```python
+def loss(model, window, key):
+    out = model.run(window)                     # membrane currents of the window
+    pred = env.potential_recording(model.recording, window.replace(membrane_currents_uA=out), key)
+    return mse(pred, window.context)
+```
 
 ## Parameters
 

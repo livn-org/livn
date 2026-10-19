@@ -14,6 +14,7 @@ from machinable.utils import load_file, save_file
 from pydantic import BaseModel, ConfigDict
 
 import livn
+from livn.conditions import Conditions
 from livn.decoding import GatherAndMerge, Slice
 from livn.env import Env
 from livn.env.distributed import DistributedEnv
@@ -219,7 +220,7 @@ class Sample(Interface):
             )
 
             cit, ctt = env.channel_recording(it, tt)
-            p = env.potential_recording(mp)
+            p = env.potential_recording(conditions=Conditions(membrane_currents_uA=mp))
 
             if _meta_fs is None and p is not None:
                 _meta_n_channels = int(p.shape[0])

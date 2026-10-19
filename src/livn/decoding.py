@@ -97,7 +97,7 @@ class ChannelRecording(Decoding):
         # Per-rank electrode potential, sum-reduced for each channel [n_channels, T].
         if self.membrane_currents and mp is not None:
             p = P.reduce_sum(
-                env.potential_recording(mp, signal.current_ids, dt=signal.current_dt),
+                env.potential_recording(conditions=signal.conditions()),
                 all=True,
                 comm=env.comm,
             )
@@ -1423,9 +1423,7 @@ class LFP(Decoding):
         mp = signal.current
 
         if mp is not None:
-            local_potential = env.potential_recording(
-                mp, signal.current_ids, dt=signal.current_dt
-            )
+            local_potential = env.potential_recording(conditions=signal.conditions())
             if local_potential is not None:
                 local_potential = np.asarray(local_potential, dtype=np.float32)
         else:

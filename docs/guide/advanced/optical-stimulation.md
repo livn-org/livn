@@ -39,6 +39,16 @@ stim = Stimulus.from_irradiance(irradiance, dt=dt)
 it, t, iv, v, *_ = env.run(duration, stimulus=stim)
 ```
 
+## Light together with a drive
+
+An optical experiment usually drives the cells by other means at the same time. Add the stimuli, and the backend delivers them in one run:
+
+```python
+drive = Stimulus.from_current(current, dt=dt)        # nA
+light = Stimulus.from_irradiance(irradiance, dt=dt)  # mW/mm²
+env.run(duration, stimulus=drive + light)
+```
+
 ## Opsin models
 
 ### RhO3c (3-state)

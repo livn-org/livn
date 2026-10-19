@@ -6,7 +6,7 @@ from livn.policy import (
     MonophasicPulsePolicy,
     PulseSweepPolicy,
 )
-from livn.stimulus import Stimulus
+from livn.stimulus import ComposedStimulus, Stimulus
 
 
 class TestStimulus:
@@ -50,6 +50,124 @@ class TestStimulus:
         assert Stimulus.from_arg(array).array is array
         assert Stimulus.from_arg((array, 0.5)).dt == 0.5
         assert Stimulus.from_arg({"array": array, "dt": 0.25}).dt == 0.25
+
+    def test_a_single_stimulus_is_one_group_under_its_own_mode(self):
+        light = Stimulus.from_irradiance(np.zeros((10, 2)), dt=0.1)
+
+        assert light.groups() == {"irradiance": light}
+        assert sum([light]).groups()["irradiance"] is light
+
+    def test_a_composite_is_a_stimulus_and_flattens(self):
+        drive = Stimulus.from_current(np.zeros((10, 2)), dt=0.1)
+        light = Stimulus.from_irradiance(np.zeros((10, 2)), dt=0.1)
+        extra = Stimulus.from_extracellular(np.zeros((10, 2)), dt=0.1)
+
+        composite = (drive + light) + extra
+        assert isinstance(composite, ComposedStimulus)
+        assert isinstance(composite, Stimulus)
+        assert composite.parts == (drive, light, extra)
+        assert Stimulus.from_arg(composite) is composite
+        assert composite.groups() == {
+            "current": drive,
+            "irradiance": light,
+            "extracellular": extra,
+        }
+
+    def test_parts_of_one_mode_add_per_cell_over_the_union_of_their_gids(self):
+        a = Stimulus.from_current(np.ones((10, 2)), dt=0.1, gids=[0, 1])
+        b = Stimulus.from_current(np.full((6, 2), 2.0), dt=0.1, gids=[1, 2])
+
+        summed = (a + b).groups()["current"]
+
+        np.testing.assert_array_equal(summed.gids, [0, 1, 2])
+        assert summed.array.shape == (10, 3)
+        # a cell a part does not name gets nothing from it; a part is zero past its end
+        np.testing.assert_array_equal(summed.array[0], [1.0, 3.0, 2.0])
+        np.testing.assert_array_equal(summed.array[8], [1.0, 1.0, 0.0])
+        assert summed.units == "nA" and summed.dt == 0.1
+
+    def test_two_lights_of_one_wavelength_are_the_light_of_their_sum(self):
+        gids = [3, 4, 5]
+        rng = np.random.default_rng(0)
+        first, second = rng.uniform(size=(2, 20, 3)).astype(np.float32)
+
+        def light(values):
+            return Stimulus.from_irradiance(values, dt=0.1, gids=gids, wavelength=470.0)
+
+        summed = (light(first) + light(second)).groups()["irradiance"]
+
+        np.testing.assert_array_equal(summed.array, first + second)
+        assert summed.extra["wavelength"] == 470.0
+
+    def test_light_of_two_wavelengths_cannot_be_added(self):
+        blue = Stimulus.from_irradiance(np.ones((5, 1)), gids=[0], wavelength=470.0)
+        amber = Stimulus.from_irradiance(np.ones((5, 1)), gids=[0], wavelength=590.0)
+
+        with pytest.raises(ValueError, match="one wavelength: light at 470 and 590 nm"):
+            (blue + amber).groups()
+
+    def test_parts_of_one_mode_must_share_their_grid_and_name_their_cells(self):
+        a = Stimulus.from_current(np.ones((10, 2)), dt=0.1, gids=[0, 1])
+
+        with pytest.raises(ValueError, match=r"dt \[0.1, 0.2\] ms"):
+            (a + Stimulus.from_current(np.ones((5, 2)), dt=0.2, gids=[0, 1])).groups()
+        with pytest.raises(ValueError, match="with and without `gids`"):
+            (a + Stimulus.from_current(np.ones((10, 2)), dt=0.1)).groups()
+
+    def test_deferred_parts_add_window_by_window(self):
+        def source(start, stop):
+            return np.ones((round((stop - start) / 0.1), 1))
+
+        deferred = Stimulus(
+            dt=0.1,
+            gids=[0],
+            input_mode="current",
+            units="nA",
+            source=source,
+            extent=2.0,
+        )
+        array = Stimulus.from_current(np.full((10, 2), 2.0), dt=0.1, gids=[0, 1])
+
+        summed = (deferred + array).groups()["current"]
+
+        assert summed.deferred and summed.duration == 2.0
+        np.testing.assert_array_equal(summed.window(0.0, 0.5)[0], [3.0, 2.0])
+        np.testing.assert_array_equal(summed.window(1.5, 2.0)[0], [1.0, 0.0])
+
+    def test_a_policy_part_is_rendered_when_the_run_resolves_it(self):
+        from livn.policy import Policy
+
+        class Ones(Policy):
+            dt: float = 0.1
+
+            def __call__(self, observation=None):
+                return np.ones((10, 2))
+
+        class Env:
+            io = None
+
+            def cell_stimulus(self, channel_inputs, dt=1.0):
+                return Stimulus.from_irradiance(channel_inputs, dt=dt, gids=[0, 1])
+
+        drive = Stimulus.from_current(np.ones((10, 2)), dt=0.1, gids=[0, 1])
+        composite = Ones() + drive
+        with pytest.raises(ValueError, match=r"pass the composite to env\.run"):
+            composite.groups()
+
+        resolved = Stimulus.from_arg(composite, env=Env(), duration=1.0)
+        groups = resolved.groups()
+        assert set(groups) == {"irradiance", "current"}
+        assert groups["irradiance"].deferred and groups["current"] is drive
+
+    def test_a_composite_of_one_mode_reads_like_its_sum(self):
+        a = Stimulus.from_current(np.ones((10, 2)), dt=0.1, gids=[0, 1])
+        b = Stimulus.from_current(np.ones((10, 2)), dt=0.1, gids=[0, 1])
+        light = Stimulus.from_irradiance(np.ones((10, 2)), dt=0.1, gids=[0, 1])
+
+        np.testing.assert_array_equal((a + b).array, 2 * np.ones((10, 2)))
+        assert (a + light).input_mode == "current+irradiance"
+        with pytest.raises(TypeError, match="delivered by mode"):
+            _ = (a + light).array
 
     def test_from_arg_refuses_what_it_cannot_read(self):
         with pytest.raises(ValueError, match="Invalid stimulus"):

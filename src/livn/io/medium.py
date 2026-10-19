@@ -14,8 +14,10 @@ _USES_JAX = "ax" in backend()
 if _USES_JAX:
     import jax
     import jax.numpy as np
+    from jax.scipy.special import erf as _erf
 else:
     import numpy as np
+    from scipy.special import erf as _erf
 
 _PI = 3.141592653589793
 _DEFAULT = object()
@@ -56,6 +58,8 @@ class ElectricalMedium(Protocol):
 
 @runtime_checkable
 class OpticalMedium(Protocol):
+    """How light spreads from a device to the cells."""
+
     def irradiance_gain(self, offsets, numerical_aperture, fiber_radius):
         """Irradiance per unit source power from fiber-to-cell offsets `[F, N, 3]`."""
 
@@ -201,6 +205,18 @@ class KubelkaMunk(Component):
         return (NA**2 / (n_tissue**2 * denom)) * np.exp(-mu_s * dist) / (4 * np.pi)
 
 
+class GaussianBlur(Component):
+    """Light projected onto the sample plane as discs with Gaussian-blurred edges."""
+
+    width: float = 5.0
+
+    def spot_gain(self, offsets, radius):
+        r = np.sqrt(np.sum(offsets**2, axis=-1) + 1e-12)
+        R = np.asarray(radius)[:, None]
+        scale = 1.4142135623730951 * np.maximum(self.width, 1e-6)
+        return 0.5 * (_erf((R - r) / scale) + _erf((R + r) / scale))
+
+
 class Medium(Module):
     electrical: ElectricalMedium | None
     optical: OpticalMedium | None
@@ -255,6 +271,7 @@ class Medium(Module):
 __all__ = [
     "DispersivePointSource",
     "ElectricalMedium",
+    "GaussianBlur",
     "KubelkaMunk",
     "Medium",
     "OpticalMedium",

@@ -602,6 +602,17 @@ class Run:
         channel = self.channels.get("current")
         return None if channel is None else channel.dt
 
+    def conditions(self, cls=None, **fields):
+        if cls is None:
+            from livn.conditions import Conditions as cls
+
+        return cls(
+            membrane_currents_uA=self.current,
+            gids=self.current_ids,
+            dt=self.current_dt,
+            **fields,
+        )
+
     @property
     def t1(self) -> float | None:
         """Absolute simulation time at which the window ends"""
