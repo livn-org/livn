@@ -159,3 +159,19 @@ What a spike does to a mechanism:
 - Across the refractory cut the states keep integrating with V held at its reset value, as the threshold and after-spike currents keep decaying there. The current a mechanism injects is dropped while V is clamped, like every other current.
 
 A stimulus mode is accepted only when a mechanism reads it so a GLIF Env without one refuses an `irradiance` stimulus. With no mechanisms the model is exactly the GLIF above. Mechanisms run on the diffrax backend only.
+
+### Opsins
+
+To use `livn.models.opsins.chr2` (ChR2[H134R], Williams et al. 2013) in GLIF, activate the `livn.models.opsins.ChR2H134R` mechanism:
+
+```python
+from livn.models.glif import GLIF, cell_populations
+from livn.models.opsins.glif import ChR2H134R
+
+
+class OptoGLIF(GLIF):
+    def diffrax_mechanisms(self, env):
+        exc = cell_populations(env) == "EXC"
+        return (ChR2H134R(g_nS=jnp.asarray(np.where(exc, 40.0, 0.0)), celsius=34.0),)
+```
+
