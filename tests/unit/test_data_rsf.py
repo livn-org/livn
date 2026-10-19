@@ -157,7 +157,7 @@ def test_the_documents_say_what_ran(tmp_path):
     )  # the simulation clock, one tick per frame
     assert simulation["sources"]["ids"] == [0, 1, 2]
     # several recording coordinates per gid: the soma stands for the source
-    assert simulation["sources"]["coordinates"][0] == [10.0, 5.0, 1.0]
+    assert simulation["sources"]["coordinates_um"][0] == [10.0, 5.0, 1.0]
     assert simulation["stimulus"] == {"cls": "a.Policy", "kwargs": {"x": 1}}
     assert simulation["regenerate"]["noise_stream"] == 2
     assert _doc(os.path.join(rsf, "stores.json")) == [
@@ -206,7 +206,7 @@ def test_withholding_records_its_stages(tmp_path):
     assert stages == ["observe", "noise", "mask"]
 
     assert rows["0"][1]["transform"]["noise"]["seed"] == 7
-    assert rows["0"][1]["transform"]["noise"]["params"] == {"sigma_uV": 5.0}
+    assert rows["0"][1]["transform"]["noise"]["params"] == {"sigma_uv": 5.0}
 
     loaded = load(session)
     assert loaded.io is None
@@ -326,6 +326,108 @@ def test_a_stack_is_stored_and_read_back_whole(tmp_path):
     ]
 
 
+def test_a_composition_is_stored_with_its_artifact_and_read_back_whole(tmp_path):
+    from livn.conditions import Conditions
+    from livn.io import (
+        Chain,
+        ElectrodeRC,
+        ExtracellularPotential,
+        LightArtifact,
+        PatternedLight,
+        Sum,
+    )
+    from livn.io.recording import electrode_light
+
+    light = PatternedLight([[0, 0.0, 0.0, 60.0]], irradiance=2.0)
+    artifact = LightArtifact([50.0], taus=(0.5,))
+    io = ComposedIO(
+        light,
+        _Env().io,
+        recording=Chain(
+            Sum(extracellular=ExtracellularPotential(), artifact=artifact),
+            rc=ElectrodeRC(20.0),
+        ),
+    )
+    inputs = np.zeros((N_FRAMES, 1), dtype=np.float32)
+    inputs[10:30] = 1.0
+    lit, dark = str(tmp_path / "lit"), str(tmp_path / "dark")
+    store(_run(), lit, _Env(io=io), inputs=inputs, inputs_dt=DT, currents=True)
+    # the same cells without the light: the plain stack, in the RSF document
+    plain = ComposedIO(light, [_Env().io, ElectrodeRC(20.0)])
+    store(_run(), dark, _Env(io=plain))
+
+    observe = _doc(os.path.join(lit, "traces.zarr", "rsf", "observe.json"))
+    assert observe["kind"] == rsf.LIVN_IO
+    assert observe["livn"]["recording"]["cls"] == "livn.io.Chain"
+    assert observe["livn"]["inputs"]["cls"] == "livn.io.PatternedLight"
+    assert (
+        "recording"
+        not in _doc(os.path.join(dark, "traces.zarr", "rsf", "observe.json"))["livn"]
+    )
+    loaded = load(lit)
+    assert loaded.io.serialize() == io.serialize()
+
+    # the light on electrode 0 is in its trace; without the inputs it is not
+    gap = loaded.run.potential.values - load(dark).run.potential.values
+    assert np.abs(gap[0]).max() > 10.0
+    reach = light.reach(np.asarray(_Env().io.electrode_coordinates))
+    want = ElectrodeRC(20.0)(
+        artifact.response(electrode_light(inputs, reach), dt=DT), dt=DT
+    )
+    np.testing.assert_allclose(gap, want, atol=2 * rsf.DEFAULT_GAIN_UV)
+
+    # the session's conditions project it again
+    conditions = loaded.conditions()
+    assert isinstance(conditions, Conditions) and conditions.dt == pytest.approx(DT)
+    np.testing.assert_array_equal(conditions.inputs, inputs)
+    again = loaded.io.observe(
+        conditions.replace(neuron_coordinates=_Env().recording_coordinates())
+    )
+    np.testing.assert_allclose(
+        again, loaded.run.potential.values, atol=rsf.DEFAULT_GAIN_UV
+    )
+
+
+def test_a_composition_that_reads_the_inputs_needs_them(tmp_path):
+    from livn.io import (
+        Chain,
+        ExtracellularPotential,
+        LightArtifact,
+        PatternedLight,
+        Sum,
+    )
+
+    io = ComposedIO(
+        PatternedLight([[0, 0.0, 0.0, 60.0]]),
+        _Env().io,
+        recording=Chain(
+            Sum(
+                extracellular=ExtracellularPotential(),
+                artifact=LightArtifact([1.0], taus=(0.5,)),
+            )
+        ),
+    )
+    with pytest.raises(ValueError, match="needs `inputs`"):
+        store(_run(), str(tmp_path / "s"), _Env(io=io))
+
+
+def test_a_recording_passed_to_store_is_the_one_stored(tmp_path):
+    from livn.io import Chain, ElectrodeRC, ExtracellularPotential
+
+    session = str(tmp_path / "s")
+    store(
+        _run(),
+        session,
+        _Env(),
+        recording=Chain(extracellular=ExtracellularPotential(), rc=ElectrodeRC(20.0)),
+    )
+
+    observe = _doc(os.path.join(session, "traces.zarr", "rsf", "observe.json"))
+    assert observe["kind"] == rsf.LIVN_IO
+    assert list(observe["livn"]["recording"]["kwargs"]) == ["extracellular", "rc"]
+    assert load(session).io.recording.names == ("extracellular", "rc")
+
+
 def test_only_a_point_source_mea_is_an_operator(tmp_path):
     from livn.io import LightArray
 
@@ -342,14 +444,22 @@ def test_a_composed_io_records_through_its_outputs(tmp_path):
     mea = _Env().io
     store(_run(), session, _Env(io=ComposedIO(LightArray([[0, 0.0, 0.0, 0.0]]), mea)))
     observe = _doc(os.path.join(session, "traces.zarr", "rsf", "observe.json"))
-    assert "stimulation_gain" not in observe and "input_radius" not in observe
+    assert "stimulation_gain" not in observe and "input_radius_um" not in observe
 
 
 def test_an_incomplete_session_is_not_read(tmp_path):
     session = str(tmp_path / "session")
     store(_run(), session, _Env())
-    os.remove(os.path.join(session, "traces.zarr", "rsf", "zarr.json"))
+    node = os.path.join(session, "traces.zarr", "rsf", "zarr.json")
+    with open(node) as f:
+        meta = json.load(f)
+    del meta["attributes"]["finished_at"]
+    with open(node, "w") as f:
+        json.dump(meta, f)
     with pytest.raises(RSFError, match="not complete"):
+        load(session)
+    os.remove(node)
+    with pytest.raises(RSFError, match="not an RSF session"):
         load(session)
 
 
@@ -476,9 +586,10 @@ def test_a_session_says_which_sections_are_in_its_traces(tmp_path):
     run, _ = _currents(["soma", "dend"])
     session = str(tmp_path / "session")
     store(run, session, env)
-    simulation = load(session).simulation
-    assert simulation["trace_sections"] == ["soma", "dend"]
-    assert "unplaced_sections" not in simulation
+    extras = load(session).recording.ext("livn", "simulation.json")
+    assert extras["trace_sections"] == ["soma", "dend"]
+    assert "unplaced_sections" not in extras
+    assert "trace_sections" not in load(session).simulation
 
 
 # -- the lazy recording ------------------------------------------------------------------
@@ -559,7 +670,7 @@ def test_inputs_are_stored_on_the_frame_grid(tmp_path):
     assert got.dtype == np.float32 and got.shape == (N_FRAMES, 3)
     np.testing.assert_array_equal(got, np.repeat(inputs, 10, axis=0))
     np.testing.assert_array_equal(recording.inputs(0, 12, 3), got[12:15])
-    assert load(session).simulation["inputs"]["source_dt"] == 1.0
+    assert recording.ext("livn", "simulation.json")["inputs"]["source_dt"] == 1.0
 
 
 def test_a_policy_is_recorded_and_rendered(tmp_path):
@@ -602,3 +713,293 @@ def test_inputs_must_fit_the_stimulating_channels(tmp_path):
     with pytest.raises(RSFError, match="inputs_dt"):
         store(_run(), str(tmp_path / "b"), _Env(), inputs=np.zeros((5, 3)))
     assert not os.path.exists(tmp_path / "a") and not os.path.exists(tmp_path / "b")
+
+
+def _physical(tmp_path, name="physical", **kwargs):
+    from testing.rsf_session import physical_session
+
+    return rsf.RsfRecording(physical_session(str(tmp_path / name), **kwargs))
+
+
+def test_a_livn_session_states_its_clock_losses_and_clips(tmp_path):
+    session = str(tmp_path / "session")
+    store(_run(t0=20.0), session, _Env())
+    traces = os.path.join(session, "traces.zarr")
+    recording = load(session).recording
+
+    # a simulation's clock: one tick per frame, from the frame count at frame 0
+    assert recording.first_sample_tick == 200 and recording.tick_rate == 10_000.0
+    np.testing.assert_array_equal(recording.tick_at([0, 7]), [200, 207])
+    np.testing.assert_array_equal(recording.frame_at([200, 207]), [0, 7])
+    # an empty gaps table: nothing was lost; livn never clips
+    np.testing.assert_array_equal(recording.gaps, np.zeros((0, 2)))
+    np.testing.assert_array_equal(recording.clipped_samples, [0, 0, 0])
+    np.testing.assert_array_equal(recording.valid_spans(0), [[0, N_FRAMES]])
+    assert len(recording.stim_markers()) == 0
+
+    # the operator's fields are the format's; the medium is livn's own, under rsf/ext/livn
+    observe = _doc(os.path.join(traces, "rsf", "observe.json"))
+    assert observe["kind"] == "rsf.point_source/1" and "livn" not in observe
+    assert {"electrode_coordinates_um", "output_radius_um", "min_distance_um"} <= set(
+        observe
+    )
+    assert recording.ext("livn", "observe.json")["medium"]["cls"] == "livn.io.Medium"
+    assert "coordinates_um" in load(session).simulation["sources"]
+
+
+def test_a_label_is_the_first_name_version(tmp_path):
+    session = str(tmp_path / "session")
+    store(_run(), session, _Env(), label="baseline")
+    folder = os.path.join(session, "traces.zarr", "rsf", "notes", "label")
+    (key,) = os.listdir(folder)
+    version = _doc(os.path.join(folder, key))
+    assert version["item"] == "session" and version["text"] == "baseline"
+    assert key.startswith(rsf._instant(version["at"]).strftime("%Y%m%dT%H%M%S.%fZ"))
+    assert load(session).recording.label == "baseline"
+    # no label given: the system's name is the attribute, and no version is written
+    store(_run(), str(tmp_path / "other"), _Env())
+    assert not os.path.exists(
+        os.path.join(tmp_path, "other", "traces.zarr", "rsf", "notes")
+    )
+    assert rsf.RsfRecording(str(tmp_path / "other")).label == "toy"
+
+
+def test_int32_traces_hold_what_int16_cannot(tmp_path):
+    run = _run()
+    env = _Env()
+    uv = np.asarray(rsf._project(run, env, env.io)[0])
+    gain = float(np.abs(uv).max()) / 100_000.0  # a step int16 cannot reach the peak at
+    with pytest.raises(RSFError, match="dtype='int32'"):
+        store(run, str(tmp_path / "a"), env, gain_uV=gain)
+    session = str(tmp_path / "b")
+    store(run, session, env, gain_uV=gain, dtype="int32")
+    recording = load(session).recording
+    assert str(recording._traces.dtype) == "int32"
+    np.testing.assert_allclose(recording.read(0, 0, N_FRAMES).T, uv, atol=gain)
+
+
+def test_rows_read_through_their_own_gains_at_either_width(tmp_path):
+    raw = np.asarray([[100_000, -3], [-70_000, 4]], dtype=np.int32)
+    recording = _physical(
+        tmp_path, traces=raw, gains=[0.0596, 0.5], dtype="int32", clipped=[0, 2]
+    )
+    np.testing.assert_allclose(
+        recording.read(0, 0, 2), raw * np.asarray([0.0596, 0.5]), rtol=1e-6
+    )
+    np.testing.assert_array_equal(recording.clipped_samples, [0, 2])
+    np.testing.assert_array_equal(recording.row_property("band"), ["wide", "wide"])
+    assert recording.row_property("impedance") is None
+    # a store that does not count its clips says nothing about them
+    assert _physical(tmp_path, "uncounted").clipped_samples is None
+
+
+def test_ticks_and_frames_on_a_device_clock_of_another_rate(tmp_path):
+    # 25 kHz ticks at 10 kHz frames: a frame spans 2.5 ticks
+    t0 = 912_384_050
+    recording = _physical(tmp_path, tick_rate=25_000.0, anchors=[(0, t0)])
+    np.testing.assert_allclose(recording.tick_at([0, 1, 10]), [t0, t0 + 2.5, t0 + 25])
+    np.testing.assert_allclose(recording.frame_at([t0, t0 + 5, t0 + 6]), [0, 2, 2.4])
+    assert np.isnan(recording.frame_at([t0 - 1])[0])  # before the first anchor
+    assert np.isnan(recording.frame_at([t0 + 2_500])[0])  # past the last frame
+    assert recording.to_run(0, 0, 1).t0 == pytest.approx(
+        t0 / 25.0
+    )  # ms on the device clock
+    np.testing.assert_allclose(recording.elapsed([0, 10]), [0.0, 0.001])
+
+
+def test_ticks_beyond_float_precision_keep_their_differences(tmp_path):
+    t0 = 2**62 + 1  # past 2^53, where a float64 tick loses digits
+    recording = _physical(tmp_path, anchors=[(0, t0), (600, t0 + 700)])
+    marker = np.asarray([t0 + 750], dtype=np.uint64)
+    np.testing.assert_array_equal(recording.frame_at(marker), [650])
+    np.testing.assert_allclose(recording.elapsed([650]), [0.075])
+
+
+def test_a_gap_cuts_the_frames_and_moves_time(tmp_path):
+    # the clock states the jump: frames 0..599, then 100 frames lost, then 600..999
+    t0 = 1_000
+    recording = _physical(
+        tmp_path, anchors=[(0, t0), (600, t0 + 700)], gaps=[(600, 100)]
+    )
+    np.testing.assert_array_equal(recording.valid_spans(0), [[0, 600], [600, 1000]])
+    np.testing.assert_allclose(
+        recording.elapsed([599, 600, 601]), [0.0599, 0.07, 0.0701]
+    )
+    np.testing.assert_allclose(recording.tick_at([599, 600]), [t0 + 599, t0 + 700])
+    # a tick inside the gap is on no stored frame
+    np.testing.assert_allclose(
+        recording.frame_at([t0 + 599, t0 + 650, t0 + 700]), [599, np.nan, 600]
+    )
+    np.testing.assert_allclose(
+        recording.frame_of_elapsed([0.0599, 0.065, 0.07]), [599, np.nan, 600]
+    )
+
+    # without a clock the gap is the only statement that time jumped
+    unclocked = _physical(tmp_path, "unclocked", anchors=None, gaps=[(600, 100)])
+    assert unclocked.first_sample_tick is None and np.isnan(unclocked.tick_at([0])[0])
+    np.testing.assert_array_equal(unclocked.valid_spans(0), [[0, 600], [600, 1000]])
+    np.testing.assert_allclose(unclocked.elapsed([599, 600]), [0.0599, 0.07])
+    np.testing.assert_allclose(
+        unclocked.frame_of_elapsed([0.0599, 0.065, 0.07]), [599, np.nan, 600]
+    )
+
+
+def test_dropped_spans_leave_the_other_rows_whole(tmp_path):
+    recording = _physical(tmp_path, dropped=[(100, 50, "a-001"), (900, 0, "a-000")])
+    np.testing.assert_array_equal(recording.valid_spans(0), [[0, 100], [150, 1000]])
+    np.testing.assert_array_equal(
+        recording.valid_spans(0, channels=["a-000"]), [[0, 1000]]
+    )
+    np.testing.assert_array_equal(
+        recording.valid_spans(0, channels=["a-001"]), [[0, 100], [150, 1000]]
+    )
+
+
+def test_stim_markers_are_placed_on_frames(tmp_path):
+    t0 = 5_000
+    recording = _physical(
+        tmp_path,
+        tick_rate=20_000.0,
+        anchors=[(0, t0)],
+        markers=[(t0 + 40, "hs0-070"), (t0 + 3, "din-0"), (t0 - 2, "hs0-070")],
+    )
+    markers = recording.stim_markers()
+    np.testing.assert_array_equal(markers.tick, [t0 - 2, t0 + 3, t0 + 40])
+    np.testing.assert_allclose(markers.frame, [np.nan, 1.5, 20.0])
+    np.testing.assert_array_equal(markers.channel, ["hs0-070", "din-0", "hs0-070"])
+
+
+def test_the_current_name_description_and_notes(tmp_path):
+    from testing.rsf_session import note
+
+    item, other = "5b1f0c3e9a7d4e2b8c64d0a1f3e79b52", "0123456789abcdef0123456789abcdef"
+    uid = "{:032x}".format
+    notes = {
+        "label": [
+            # the later instant wins though it sorts earlier as text
+            (
+                f"20261004T100541.207311Z-{uid(1)}.json",
+                note("session", "2026-10-04T10:05:41.207311Z", "Slice 3"),
+            ),
+            (
+                f"20261004T103000.000000Z-{uid(2)}.json",
+                note(
+                    "session", "2026-10-04T12:30:00.000000+02:00", "Slice 3, baseline"
+                ),
+            ),
+            # one instant, and the greater key wins the tie
+            (
+                f"20261004T103000.000000Z-{uid(3)}.json",
+                note("session", "2026-10-04T10:30:00Z", "Slice 3, wash"),
+            ),
+        ],
+        "description": [
+            (
+                f"20261004T100600.500000Z-{uid(4)}.json",
+                note("session", "2026-10-04T10:06:00.5Z", "Cortical culture, DIV 21"),
+            ),
+            ("not-a-key.json", note("session", "2026-10-04T11:00:00Z", "skipped")),
+        ],
+        "note": [
+            (
+                f"20261004T091250.100000Z-{uid(5)}.json",
+                note(item, "2026-10-04T09:12:50.100000Z", "drug", frame=120),
+            ),
+            (
+                f"20261004T091251.000000Z-{uid(6)}.json",
+                note(item, "2026-10-04T09:12:51Z", "drug added", frame=120),
+            ),
+            (
+                f"20261004T091300.000000Z-{uid(7)}.json",
+                note(other, "2026-10-04T09:13:00Z", "washed out", frame=300),
+            ),
+            (
+                f"20261004T100000.000000Z-{uid(8)}.json",
+                note(other, "2026-10-04T10:00:00Z", "", removed=True, frame=300),
+            ),
+            # an item that does not suit its kind is skipped
+            (
+                f"20261004T100100.000000Z-{uid(9)}.json",
+                note("session", "2026-10-04T10:01:00Z", "x"),
+            ),
+        ],
+    }
+    recording = _physical(tmp_path, notes=notes, label="started as")
+    assert recording.label == "Slice 3, wash"
+    assert recording.metadata["label"] == "Slice 3, wash"
+    assert recording.description == "Cortical culture, DIV 21"
+    assert [(n["item"], n["text"], n["frame"]) for n in recording.notes] == [
+        (item, "drug added", 120)
+    ]
+    # no versions: the name is the attribute, the description empty
+    plain = _physical(tmp_path, "plain", label="started as")
+    assert (plain.label, plain.description, plain.notes) == ("started as", "", [])
+    # a removed name falls back to the attribute
+    removed = {
+        "label": [
+            (
+                f"20261004T100541.207311Z-{uid(1)}.json",
+                note("session", "2026-10-04T10:05:41.207311Z", "", removed=True),
+            )
+        ]
+    }
+    assert _physical(tmp_path, "removed", notes=removed, label="first").label == "first"
+
+
+def test_what_livn_cannot_read_is_refused(tmp_path):
+    from testing.rsf_session import physical_session
+
+    with pytest.raises(RSFError, match="not sorted"):
+        _physical(tmp_path, "unsorted", gaps=[(600, 10), (300, 5)])
+    path = physical_session(str(tmp_path / "format2"))
+    node = os.path.join(path, "traces.zarr", "rsf", "zarr.json")
+    meta = _doc(node)
+    meta["attributes"]["format"] = 2
+    with open(node, "w") as f:
+        json.dump(meta, f)
+    with pytest.raises(RSFError, match="format 2"):
+        rsf.RsfRecording(path)
+    with pytest.raises(RSFError, match="no tick anchor"):
+        _physical(tmp_path, "markers", anchors=None, markers=[(5, "x")]).stim_markers()
+
+
+def test_stimulation_records_are_read_as_written_and_not_interpreted(tmp_path):
+    """RSF defines a record's ``started_at`` only; the rest is the producer's, so the records
+    come back raw and are not rendered as inputs."""
+    written = [
+        {"started_at": "2026-10-04T09:12:34Z", "program": {"segments": [[1, 5]]}},
+        {"started_at": "2026-10-04T09:13:00Z"},
+    ]
+    recording = _physical(tmp_path, "records", stimulation=written)
+    assert recording.stimulation_records() == [
+        {**record, "index": i} for i, record in enumerate(written)
+    ]
+    with pytest.raises(
+        Missing, match="neutral representation of the delivered stimulus"
+    ):
+        recording.inputs(0, 0, 10)
+    assert _physical(tmp_path, "none").stimulation_records() == []
+
+
+def test_the_rsf_conformance_fixtures_read(tmp_path):
+    """Every valid session of RSF's conformance kit opens and reads (``python
+    rsf_fixtures.py <dir>`` beside the spec; ``LIVN_RSF_FIXTURES=<dir>``)."""
+    root = os.environ.get("LIVN_RSF_FIXTURES")
+    if not root or not os.path.isfile(os.path.join(root, "cases.json")):
+        pytest.skip("LIVN_RSF_FIXTURES names no generated RSF fixture directory")
+    cases = _doc(os.path.join(root, "cases.json"))
+    for name in cases["valid"]:
+        if name == "in_progress":  # livn reads complete sessions only
+            with pytest.raises(RSFError, match="not complete"):
+                rsf.RsfRecording(os.path.join(root, name))
+            continue
+        recording = rsf.RsfRecording(os.path.join(root, name))
+        n = recording.num_samples()
+        assert recording.read(0, 0, min(n, 4)).shape[0] == min(n, 4), name
+        assert recording.valid_spans(0)[-1, 1] == n, name
+        recording.stim_markers()
+    assert rsf.RsfRecording(os.path.join(root, "notes")).label == "Slice 3, baseline"
+    for name in ("gaps_unsorted", "stim_marker_without_clock", "group_recording_id"):
+        with pytest.raises(RSFError):
+            recording = rsf.RsfRecording(os.path.join(root, "broken", name))
+            recording.stim_markers()

@@ -40,6 +40,9 @@ class _RunRecording:
         self._segment(segment)
         return int(self._potential().values.shape[1])
 
+    def valid_spans(self, segment: int = 0) -> np.ndarray:
+        return np.asarray([[0, self.num_samples(segment)]], dtype=np.int64)
+
     def read(self, segment, start, length, channels=None) -> np.ndarray:
         self._segment(segment)
         potential = self._potential()

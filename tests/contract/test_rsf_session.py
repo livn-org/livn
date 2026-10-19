@@ -51,7 +51,7 @@ def test_a_saved_run_reads_back(recorded, session):
     loaded = load(session)
     back = loaded.run
 
-    expected = np.asarray(env.potential_recording(run.current, run.current_ids))
+    expected = np.asarray(env.potential_recording(conditions=run.conditions()))
     np.testing.assert_allclose(
         back.potential.values, expected, atol=DEFAULT_GAIN_UV / 2 + 1e-6
     )
@@ -104,12 +104,11 @@ def test_the_session_names_the_sections_in_its_traces(recorded, session):
     from livn.data.rsf import load
 
     _, run = recorded
-    simulation = load(session).simulation
+    extras = load(session).recording.ext("livn", "simulation.json")
     recorded_sections = set(np.asarray(run.current_sections).tolist())
-    contributing = set(simulation["trace_sections"])
+    contributing = set(extras["trace_sections"])
     assert contributing
-    # every recorded section is in the traces or said to be left out of them
-    assert contributing | set(simulation.get("unplaced_sections", [])) == (
+    assert contributing | set(extras.get("unplaced_sections", [])) == (
         recorded_sections
     )
 

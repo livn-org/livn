@@ -197,6 +197,7 @@ class _Windower:
         self.preprocess_at = preprocess_at
         self.stats: Stats | None = None
         self._spikes: dict[tuple[int, int], tuple] = {}
+        self._starts: dict[tuple[int, int], tuple[np.ndarray, np.ndarray]] = {}
         self._good = [
             ~np.isin(np.asarray(r.channel_ids), np.asarray(r.bad_channels))
             for r in recordings
@@ -215,6 +216,7 @@ class _Windower:
     def __getstate__(self):
         state = dict(self.__dict__)
         state["_spikes"] = {}
+        state["_starts"] = {}
         return state
 
     @property
@@ -222,9 +224,29 @@ class _Windower:
         """Target samples in a window: context, gap and prediction"""
         return self.context + self.gap + self.prediction
 
-    def start_range(self, rec, segment) -> int:
-        """Number of valid window starts (target-sample units) in the segment"""
-        return rec.num_samples(segment) // self.q - self.total + 1
+    def start_spans(self, r, segment) -> tuple[np.ndarray, np.ndarray]:
+        """``(first, count)`` of the window starts (target-sample units) inside each of the
+        segment's valid spans: a window never crosses lost frames or dropped samples"""
+        key = (r, segment)
+        if key not in self._starts:
+            spans = np.asarray(self.recordings[r].valid_spans(segment), np.int64)
+            first = -(-spans[:, 0] // self.q)
+            count = np.maximum(
+                (spans[:, 1] - self.total * self.q) // self.q - first + 1, 0
+            )
+            self._starts[key] = (first[count > 0], count[count > 0])
+        return self._starts[key]
+
+    def start_range(self, r, segment) -> int:
+        """Number of valid window starts in the segment"""
+        return int(self.start_spans(r, segment)[1].sum())
+
+    def nth_start(self, r, segment, i: int) -> int:
+        """The ``i``-th valid window start of the segment, in target samples"""
+        first, count = self.start_spans(r, segment)
+        ends = np.cumsum(count)
+        j = int(np.searchsorted(ends, i, side="right"))
+        return int(first[j] + i - (ends[j] - count[j]))
 
     def item(self, element: dict, rng: np.random.Generator) -> dict:
         r, s, k = (
@@ -233,19 +255,20 @@ class _Windower:
             int(element["slot"]),
         )
         rec = self.recordings[r]
-        n = self.start_range(rec, s)
+        n = self.start_range(r, s)
         if self.starts == "random":
-            start = int(rng.integers(0, n))
+            index = int(rng.integers(0, n))
         elif self.starts == "grid":
-            start = (
+            index = (
                 0
                 if self.per_segment == 1
                 else round(k * (n - 1) / (self.per_segment - 1))
             )
         elif self.starts == "head":
-            start = 0
+            index = 0
         else:
-            start = n - 1
+            index = n - 1
+        start = self.nth_start(r, s, index)
         item = {
             "recording": r,
             "segment": s,
@@ -261,13 +284,12 @@ class _Windower:
     def _check(self, item) -> None:
         rec = self.recordings[item["recording"]]
         start = item["start"]
-        if (
-            start % self.q
-            or not 0 <= start <= rec.num_samples(item["segment"]) - item["length"]
-        ):
+        spans = np.asarray(rec.valid_spans(item["segment"]))
+        inside = (spans[:, 0] <= start) & (start + item["length"] <= spans[:, 1])
+        if start % self.q or not inside.any():
             raise ValueError(
-                f"window_policy returned start {start}, outside segment {item['segment']} "
-                f"or off the decimation grid (every {self.q} samples)"
+                f"window_policy returned start {start}, outside the valid spans of segment "
+                f"{item['segment']} or off the decimation grid (every {self.q} samples)"
             )
 
     def signal(self, item) -> np.ndarray:
@@ -658,12 +680,6 @@ def windows(
     selected = _select(recordings, split)
     entries = [(r, s, k) for r, s in selected for k in range(slots)]
     total = context_samples + gap_samples + prediction_samples
-    for r, s in selected:
-        if recordings[r].num_samples(s) // q < total:
-            raise ValueError(
-                f"segment {s} of recording {r} has {recordings[r].num_samples(s)} samples, "
-                f"fewer than one window ({total * q})"
-            )
 
     unit_ids = np.zeros(0, np.int64)
     if spikes:
@@ -695,6 +711,12 @@ def windows(
         policy=window_policy,
         preprocess_at=preprocess_at,
     )
+    for r, s in selected:
+        if windower.start_range(r, s) < 1:
+            raise ValueError(
+                f"segment {s} of recording {r} has {recordings[r].num_samples(s)} samples, "
+                f"and no valid span of them holds one window ({total * q})"
+            )
     fingerprint = (
         f"decim={q};fs={target:g}"
         + (

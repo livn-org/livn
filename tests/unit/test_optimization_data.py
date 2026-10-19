@@ -221,8 +221,32 @@ def test_splits_select_recordings_and_segments(make_pipe, make_recording):
         make_pipe([train], split="val")
 
 
+def test_windows_stay_inside_the_valid_spans(make_pipe, make_recording):
+    rec = make_recording()
+    spans = np.asarray([[0, 5000], [5000, 12000]])
+    rec.valid_spans = lambda segment: spans
+    length = 50
+    for starts in ("random", "grid"):
+        batch = make_pipe(rec, starts=starts, per_segment=24, batch_size=24).batch(0)
+        inside = (batch.start[:, None] >= spans[:, :1].T) & (
+            batch.start[:, None] + length <= spans[:, 1:].T
+        )
+        assert inside.any(axis=1).all(), starts
+    assert (
+        make_pipe(rec, starts="tail", per_segment=1, batch_size=1).batch(0).start[0]
+        == 12000 - length
+    )
+    with pytest.raises(ValueError, match="valid spans"):
+        make_pipe(
+            rec, window_policy=lambda item, rng, r: {**item, "start": 4980}
+        ).batch(0)
+    rec.valid_spans = lambda segment: np.asarray([[0, 30], [30, 60]])
+    with pytest.raises(ValueError, match="holds one window"):
+        make_pipe(rec)
+
+
 def test_a_window_longer_than_the_segment_is_refused(make_pipe):
-    with pytest.raises(ValueError, match="fewer than one window"):
+    with pytest.raises(ValueError, match="holds one window"):
         make_pipe(context=5000.0)
 
 

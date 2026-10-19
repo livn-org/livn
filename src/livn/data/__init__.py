@@ -29,6 +29,11 @@ class Recording(Protocol):
 
     def num_samples(self, segment: int) -> int: ...
 
+    def valid_spans(self, segment: int) -> np.ndarray:
+        """``(k, 2)`` int64 ``[start, stop)`` frame ranges of contiguous, delivered signal:
+        a window inside one span crosses no lost frames and no dropped samples"""
+        ...
+
     def read(self, segment, start, length, channels=None) -> np.ndarray:
         """float32 ``(length, channels)`` in uV; ``channels`` are channel ids"""
         ...

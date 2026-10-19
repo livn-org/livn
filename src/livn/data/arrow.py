@@ -244,6 +244,10 @@ class ArrowRecording:
             raise Missing(f"{self.path} has no `cp` column: it holds no channel signal")
         return int(self._lengths(column, self._row(segment))[0])
 
+    def valid_spans(self, segment: int) -> np.ndarray:
+        """The whole segment for which the Arrow layout states no lost or dropped frames."""
+        return np.asarray([[0, self.num_samples(segment)]], dtype=np.int64)
+
     def read(self, segment, start, length, channels=None) -> np.ndarray:
         """Samples ``[start, start + length)`` of the given channel ids (all by default), as
         float32 ``(length, channels)`` in uV."""
