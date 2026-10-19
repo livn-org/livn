@@ -171,9 +171,16 @@ class StateLayout:
     t_ref_end: int
     size: int
     next_forced: int = -1
+    mechanisms: tuple[int, ...] = ()
 
     @classmethod
-    def of(cls, coupled: bool, escape: bool, forced: bool = False) -> StateLayout:
+    def of(
+        cls,
+        coupled: bool,
+        escape: bool,
+        forced: bool = False,
+        mechanisms: tuple[int, ...] = (),
+    ) -> StateLayout:
         size = 5
         i_syn = s = t_ref_end = next_forced = -1
         if coupled:
@@ -188,8 +195,14 @@ class StateLayout:
         if forced:
             next_forced = size
             size += 1
+        mechanisms = tuple(int(width) for width in mechanisms)
         return cls(
-            i_syn=i_syn, s=s, t_ref_end=t_ref_end, size=size, next_forced=next_forced
+            i_syn=i_syn,
+            s=s,
+            t_ref_end=t_ref_end,
+            size=size + sum(mechanisms),
+            next_forced=next_forced,
+            mechanisms=mechanisms,
         )
 
     @property
@@ -203,6 +216,19 @@ class StateLayout:
     @property
     def forced(self) -> bool:
         return self.next_forced >= 0
+
+    @property
+    def mechanism_start(self) -> int:
+        """The first mechanism column."""
+        return self.size - sum(self.mechanisms)
+
+    def mechanism_columns(self) -> list[tuple[int, int]]:
+        """``(start, stop)`` of each mechanism's columns."""
+        out, start = [], self.mechanism_start
+        for width in self.mechanisms:
+            out.append((start, start + width))
+            start += width
+        return out
 
 
 def _check_level(level: int) -> int:
@@ -594,7 +620,133 @@ def _active(layout: StateLayout, t, y):
     return (t >= y[..., layout.t_ref_end]).astype(y.dtype)
 
 
-def _drift(p, layout: StateLayout, t, y, current):
+class GlifMechanism(eqx.Module):
+    """A extension mechanism inserted into the GLIF cell."""
+
+    states: tuple[str, ...] = eqx.field(static=True, default=(), kw_only=True)
+    inputs: tuple[str, ...] = eqx.field(static=True, default=(), kw_only=True)
+
+    def initial(self, n_cells: int):
+        """``[cells, len(states)]`` at t0"""
+        return jnp.zeros((n_cells, len(self.states)))
+
+    def drift(self, t, v, states, inputs):
+        """``(current [cells] in pA into V, d states / dt [cells, len(states)])``"""
+        raise NotImplementedError(f"{type(self).__name__} has no drift")
+
+    def on_spike(self, fired, states):
+        """The states after the cells marked in ``fired [cells]`` spiked.
+
+        Applied at the spike time, before the refractory cut (the cell's own jumps
+        land at its end, Allen's ordering).  Only the fired rows are kept, so the
+        rule need not mask.
+        """
+        return states
+
+    def presynaptic(self, states):
+        """``[cells]`` scaling each cell's outgoing synaptic jumps, or None.
+
+        Read from the states just before :meth:`on_spike`.
+        """
+
+
+MECHANISM_INPUTS = ("current", "irradiance", "conductance", "current_density")
+
+
+def _mechanism_modes(mechanisms) -> tuple[str, ...]:
+    modes = (mode for m in mechanisms for mode in m.inputs if mode != "current")
+    return tuple(dict.fromkeys(modes))
+
+
+def _check_mechanisms(mechanisms) -> None:
+    names: list[str] = []
+    for mechanism in mechanisms:
+        if not isinstance(mechanism, GlifMechanism):
+            raise TypeError(
+                f"a GLIF mechanism is a GlifMechanism, not {type(mechanism).__name__}"
+            )
+        unknown = set(mechanism.inputs) - set(MECHANISM_INPUTS)
+        if unknown:
+            raise ValueError(
+                f"{type(mechanism).__name__} reads {sorted(unknown)}; a GLIF "
+                f"mechanism reads {MECHANISM_INPUTS}"
+            )
+        names.extend(mechanism.states)
+    own = {*RECORDABLE_STATES, *DEFAULT_RECORD, "segments"}
+    clashes = sorted({n for n in names if names.count(n) > 1 or n in own})
+    if clashes:
+        raise ValueError(
+            f"mechanism states {clashes} are named twice; a state is recorded by "
+            "its name, so the names must be unique and not the cell's own"
+        )
+
+
+def _jumps(mechanism: GlifMechanism) -> bool:
+    return type(mechanism).on_spike is not GlifMechanism.on_spike
+
+
+def _mechanism_terms(mechanisms, layout: StateLayout, t, v, states, inputs):
+    """The summed current and the stacked derivatives, on ``[cells]`` / ``[cells, k]``."""
+    current, derivatives = 0.0, []
+    start = layout.mechanism_start
+    for mechanism, (lo, hi) in zip(mechanisms, layout.mechanism_columns(), strict=True):
+        given = {mode: inputs[mode] for mode in mechanism.inputs}
+        i, d = mechanism.drift(t, v, states[:, lo - start : hi - start], given)
+        current = current + jnp.broadcast_to(i, v.shape)
+        derivatives.append(jnp.broadcast_to(d, (*v.shape, hi - lo)))
+    return current, jnp.concatenate(derivatives, axis=-1)
+
+
+def _mechanism_spiked(mechanisms, layout: StateLayout, fired, states):
+    out, start = [], layout.mechanism_start
+    for mechanism, (lo, hi) in zip(mechanisms, layout.mechanism_columns(), strict=True):
+        own = states[:, lo - start : hi - start]
+        if _jumps(mechanism):
+            own = jnp.where(fired[:, None], mechanism.on_spike(fired, own), own)
+        out.append(own)
+    return jnp.concatenate(out, axis=-1)
+
+
+def _across_cut(
+    mechanisms, layout: StateLayout, t_event, t_resume, n, v, states, inputs_at
+):
+    """One cell's mechanism states over the cut, on the hold grid: ``([n, k], [k])``.
+
+    A fixed-step RK4 from the spike (after :meth:`GlifMechanism.on_spike`) with V
+    held at its reset value, so the samples are the hold the event loop records
+    and the last step lands on the resume.
+    """
+    fired = jnp.ones((1,), bool)
+    m0 = _mechanism_spiked(mechanisms, layout, fired, states[None])
+    h = (t_resume - t_event) / n
+
+    def f(t, m):
+        inputs = {mode: jnp.reshape(x, (1,)) for mode, x in inputs_at(t).items()}
+        return _mechanism_terms(mechanisms, layout, t, v[None], m, inputs)[1]
+
+    def step(m, k):
+        t = t_event + k * h
+        k1 = f(t, m)
+        k2 = f(t + h / 2, m + h / 2 * k1)
+        k3 = f(t + h / 2, m + h / 2 * k2)
+        k4 = f(t + h, m + h * k3)
+        return m + h / 6 * (k1 + 2 * k2 + 2 * k3 + k4), m[0]
+
+    final, trajectory = jax.lax.scan(step, m0, jnp.arange(n))
+    return trajectory, final[0]
+
+
+def _cell_axes(tree, n_cells: int):
+    """vmap axes splitting the per-cell leaves of ``tree`` into one cell each"""
+    return jax.tree_util.tree_map(
+        lambda x: (
+            0 if eqx.is_array(x) and x.ndim >= 1 and x.shape[0] == n_cells else None
+        ),
+        tree,
+    )
+
+
+def _drift(p, layout: StateLayout, t, y, current, mechanisms=(), inputs=None):
     v = y[..., V]
     asc_1 = y[..., ASC_1]
     asc_2 = y[..., ASC_2]
@@ -602,6 +754,19 @@ def _drift(p, layout: StateLayout, t, y, current):
     total_current = current + asc_1 + asc_2
     if layout.coupled:
         total_current = total_current + y[..., layout.i_syn]
+    if mechanisms:
+        # on the cell axis even for the one cell of the uncoupled solve
+        cells = jnp.reshape(v, (-1,))
+        given = {"current": current, **(inputs or {})}
+        given = {
+            mode: jnp.broadcast_to(x, v.shape).reshape(-1) for mode, x in given.items()
+        }
+        width = sum(layout.mechanisms)
+        states = jnp.reshape(y[..., layout.mechanism_start :], (cells.shape[0], width))
+        injected, derivatives = _mechanism_terms(
+            mechanisms, layout, t, cells, states, given
+        )
+        total_current = total_current + jnp.reshape(injected, v.shape)
 
     active = _active(layout, t, y)
 
@@ -621,7 +786,11 @@ def _drift(p, layout: StateLayout, t, y, current):
     if layout.forced:
         columns.append(jnp.zeros_like(v))  # next_forced only moves at an event
 
-    return jnp.stack(columns, axis=-1)
+    if not mechanisms:
+        return jnp.stack(columns, axis=-1)
+
+    derivatives = jnp.reshape(derivatives, (*v.shape, width))
+    return jnp.concatenate([jnp.stack(columns, axis=-1), derivatives], axis=-1)
 
 
 FAR_FUTURE = 1e30
@@ -669,11 +838,38 @@ def _solve_cell(
     diffusion,
     segments=False,
     forced=None,
+    mechanisms=(),
+    inputs=None,
 ):
     current = diffrax.LinearInterpolation(ts=stim_ts, ys=stim_ys)
+    series = {
+        mode: diffrax.LinearInterpolation(ts=ts, ys=ys)
+        for mode, (ts, ys) in (inputs or {}).items()
+    }
+
+    def inputs_at(t):
+        return {mode: x.evaluate(t) for mode, x in series.items()}
 
     def drift(t, y, args):
-        return _drift(p, layout, t, y, current.evaluate(t))
+        if not mechanisms:
+            return _drift(p, layout, t, y, current.evaluate(t))
+        return _drift(p, layout, t, y, current.evaluate(t), mechanisms, inputs_at(t))
+
+    def across_cut(t_event, y, t_resume, n):
+        def given(t):
+            return {"current": current.evaluate(t), **inputs_at(t)}
+
+        start = layout.mechanism_start
+        return _across_cut(
+            mechanisms,
+            layout,
+            t_event,
+            t_resume,
+            n,
+            _voltage_reset(p, y),
+            y[start:],
+            given,
+        )
 
     if layout.forced:
 
@@ -707,7 +903,10 @@ def _solve_cell(
             reset.append(_draw_survival(p, key, ()))
         if layout.forced:
             reset.append(_next_forced(forced, t_resume))
-        return t_resume, jnp.stack(reset)
+        if not mechanisms:
+            return t_resume, jnp.stack(reset)
+        _, carried = across_cut(t_event, y, t_resume, config.points_per_segment)
+        return t_resume, jnp.concatenate([jnp.stack(reset), carried])
 
     def hold_fn(t_event, y, t_resume, ts, args, mask):
         """The refractory window"""
@@ -724,7 +923,11 @@ def _solve_cell(
             held.append(ones * y[layout.s])
         if layout.forced:
             held.append(ones * y[layout.next_forced])
-        return jnp.stack(held, axis=1)
+        if not mechanisms:
+            return jnp.stack(held, axis=1)
+
+        trajectory, _ = across_cut(t_event, y, t_resume, ts.shape[0])
+        return jnp.concatenate([jnp.stack(held, axis=1), trajectory], axis=1)
 
     extra_terms = None
     if diffusion:
@@ -779,14 +982,23 @@ def _solve_network(
     network,
     spike_cells,
     diffusion,
+    mechanisms=(),
+    inputs=None,
 ):
     n_cells = int(network.shape[0])
     n_spiking = len(spike_cells)
     spike_index = jnp.asarray(spike_cells, dtype=jnp.int32)
     current = diffrax.LinearInterpolation(ts=stim_ts, ys=stim_ys)
+    series = {
+        mode: diffrax.LinearInterpolation(ts=ts, ys=ys)
+        for mode, (ts, ys) in (inputs or {}).items()
+    }
 
     def drift(t, y, args):
-        return _drift(p, layout, t, y, current.evaluate(t))
+        if not mechanisms:
+            return _drift(p, layout, t, y, current.evaluate(t))
+        given = {mode: x.evaluate(t) for mode, x in series.items()}
+        return _drift(p, layout, t, y, current.evaluate(t), mechanisms, given)
 
     if layout.escape:
 
@@ -843,7 +1055,14 @@ def _solve_network(
 
         # w[pre, post], so a post-synaptic cell collects the column of every
         # cell that just fired.  Weights are synaptic current jumps, in pA.
-        arriving = fired.astype(y.dtype) @ network
+        drive = fired.astype(y.dtype)
+        for mechanism, (lo, hi) in zip(
+            mechanisms, layout.mechanism_columns(), strict=True
+        ):
+            scale = mechanism.presynaptic(y[:, lo:hi])
+            if scale is not None:
+                drive = drive * scale
+        arriving = drive @ network
         columns_out.append(y[:, layout.i_syn] + arriving)
 
         if layout.escape:
@@ -857,7 +1076,13 @@ def _solve_network(
         columns_out.append(jnp.where(resumed, NOT_REFRACTORY, t_ref_end))
 
         # the loop resumes immediately: the cut is per cell, not global
-        return t_event, jnp.stack(columns_out, axis=-1)
+        if not mechanisms:
+            return t_event, jnp.stack(columns_out, axis=-1)
+        states = y[:, layout.mechanism_start :]
+        carried = _mechanism_spiked(mechanisms, layout, fired, states)
+        return t_event, jnp.concatenate(
+            [jnp.stack(columns_out, axis=-1), carried], axis=-1
+        )
 
     extra_terms = None
     if diffusion:
@@ -922,6 +1147,7 @@ class GlifNeurons(eqx.Module):
     tau_syn: Any
 
     network: Any  # (cells, cells) signed weights in pA, or None when unconnected
+    mechanisms: tuple
 
     n_cells: int = eqx.field(static=True)
     mechanism: str = eqx.field(static=True)
@@ -943,6 +1169,7 @@ class GlifNeurons(eqx.Module):
         network=None,
         read_out_neurons: Sequence[int] | None = None,
         diffusion: bool = False,
+        mechanisms: Sequence[GlifMechanism] = (),
     ):
         _check_mechanism(mechanism)
 
@@ -995,9 +1222,17 @@ class GlifNeurons(eqx.Module):
             )
         self.read_out_neurons = read_out_neurons
 
+        mechanisms = tuple(mechanisms)
+        _check_mechanisms(mechanisms)
+        self.mechanisms = mechanisms
+
         self.n_cells = n_cells
         self.mechanism = mechanism
-        self.layout = StateLayout.of(network is not None, mechanism == "escape")
+        self.layout = StateLayout.of(
+            network is not None,
+            mechanism == "escape",
+            mechanisms=tuple(len(m.states) for m in mechanisms),
+        )
         self.diffusion = bool(diffusion)
         self.config = config if config is not None else SolverConfig()
         self.current_scale = float(current_scale)
@@ -1012,6 +1247,23 @@ class GlifNeurons(eqx.Module):
             self.mechanism,
             diffusion=self.diffusion,
             coupled=self.network is not None,
+        )
+
+    @property
+    def input_mode(self) -> str | tuple[str, ...]:
+        """``"current"``, and every mode a mechanism reads besides"""
+        modes = _mechanism_modes(self.mechanisms)
+        return ("current", *modes) if modes else "current"
+
+    @property
+    def state_columns(self) -> dict[str, int]:
+        """The column of each mechanism state, by name"""
+        return dict(
+            zip(
+                (name for m in self.mechanisms for name in m.states),
+                range(self.layout.mechanism_start, self.layout.size),
+                strict=True,
+            )
         )
 
     @property
@@ -1052,6 +1304,13 @@ class GlifNeurons(eqx.Module):
             columns.append(jnp.full_like(zeros, NOT_REFRACTORY))
         if layout.forced:
             columns.append(jnp.minimum(jnp.min(forced_spikes, axis=-1), FAR_FUTURE))
+        for mechanism in self.mechanisms:
+            width = len(mechanism.states)
+            initial = jnp.broadcast_to(
+                jnp.asarray(mechanism.initial(self.n_cells), dtype=zeros.dtype),
+                (self.n_cells, width),
+            )
+            columns.extend(initial[:, j] for j in range(width))
 
         return jnp.stack(jnp.broadcast_arrays(*columns), axis=-1)
 
@@ -1079,7 +1338,14 @@ class GlifNeurons(eqx.Module):
         num_samples: int = 1,
         diffusion: bool | None = None,
         forced_spikes=None,
+        inputs: Mapping[str, Any] | None = None,
     ) -> GlifSolution:
+        """Integrate from ``t0`` to ``t1``.
+
+        ``inputs`` is ``{mode: [steps, cells]}`` for the modes the mechanisms read,
+        sampled every ``stimulus_dt`` like the current and interpolated the same
+        way; a mode they read but are not given is zero.
+        """
         return self._solve(
             input_current=input_current,
             t0=float(t0),
@@ -1093,6 +1359,7 @@ class GlifNeurons(eqx.Module):
             num_samples=int(num_samples),
             diffusion=diffusion,
             forced_spikes=forced_spikes,
+            inputs=dict(inputs) if inputs else {},
         )
 
     @eqx.filter_jit
@@ -1110,6 +1377,7 @@ class GlifNeurons(eqx.Module):
         num_samples: int,
         diffusion: bool | None,
         forced_spikes,
+        inputs,
     ) -> GlifSolution:
         t0, t1, dt = float(t0), float(t1), float(dt)
         config = self.config if config is None else config
@@ -1128,19 +1396,26 @@ class GlifNeurons(eqx.Module):
                     f"got {tuple(forced_spikes.shape)}"
                 )
             forced_spikes = jnp.sort(forced_spikes, axis=-1)  # inf padding sorts last
-            layout = StateLayout.of(False, False, forced=True)
+            layout = StateLayout.of(
+                False, False, forced=True, mechanisms=layout.mechanisms
+            )
         n_out = round((t1 - t0) / dt) + 1
         stimulus_dt = dt if stimulus_dt is None else float(stimulus_dt)
+        series = self._input_series(inputs, t0, t1, stimulus_dt)
 
         num_samples = int(num_samples)
         if num_samples < 1:
             raise ValueError(f"num_samples must be positive, got {num_samples}")
 
+        named = self.state_columns
         if record is None:
-            columns, want_threshold = ALL_COLUMNS, True
+            columns, want_threshold = ALL_COLUMNS + tuple(named.values()), True
         else:
             record = frozenset(record)
             columns, want_threshold = _columns_for(record), "threshold" in record
+            if named:
+                chosen = {named[name] for name in record if name in named}
+                columns = tuple(sorted({*columns, *chosen}))
 
         want_segments = bool(record) and "segments" in record
 
@@ -1148,16 +1423,7 @@ class GlifNeurons(eqx.Module):
             stim = jnp.zeros((2, self.n_cells))
             stimulus_dt = t1 - t0
         else:
-            stim = jnp.asarray(input_current)
-            if stim.ndim == 1:
-                stim = stim[:, None]
-            if stim.ndim != 2 or stim.shape[1] != self.n_cells:
-                raise ValueError(
-                    f"expected a stimulus of shape (steps, {self.n_cells}), "
-                    f"got {tuple(stim.shape)}"
-                )
-            if stim.shape[0] < 2:
-                stim = jnp.repeat(stim, 2, axis=0)
+            stim = self._as_series(input_current, "a stimulus")
 
         stim = stim * self.current_scale  # -> pA
         stim_ts = t0 + jnp.arange(stim.shape[0]) * stimulus_dt
@@ -1173,7 +1439,8 @@ class GlifNeurons(eqx.Module):
                 f"expected an initial state with {layout.size} columns for "
                 f"a {self.mechanism!r} "
                 f"{'network' if layout.coupled else 'population'}"
-                f"{' under forcing' if layout.forced else ''}, "
+                f"{' under forcing' if layout.forced else ''}"
+                f"{' with mechanisms' if layout.mechanisms else ''}, "
                 f"got {y0.shape[-1]}"
             )
         if y0.ndim == 2:
@@ -1196,7 +1463,7 @@ class GlifNeurons(eqx.Module):
                 "does not return its native grid yet"
             )
 
-        if self.network is None:
+        if self.network is None and not self.mechanisms:
 
             def solve_sample(y0_sample, sample_key):
                 return jax.vmap(
@@ -1212,6 +1479,46 @@ class GlifNeurons(eqx.Module):
                     forced_spikes,
                 )
 
+        elif self.network is None:
+            input_ts = {mode: ts for mode, (ts, _) in series.items()}
+
+            def solve_cell(p, s, y, k, f, m, x):
+                given = {mode: (input_ts[mode], x[mode]) for mode in x}
+                return _solve_cell(
+                    p,
+                    stim_ts,
+                    s,
+                    y,
+                    k,
+                    forced=f,
+                    segments=want_segments,
+                    mechanisms=m,
+                    inputs=given,
+                    **shared,
+                )
+
+            def solve_sample(y0_sample, sample_key):
+                return jax.vmap(
+                    solve_cell,
+                    in_axes=(
+                        0,
+                        0,
+                        0,
+                        0,
+                        None if forced_spikes is None else 0,
+                        _cell_axes(self.mechanisms, self.n_cells),
+                        0,
+                    ),
+                )(
+                    self.params(),
+                    stim.T,
+                    y0_sample,
+                    jr.split(sample_key, self.n_cells),
+                    forced_spikes,
+                    self.mechanisms,
+                    {mode: ys.T for mode, (_, ys) in series.items()},
+                )
+
         else:
 
             def solve_sample(y0_sample, sample_key):
@@ -1223,6 +1530,8 @@ class GlifNeurons(eqx.Module):
                     sample_key,
                     network=self.network,
                     spike_cells=self.spike_cells,
+                    mechanisms=self.mechanisms,
+                    inputs=series,
                     **shared,
                 )
 
@@ -1258,6 +1567,41 @@ class GlifNeurons(eqx.Module):
             columns=columns,
         )
 
+    def _as_series(self, value, what: str):
+        """``[steps, cells]``, at least two steps"""
+        array = jnp.asarray(value)
+        if array.ndim == 1:
+            array = array[:, None]
+        if array.ndim != 2 or array.shape[1] != self.n_cells:
+            raise ValueError(
+                f"expected {what} of shape (steps, {self.n_cells}), "
+                f"got {tuple(array.shape)}"
+            )
+        if array.shape[0] < 2:
+            array = jnp.repeat(array, 2, axis=0)
+        return array
+
+    def _input_series(self, inputs, t0: float, t1: float, stimulus_dt: float):
+        """``{mode: (ts, [steps, cells])}`` for every mode a mechanism reads"""
+        modes = _mechanism_modes(self.mechanisms)
+        unread = sorted(set(inputs) - set(modes))
+        if unread:
+            raise ValueError(
+                f"no mechanism of this GLIF reads {unread}"
+                + (f"; they read {list(modes)}" if modes else "")
+            )
+        series = {}
+        for mode in modes:
+            if inputs.get(mode) is None:
+                ys, step = jnp.zeros((2, self.n_cells)), t1 - t0
+            else:
+                ys, step = (
+                    self._as_series(inputs[mode], f"a {mode!r} input"),
+                    stimulus_dt,
+                )
+            series[mode] = (t0 + jnp.arange(ys.shape[0]) * step, ys)
+        return series
+
     def run(
         self,
         input_current=None,
@@ -1280,6 +1624,11 @@ class GlifNeurons(eqx.Module):
         module, diffusion = self._with_noise(noise)
         num_samples = int(num_samples)
 
+        inputs = kwargs.pop("inputs", None)
+        if isinstance(input_current, Mapping):
+            inputs = {**(inputs or {}), **input_current}
+            input_current = inputs.pop("current", None)
+
         record = DEFAULT_RECORD if record is None else frozenset(record)
 
         config = module.config
@@ -1298,6 +1647,7 @@ class GlifNeurons(eqx.Module):
             key=key,
             num_samples=num_samples,
             diffusion=diffusion,
+            inputs=inputs,
         )
 
         ids = jnp.arange(module.n_cells)
@@ -1307,6 +1657,9 @@ class GlifNeurons(eqx.Module):
             for name, attribute in _STATE_ATTRIBUTES.items()
             if name in record
         }
+        for name, column in module.state_columns.items():
+            if name in record:
+                states[name] = (ids, solution.column(column))
 
         if "spikes" not in record:
             return None, None, ids, voltage, None, None, solution.yT, states
@@ -1396,6 +1749,14 @@ class GlifNeuronJAX(eqx.Module):
         }
 
 
+def cell_populations(env) -> np.ndarray:
+    gids = np.asarray(env.simulated_gids(everywhere=True))
+    names = np.full(len(gids), "", dtype=object)
+    for name, (start, count, *_) in env.system.population_ranges.items():
+        names[(gids >= int(start)) & (gids < int(start) + int(count))] = name
+    return names.astype(str)
+
+
 class GLIF(Model):
     def __init__(
         self,
@@ -1443,9 +1804,11 @@ class GLIF(Model):
         return RECORDABLE_STATES
 
     def prepare_stimulus(self, stimulus):
-        if stimulus.input_mode != "current":
+        if stimulus.input_mode not in MECHANISM_INPUTS:
             raise ValueError(
-                f"GLIF only supports the 'current' input mode, got {stimulus.input_mode!r}"
+                f"GLIF reads the 'current' input mode, and the modes of "
+                f"{MECHANISM_INPUTS[1:]} its mechanisms declare, not "
+                f"{stimulus.input_mode!r}"
             )
         return stimulus
 
@@ -1471,6 +1834,7 @@ class GLIF(Model):
             network=network,
             read_out_neurons=self.read_out_neurons if network.any() else None,
             diffusion=self.diffusion,
+            mechanisms=tuple(self.diffrax_mechanisms(env)),
         )
 
     def diffrax_default_noise(self, system: str):

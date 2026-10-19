@@ -1525,6 +1525,9 @@ class Model(Protocol):
             f"{type(self).__name__} does not implement the diffrax backend"
         )
 
+    def diffrax_mechanisms(self, env: Env) -> tuple:
+        return ()
+
     def ignored_populations(self) -> set[str]:
         """Populations that backends should skip when instantiating cells/connections."""
         return set()

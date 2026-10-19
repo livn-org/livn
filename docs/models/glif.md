@@ -102,3 +102,60 @@ env = env.record_spikes()
 run = env.run(duration, stimulus, dt=dt)
 run.spikes.padded.times     # exact event times, differentiable
 ```
+
+## Inserting mechanisms
+
+GLIF can be extended using `GlifMechanism`, an `equinox.Module` whose fields are its parameters, returned in the  `Model`'s `diffrax_mechanisms(env)`:
+
+```python
+import equinox as eqx
+import jax.numpy as jnp
+import numpy as np
+
+from livn.env import Env
+from livn.models.glif import GLIF, GlifMechanism, cell_populations
+from livn.stimulus import Stimulus
+
+
+class LightCurrent(GlifMechanism):
+    # its state columns, after the cell's own, and the stimulus modes it reads besides
+    # the current
+    states: tuple[str, ...] = eqx.field(static=True, default=("s",), kw_only=True)
+    inputs: tuple[str, ...] = eqx.field(static=True, default=("irradiance",), kw_only=True)
+    g: jnp.ndarray               # pA at full activation, per cell
+    tau: float = 5.0             # parameters
+
+    def drift(self, t, v, states, inputs):
+        s = states[:, 0]
+        ds = (inputs["irradiance"] * (1.0 - s) - s) / self.tau
+        return self.g * s, ds[:, None]    # current into V in pA, d states / dt
+
+
+class OptoGLIF(GLIF):
+    def diffrax_mechanisms(self, env):
+        populations = cell_populations(env)     # one name per cell, in module order
+        return (LightCurrent(g=jnp.asarray(np.where(populations == "EXC", 50.0, 0.0))),)
+
+
+env = Env(system, model=OptoGLIF(level=5)).init()
+run = env.run(100.0, Stimulus.from_current(current) + Stimulus.from_irradiance(light))
+```
+
+| member | | |
+|---|---|---|
+| `states` | static field (`eqx.field(static=True, kw_only=True)`) | names of its state columns; also what [`env.record()`](/guide/concepts/env#recording) takes once the model lists them in `recordable_states()` |
+| `inputs` | static field | modes it reads: `irradiance`, `conductance`, `current_density`, or `current` (the injected current in pA) |
+| `initial(n_cells)` | optional | `[cells, len(states)]` at t0; zeros by default |
+| `drift(t, v, states, inputs)` | required | `(current [cells] in pA, d states / dt [cells, len(states)])` between events; `inputs` is `{mode: [cells]}` at `t` |
+| `on_spike(fired, states)` | optional | the states after the cells in `fired [cells]` spiked; only fired rows are kept |
+| `presynaptic(states)` | optional | `[cells]` scaling each cell's outgoing synaptic jumps (from the states before `on_spike`), or `None` |
+
+The cells are from `env.simulated_gids(everywhere=True)` with `cell_populations(env)` naming each one's population.
+
+What a spike does to a mechanism:
+
+- The voltage reset does not touch its states, so an opsin carries through a spike.
+- `on_spike` acts at the spike time. The cell's own threshold and after-spike jumps land at the end of the refractory cut instead, which is Allen's ordering.
+- Across the refractory cut the states keep integrating with V held at its reset value, as the threshold and after-spike currents keep decaying there. The current a mechanism injects is dropped while V is clamped, like every other current.
+
+A stimulus mode is accepted only when a mechanism reads it so a GLIF Env without one refuses an `irradiance` stimulus. With no mechanisms the model is exactly the GLIF above. Mechanisms run on the diffrax backend only.

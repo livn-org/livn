@@ -456,7 +456,8 @@ class Env(EnvProtocol):
             raise ValueError(
                 f"{', '.join(map(repr, stimuli))} stimuli together on a module "
                 f"compiled for {expected!r} input alone. Build the model with "
-                f"input_mode={tuple(stimuli)!r} to deliver them in one run"
+                f"input_mode={tuple(stimuli)!r} (RCSD), or with mechanisms that "
+                "read them (GLIF), to deliver them in one run"
             )
         inputs = {}
         for mode, stimulus in stimuli.items():
@@ -466,7 +467,8 @@ class Env(EnvProtocol):
                     f"a {mode!r} stimulus on a module compiled for "
                     f"{expected!r} input: the module would read the array in its own "
                     f"units. Build the model with input_mode={mode!r} (or a tuple "
-                    f"of modes that includes it), or the stimulus in {expected!r}"
+                    f"of modes that includes it; on GLIF, a mechanism that reads "
+                    f"it), or the stimulus in {expected!r}"
                 )
             inputs[mode] = self._module_input(stimulus, duration, dt)
 
