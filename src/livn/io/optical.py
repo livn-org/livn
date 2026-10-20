@@ -199,11 +199,17 @@ class PatternedLight(_Light):
         for c in channels:
             shape = c.get("shape") or {}
             kind = shape.get("kind")
+            if kind == "unplaced":
+                raise ValueError(
+                    f"channel {c.get('id')!r} is unplaced so its session withholds "
+                    "where the channel acts (a mask on electrode_positions)"
+                )
             if kind != "disc":
                 what = "has no shape" if kind is None else f"is a {kind!r} shape"
                 raise ValueError(
-                    f"channel {c.get('id')!r} {what}; a PatternedLight "
-                    "models discs, {'kind': 'disc', 'x', 'y', 'radius'}"
+                    f"channel {c.get('id')!r} {what}; a PatternedLight models "
+                    "discs only, {'kind': 'disc', 'x', 'y', 'radius'}, since its "
+                    "medium spreads light by a spot's radius"
                 )
             missing = [k for k in ("x", "y", "radius") if shape.get(k) is None]
             if missing:

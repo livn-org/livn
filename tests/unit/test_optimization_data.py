@@ -401,3 +401,58 @@ def test_given_stats_come_from_a_dict_or_a_file(tmp_path, make_pipe, make_record
     np.testing.assert_array_equal(
         make_pipe(rec, normalize=Standardize(path)).stats.scale, [3.0] * C
     )
+
+
+def test_inputs_of_rsf_sessions_come_from_their_stimulus_events(
+    tmp_path, physical_session
+):
+    """A session's delivered stimulus reaches the windows through the RSF reader, the rule
+    simulated and recorded sessions share: each channel's fraction of its full scale, held
+    from event to event."""
+    pytest.importorskip("zarr", minversion="3")
+    from livn.data.rsf import RsfRecording
+
+    record = {
+        "started_at": "2026-10-04T09:12:34Z",
+        "kind": "electrode",
+        "channels": [
+            {
+                "id": "electrode/4",
+                "shape": {"kind": "contact", "contact_id": 4, "x": 0.0, "y": 0.0},
+                "full_scale": {"units": "uA", "value": 100.0},
+                "bipolar": True,
+                "wavelength_nm": None,
+            }
+        ],
+        "marker_channel": None,
+        "marker_edge": None,
+        "timing": "schedule",
+        "placement_lag_ms": 0,
+    }
+    rows = [
+        (0, "electrode/4", 0.2, 0, 0, "schedule"),
+        (8_000, "electrode/4", -0.2, 0, 1, "schedule"),
+        (12_000, "electrode/4", 0.0, 0, 2, "schedule"),
+    ]
+    path = physical_session(
+        str(tmp_path / "recorded"),
+        n_frames=T,
+        stimulation=[record],
+        stim_events=rows,
+    )
+    pipe = windows(
+        RsfRecording(path),
+        context=5.0,
+        batch_size=12,
+        per_segment=6,
+        threads=2,
+        inputs=True,
+        fs=5000.0,
+        mask_bad_channels=False,
+    )
+    batch = pipe.batch(0)
+    assert batch.inputs.shape == (12, 25, 1)
+    for start, got in zip(batch.start, batch.inputs[:, :, 0], strict=True):
+        frames = start + 2 * np.arange(25)
+        want = np.where(frames < 8_000, 0.2, np.where(frames < 12_000, -0.2, 0.0))
+        np.testing.assert_allclose(got, want)

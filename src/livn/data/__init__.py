@@ -43,7 +43,8 @@ class Recording(Protocol):
         ...
 
     def inputs(self, segment, start, length) -> np.ndarray:
-        """The delivered input, float32 ``(length, k)``; raises :class:`Missing` if none"""
+        """The delivered stimulus, float32 ``(length, k)``, a column per
+        stimulus channel; raises :class:`Missing` if none."""
         ...
 
     def ground_truth(self, name, segment=0) -> Any: ...

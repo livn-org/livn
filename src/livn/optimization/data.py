@@ -617,8 +617,8 @@ def windows(
             ``None`` takes everything.
         spikes: Set ``Window.spikes``, ``(U, max_spikes)`` per unit of the recordings' spikes,
             ``U`` = the union of unit ids over the selected segments (``Windows.unit_ids``)
-        inputs: Set ``Window.inputs``, the delivered input series (strided to the target rate,
-            not filtered), on the window's grid.
+        inputs: Set ``Window.inputs``, the delivered stimulus (``Recording.inputs``, strided
+            to the target rate, not filtered) on the window's grid.
             Raises :class:`livn.data.Missing` here if a recording has none.
         max_spikes: Capacity of a unit's row in a window
         mask_bad_channels: Zero the recording's bad channels and exclude them from ``CMR``;

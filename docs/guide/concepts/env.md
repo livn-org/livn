@@ -221,9 +221,21 @@ The directory is directly compatible with SpikeInterface via `spikeinterface.rea
 
 Under MPI, gather first, e.g. `store(run.gather(env.comm), path, env)` writes on the root rank and does nothing on the others.
 
-To keep what drove the run, pass the channel-space `stimulus=policy` (its spec is recorded and its rendered array is stored) or `inputs=array, inputs_dt=ms`. The delivered input is stored on the traces' frame grid (each row held until the next, zero past the end) and read back with `recording.inputs(segment, start, length)`. A session saved without it raises `livn.data.Missing` rather than returning zeros.
+To keep what drove the run, pass the channel-space `stimulus=policy` (its spec is recorded and its rendered array is the delivered input) or `inputs=array, inputs_dt=ms`, in the stimulating IO's input units. The session stores any delivered stimulus, simulated or recorded.
 
-The channel signal is projected through the env's [recording composition](/guide/concepts/io#recording-compositions) (`env.io.recording`, or `store(..., recording=Chain(...))`), with the delivered inputs as its `inputs`, so a `LightArtifact` is in the traces. A plain point-source stack is stored in the RSF point-source document, any other composition in livn's own (`livn.io/1`), and `session.io` rebuilds it. `session.conditions()` gives the stored run's conditions (the ground-truth currents and their gids when saved with `currents=True`, the inputs, `dt`) to project it again: `env.potential_recording(session.io.recording, session.conditions())`.
+Reading, which works the same on a recorded session:
+
+```python
+recording = load("sessions/stimulated-1").recording
+recording.stimulus_channels()      # the channel objects, the columns of inputs()
+recording.inputs(0, 0, 1000)       # fractions of full scale, [frames, channels]
+recording.inputs(0, 0, 1000, physical=True)  # mW/mm2 and uA (cathodic negative)
+recording.stimulus_full_scales()   # {id: {"units", "value", "source", ...}}
+recording.stim_events()            # the resolved rows
+recording.stimulus_io()            # PatternedLight / MEA / InputDevices of the channels
+```
+
+The channel signal is projected through the env's [recording composition](/guide/concepts/io#recording-compositions) (`env.io.recording`, or `store(..., recording=Chain(...))`), with the delivered inputs as its `inputs`, so a `LightArtifact` is in the traces. A plain point-source stack is stored in the RSF point-source document, any other composition in livn's own (`livn.io/1`), and `session.io` rebuilds it. `session.conditions()` gives the stored run's conditions (the ground-truth currents and their gids when saved with `currents=True`, the delivered inputs in the stimulating devices' units, `dt`) to project it again: `env.potential_recording(session.io.recording, session.conditions())`.
 
 ### Opening recordings lazily
 

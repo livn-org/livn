@@ -147,6 +147,8 @@ def _physical_session(
     markers: Sequence[tuple[int, str]] = (),
     clipped: Sequence[int] | None = None,
     stimulation: Sequence[Mapping] = (),
+    stim_events: Sequence[tuple] | None = (),
+    finished: bool = True,
     notes: Mapping[str, Sequence[tuple[str, dict]]] | None = None,
     producer: str = "acme",
     label: str = "slice 3",
@@ -213,6 +215,15 @@ def _physical_session(
             "channel": [d[2] for d in dropped],
         },
     }
+    if stim_events is not None:  # (frame, channel, value, program, event, timing)
+        tables["stim_events"] = {
+            "frame": np.asarray([r[0] for r in stim_events], dtype=np.uint64),
+            "channel": [r[1] for r in stim_events],
+            "value": np.asarray([r[2] for r in stim_events], dtype=np.float32),
+            "program": np.asarray([r[3] for r in stim_events], dtype=np.uint32),
+            "event": np.asarray([r[4] for r in stim_events], dtype=np.uint32),
+            "timing": [r[5] for r in stim_events],
+        }
     if gaps is not None:
         tables["gaps"] = {
             "frame": np.asarray([g[0] for g in gaps], dtype=np.uint64),
@@ -255,8 +266,9 @@ def _physical_session(
         },
         "compressed_bytes": 0,
         "group": group,
-        "finished_at": "2026-10-04T09:20:00.000000+00:00",
     }
+    if finished:
+        attributes["finished_at"] = "2026-10-04T09:20:00.000000+00:00"
     if tick_rate is not None:
         attributes["hardware_tick_rate_hz"] = float(tick_rate)
     _node(rsf, attributes)

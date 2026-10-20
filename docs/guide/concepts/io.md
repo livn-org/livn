@@ -42,8 +42,11 @@ mea = MEA(
     electrode_coordinates=None,   # uses default 4x4 grid
     input_radius=250,             # stimulation radius in µm
     output_radius=250,            # recording radius in µm
+    max_current_uA=100.0,         # the stimulator's range, in µA
 )
 ```
+
+`max_current_uA` is the stimulator's range limit. livn does not clip the simulated current, but it is used to store in a way that is consistent with real recordings ([Storing a run](/guide/concepts/env#storing-a-run)). The default, 100 µA, is a common MEA stimulator's range.
 
 ### Electrode layout
 

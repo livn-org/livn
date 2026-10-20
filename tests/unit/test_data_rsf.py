@@ -660,17 +660,19 @@ def test_a_session_without_spikes_says_so(tmp_path):
 
 
 def test_inputs_are_stored_on_the_frame_grid(tmp_path):
-    inputs = np.arange(15, dtype=np.float32).reshape(5, 3)  # 1 ms rows, 3 channels
+    inputs = np.arange(15, dtype=np.float32).reshape(5, 3)  # 1 ms rows, 3 channels, uA
     session = str(tmp_path / "session")
     store(_run(), session, _Env(), inputs=inputs, inputs_dt=1.0)
     recording = load(session).recording
 
     # 0.1 ms frames hold each 1 ms row for ten frames; the run is 5 ms long
-    got = recording.inputs(0, 0, N_FRAMES)
+    got = recording.inputs(0, 0, N_FRAMES, physical=True)
     assert got.dtype == np.float32 and got.shape == (N_FRAMES, 3)
-    np.testing.assert_array_equal(got, np.repeat(inputs, 10, axis=0))
-    np.testing.assert_array_equal(recording.inputs(0, 12, 3), got[12:15])
-    assert recording.ext("livn", "simulation.json")["inputs"]["source_dt"] == 1.0
+    np.testing.assert_allclose(got, np.repeat(inputs, 10, axis=0), rtol=1e-6)
+    np.testing.assert_array_equal(recording.inputs(0, 12, 3, physical=True), got[12:15])
+    (record,) = recording.stimulation_records()
+    assert record["livn"]["source_dt"] == 1.0 and record["livn"]["units"] == "uA"
+    assert record["livn"]["channels"] == [0, 1, 2]
 
 
 def test_a_policy_is_recorded_and_rendered(tmp_path):
@@ -691,9 +693,37 @@ def test_a_policy_is_recorded_and_rendered(tmp_path):
 
     simulation = load(session).simulation
     assert simulation["stimulus"]["cls"].endswith("BiphasicPulsePolicy")
-    delivered = recording.inputs(0, 0, N_FRAMES)
-    np.testing.assert_allclose(delivered[:, 1][:6], [-2, -2, 0, 2, 2, 0])
+    assert simulation["stimulus"]["record"] == 0
+    # livn writes the cathodic phase first and negative; RSF states it positive, a
+    # fraction of the MEA's 100 uA range, and physical=True turns it back
+    np.testing.assert_allclose(
+        recording.inputs(0, 0, 6)[:, 1], [0.02, 0.02, 0, -0.02, -0.02, 0], rtol=1e-6
+    )
+    delivered = recording.inputs(0, 0, N_FRAMES, physical=True)
+    np.testing.assert_allclose(delivered[:, 1][:6], [-2, -2, 0, 2, 2, 0], rtol=1e-6)
     assert not delivered[:, [0, 2]].any() and not delivered[6:].any()
+    assert rsf._livn_scale("electrode", 100.0) == -100.0
+    assert rsf._livn_scale("light", 2.0) == 2.0
+
+    rows = recording.stim_events()
+    np.testing.assert_array_equal(rows.frame, [0, 2, 3, 5])
+    np.testing.assert_array_equal(rows.event, [0, 1, 2, 3])
+    assert set(rows.channel) == {"electrode/1"} and set(rows.timing) == {"simulated"}
+    (record,) = recording.stimulation_records()
+    assert record["kind"] == "electrode" and record["timing"] == "simulated"
+    assert [c["id"] for c in record["channels"]] == [
+        "electrode/0",
+        "electrode/1",
+        "electrode/2",
+    ]
+    assert record["channels"][2]["shape"] == {
+        "kind": "contact",
+        "contact_id": 2,
+        "x": 200.0,
+        "y": 0.0,
+    }
+    assert recording.stimulus_full_scales()["electrode/1"]["value"] == 100.0
+    assert record["livn"]["stimulus"]["cls"].endswith("BiphasicPulsePolicy")
 
 
 def test_a_spec_only_stimulus_keeps_working_and_has_no_inputs(tmp_path):
@@ -701,8 +731,10 @@ def test_a_spec_only_stimulus_keeps_working_and_has_no_inputs(tmp_path):
     store(_run(), session, _Env(), stimulus={"cls": "x.Y", "kwargs": {"a": 1}})
     recording = load(session).recording
     assert load(session).simulation["stimulus"] == {"cls": "x.Y", "kwargs": {"a": 1}}
-    with pytest.raises(Missing, match="no input series"):
+    with pytest.raises(Missing, match="no delivered stimulus"):
         recording.inputs(0, 0, 5)
+    assert recording.stimulation_records() == [] and len(recording.stim_events()) == 0
+    assert load(session).conditions().inputs is None
 
 
 def test_inputs_must_fit_the_stimulating_channels(tmp_path):
@@ -712,7 +744,178 @@ def test_inputs_must_fit_the_stimulating_channels(tmp_path):
         )
     with pytest.raises(RSFError, match="inputs_dt"):
         store(_run(), str(tmp_path / "b"), _Env(), inputs=np.zeros((5, 3)))
-    assert not os.path.exists(tmp_path / "a") and not os.path.exists(tmp_path / "b")
+    # a current beyond the stimulator's range is not a fraction of it
+    with pytest.raises(RSFError, match="max_current_uA"):
+        store(
+            _run(),
+            str(tmp_path / "c"),
+            _Env(),
+            inputs=np.full((5, 3), 150.0),
+            inputs_dt=1.0,
+        )
+    for name in "abc":
+        assert not os.path.exists(tmp_path / name)
+
+    wide = MEA(np.asarray(_Env().io.electrode_coordinates), max_current_uA=500.0)
+    session = str(tmp_path / "wide")
+    store(_run(), session, _Env(io=wide), inputs=np.full((5, 3), 150.0), inputs_dt=1.0)
+    recording = load(session).recording
+    np.testing.assert_allclose(recording.inputs(0, 0, 1), [[-0.3, -0.3, -0.3]])
+    assert recording.stimulus_full_scales()["electrode/0"]["value"] == 500.0
+    assert load(session).io.max_current_uA == 500.0
+
+
+def _light_io(*wavelengths, irradiance=2.0):
+    from livn.io import PatternedLight
+
+    lights = [
+        PatternedLight(
+            [[3, 10.0 * k, 0.0, 30.0], [7, 50.0, 20.0, 40.0]],
+            irradiance=irradiance * (k + 1),
+            wavelength=w,
+            labels=["near", "far"],
+        )
+        for k, w in enumerate(wavelengths)
+    ]
+    return ComposedIO(lights[0] if len(lights) == 1 else lights, _Env().io)
+
+
+def test_a_light_session_round_trips(tmp_path):
+    io = _light_io(470.0)
+    inputs = np.zeros((N_FRAMES, 2), dtype=np.float32)
+    inputs[5:20, 0] = 1.0
+    inputs[10:N_FRAMES, 1] = 0.25  # still on at the end
+    session = str(tmp_path / "lit")
+    store(_run(), session, _Env(io=io), inputs=inputs, inputs_dt=DT)
+    recording = load(session).recording
+
+    np.testing.assert_array_equal(recording.inputs(0, 0, N_FRAMES), inputs)
+    np.testing.assert_allclose(
+        recording.inputs(0, 0, N_FRAMES, physical=True), inputs * 2.0
+    )
+    channels = recording.stimulus_channels()
+    assert [c["id"] for c in channels] == ["light/3", "light/7"]
+    assert channels[1]["shape"] == {
+        "kind": "disc",
+        "x": 50.0,
+        "y": 20.0,
+        "radius": 40.0,
+    }
+    assert channels[0]["label"] == "near" and channels[0]["wavelength_nm"] == 470.0
+    assert channels[0]["full_scale"] == {"units": "mW/mm2", "value": 2.0}
+    assert channels[0]["kind"] == "light" and channels[0]["index"] == 0
+
+    # the program is closed at the store's length, the point after the last frame
+    rows = recording.stim_events()
+    closing = rows.frame == N_FRAMES
+    assert set(rows.channel[closing]) == {"light/3", "light/7"}
+    assert not rows.value[closing].any()
+    assert rows.event[closing].tolist() == [rows.event.max()] * 2
+
+    # the light reads back as the device that delivered it
+    light = recording.stimulus_io()
+    np.testing.assert_array_equal(
+        np.asarray(light.spots)[:, 1:], np.asarray(io.inputs.spots)[:, 1:]
+    )
+    assert light.irradiance == 2.0 and light.wavelength == 470.0
+    assert light.labels == ["near", "far"]
+
+
+def test_several_devices_are_several_programs(tmp_path):
+    io = _light_io(470.0, 590.0)
+    inputs = np.zeros((N_FRAMES, 4), dtype=np.float32)
+    inputs[5:20, 0] = 1.0
+    inputs[8:12, 3] = 0.5  # the two programs overlap in time on their own channels
+    session = str(tmp_path / "two")
+    store(_run(), session, _Env(io=io), inputs=inputs, inputs_dt=DT)
+    recording = load(session).recording
+
+    records = recording.stimulation_records()
+    assert [r["kind"] for r in records] == ["light", "light"]
+    assert [c["id"] for c in recording.stimulus_channels()] == [
+        "light/0/3",
+        "light/0/7",
+        "light/1/3",
+        "light/1/7",
+    ]
+    assert [c["wavelength_nm"] for c in records[1]["channels"]] == [590.0, 590.0]
+    assert load(session).simulation["stimulus"] == {"records": [0, 1]}
+    rows = recording.stim_events()
+    assert set(
+        rows.program[np.char.startswith(rows.channel.astype(str), "light/1")]
+    ) == {1}
+    np.testing.assert_array_equal(recording.inputs(0, 0, N_FRAMES), inputs)
+
+    # two wavelengths are two PatternedLights, in the order of the inputs' columns
+    from livn.io import InputDevices
+
+    devices = recording.stimulus_io()
+    assert isinstance(devices, InputDevices) and devices.sizes == (2, 2)
+    assert [d.wavelength for d in devices.devices] == [470.0, 590.0]
+    assert [d.irradiance for d in devices.devices] == [2.0, 4.0]
+    np.testing.assert_array_equal(
+        devices.reach(np.asarray([[0, 0.0, 0.0, 0.0]])),
+        io.inputs.reach(np.asarray([[0, 0.0, 0.0, 0.0]])),
+    )
+
+    # an electrode and a light: one record each
+    from livn.io import PatternedLight
+
+    mixed = ComposedIO(
+        ["outputs", PatternedLight([[0, 0.0, 0.0, 30.0]], irradiance=1.5)], _Env().io
+    )
+    both = np.zeros((N_FRAMES, 4), dtype=np.float32)
+    both[0:2, 1] = -4.0  # cathodic, 4 uA
+    both[3:9, 3] = 1.0
+    session = str(tmp_path / "mixed")
+    store(_run(), session, _Env(io=mixed), inputs=both, inputs_dt=DT)
+    recording = load(session).recording
+    assert [r["kind"] for r in recording.stimulation_records()] == [
+        "electrode",
+        "light",
+    ]
+    assert recording.inputs(0, 0, 1)[0, 1] == pytest.approx(0.04)
+    np.testing.assert_allclose(
+        recording.inputs(0, 0, N_FRAMES, physical=True), both * [1, 1, 1, 1.5]
+    )
+    np.testing.assert_allclose(load(session).conditions().inputs, both, rtol=1e-6)
+    devices = recording.stimulus_io()
+    assert isinstance(devices.devices[0], MEA) and devices.sizes == (3, 1)
+    np.testing.assert_array_equal(
+        devices.devices[0].electrode_coordinates[:, :3],
+        np.asarray(_Env().io.electrode_coordinates)[:, :3],
+    )
+
+
+def test_a_device_rsf_cannot_place_gets_a_record_without_channels(tmp_path):
+    from livn.io import LightArray
+
+    io = ComposedIO(LightArray([[0, 0.0, 0.0, 0.0]]), _Env().io)
+    session = str(tmp_path / "fibre")
+    store(_run(), session, _Env(io=io), inputs=np.ones((5, 1)), inputs_dt=1.0)
+    recording = load(session).recording
+    (record,) = recording.stimulation_records()
+    assert "kind" not in record and record["livn"]["units"] == "mW"
+    assert len(recording.stim_events()) == 0
+    with pytest.raises(Missing, match="no delivered stimulus"):
+        recording.inputs(0, 0, 5)
+
+
+def test_a_masked_session_leaves_its_channels_unplaced(tmp_path):
+    session = str(tmp_path / "masked")
+    store(
+        _run(),
+        session,
+        _Env(io=_light_io(470.0)),
+        inputs=np.ones((5, 2), dtype=np.float32),
+        inputs_dt=1.0,
+        withhold=[{"mask": {"fields": ["electrode_positions"]}}],
+    )
+    recording = load(session).recording
+    assert {c["shape"]["kind"] for c in recording.stimulus_channels()} == {"unplaced"}
+    np.testing.assert_array_equal(recording.inputs(0, 0, 3), np.ones((3, 2)))
+    with pytest.raises(ValueError, match="unplaced"):
+        recording.stimulus_io()
 
 
 @pytest.fixture
@@ -960,9 +1163,31 @@ def test_what_livn_cannot_read_is_refused(tmp_path, physical, physical_session):
         physical("markers", anchors=None, markers=[(5, "x")]).stim_markers()
 
 
-def test_stimulation_records_are_read_as_written_and_not_interpreted(physical):
-    """RSF defines a record's ``started_at`` only; the rest is the producer's, so the records
-    come back raw and are not rendered as inputs."""
+def _light_record(scale=None, lag=250, **extra):
+    def spot(n, x):
+        return {
+            "id": f"light/s{n}",
+            "shape": {"kind": "disc", "x": x, "y": 0.0, "radius": 25.0},
+            "full_scale": {"units": "mW/mm2", "value": scale},
+            "bipolar": False,
+            "wavelength_nm": None,
+            "label": f"spot {n}",
+        }
+
+    return {
+        "started_at": "2026-10-04T09:12:34Z",
+        "kind": "light",
+        "channels": [spot(1, 0.0), spot(2, 100.0)],
+        "marker_channel": "di-0",
+        "marker_edge": "onset",
+        "timing": "marker",
+        "placement_lag_ms": lag,
+        "acme": {"program": [1, 2]},
+        **extra,
+    }
+
+
+def test_records_without_the_neutral_members_have_no_stimulus(physical):
     written = [
         {"started_at": "2026-10-04T09:12:34Z", "program": {"segments": [[1, 5]]}},
         {"started_at": "2026-10-04T09:13:00Z"},
@@ -971,11 +1196,176 @@ def test_stimulation_records_are_read_as_written_and_not_interpreted(physical):
     assert recording.stimulation_records() == [
         {**record, "index": i} for i, record in enumerate(written)
     ]
-    with pytest.raises(
-        Missing, match="neutral representation of the delivered stimulus"
-    ):
+    assert recording.stimulus_channels() == []
+    with pytest.raises(Missing, match="no delivered stimulus"):
         recording.inputs(0, 0, 10)
     assert physical("none").stimulation_records() == []
+    # a store from before stim_events: no table, no stimulus
+    old = physical("old", stimulation=written, stim_events=None)
+    assert len(old.stim_events()) == 0
+    with pytest.raises(Missing):
+        old.inputs(0, 0, 10)
+
+
+def test_the_best_placed_row_wins_its_key(physical):
+    rows = [
+        (100, "light/s1", 1.0, 0, 0, "marker"),
+        (105, "light/s1", 1.0, 0, 0, "schedule"),  # later in the table, placed worse
+        (210, "light/s1", 0.0, 0, 1, "sidereal"),  # a source the spec does not define
+        (205, "light/s1", 0.0, 0, 1, "schedule"),
+        (300, "light/s2", 0.6, 0, 2, "schedule"),
+        (302, "light/s2", 0.6, 0, 2, "schedule"),  # one source twice: the later row
+        (400, "light/s2", 0.0, 0, 3, "from_marker"),
+    ]
+    recording = physical("supersede", stimulation=[_light_record()], stim_events=rows)
+    raw = recording.stim_events(resolve=False)
+    assert len(raw) == len(rows) and raw.timing[2] == "sidereal"
+    resolved = recording.stim_events()
+    np.testing.assert_array_equal(resolved.frame, [100, 205, 302, 400])
+    np.testing.assert_array_equal(
+        resolved.timing, ["marker", "schedule", "schedule", "from_marker"]
+    )
+    # the same rows in another order resolve alike
+    shuffled = physical(
+        "shuffled", stimulation=[_light_record()], stim_events=rows[::-1]
+    ).stim_events()
+    np.testing.assert_array_equal(shuffled.frame, [100, 205, 300, 400])
+
+    got = recording.inputs(0, 0, 500)
+    assert got.shape == (500, 2)
+    assert not got[:100].any() and (got[100:205, 0] == 1).all()
+    assert not got[205:, 0].any()
+    np.testing.assert_allclose(got[302:400, 1], 0.6)
+    assert not got[400:, 1].any() and not got[:302, 1].any()
+
+
+def test_a_value_holds_across_a_window_without_events(physical):
+    rows = [
+        (10, "light/s1", 0.5, 0, 0, "marker"),
+        (900, "light/s1", 0.0, 0, 1, "from_marker"),
+    ]
+    recording = physical("held", stimulation=[_light_record()], stim_events=rows)
+    np.testing.assert_allclose(recording.inputs(0, 400, 20)[:, 0], 0.5)
+    assert not recording.inputs(0, 400, 20)[:, 1].any()
+    np.testing.assert_allclose(recording.inputs(0, 895, 10)[:, 0], [0.5] * 5 + [0] * 5)
+
+
+def test_a_calibration_gives_a_light_its_full_scale(physical, rsf_note):
+    rows = [
+        (10, "light/s1", 0.5, 0, 0, "marker"),
+        (10, "light/s2", 1.0, 0, 0, "marker"),
+    ]
+
+    def calibration(item, at, value, *, removed=False):
+        version = rsf_note(item, at, "" if removed else "power meter", removed=removed)
+        return {
+            **version,
+            "full_scale": {"units": "mW/mm2", "value": value},
+            "measured_at": "2026-10-06T14:05:00Z",
+            "method": None if removed else "power meter at the sample plane",
+        }
+
+    uid = "0123456789abcdef0123456789abcdef"
+    notes = {
+        "stimulus_calibration": [
+            (
+                f"20261006T142208.311904Z-{uid}.json",
+                calibration("light/s1", "2026-10-06T14:22:08.311904Z", 12.4),
+            ),
+            (
+                f"20261006T150000.000000Z-{uid}.json",
+                calibration("light/s1", "2026-10-06T15:00:00.000000Z", 12.9),
+            ),
+            # a unit that is not the channel's is no calibration of it
+            (
+                f"20261006T160000.000000Z-{uid}.json",
+                {
+                    **calibration("light/s2", "2026-10-06T16:00:00.000000Z", 3.0),
+                    "full_scale": {"units": "uA", "value": 3.0},
+                },
+            ),
+        ]
+    }
+    recording = physical(
+        "calibrated", stimulation=[_light_record()], stim_events=rows, notes=notes
+    )
+    scales = recording.stimulus_full_scales()
+    assert scales["light/s1"]["value"] == 12.9
+    assert scales["light/s1"]["source"] == "calibration"
+    assert scales["light/s2"] == {
+        "units": "mW/mm2",
+        "value": None,
+        "source": "record",
+        "measured_at": None,
+        "method": None,
+        "text": None,
+    }
+    with pytest.raises(Missing, match="light/s2"):
+        recording.inputs(0, 10, 1, physical=True)
+    assert recording.stimulus_io().devices[0].irradiance == 12.9
+
+    measured = physical(
+        "measured",
+        stimulation=[_light_record(scale=2.0)],
+        stim_events=rows,
+        notes=notes,
+    )
+    np.testing.assert_allclose(
+        measured.inputs(0, 10, 1, physical=True), [[0.5 * 12.9, 2.0]]
+    )
+    # a removed calibration falls back to the record
+    notes["stimulus_calibration"].append(
+        (
+            f"20261007T000000.000000Z-{uid}.json",
+            calibration("light/s1", "2026-10-07T00:00:00.000000Z", None, removed=True),
+        )
+    )
+    removed = physical(
+        "removed", stimulation=[_light_record(scale=2.0)], stim_events=rows, notes=notes
+    )
+    assert removed.stimulus_full_scales()["light/s1"]["value"] == 2.0
+
+
+def test_a_growing_store_says_how_far_its_stimulus_is_final(
+    physical, physical_session, tmp_path
+):
+    rows = [(100, "light/s1", 1.0, 0, 0, "schedule")]
+    path = physical_session(
+        str(tmp_path / "live"),
+        stimulation=[_light_record(lag=25)],
+        stim_events=rows,
+        finished=False,
+    )
+    with pytest.raises(RSFError, match="growing=True"):
+        rsf.RsfRecording(path)
+    recording = rsf.RsfRecording(path, growing=True)
+    # 1000 frames at 10 kHz, schedule rows up to 25 ms late
+    assert recording.stimulus_final_to == 1000 - 250
+    np.testing.assert_allclose(recording.inputs(0, 99, 2)[:, 0], [0.0, 1.0])
+    assert recording.__getstate__()["growing"] is True
+    done = physical("done", stimulation=[_light_record(lag=25)], stim_events=rows)
+    assert done.stimulus_final_to == 1000
+
+
+def test_the_reference_stimulus_session_reads(tmp_path):
+    root = os.environ.get("LIVN_RSF_FIXTURES")
+    if not root or not os.path.isdir(os.path.join(root or "", "stimulus")):
+        pytest.skip("LIVN_RSF_FIXTURES names no generated stimulus session")
+    recording = rsf.RsfRecording(os.path.join(root, "stimulus"))
+    ids = [c["id"] for c in recording.stimulus_channels()]
+    assert ids == ["light/s1-7f3a", "light/s2-7f3a", "electrode/35"]
+    got = recording.inputs(0, 0, recording.num_samples())
+    want = np.zeros_like(got)
+    want[300:310, 0] = want[900:910, 0] = 1.0
+    want[1500:1800, :2] = 0.6
+    want[2400:2404, 2], want[2404:2408, 2] = 0.2, -0.2
+    np.testing.assert_allclose(got, want)
+    scales = recording.stimulus_full_scales()
+    assert scales["light/s1-7f3a"]["value"] == 12.9
+    assert scales["light/s2-7f3a"]["value"] is None
+    assert scales["electrode/35"]["value"] == 100.0
+    devices = recording.stimulus_io()
+    assert devices.sizes == (1, 1, 1)  # spot 1 measured, spot 2 relative, the contact
 
 
 def test_the_rsf_conformance_fixtures_read(tmp_path):

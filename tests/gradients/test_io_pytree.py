@@ -17,6 +17,7 @@ def test_the_mea_pytree_round_trip_keeps_the_detector():
         detection_threshold=0.2,
         threshold_sigma=4.0,
         dead_time=1.5,
+        max_current_uA=250.0,
         spike_profile={"distance": [0, 50, 100], "trough_uV": [-80, -20, -5]},
     )
     mea.attach_spike_profile({"distance": [0, 10], "trough_uV": [-50, -5]})
@@ -27,6 +28,7 @@ def test_the_mea_pytree_round_trip_keeps_the_detector():
         "detection_threshold",
         "threshold_sigma",
         "dead_time",
+        "max_current_uA",
         "spike_profile",
         "_attached_profile",
         "input_radius",

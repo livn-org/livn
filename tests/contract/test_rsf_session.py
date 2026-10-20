@@ -113,7 +113,7 @@ def test_the_session_names_the_sections_in_its_traces(recorded, session):
     )
 
 
-def test_the_delivered_input_is_stored_as_a_series(recorded, tmp_path_factory):
+def test_the_delivered_input_is_stored_as_stimulus_events(recorded, tmp_path_factory):
     from livn.data.rsf import RsfRecording, store
 
     env, run = recorded
@@ -124,14 +124,19 @@ def test_the_delivered_input_is_stored_as_a_series(recorded, tmp_path_factory):
 
     recording = RsfRecording(path)
     n = recording.num_samples(0)
-    delivered = recording.inputs(0, 0, n)
+    delivered = recording.inputs(0, 0, n, physical=True)
     assert delivered.shape == (n, env.io.num_channels)
     # frame i is at i * dt ms and holds the 1 ms row it falls in
     rows = np.minimum(
         np.floor(np.arange(n) * 1000.0 / recording.fs + 1e-9).astype(int), DURATION - 1
     )
-    np.testing.assert_array_equal(delivered, inputs[rows])
-    assert delivered.max() == np.float32(AMPLITUDE)
+    np.testing.assert_allclose(delivered, inputs[rows], rtol=1e-6)
+    # stored as fractions of the stimulator's range, cathodic positive
+    fractions = recording.inputs(0, 0, n)
+    np.testing.assert_allclose(
+        fractions, -inputs[rows] / env.io.max_current_uA, rtol=1e-6
+    )
+    assert len(recording.stim_events()) == 2 * env.io.num_channels
 
 
 def test_a_run_goes_through_the_arrow_layout(recorded, tmp_path_factory):

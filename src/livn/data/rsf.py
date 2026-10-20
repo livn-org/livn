@@ -31,7 +31,6 @@ RECORD_KEY = f"{RSF}_provenance"
 POINT_SOURCE = f"{RSF}.point_source/1"
 LIVN_IO = "livn.io/1"
 OPERATOR_PATH = f"traces.zarr/{RSF}/observe.json"
-INPUTS = "inputs"
 
 DEFAULT_GAIN_UV = 0.195
 PROBEINTERFACE_VERSION = "0.3.2"
@@ -40,6 +39,16 @@ MASK_FIELDS = ("electrode_positions", "source_positions")
 
 TRACE_DTYPES = ("int16", "int32")
 NOTE_KINDS = ("label", "description", "note")
+CALIBRATION = "stimulus_calibration"
+
+TIMING_RANK = {
+    "marker": 4,
+    "from_marker": 3,
+    "device_clock": 2,
+    "schedule": 1,
+    "simulated": 1,
+}
+STIM_COLUMNS = ("frame", "channel", "value", "program", "event", "timing")
 
 
 class RSFError(ValueError):
@@ -104,11 +113,11 @@ def store(
         currents: Also write ``ground_truth/currents.zarr``
         stimulus: ``{"cls", "kwargs"}`` of what drove the run, or the channel-space
             :class:`~livn.policy.Policy` itself (whose spec is recorded and whose rendered
-            array is stored as the input series unless ``inputs`` is given); ``None`` for
+            array is the delivered input unless ``inputs`` is given); ``None`` for
             spontaneous activity
         inputs: The delivered per-channel input, ``(timestep, n_channels)`` over the stimulating
-            IO's channels, starting at the run's ``t0``. It is stored at the traces' frame rate
-            (zero-order hold; zero past its end) so :meth:`RsfRecording.inputs` can serve it
+            IO's channels in its input units, starting at the run's ``t0``. It is held on the
+            traces' frame grid (zero-order hold; zero past its end).
         inputs_dt: Sampling interval of ``inputs`` in ms; defaults to the policy's ``dt``
         gain_uV: uV per LSB of the stored traces; a sample outside ``dtype`` is an error
             (livn never clips, so every row's ``clipped_samples`` is 0)
@@ -306,13 +315,13 @@ def _prepare(
         "stimulus": None if stimulus is None else _plain(stimulus),
     }
 
+    stimulation, stim_events = _programs(io, delivered, stimulus, masked, started_at)
+    cited = [i for i, record in enumerate(stimulation) if "kind" in record]
+    if cited:
+        cite = {"record": cited[0]} if len(cited) == 1 else {"records": cited}
+        simulation["stimulus"] = {**(simulation["stimulus"] or {}), **cite}
+
     run_extras: dict[str, Any] = {}
-    if delivered is not None:
-        run_extras["inputs"] = {
-            "channels": delivered["ids"],
-            "units": delivered["units"],
-            "source_dt": delivered["source_dt"],
-        }
     if projected is not None:
         run_extras["trace_sections"] = projected["contributing"]
         if projected["unplaced"]:
@@ -355,6 +364,7 @@ def _prepare(
         ("observe.json", observe),
         ("simulation.json", simulation),
         ("the record", record),
+        *(("a stimulation record", r) for r in stimulation),
         *ext.items(),
     ):
         _json(document, name)
@@ -374,7 +384,8 @@ def _prepare(
         "spikes": spikes,
         "sources": sources,
         "truth": truth,
-        "inputs": delivered,
+        "stimulation": stimulation,
+        "stim_events": stim_events,
         "record": record,
         "observe": observe,
         "simulation": simulation,
@@ -486,22 +497,20 @@ def _write(plan: dict) -> None:
     markers = zarr.open_group(os.path.join(rsf, "stim_markers"), mode="w")
     _array(markers, "tick", np.zeros(0, dtype=np.uint64))
     _strings(markers, "channel", [])
-    if plan["inputs"] is not None:
-        delivered = zarr.open_group(
-            os.path.join(rsf, INPUTS),
-            mode="w",
-            attributes={
-                "units": plan["inputs"]["units"],
-                "source_dt": plan["inputs"]["source_dt"],
-            },
-        )
-        _strings(delivered, "channel_ids", plan["inputs"]["ids"])
-        _array(
-            delivered,
-            "values",
-            plan["inputs"]["values"],
-            chunks=_chunks(plan["fs"], plan["inputs"]["values"]),
-        )
+    events = zarr.open_group(os.path.join(rsf, "stim_events"), mode="w")
+    for name in STIM_COLUMNS:
+        column = plan["stim_events"][name]
+        if name in ("channel", "timing"):
+            _strings(events, name, column)
+        else:
+            _array(events, name, column)
+    if plan["stimulation"]:
+        _group_node(os.path.join(rsf, "stimulation"), {})
+        for index, attribute in enumerate(plan["stimulation"]):
+            _group_node(
+                os.path.join(rsf, "stimulation", f"{index:04d}"),
+                {"stimulation": attribute},
+            )
     dropped = zarr.open_group(os.path.join(rsf, "dropped_spans"), mode="w")
     _array(dropped, "frame_start", np.zeros(0, dtype=np.uint64))
     _array(dropped, "n_frames", np.zeros(0, dtype=np.uint32))
@@ -664,6 +673,181 @@ def _delivered(io, given: dict, dt: float, n_frames: int) -> dict:
     series = np.zeros((n_frames, len(ids)), dtype=np.float32)
     series[inside] = values[rows[inside]]
     return {"ids": ids, "values": series, "source_dt": dt_in, "units": units}
+
+
+def _livn_scale(kind: str, full_scale: float) -> float:
+    """livn's quantity for an RSF stimulus value of 1.0 on a channel of ``kind``."""
+    return -float(full_scale) if kind == "electrode" else float(full_scale)
+
+
+def _stimulating_devices(io) -> list:
+    from livn.io import ComposedIO, InputDevices
+
+    device = io.inputs if isinstance(io, ComposedIO) else io
+    return list(device.devices) if isinstance(device, InputDevices) else [device]
+
+
+def _no_events() -> dict:
+    return {
+        "frame": np.zeros(0, dtype=np.uint64),
+        "channel": [],
+        "value": np.zeros(0, dtype=np.float32),
+        "program": np.zeros(0, dtype=np.uint32),
+        "event": np.zeros(0, dtype=np.uint32),
+        "timing": [],
+    }
+
+
+def _programs(io, delivered, spec, masked: set[str], started_at: str):
+    """``(records, stim_events)``: one stimulation record per stimulating device, in device
+    order (a ``ComposedIO``'s ``InputDevices`` are several), and the rows of every program.
+
+    A device RSF has no channel object for (a ``LightArray``'s fibres command source power,
+    not a fraction of an irradiance at the sample) gets a record without the neutral members.
+    """
+    from livn.io import MEA, InputDevices, PatternedLight
+
+    if delivered is None:
+        return [], _no_events()
+    devices = _stimulating_devices(io)
+    values = delivered["values"]
+    parts = InputDevices._of(devices).split(values) if len(devices) > 1 else [values]
+    records, tables = [], []
+    for program, (device, part) in enumerate(zip(devices, parts, strict=True)):
+        livn = {
+            "channels": [_id_value(c) for c in np.asarray(device.channel_ids).ravel()],
+            "units": delivered["units"]
+            if len(devices) == 1
+            else getattr(device, "input_units", None),
+            "source_dt": delivered["source_dt"],
+            "stimulus": None if spec is None else _plain(spec),
+        }
+        record: dict[str, Any] = {"started_at": started_at}
+        if isinstance(device, MEA):
+            kind = "electrode"
+        elif isinstance(device, PatternedLight):
+            kind = "light"
+        else:
+            records.append({**record, PRODUCER: livn})
+            continue
+        prefix = kind if len(devices) == 1 else f"{kind}/{program}"
+        channels, fractions = _channels(device, kind, prefix, part, masked)
+        records.append(
+            {
+                **record,
+                "kind": kind,
+                "channels": channels,
+                "marker_channel": None,
+                "marker_edge": None,
+                "timing": "simulated",
+                "placement_lag_ms": 0,
+                PRODUCER: livn,
+            }
+        )
+        tables.append(_events(program, [c["id"] for c in channels], fractions))
+    if not tables:
+        return records, _no_events()
+    return records, {
+        name: (
+            [v for t in tables for v in t[name]]
+            if name in ("channel", "timing")
+            else np.concatenate([t[name] for t in tables])
+        )
+        for name in STIM_COLUMNS
+    }
+
+
+def _channels(device, kind: str, prefix: str, values: np.ndarray, masked: set[str]):
+    """The channel objects of one device, and its commands as fractions of full scale."""
+    unplaced = "electrode_positions" in masked
+    channels = []
+    if kind == "light":
+        scale = float(device.irradiance)
+        if not scale > 0 or not math.isfinite(scale):
+            raise RSFError(
+                f"the PatternedLight's irradiance is {scale}; a session states it as the "
+                "channels' full scale, which is a positive number of mW/mm2"
+            )
+        spots = np.asarray(device.spots, dtype=np.float64)
+        labels = device.labels or [None] * len(spots)
+        for row, label in zip(spots, labels, strict=True):
+            channels.append(
+                {
+                    "id": f"{prefix}/{_id_str(row[0])}",
+                    "shape": {"kind": "unplaced"}
+                    if unplaced
+                    else {
+                        "kind": "disc",
+                        "x": float(row[1]),
+                        "y": float(row[2]),
+                        "radius": float(row[3]),
+                    },
+                    "full_scale": {"units": "mW/mm2", "value": scale},
+                    "bipolar": False,
+                    "wavelength_nm": float(device.wavelength),
+                    "label": label,
+                }
+            )
+        low, knob = 0.0, "the PatternedLight's irradiance"
+    else:
+        scale = float(device.max_current_uA)
+        for row in np.asarray(device.electrode_coordinates, dtype=np.float64):
+            contact = _id_value(row[0])
+            channels.append(
+                {
+                    "id": f"{prefix}/{_id_str(row[0])}",
+                    "shape": {"kind": "unplaced"}
+                    if unplaced
+                    else {
+                        "kind": "contact",
+                        "contact_id": contact,
+                        "x": float(row[1]),
+                        "y": float(row[2]),
+                    },
+                    "full_scale": {"units": "uA", "value": scale},
+                    "bipolar": True,
+                    "wavelength_nm": None,
+                    "label": None,
+                }
+            )
+        low, knob = -1.0, "MEA(max_current_uA=...)"
+
+    values = np.asarray(values, dtype=np.float64)
+    if not np.all(np.isfinite(values)):
+        raise RSFError("the delivered input holds a NaN or an infinity")
+    # a PatternedLight's command is already a fraction of its irradiance, the full scale
+    fractions = values if kind == "light" else values / _livn_scale(kind, scale)
+    if fractions.size and (fractions.max() > 1 + 1e-6 or fractions.min() < low - 1e-6):
+        peak = float(np.abs(values).max())
+        raise RSFError(
+            f"the delivered {kind} input reaches {peak:.6g} {device.input_units}, beyond "
+            f"its full scale {scale:g} ({'mW/mm2' if kind == 'light' else 'uA'}); a "
+            f"session states it as a fraction of that, so raise {knob}"
+        )
+    return channels, np.clip(fractions, low, 1.0).astype(np.float32)
+
+
+def _events(program: int, ids: list[str], fractions: np.ndarray) -> dict:
+    n_frames, n = fractions.shape
+    previous = np.zeros_like(fractions)
+    previous[1:] = fractions[:-1]
+    frames, columns = np.nonzero(
+        fractions != previous
+    )  # ordered by frame, then channel
+    values = fractions[frames, columns]
+    if n_frames and fractions[-1].any():
+        frames = np.concatenate([frames, np.full(n, n_frames)])
+        columns = np.concatenate([columns, np.arange(n)])
+        values = np.concatenate([values, np.zeros(n, dtype=np.float32)])
+    edges = np.unique(frames)
+    return {
+        "frame": frames.astype(np.uint64),
+        "channel": [ids[c] for c in columns.tolist()],
+        "value": values.astype(np.float32),
+        "program": np.full(len(frames), program, dtype=np.uint32),
+        "event": np.searchsorted(edges, frames).astype(np.uint32),
+        "timing": ["simulated"] * len(frames),
+    }
 
 
 def _sampling_frequency(dt: float) -> float:
@@ -1178,14 +1362,32 @@ class StimMarkers:
         return len(self.tick)
 
 
+@dataclass(frozen=True)
+class StimEvents:
+    frame: np.ndarray
+    channel: np.ndarray
+    value: np.ndarray
+    program: np.ndarray
+    event: np.ndarray
+    timing: np.ndarray
+
+    def __len__(self) -> int:
+        return len(self.frame)
+
+
 class RsfRecording:
     """A session opened lazily: the zarr arrays stay on disk and :meth:`read` touches only
     the chunks of the window it is asked for, so it is cheap to call from many threads
     (a read is a plain zarr slice). Pickling keeps the path and reopens on the other side.
+
+    ``growing=True`` opens a store that is still being written (no ``finished_at``): its
+    tables are read to their shortest column, and :attr:`stimulus_final_to` says how far its
+    delivered stimulus is final.
     """
 
-    def __init__(self, path: str | os.PathLike):
+    def __init__(self, path: str | os.PathLike, *, growing: bool = False):
         self.path = os.fspath(path)
+        self.growing = bool(growing)
         self._open()
 
     def _open(self) -> None:
@@ -1206,9 +1408,11 @@ class RsfRecording:
             raise RSFError(
                 f"{path} is RSF format {group_attrs.get('format')!r}; livn reads format {FORMAT}"
             )
-        if not group_attrs.get("finished_at"):
+        self.finished = bool(group_attrs.get("finished_at"))
+        if not self.finished and not self.growing:
             raise RSFError(
-                f"{path} is not complete (traces.zarr has no finished_at); it may still be written"
+                f"{path} is not complete (traces.zarr has no finished_at); it may still be "
+                "written: open it with growing=True to follow it"
             )
 
         root = zarr.open_group(traces_path, mode="r")
@@ -1291,12 +1495,13 @@ class RsfRecording:
                 os.path.join(documents, "simulation.json"), encoding="utf-8"
             ) as f:
                 self.simulation = json.load(f)
+        self._documents = documents
+        self._held = None
         self.io = _read_operator(
             os.path.join(documents, "observe.json"),
             os.path.join(documents, "ext", PRODUCER, "observe.json"),
+            max_current_uA=self._electrode_range(),
         )
-        self._documents = documents
-        self._inputs_path = os.path.join(documents, INPUTS)
         self.bad_channels = np.zeros(0, dtype=np.int64)
         notes = _read_notes(os.path.join(documents, "notes"))
         self.label = _current_label(notes, group_attrs.get("label", ""))
@@ -1327,10 +1532,11 @@ class RsfRecording:
         }
 
     def __getstate__(self) -> dict:
-        return {"path": self.path}
+        return {"path": self.path, "growing": self.growing}
 
     def __setstate__(self, state: dict) -> None:
         self.path = state["path"]
+        self.growing = state.get("growing", False)
         self._open()
 
     @property
@@ -1540,21 +1746,6 @@ class RsfRecording:
         with open(path, encoding="utf-8") as f:
             return json.load(f)
 
-    def stimulation_records(self) -> list[dict]:
-        """The ``stimulation`` attribute of every ``rsf/stimulation/<NNNN>/``, in start order.
-        RSF defines only their ``started_at``; the rest is the producer's."""
-        root = os.path.join(self._documents, "stimulation")
-        if not os.path.isdir(root):
-            return []
-        records = []
-        for name in sorted(os.listdir(root)):
-            if not re.fullmatch(r"[0-9]{4}", name):
-                continue
-            record = _read_node(os.path.join(root, name)).get("stimulation")
-            if isinstance(record, Mapping):
-                records.append({**record, "index": int(name)})
-        return records
-
     def spikes(self, segment: int = 0) -> Events:
         self._segment(segment)
         from livn.run import Events
@@ -1567,23 +1758,261 @@ class RsfRecording:
             duration=self.num_samples() * self._dt,
         )
 
-    def inputs(self, segment, start, length) -> np.ndarray:
-        """The delivered input on the frame grid, float32 ``(length, channels)``: the series
-        livn stored with a simulated session (``traces.zarr/rsf/inputs``)."""
-        self._segment(segment)
-        if os.path.isdir(self._inputs_path):
-            values = _array_of(
-                _zarr().open_group(self._inputs_path, mode="r"), "values"
-            )
-            start, length = _window(start, length, int(values.shape[0]))
-            return np.asarray(values[start : start + length, :], dtype=np.float32)
-        raise Missing(
-            f"{self.path} stores no input series: livn saved it without `inputs` (or a "
-            "policy as `stimulus`), or another producer wrote it. RSF does not yet define a "
-            "neutral representation of the delivered stimulus (one that states, per stimulus "
-            "channel, the fraction of full scale it delivers from which frame), so livn does "
-            "not interpret a producer's rsf/stimulation records"
+    def stimulation_records(self) -> list[dict]:
+        """The ``stimulation`` attribute of every ``rsf/stimulation/<NNNN>/``, in start order,
+        each as written plus its ``index`` (the ``program`` of its ``stim_events`` rows). A
+        record with ``kind`` has the neutral members; the producer's own member (``livn``,
+        ...) is opaque to every other reader."""
+        root = os.path.join(self._documents, "stimulation")
+        if not os.path.isdir(root):
+            return []
+        records = []
+        for name in sorted(os.listdir(root)):
+            if not re.fullmatch(r"[0-9]{4}", name):
+                continue
+            record = _read_node(os.path.join(root, name)).get("stimulation")
+            if isinstance(record, Mapping):
+                records.append({**record, "index": int(name)})
+        return records
+
+    def stimulus_channels(self) -> list[dict]:
+        """The channels of every record with the neutral members, each the channel object
+        plus its record's ``kind`` and ``index``, once per ``id`` (one id is one shape and one
+        unit in every record that uses it), in order of first appearance: the columns of
+        :meth:`inputs`. For a session livn wrote, the stimulating IO's channels in order."""
+        seen: dict[str, dict] = {}
+        for record in self.stimulation_records():
+            if "kind" not in record:
+                continue
+            for channel in record.get("channels") or ():
+                if isinstance(channel, Mapping) and isinstance(channel.get("id"), str):
+                    seen.setdefault(
+                        channel["id"],
+                        {**channel, "kind": record["kind"], "index": record["index"]},
+                    )
+        return list(seen.values())
+
+    def stim_events(self, resolve: bool = True) -> StimEvents:
+        """The rows of ``rsf/stim_events``, read to the shortest column.
+
+        Resolved by default: of the rows of one key ``(program, event, channel)`` the one whose
+        timing source ranks highest wins (``marker`` > ``from_marker`` > ``device_clock`` >
+        ``schedule``; ``simulated`` stands alone; an unknown source lowest), ties to the later
+        row, and the winners are ordered by frame, then program, event and channel.
+        ``resolve=False`` gives every row in table order. A store from before the table has
+        none."""
+        table = _table(self._root, "stim_events", STIM_COLUMNS)
+        if table is None:
+            table = _no_events()
+        rows = StimEvents(
+            frame=np.asarray(table["frame"]).astype(np.int64),
+            channel=np.asarray([str(c) for c in table["channel"]], dtype=str),
+            value=np.asarray(table["value"]).astype(np.float32),
+            program=np.asarray(table["program"]).astype(np.int64),
+            event=np.asarray(table["event"]).astype(np.int64),
+            timing=np.asarray([str(t) for t in table["timing"]], dtype=str),
         )
+        if not resolve or not len(rows):
+            return rows
+        _, channel = np.unique(rows.channel, return_inverse=True)
+        sources, timing = np.unique(rows.timing, return_inverse=True)
+        rank = np.asarray([TIMING_RANK.get(str(t), 0) for t in sources])[timing]
+        n = len(rows)
+        # within a key, the best source last and of equal sources the later row last
+        order = np.lexsort((np.arange(n), rank, channel, rows.event, rows.program))
+        key = np.stack([rows.program[order], rows.event[order], channel[order]])
+        last = np.ones(n, dtype=bool)
+        last[:-1] = np.any(key[:, 1:] != key[:, :-1], axis=0)
+        kept = order[last]
+        kept = kept[
+            np.lexsort(
+                (channel[kept], rows.event[kept], rows.program[kept], rows.frame[kept])
+            )
+        ]
+        return StimEvents(**{name: getattr(rows, name)[kept] for name in STIM_COLUMNS})
+
+    def stimulus_full_scales(self) -> dict[str, dict]:
+        """What a value of 1.0 delivers, per channel id of :meth:`stimulus_channels`:
+        ``{"units", "value", "source", "measured_at", "method", "text"}``. The channel's current
+        ``stimulus_calibration`` version (``source`` ``"calibration"``) unless there is none or
+        it is removed; else the record's ``full_scale`` (``source`` ``"record"``), whose value
+        is ``None`` for light nobody measured: such a channel is known only relatively."""
+        out: dict[str, dict] = {}
+        for channel in self.stimulus_channels():
+            scale = channel.get("full_scale") or {}
+            out[channel["id"]] = {
+                "units": scale.get("units"),
+                "value": scale.get("value"),
+                "source": "record",
+                "measured_at": None,
+                "method": None,
+                "text": None,
+            }
+        versions = _read_notes(
+            os.path.join(self._documents, "notes"), (CALIBRATION,)
+        ).get(CALIBRATION, {})
+        for item, history in versions.items():
+            current = _current(history)
+            if item not in out or current is None or current["removed"]:
+                continue
+            if current["full_scale"].get("units") != out[item]["units"]:
+                continue  # a calibration states the channel's own units
+            out[item] = {
+                "units": current["full_scale"]["units"],
+                "value": current["full_scale"]["value"],
+                "source": "calibration",
+                "measured_at": current["measured_at"],
+                "method": current["method"],
+                "text": current["text"],
+            }
+        return out
+
+    @property
+    def stimulus_final_to(self) -> int:
+        """The frame before which the delivered stimulus is final: the store's length once it
+        is complete; while it grows, the length less the longest ``placement_lag_ms`` of its
+        records, before which no more ``schedule`` row is appended ("Stimulation records").
+        A record whose ``timing`` is ``marker`` may still have its rows re-placed by
+        better-placed ones when the store completes."""
+        n = self.num_samples()
+        if self.finished:
+            return n
+        lags = [
+            float(record.get("placement_lag_ms") or 0.0)
+            for record in self.stimulation_records()
+            if "kind" in record
+        ]
+        lag = math.ceil(max(lags, default=0.0) * self.fs / 1000.0 - 1e-9)
+        return max(0, n - lag)
+
+    def inputs(self, segment, start, length, *, physical: bool = False) -> np.ndarray:
+        """The delivered stimulus on the frame grid, float32 ``(length, channels)``, one column
+        per :meth:`stimulus_channels` channel: each channel delivers 0 before its first event
+        and holds an event's value until its next (the resolved :meth:`stim_events`).
+
+        Values are as RSF stores them, fractions of each channel's full scale: light in
+        ``[0, 1]``, electrodes in ``[-1, 1]`` with cathodic current positive. ``physical=True``
+        multiplies by :meth:`stimulus_full_scales` into livn's quantities: mW/mm2 for light,
+        uA for electrodes with cathodic current negative as livn's MEA reads it (the sign
+        flips here and nowhere else); it raises when a channel's full scale is unknown.
+
+        A growing store's rows are final up to :attr:`stimulus_final_to`.
+        """
+        self._segment(segment)
+        start, length = _window(start, length, self.num_samples())
+        channels, held = self._held_stimulus()
+        out = np.zeros((length, len(channels)), dtype=np.float32)
+        at = np.arange(start, start + length)
+        for column, (frames, values) in enumerate(held):
+            if not len(frames):
+                continue
+            k = np.searchsorted(frames, at, side="right") - 1
+            out[:, column] = np.where(k >= 0, values[np.maximum(k, 0)], 0.0)
+        if not physical:
+            return out
+        scales = self.stimulus_full_scales()
+        unknown = [c["id"] for c in channels if scales[c["id"]]["value"] is None]
+        if unknown:
+            raise Missing(
+                f"{self.path}: the full scale of {unknown[:5]} is unknown (no calibration), "
+                "so their stimulus is known only relatively; read physical=False"
+            )
+        factor = np.asarray(
+            [_livn_scale(c["kind"], scales[c["id"]]["value"]) for c in channels],
+            dtype=np.float64,
+        )
+        return (out * factor).astype(np.float32)
+
+    def stimulus_io(self, medium=None):
+        """livn's stimulating devices for :meth:`stimulus_channels`, in their order, so the
+        IO's channels are the columns of :meth:`inputs`."""
+        from livn.io import MEA, InputDevices, PatternedLight
+
+        channels = self.stimulus_channels()
+        if not channels:
+            raise Missing(f"{self.path} has no delivered stimulus")
+        scales = self.stimulus_full_scales()
+        runs: list[list[tuple]] = []
+        for channel in channels:
+            group = (
+                channel["index"],
+                channel["kind"],
+                channel.get("wavelength_nm"),
+                scales[channel["id"]]["value"],
+            )
+            if runs and runs[-1][0][0] == group:
+                runs[-1].append((group, channel))
+            else:
+                runs.append([(group, channel)])
+        devices = []
+        for run in runs:
+            (_, kind, wavelength, scale), _ = run[0]
+            members = [channel for _, channel in run]
+            extra = {} if medium is None else {"medium": medium}
+            if kind == "light":
+                if wavelength is not None:
+                    extra["wavelength"] = float(wavelength)
+                devices.append(
+                    PatternedLight.from_channels(
+                        members,
+                        irradiance=1.0 if scale is None else float(scale),
+                        **extra,
+                    )
+                )
+                continue
+            rows = []
+            for channel in members:
+                shape = channel.get("shape") or {}
+                if shape.get("kind") != "contact":
+                    raise ValueError(
+                        f"channel {channel['id']!r} is {shape.get('kind')!r}, not a contact: "
+                        "its session withholds where it acts (a mask on electrode_positions), "
+                        "so there is no electrode to model"
+                    )
+                contact = str(shape["contact_id"])
+                if not re.fullmatch(r"-?[0-9]+", contact):
+                    raise ValueError(
+                        f"channel {channel['id']!r} is contact {contact!r}; livn's MEA "
+                        "numbers its electrodes"
+                    )
+                rows.append([int(contact), float(shape["x"]), float(shape["y"]), 0.0])
+            devices.append(MEA(rows, max_current_uA=float(scale), **extra))
+        return devices[0] if len(devices) == 1 else InputDevices(devices)
+
+    def _held_stimulus(self) -> tuple[list[dict], list[tuple[np.ndarray, np.ndarray]]]:
+        """The channels and, per channel, its resolved events' ``(frames, values)`` in the
+        order they hold: by frame, then program (start order) and event."""
+        if self._held is not None:
+            return self._held
+        channels = self.stimulus_channels()
+        if not channels:
+            raise Missing(f"{self.path} has no delivered stimulus")
+        rows = self.stim_events()
+        # a row names a channel of the record its program is
+        own = np.zeros(len(rows), dtype=bool)
+        for record in self.stimulation_records():
+            if "kind" in record:
+                ids = [c.get("id") for c in record.get("channels") or ()]
+                own |= (rows.program == record["index"]) & np.isin(rows.channel, ids)
+        order = np.lexsort((rows.event, rows.program, rows.frame))
+        order = order[own[order]]
+        held = []
+        for channel in channels:
+            mine = order[rows.channel[order] == channel["id"]]
+            held.append((rows.frame[mine], rows.value[mine]))
+        if self.finished:
+            self._held = (channels, held)
+        return channels, held
+
+    def _electrode_range(self) -> float | None:
+        """The one full scale of the session's electrode channels, if they share one."""
+        scales = self.stimulus_full_scales()
+        values = {
+            scales[c["id"]]["value"]
+            for c in self.stimulus_channels()
+            if c["kind"] == "electrode"
+        }
+        return values.pop() if len(values) == 1 and None not in values else None
 
     def ground_truth(self, name: str, segment: int = 0):
         """``"spikes"`` (Events), ``"voltage"`` or ``"currents"`` (Series), whole segment."""
@@ -1642,8 +2071,8 @@ class RsfRecording:
         start, length = _window(start, n - start if length is None else length, n)
         currents = self._truth_series("currents", start, length)
         inputs = None
-        if os.path.isdir(self._inputs_path):
-            inputs = self.inputs(segment, start, length)
+        if self.stimulus_channels():
+            inputs = self._device_inputs(segment, start, length)
         return Conditions(
             membrane_currents_uA=None if currents is None else currents.values,
             gids=None if currents is None else np.asarray(currents.ids),
@@ -1653,6 +2082,20 @@ class RsfRecording:
             segment=segment,
             start=start,
         )
+
+    def _device_inputs(self, segment, start, length) -> np.ndarray:
+        fractions = self.inputs(segment, start, length)
+        scales = self.stimulus_full_scales()
+        factor = np.asarray(
+            [
+                _livn_scale(c["kind"], scales[c["id"]]["value"])
+                if c["kind"] == "electrode"
+                else 1.0
+                for c in self.stimulus_channels()
+            ],
+            dtype=np.float64,
+        )
+        return (fractions * factor).astype(np.float32)
 
     def _segment(self, segment: int) -> None:
         if segment != 0:
@@ -1791,7 +2234,9 @@ def _ids_array(ids) -> np.ndarray:
     return np.asarray(strings)
 
 
-def _read_operator(path: str, ext_path: str | None = None):
+def _read_operator(
+    path: str, ext_path: str | None = None, max_current_uA: float | None = None
+):
     from livn.io import MEA, ComposedIO, Medium, PointSource
 
     if not os.path.isfile(path):
@@ -1845,6 +2290,8 @@ def _read_operator(path: str, ext_path: str | None = None):
         kwargs["input_radius"] = document["input_radius_um"]
     if "electrode_radius_um" in document:
         kwargs["electrode_radius"] = document["electrode_radius_um"]
+    if max_current_uA is not None:
+        kwargs["max_current_uA"] = max_current_uA
     mea = MEA(**kwargs)
     if recording is not None:
         return ComposedIO(stimulating, mea, medium=medium, recording=recording)
@@ -1873,9 +2320,11 @@ _NOTE_MEMBERS = {
 }
 
 
-def _read_notes(directory: str) -> dict[str, dict[str, list[tuple]]]:
+def _read_notes(
+    directory: str, kinds: Sequence[str] = NOTE_KINDS
+) -> dict[str, dict[str, list[tuple]]]:
     out: dict[str, dict[str, list[tuple]]] = {}
-    for kind in NOTE_KINDS:
+    for kind in kinds:
         folder = os.path.join(directory, kind)
         if not os.path.isdir(folder):
             continue
@@ -1898,10 +2347,29 @@ def _read_notes(directory: str) -> dict[str, dict[str, list[tuple]]]:
             if kind == "note":
                 if not re.fullmatch(r"[0-9a-f]{32}", item):
                     continue
+            elif kind == CALIBRATION:
+                if not _calibration(version):
+                    continue
             elif item != "session":
                 continue
             out.setdefault(kind, {}).setdefault(item, []).append((at, name, version))
     return out
+
+
+def _calibration(version: dict) -> bool:
+    scale = version.get("full_scale")
+    if (
+        not version["item"]
+        or version["frame"] is not None
+        or not isinstance(scale, dict)
+    ):
+        return False
+    if "measured_at" not in version or "method" not in version:
+        return False
+    if version["removed"]:
+        return not version["text"]
+    value = scale.get("value")
+    return isinstance(value, int | float) and not isinstance(value, bool) and value > 0
 
 
 def _current(versions: list[tuple] | None) -> dict | None:

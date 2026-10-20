@@ -55,7 +55,7 @@ See the [worked example](/examples/fitting) for a runnable version.
 
 `livn.optimization.data.windows(recording, context=..., batch_size=...)` returns `Windows` which are step-addressed batches for `data=`, each a `Window`. 
 
-A `Window` provides `window.context` `(B, T, C)`, `window.prediction` (with `prediction > 0`), `window.spikes` (with `spikes=True`), `window.inputs` (with `inputs=True`), `window.channel_mask`, `window.recording`, `window.segment` and `window.start`:
+A `Window` provides `window.context` `(B, T, C)`, `window.prediction` (with `prediction > 0`), `window.spikes` (with `spikes=True`), `window.inputs` (with `inputs=True`, the recording's delivered stimulus, `Recording.inputs`, strided to the window's rate), `window.channel_mask`, `window.recording`, `window.segment` and `window.start`:
 
 ```python
 def loss(model, window, key):

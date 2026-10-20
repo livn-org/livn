@@ -102,7 +102,7 @@ existing_tiers() {
 # Add a name to UNIT_SUFFIX_ALLOW only for an external one (a library argument
 # or a file format) that livn does not control: RSF 1's document fields
 # (livn.data.rsf).
-RSF_NAMES='electrode_coordinates_um|coordinates_um|output_radius_um|min_distance_um|input_radius_um|electrode_radius_um|culture_height_um|hardware_tick_rate_hz'
+RSF_NAMES='electrode_coordinates_um|coordinates_um|output_radius_um|min_distance_um|input_radius_um|electrode_radius_um|culture_height_um|hardware_tick_rate_hz|placement_lag_ms|wavelength_nm'
 UNIT_SUFFIX_ALLOW="(_per_ms|_per_um|:($RSF_NAMES))\$"
 unit_suffix_check() {
   local hits

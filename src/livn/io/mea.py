@@ -87,6 +87,10 @@ class MEA(IO):
         A detector's refractory period per channel: spikes on one channel
         closer than this to the previous kept one are dropped
         (`apply_dead_time`). 0 keeps every spike.
+    max_current_uA
+        The stimulator's range limit to be captured in stored sessions.
+        The simulation does not clip to it, and it is not a fitted
+        parameter. The default, 100 uA, is a common MEA stimulator's range.
 
     # Computed attributes
 
@@ -106,6 +110,7 @@ class MEA(IO):
         threshold_sigma: float = 5.0,
         dead_time: float = 0.0,
         spike_profile: Mapping | None = None,
+        max_current_uA: float = 100.0,
     ):
         if electrode_coordinates is None:
             electrode_coordinates = self.default_electrode_coordinates()
@@ -115,6 +120,12 @@ class MEA(IO):
         self.detection_threshold = float(detection_threshold)
         self.threshold_sigma = float(threshold_sigma)
         self.dead_time = float(dead_time)
+        if not float(max_current_uA) > 0:
+            raise ValueError(
+                f"max_current_uA is the stimulator's range, a positive current, not "
+                f"{max_current_uA}"
+            )
+        self.max_current_uA = float(max_current_uA)
         self.spike_profile = (
             None if spike_profile is None else _checked_profile(spike_profile)
         )
@@ -166,6 +177,7 @@ class MEA(IO):
             "detection_threshold": self.detection_threshold,
             "threshold_sigma": self.threshold_sigma,
             "dead_time": self.dead_time,
+            "max_current_uA": self.max_current_uA,
             **(
                 {"spike_profile": self.spike_profile}
                 if self.spike_profile is not None
@@ -494,6 +506,7 @@ if _USES_JAX:
             "detection_threshold": mea.detection_threshold,
             "threshold_sigma": mea.threshold_sigma,
             "dead_time": mea.dead_time,
+            "max_current_uA": mea.max_current_uA,
             "spike_profile": mea.spike_profile,
             "_attached_profile": mea._attached_profile,
             "_stack": mea._stack,
