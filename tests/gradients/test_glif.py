@@ -350,6 +350,112 @@ def test_a_network_run_is_differentiable_through_its_weights():
     assert gradient[1, 2] != 0.0
 
 
+def _trains(solution):
+    return [
+        np.asarray(row)[np.isfinite(np.asarray(row))] for row in solution.spike_times
+    ]
+
+
+def _vectorized(module):
+    return dataclasses.replace(module.config, vectorized_events=True)
+
+
+def _listed(module):
+    return dataclasses.replace(module.config, vectorized_events=False)
+
+
+@pytest.mark.parametrize("mechanism", ["hard", "escape"])
+def test_one_condition_vector_reproduces_the_list_of_conditions(mechanism):
+    module = _chain_module(mechanism)
+    duration, dt = 60.0, 0.1
+    stimulus = jnp.zeros((round(duration / dt) + 1, 3)).at[:, 0].set(0.3)
+
+    listed = _trains(
+        module.solve(
+            stimulus, 0.0, duration, dt, key=jr.PRNGKey(0), config=_listed(module)
+        )
+    )
+    vector = _trains(
+        module.solve(
+            stimulus,
+            0.0,
+            duration,
+            dt,
+            key=jr.PRNGKey(0),
+            config=_vectorized(module),
+        )
+    )
+
+    assert sum(len(train) for train in listed) > 6
+    for a, b in zip(listed, vector, strict=True):
+        np.testing.assert_allclose(b, a, atol=1e-4)
+
+
+def test_the_default_is_one_condition_vector():
+    assert SolverConfig().vectorized_events
+
+
+def test_one_condition_vector_keeps_simultaneous_spikes():
+    # cells 0 and 1 are identical and identically driven, so they cross in the same
+    # step; both project onto cell 2
+    connectivity = np.zeros((3, 3), dtype=np.float32)
+    connectivity[:2, 2] = 400.0
+    module = GLIF(config=SolverConfig(max_rate_per_ms=1.0)).diffrax_module(
+        _FakeEnv(3, connectivity)
+    )
+    duration, dt = 60.0, 0.1
+    stimulus = jnp.zeros((round(duration / dt) + 1, 3)).at[:, :2].set(0.3)
+
+    trains = _trains(
+        module.solve(stimulus, 0.0, duration, dt, config=_vectorized(module))
+    )
+
+    assert len(trains[0]) > 1
+    np.testing.assert_array_equal(trains[0], trains[1])
+    assert len(trains[2]) > 0
+
+
+@pytest.mark.parametrize("vectorized", [False, True])
+def test_recording_only_spikes_returns_the_same_spikes(vectorized):
+    module = _chain_module()
+    config = _vectorized(module) if vectorized else _listed(module)
+    duration, dt = 60.0, 0.1
+    stimulus = jnp.zeros((round(duration / dt) + 1, 3)).at[:, 0].set(0.3)
+
+    traced = module.solve(stimulus, 0.0, duration, dt, config=config)
+    spikes = module.solve(stimulus, 0.0, duration, dt, config=config, record={"spikes"})
+
+    assert spikes.ys.shape[-1] == 0
+    for a, b in zip(_trains(traced), _trains(spikes), strict=True):
+        assert len(a) > 0
+        np.testing.assert_array_equal(b, a)
+
+
+def test_a_vectorized_spikes_only_run_is_differentiable_through_its_weights():
+    duration, dt = 40.0, 0.1
+    module = _chain_module()
+    config = _vectorized(module)
+    stimulus = jnp.zeros((round(duration / dt) + 1, 3)).at[:, 0].set(0.3)
+
+    def loss(record):
+        def of(network):
+            coupled = eqx.tree_at(lambda m: m.network, module, network)
+            solution = coupled.solve(
+                stimulus, 0.0, duration, dt, config=config, record=record
+            )
+            times = solution.spike_times
+            return jnp.sum(jnp.where(jnp.isfinite(times), times, 0.0))
+
+        return of
+
+    fast = np.asarray(jax.grad(loss({"spikes"}))(module.network))
+    traced = np.asarray(jax.grad(loss(None))(module.network))
+
+    assert np.all(np.isfinite(fast))
+    assert fast[1, 2] != 0.0
+    np.testing.assert_allclose(fast, traced, rtol=1e-2, atol=1e-6)
+
+
 def test_samples_are_independent_realisations_of_the_same_run():
     duration, dt = 60.0, 0.1
     module = GlifNeurons(2, {"sigma": 2.0}, mechanism="escape")

@@ -841,6 +841,7 @@ def _solve_cell(
     mechanisms=(),
     inputs=None,
 ):
+    trace = bool(columns) or segments
     current = diffrax.LinearInterpolation(ts=stim_ts, ys=stim_ys)
     series = {
         mode: diffrax.LinearInterpolation(ts=ts, ys=ys)
@@ -948,7 +949,18 @@ def _solve_cell(
         extra_terms=extra_terms,
         key=key if layout.escape else None,
         config=config,
+        trace=trace,
     )
+
+    if not trace:
+        # spikes only: nothing was sampled, so there is nothing to resample
+        return (
+            jnp.zeros((n_out, 0)),
+            solution.event_times,
+            solution.y1,
+            solution.saturated,
+            solution.solver_ok,
+        )
 
     ts_out = t0 + jnp.arange(n_out) * dt
     ys = solution.ys[:, jnp.asarray(columns, dtype=jnp.int32)]
@@ -1013,9 +1025,23 @@ def _solve_network(
     def resume_cond(t, y, args, n=0, **kwargs):
         return t - y[n, layout.t_ref_end]
 
-    cond_fn = [functools.partial(spike_cond, n=n) for n in spike_cells] + [
-        functools.partial(resume_cond, n=n) for n in spike_cells
-    ]
+    if config.vectorized_events:
+        # the same 2 * n_spiking conditions, as one vector the loop reduces to one
+        def cond_fn(t, y, args, **kwargs):
+            if layout.escape:
+                spike = y[spike_index, layout.s]
+            else:
+                spike = y[spike_index, V] - (
+                    p["V_threshold_base"][spike_index]
+                    + y[spike_index, THETA_S]
+                    + y[spike_index, THETA_V]
+                )
+            return jnp.concatenate([spike, t - y[spike_index, layout.t_ref_end]])
+
+    else:
+        cond_fn = [functools.partial(spike_cond, n=n) for n in spike_cells] + [
+            functools.partial(resume_cond, n=n) for n in spike_cells
+        ]
 
     def widen(bits):
         """A per-condition mask, back on the one-column-per-cell grid"""
@@ -1091,6 +1117,7 @@ def _solve_network(
             p, layout, bm_key, t0, t1, tol=config.dt_solver / 2, n_cells=n_cells
         )
 
+    trace = bool(columns)
     solution = event_solve(
         drift=drift,
         cond_fn=cond_fn,
@@ -1102,12 +1129,17 @@ def _solve_network(
         extra_terms=extra_terms,
         key=key,
         config=config,
+        trace=trace,
     )
 
-    ts_out = t0 + jnp.arange(n_out) * dt
-    ys = solution.ys[:, :, jnp.asarray(columns, dtype=jnp.int32)]
-    # (times, cells, columns) -> (cells, times, columns)
-    ys = jnp.transpose(resample(solution.ts, ys, ts_out), (1, 0, 2))
+    if trace:
+        ts_out = t0 + jnp.arange(n_out) * dt
+        ys = solution.ys[:, :, jnp.asarray(columns, dtype=jnp.int32)]
+        # (times, cells, columns) -> (cells, times, columns)
+        ys = jnp.transpose(resample(solution.ts, ys, ts_out), (1, 0, 2))
+    else:
+        # spikes only: nothing was sampled, so there is nothing to resample
+        ys = jnp.zeros((n_cells, n_out, 0))
 
     marks = jnp.zeros((*solution.event_masks.shape[:1], n_cells), bool)
     marks = marks.at[:, spike_index].set(solution.event_masks[:, :n_spiking])

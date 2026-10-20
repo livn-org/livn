@@ -4,6 +4,7 @@ import pytest
 
 pytest.importorskip("diffrax")
 
+import dataclasses
 import itertools
 
 import equinox as eqx
@@ -197,3 +198,148 @@ def test_the_brownian_path_survives_reverse_mode():
 
     with pytest.raises(RuntimeError, match="cannot be autodifferentiated"):
         gradient_through(diffrax.VirtualBrownianTree)
+
+
+def _ramps(
+    slopes,
+    threshold=1.0,
+    dt_solver=0.005,
+    t1=4.5,
+    vectorized=True,
+    trace=True,
+    span=None,
+):
+    """Independent ramps resetting to zero at ``threshold``, one event source each"""
+    slopes = jnp.asarray(slopes)
+
+    def drift(t, y, args):
+        return slopes
+
+    def cond_fn(t, y, args, **kwargs):
+        return y - threshold
+
+    def one(i):
+        return lambda t, y, args, **kwargs: y[i] - threshold
+
+    def transition(t_event, y, args, mask, key):
+        return t_event, jnp.where(mask, 0.0, y)
+
+    return event_solve(
+        drift=drift,
+        cond_fn=cond_fn if vectorized else [one(i) for i in range(len(slopes))],
+        transition=transition,
+        y0=jnp.zeros(len(slopes)),
+        t0=0.0,
+        t1=t1,
+        dt=0.1,
+        config=SolverConfig(
+            dt_solver=dt_solver,
+            points_per_segment=16,
+            max_rate_per_ms=4.0,
+            max_segment_span=span,
+        ),
+        trace=trace,
+    )
+
+
+def _fired(solution):
+    times = np.asarray(solution.event_times)
+    masks = np.asarray(solution.event_masks)
+    keep = np.isfinite(times)
+    return times[keep], masks[keep]
+
+
+def test_a_condition_vector_reproduces_the_list_of_conditions():
+    listed = _fired(_ramps([1.0, 0.7], vectorized=False))
+    vector = _fired(_ramps([1.0, 0.7]))
+
+    np.testing.assert_allclose(vector[0], listed[0], atol=1e-5)
+    np.testing.assert_array_equal(vector[1], listed[1])
+    np.testing.assert_allclose(
+        np.sort(vector[0]), np.sort([1, 2, 3, 4, *(np.arange(1, 4) / 0.7)]), atol=1e-4
+    )
+
+
+def test_a_condition_vector_fires_simultaneous_crossings_together():
+    times, masks = _fired(_ramps([1.0, 1.0]))
+
+    np.testing.assert_allclose(times, [1.0, 2.0, 3.0, 4.0], atol=1e-4)
+    assert masks.all()
+
+
+def test_a_condition_vector_locates_the_earlier_of_two_crossings_in_one_step():
+    # both cross inside the step (0.6, 1.2]: the list keeps the first-listed source
+    # only, so the second starts the next solve above threshold and never fires
+    listed = _fired(_ramps([1.0, 1.1], dt_solver=0.6, t1=1.3, vectorized=False))
+    vector = _fired(_ramps([1.0, 1.1], dt_solver=0.6, t1=1.3))
+
+    np.testing.assert_allclose(vector[0], [1 / 1.1, 1.0], atol=1e-4)
+    np.testing.assert_array_equal(vector[1], [[False, True], [True, False]])
+    assert len(listed[0]) == 1
+
+
+def test_event_times_of_a_condition_vector_are_differentiable():
+    def loss(slope):
+        solution = _ramps(jnp.stack([slope, 0.7 * jnp.ones(())]), t1=4.0)
+        times = solution.event_times
+        return jnp.sum(jnp.where(jnp.isfinite(times), times, 0.0))
+
+    slope = 1.3
+    gradient = float(jax.grad(loss)(slope))
+    finite_difference = float((loss(slope + 1e-3) - loss(slope - 1e-3)) / 2e-3)
+
+    assert np.isfinite(gradient) and gradient != 0.0
+    np.testing.assert_allclose(gradient, finite_difference, rtol=1e-2)
+
+
+@pytest.mark.parametrize("vectorized", [False, True])
+def test_without_a_trace_the_events_are_the_same(vectorized):
+    traced = _ramps([1.0, 0.7], vectorized=vectorized)
+    untraced = _ramps([1.0, 0.7], vectorized=vectorized, trace=False)
+
+    assert untraced.ts is None and untraced.ys is None
+    # the same segments, so the same steps
+    assert int(untraced.blocks) == int(traced.blocks)
+    np.testing.assert_array_equal(_fired(untraced)[0], _fired(traced)[0])
+    np.testing.assert_array_equal(_fired(untraced)[1], _fired(traced)[1])
+
+
+def test_an_unbounded_untraced_solve_restarts_only_at_events():
+    traced = _ramps([1.0, 0.7])
+    untraced = _ramps([1.0, 0.7], trace=False, span=math.inf)
+
+    np.testing.assert_allclose(_fired(untraced)[0], _fired(traced)[0], atol=1e-4)
+    # one solve per event and one to reach t1
+    assert int(untraced.blocks) == len(_fired(untraced)[0]) + 1
+
+
+def test_storing_every_checkpoint_changes_the_cost_not_the_gradient():
+    import diffrax
+
+    def gradient(config):
+        def loss(slope):
+            solution = event_solve(
+                y0=jnp.array([0.0]),
+                t0=0.0,
+                t1=5.0,
+                dt=0.1,
+                config=config,
+                trace=False,
+                **_ramp(slope=slope),
+            )
+            times = solution.event_times
+            return jnp.sum(jnp.where(jnp.isfinite(times), times, 0.0))
+
+        return float(jax.grad(loss)(1.3))
+
+    base = SolverConfig(dt_solver=0.005, max_rate_per_ms=2.0)
+    stored = dataclasses.replace(
+        base,
+        checkpoints=1 << 30,
+        adjoint=diffrax.RecursiveCheckpointAdjoint(checkpoints=2000),
+    )
+
+    every = dataclasses.replace(base, checkpoints=1 << 30)
+
+    np.testing.assert_allclose(gradient(stored), gradient(base), rtol=1e-6)
+    np.testing.assert_allclose(gradient(every), gradient(base), rtol=1e-6)

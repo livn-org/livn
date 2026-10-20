@@ -2,7 +2,7 @@
 
 ```python
 from livn.models.glif import GLIF
-from livn.system import NeuroH5System, fetch
+from livn.system import predefined
 
 GLIF(level=5, mechanism="hard")     # full Allen GLIF5
 GLIF(level=1, mechanism="hard")     # leaky integrate-and-fire
@@ -42,15 +42,34 @@ GLIF(mechanism="escape", params={"sigma": 1.0})
 ## Networks
 
 ```python
-env = Env(NeuroH5System(fetch("S1")), model=GLIF(level=1)).init()
+env = Env(predefined("EI")), model=GLIF(level=1)).init()
 env.module.network        # (cells, cells), w[pre, post]; None when unconnected
 ```
 
 Weights must be set before `init()` on the diffrax backend since the connectivity is baked into the module:
 
 ```python
-env = Env(NeuroH5System(fetch("S1")), model=GLIF()).set_weights({"EXC_EXC": 400.0}).init()
+env = Env(predefined("S1")), model=GLIF()).set_weights({"EXC_EXC": 400.0}).init()
 ```
+
+A network is one event-driven solve that integrates between events and restarts at every spike and every end of a refractory period, anywhere in the network:
+
+```python
+from livn.models.eventloop import SolverConfig
+
+GLIF(config=SolverConfig(
+    vectorized_events=True,   # the default: one event condition for the whole network
+    dt_solver=0.1,            # Euler step between events, in ms
+    max_segment_span=1.0,     # cut a solve 1 ms after its last restart
+    checkpoints=1 << 30,      # reverse mode: store every segment and step
+))
+```
+
+- `vectorized_events` (the default) hands the solver the largest of the cells' conditions instead of one condition per cell, so a step does not grow with the network, and the earliest crossing in a step is the one located. Root finding on the maximum relies on a monotone interpolant: use it with `Euler`. `vectorized_events=False` gives the solver one condition per cell, which other solvers need; then two cells crossing within one step fire in the order of their index, and the one located second starts the next solve above threshold and loses its spike.
+- Recording nothing but spikes skips the sampled trace and keeps only the state at each segment's end; the spikes are the same.
+- Batched with `vmap`, every window waits for the longest solve of an iteration, so a quiet stretch in one window holds up all of them; short segments bound that. `max_segment_span=math.inf` restarts only at events, which suits a single window.
+- Reverse mode recomputes each loop about twice unless `checkpoints` is raised; the state of a segment is small and its steps are bounded, so storing all of them costs little memory.
+- Events are located on the step's interpolant, so a coarse `dt_solver` moves spike times by its integration error, not by the step.
 
 ## Noise
 

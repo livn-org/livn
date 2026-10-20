@@ -96,6 +96,9 @@ class SolverConfig:
         default_factory=lambda: optx.Newton(1e-2, 1e-2, optx.rms_norm)
     )
     throw: bool = True
+    vectorized_events: bool = True
+    checkpoints: int | None = None
+    adjoint: Any = None
 
 
 # SolverConfig is frozen, so one shared instance is safe as a default argument
@@ -158,6 +161,7 @@ def loop_budget(
     dt: float,
     config: SolverConfig = DEFAULT_SOLVER_CONFIG,
     holds=False,
+    trace=True,
 ) -> LoopBudget:
     """Size a solve without running it."""
     t0, t1, dt = float(t0), float(t1), float(dt)
@@ -170,9 +174,10 @@ def loop_budget(
     points = int(config.points_per_segment)
     if points < 2:
         raise ValueError(f"points_per_segment must be >= 2, got {points}")
-
     span = config.max_segment_span
     span = (points - 1) * dt if span is None else float(span)
+    if not trace:
+        points, holds = 0, False
     if span <= 0:
         raise ValueError(f"max_segment_span must be positive, got {span}")
     unbounded = math.isinf(span)
@@ -190,7 +195,7 @@ def loop_budget(
         events=events,
         segments=segments,
         points_per_block=points,
-        points_per_hold=points if holds else 1,
+        points_per_hold=points if holds else min(points, 1),
         span=span,
         max_steps=int(max_steps),
     )
@@ -244,6 +249,7 @@ def event_solve(
     extra_terms: Sequence[Any] | None = None,
     key: Any = None,
     config: SolverConfig = DEFAULT_SOLVER_CONFIG,
+    trace: bool = True,
 ) -> EventSolution:
     """Integrate ``drift`` from ``t0`` to ``t1``, restarting at every event.
 
@@ -251,6 +257,14 @@ def event_solve(
         drift: ``(t, y, args) -> dy``.
         cond_fn: Event condition ``(t, y, args, **kwargs) -> scalar``, or a list
             of them (one per event source).  An event fires on a sign change.
+            Or one function returning a vector ``[k]``, one element per event
+            source where an element fires when it crosses from negative to positive,
+            and an element that starts a segment non-negative is disarmed until
+            the next one.  The solver then sees a single condition, the largest
+            armed element, so the cost of a step does not grow with ``k`` and
+            the earliest crossing is the one located.  Every armed element at
+            or above zero at the located time fires with it (``event_mask`` is
+            ``[k]``), so a simultaneous crossing is not lost.
         transition: ``(t_event, y_event, args, event_mask, key) -> (t_resume, y_resume)``.
             ``t_resume`` may be later than ``t_event`` (a refractory window);
             the state in between is described by ``hold_fn``.  ``key`` is a fresh
@@ -269,6 +283,10 @@ def event_solve(
             iteration, so the draw a transition sees depends on how many
             segments preceded it, not on wall-clock time.
         config: See :class:`SolverConfig`.
+        trace: Sample the trajectory.  Without it only the state at the end of
+            each segment is kept (the segments and so the steps are the same, the
+            events identical) and ``ts``/``ys`` are ``None`` and ``hold_fn`` is unused.
+            With ``max_segment_span=math.inf`` the solve restarts only at events.
 
     Returns:
         An :class:`EventSolution`.
@@ -276,7 +294,7 @@ def event_solve(
     t0, t1, dt = float(t0), float(t1), float(dt)
     duration = t1 - t0
 
-    budget = loop_budget(t0, t1, dt, config, holds=hold_fn is not None)
+    budget = loop_budget(t0, t1, dt, config, holds=hold_fn is not None, trace=trace)
     n_points = budget.points_per_block
     n_hold = budget.points_per_hold
     n_events = budget.events
@@ -292,12 +310,33 @@ def event_solve(
     term = diffrax.ODETerm(drift)
     if extra_terms:
         term = diffrax.MultiTerm(term, *extra_terms)
-    event = diffrax.Event(cond_fn, config.root_finder)
-    n_cond = len(jax.tree_util.tree_leaves(cond_fn))
+    shape = ()
+    if callable(cond_fn):
+        shape = jax.eval_shape(lambda y: cond_fn(t0, y, args), y0).shape
+    vector = len(shape) == 1
+    if vector:
+        n_cond = shape[0]
+    else:
+        shared_event = diffrax.Event(cond_fn, config.root_finder)
+        n_cond = len(jax.tree_util.tree_leaves(cond_fn))
+
+    adjoint = config.adjoint
+    if adjoint is None and config.checkpoints is not None:
+        adjoint = diffrax.RecursiveCheckpointAdjoint(
+            checkpoints=min(int(config.checkpoints), max_steps)
+        )
 
     def body(state: _LoopState) -> _LoopState:
         block = state.block
         t_start = jnp.minimum(state.t, t1)
+        event = None if vector else shared_event
+        if vector:
+            armed = cond_fn(t_start, state.y, args) < 0
+
+            def first(t, y, args, **kwargs):
+                return jnp.max(jnp.where(armed, cond_fn(t, y, args), -jnp.inf))
+
+            event = diffrax.Event(first, config.root_finder)
         t_stop = (
             jnp.asarray(t1, dtype) if unbounded else jnp.minimum(t_start + span, t1)
         )
@@ -310,9 +349,12 @@ def event_solve(
         t_stop = jnp.where(t_stop > t_start, t_stop, t_start + config.dt_solver)
         ts_seg = _grid(t_start, t_stop, n_points)
 
-        saveat = diffrax.SaveAt(
-            subs=(diffrax.SubSaveAt(ts=ts_seg), diffrax.SubSaveAt(t1=True))
-        )
+        if trace:
+            saveat = diffrax.SaveAt(
+                subs=(diffrax.SubSaveAt(ts=ts_seg), diffrax.SubSaveAt(t1=True))
+            )
+        else:
+            saveat = diffrax.SaveAt(subs=(diffrax.SubSaveAt(t1=True),))
         sol = diffrax.diffeqsolve(
             term,
             config.solver,
@@ -326,13 +368,15 @@ def event_solve(
             saveat=saveat,
             event=event,
             max_steps=max_steps,
+            **({} if adjoint is None else {"adjoint": adjoint}),
         )
 
-        t_event = sol.ts[1][0]
-        y_event = sol.ys[1][0]
-        mask = jnp.reshape(
-            jnp.asarray(jax.tree_util.tree_leaves(sol.event_mask)), (n_cond,)
-        )
+        t_event = sol.ts[-1][0]
+        y_event = sol.ys[-1][0]
+        if not vector:
+            mask = jnp.reshape(
+                jnp.asarray(jax.tree_util.tree_leaves(sol.event_mask)), (n_cond,)
+            )
         slack = config.dt_solver  # a root landing just off the end is rounding
         found = (
             jnp.isfinite(t_event)
@@ -340,13 +384,21 @@ def event_solve(
             & (t_event <= t_stop + slack)
         )
         t_event = jnp.clip(jnp.where(found, t_event, t_stop), t_start, t_stop)
+        if vector:
+            values = jax.lax.stop_gradient(cond_fn(t_event, y_event, args))
+            values = jnp.where(armed, values, -jnp.inf)
+            level = jnp.minimum(jnp.max(values), 0.0)
+            mask = jnp.asarray(sol.event_mask) & armed & (values >= level)
         fired = jnp.any(mask) & found
 
         keep = ts_seg <= t_event
         seg_ts = jnp.where(keep, ts_seg, t_event)
-        seg_ys = jnp.where(
-            keep.reshape((n_points,) + (1,) * len(y_shape)), sol.ys[0], y_event
-        )
+        if trace:
+            seg_ys = jnp.where(
+                keep.reshape((n_points,) + (1,) * len(y_shape)), sol.ys[0], y_event
+            )
+        else:
+            seg_ys = jnp.zeros((0, *y_shape), dtype)
 
         if state.key is None:
             next_key, event_key = None, None
@@ -362,7 +414,7 @@ def event_solve(
         # jump that lands at the end of the window is not smeared by the
         # resampling.
         hold_ts = _grid(t_event, t_next, n_hold, endpoint=False)
-        if hold_fn is None:
+        if hold_fn is None or not trace:
             hold_ys = jnp.broadcast_to(y_event, (n_hold, *y_shape))
         else:
             hold_ys = jnp.where(
@@ -420,26 +472,31 @@ def event_solve(
         buffers=_buffers,
         max_steps=n_blocks,
         kind="checkpointed",
+        checkpoints=None
+        if config.checkpoints is None
+        else min(int(config.checkpoints), n_blocks),
     )
 
     # Unwritten blocks repeat the final state so that resampling past the end of
     # the run extrapolates as a constant instead of reading uninitialised memory.
     written = jnp.arange(n_blocks) < final.block
-    ts = jnp.concatenate(
-        [
-            jnp.where(written[:, None], final.seg_ts, final.t),
-            jnp.where(written[:, None], final.hold_ts, final.t),
-        ],
-        axis=1,
-    ).reshape(-1)
-    keep_y = written.reshape((n_blocks, 1) + (1,) * len(y_shape))
-    ys = jnp.concatenate(
-        [
-            jnp.where(keep_y, final.seg_ys, final.y),
-            jnp.where(keep_y, final.hold_ys, final.y),
-        ],
-        axis=1,
-    ).reshape((n_blocks * (n_points + n_hold), *y_shape))
+    ts = ys = None
+    if trace:
+        ts = jnp.concatenate(
+            [
+                jnp.where(written[:, None], final.seg_ts, final.t),
+                jnp.where(written[:, None], final.hold_ts, final.t),
+            ],
+            axis=1,
+        ).reshape(-1)
+        keep_y = written.reshape((n_blocks, 1) + (1,) * len(y_shape))
+        ys = jnp.concatenate(
+            [
+                jnp.where(keep_y, final.seg_ys, final.y),
+                jnp.where(keep_y, final.hold_ys, final.y),
+            ],
+            axis=1,
+        ).reshape((n_blocks * (n_points + n_hold), *y_shape))
 
     event_times = jnp.where(written, final.event_times, jnp.inf)
     saturated = final.t < t1
