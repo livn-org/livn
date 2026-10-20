@@ -659,6 +659,28 @@ def test_a_session_without_spikes_says_so(tmp_path):
     assert load(session).run.spikes is None
 
 
+def test_a_sorting_beside_the_session_reads_like_its_ground_truth(tmp_path):
+    import shutil
+
+    session = str(tmp_path / "session")
+    store(_run(), session, _Env())
+    os.makedirs(os.path.join(session, "sortings"))
+    shutil.copytree(
+        os.path.join(session, "ground_truth", "spikes.zarr"),
+        os.path.join(session, "sortings", "sorter-1.zarr"),
+    )
+    recording = load(session).recording
+
+    assert recording.sortings() == ["sortings/sorter-1.zarr"]
+    truth = recording.spikes()
+    for name in ("sortings/sorter-1.zarr", "sorter-1"):
+        sorted_ = recording.spikes(sorting=name)
+        np.testing.assert_array_equal(sorted_.ids, truth.ids)
+        np.testing.assert_array_equal(sorted_.times, truth.times)
+    with pytest.raises(Missing, match="none of the sortings"):
+        recording.spikes(sorting="sorter-2")
+
+
 def test_inputs_are_stored_on_the_frame_grid(tmp_path):
     inputs = np.arange(15, dtype=np.float32).reshape(5, 3)  # 1 ms rows, 3 channels, uA
     session = str(tmp_path / "session")

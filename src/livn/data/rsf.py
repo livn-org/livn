@@ -1746,11 +1746,35 @@ class RsfRecording:
         with open(path, encoding="utf-8") as f:
             return json.load(f)
 
-    def spikes(self, segment: int = 0) -> Events:
+    def sortings(self) -> list[str]:
+        """The session's sorting stores besides its ground truth, as paths relative to it."""
+        found = []
+        for entry in sorted(os.listdir(self.path)):
+            here = os.path.join(self.path, entry)
+            if entry.endswith(".zarr"):
+                candidates = [entry] if entry != "traces.zarr" else []
+            elif os.path.isdir(here) and entry not in ("ground_truth", "uncertainty"):
+                candidates = [
+                    f"{entry}/{name}"
+                    for name in sorted(os.listdir(here))
+                    if name.endswith(".zarr")
+                ]
+            else:
+                candidates = []
+            found += [
+                c
+                for c in candidates
+                if os.path.isfile(os.path.join(self.path, c, "unit_ids", "zarr.json"))
+            ]
+        return found
+
+    def spikes(self, segment: int = 0, sorting: str | None = None) -> Events:
+        """The ground-truth spikes, or with ``sorting`` those of one of :meth:`sortings`, named
+        by its path or, when that is unambiguous, by its name."""
         self._segment(segment)
         from livn.run import Events
 
-        ids, samples = self._sorting()
+        ids, samples = self._sorting(sorting)
         return Events(
             ids=ids,
             times=samples * self._dt,
@@ -2113,11 +2137,27 @@ class RsfRecording:
         except KeyError as e:
             raise KeyError(f"{e.args[0]!r} is not a channel of {self.path}") from None
 
-    def _sorting(self) -> tuple[np.ndarray, np.ndarray]:
-        """``(unit ids, frames)`` of the ground-truth spikes, ordered by frame."""
-        store = os.path.join(self.path, "ground_truth", "spikes.zarr")
+    def _sorting(self, sorting: str | None = None) -> tuple[np.ndarray, np.ndarray]:
+        """``(unit ids, frames)`` of the ground-truth spikes or of a sorting, ordered by frame."""
+        if sorting is None:
+            relative = "ground_truth/spikes.zarr"
+        else:
+            stores = self.sortings()
+            named = [
+                s
+                for s in stores
+                if sorting in (s, s.removesuffix(".zarr"))
+                or os.path.basename(s) in (sorting, f"{sorting}.zarr")
+            ]
+            if len(named) != 1:
+                which = "matches several" if named else "is none"
+                raise Missing(
+                    f"{sorting!r} {which} of the sortings of {self.path}: {stores}"
+                )
+            relative = named[0]
+        store = os.path.join(self.path, relative)
         if not _complete(store):
-            raise Missing(f"{self.path} stores no ground_truth/spikes.zarr")
+            raise Missing(f"{self.path} stores no finished {relative}")
         sorting = _zarr().open_group(store, mode="r")
         units = np.asarray(_read(sorting, "unit_ids"))
         sample_index = np.asarray(_read(sorting, "spikes/sample_index"), dtype=np.int64)
