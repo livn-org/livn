@@ -654,3 +654,27 @@ class TestPopulationRanges:
         f = self._file([(0, 10, 100)], {"EXC": 100, "INH": 101}, ["EXC", "INH"])
         with pytest.raises(ValueError, match="INH"):
             _h5_read_population_ranges(f)
+
+
+@pytest.mark.parametrize("name", ["E3I", "E3I-470"])
+def test_a_composed_io_in_a_document_records_at_the_systems_electrodes(name):
+    import json
+
+    from livn.system import predefined, predefined_document
+    from livn.types import _io_on_system
+
+    with open(predefined_document(name)) as f:
+        document = json.load(f)
+    system = predefined(name)
+
+    io = _io_on_system(document["io"], system)
+
+    np.testing.assert_array_equal(
+        np.asarray(io.outputs.electrode_coordinates),
+        np.asarray(system.default_io().electrode_coordinates),
+    )
+    assert [type(t).__name__ for t in io.transfers] == ["Noise"]
+    assert (
+        io.outputs.output_radius
+        == document["io"]["kwargs"]["outputs"][0]["output_radius"]
+    )

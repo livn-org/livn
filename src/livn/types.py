@@ -429,8 +429,37 @@ def _io_on_system(described, system):
         return _build(described)
     base = system.default_io()
     if _describe(base)["cls"] != described["cls"]:
-        return _build(described)
+        return _build(_with_system_electrodes(described, base))
     return _build({"cls": described["cls"], "kwargs": {**base.serialize(), **kwargs}})
+
+
+def _with_system_electrodes(described, base):
+    from livn.utils import import_object_by_path
+
+    coordinates = base.serialize()["electrode_coordinates"]
+
+    def placed(device):
+        if not isinstance(device, Mapping) or "cls" not in device:
+            return device
+        if import_object_by_path(device["cls"]) is not type(base):
+            return device
+        if "kwargs" in device:
+            given = dict(device["kwargs"] or {})
+            if "electrode_coordinates" in given:
+                return device
+            return {**device, "kwargs": {**given, "electrode_coordinates": coordinates}}
+        if "electrode_coordinates" in device:
+            return device
+        return {**device, "electrode_coordinates": coordinates}
+
+    kwargs = dict(described.get("kwargs") or {})
+    for key in ("outputs", "inputs"):
+        value = kwargs.get(key)
+        if isinstance(value, (list, tuple)):
+            kwargs[key] = [placed(device) for device in value]
+        elif value is not None:
+            kwargs[key] = placed(value)
+    return {**described, "kwargs": kwargs}
 
 
 def describe_io(system, io) -> dict | None:
