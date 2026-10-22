@@ -100,6 +100,7 @@ def store(
     gain_uV: float = DEFAULT_GAIN_UV,
     dtype: str = "int16",
     label: str | None = None,
+    author: str | None = None,
     recording=None,
     conditions=None,
 ) -> str | None:
@@ -134,6 +135,7 @@ def store(
             (livn never clips, so every row's ``clipped_samples`` is 0)
         dtype: ``"int16"`` or ``"int32"``, the integer type of ``traces_seg0``
         label: Free text for people; defaults to the system's name.
+        author: Who made the session. ``None`` writes no ``author``.
         conditions: Further :class:`livn.conditions.Conditions` of the projection
 
     Returns:
@@ -156,6 +158,7 @@ def store(
         gain_uV=gain_uV,
         dtype=dtype,
         label=label,
+        author=author,
         recording=recording,
         conditions=conditions,
     )
@@ -177,6 +180,7 @@ def _prepare(
     gain_uV,
     dtype,
     label,
+    author=None,
     recording=None,
     conditions=None,
 ):
@@ -185,6 +189,7 @@ def _prepare(
     path = os.fspath(path)
     _check_location(path)
     _check_not_batched(run)
+    _check_author(author)
 
     simulator = _simulator_name(env)
     io, operator, stimulates = _observation(env)
@@ -357,6 +362,8 @@ def _prepare(
         },
         "compressed_bytes": 0,
     }
+    if author is not None:
+        group_attrs["author"] = author
 
     probe = None
     if "electrode_positions" not in masked:
@@ -591,6 +598,18 @@ def _check_not_batched(run) -> None:
                 f"{name!r} has shape {tuple(np.shape(values))}; a session holds one sample of "
                 "(rows, frames) series"
             )
+
+
+def _check_author(author) -> None:
+    if author is None:
+        return
+    if not isinstance(author, str) or not author.strip():
+        raise RSFError(
+            f"author is who made the session, as they want to be named, not {author!r}; "
+            "pass None to leave it unknown"
+        )
+    if "@" in author:
+        raise RSFError(f"author {author!r} looks like an email address")
 
 
 def _simulator_name(env) -> str:
@@ -1562,6 +1581,7 @@ class RsfRecording:
         self.bad_channels = np.zeros(0, dtype=np.int64)
         self.created_at = group_attrs.get("created_at")
         self.zone = _string(group_attrs.get("zone"))
+        self.author = _string(group_attrs.get("author"))
         self.derived_from = _derived_from(group_attrs.get("derived_from"))
         self.prep = _prep((self.record.get("env") or {}).get("system"))
         notes = _read_notes(os.path.join(documents, "notes"))
@@ -1593,6 +1613,7 @@ class RsfRecording:
             "gain_uV": float(self._gain[0]) if len(self._gain) else None,
             "started_at": self.started_at,
             "zone": self.zone,
+            "author": self.author,
             "derived_from": self.derived_from,
             "prep": self.prep,
         }
@@ -2859,8 +2880,8 @@ def _wavelength(value) -> float | None:
 
 def _derived_from(value) -> dict | None:
     """The ``derived_from`` attribute with every member RSF defines, ``None`` where absent:
-    ``recording_id``, ``session``, and the source's ``started_at`` and ``created_at`` and the
-    derivation's ``changes`` (``[{"what", "how", "params"}]``) when it says them."""
+    ``recording_id``, ``session``, the source's ``started_at``, ``created_at`` and ``author``
+    and the derivation's ``changes`` (``[{"what", "how", "params"}]``) when it says them."""
     if not isinstance(value, Mapping):
         return None
     changes = value.get("changes")
@@ -2883,6 +2904,7 @@ def _derived_from(value) -> dict | None:
         "session": _string(value.get("session")),
         "started_at": _string(value.get("started_at")),
         "created_at": _string(value.get("created_at")),
+        "author": _string(value.get("author")),
         "changes": changes,
     }
 

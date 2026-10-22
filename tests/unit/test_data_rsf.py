@@ -265,6 +265,25 @@ def test_a_location_is_written_once(tmp_path):
         store(_run(), str(session), _Env())
 
 
+def test_the_author_is_written_only_when_given(tmp_path):
+    named, unnamed = str(tmp_path / "named"), str(tmp_path / "unnamed")
+    store(_run(), named, _Env(), author="Ada Lovelace")
+    store(_run(), unnamed, _Env())
+
+    assert _attrs(os.path.join(named, "traces.zarr", "rsf"))["author"] == "Ada Lovelace"
+    assert load(named).recording.author == "Ada Lovelace"
+    # no name from the OS user: absent means unknown
+    assert "author" not in _attrs(os.path.join(unnamed, "traces.zarr", "rsf"))
+    assert load(unnamed).recording.author is None
+
+
+@pytest.mark.parametrize("author", ["", " \t ", "ada@example.org"])
+def test_an_author_that_is_no_name_is_refused(tmp_path, author):
+    with pytest.raises(RSFError, match="author"):
+        store(_run(), str(tmp_path / "session"), _Env(), author=author)
+    assert not os.path.exists(tmp_path / "session")
+
+
 def test_a_case_twin_is_refused(tmp_path):
     (tmp_path / "Session").mkdir()
     if os.path.exists(tmp_path / "session"):
@@ -1611,6 +1630,7 @@ def test_a_derived_session_shows_when_its_source_was_recorded(physical, rsf_note
                 "params": {"marker_channel": "hs0-068", "tolerance_ms": 2.5},
             }
         ],
+        "author": "Ada Lovelace",
         "acme": "kept, unknown",
     }
     carried = {
@@ -1622,18 +1642,31 @@ def test_a_derived_session_shows_when_its_source_was_recorded(physical, rsf_note
     recording = physical(
         "derived",
         started_at="2026-10-21T08:00:00.000000Z",
-        extra_attributes={"derived_from": derived_from, "zone": "Europe/Berlin"},
+        extra_attributes={
+            "derived_from": derived_from,
+            "zone": "Europe/Berlin",
+            "author": "Charles Babbage",
+        },
         notes={
             "note": [(f"20261020T141000.000000Z-{'2' * 32}.json", carried)],
         },
     )
     assert recording.derived_from == {
         k: derived_from[k]
-        for k in ("recording_id", "session", "started_at", "created_at", "changes")
+        for k in (
+            "recording_id",
+            "session",
+            "started_at",
+            "created_at",
+            "author",
+            "changes",
+        )
     }
     assert recording.started_at == "2026-10-20T14:02:11.000000Z"
     assert recording.metadata["started_at"] == recording.started_at
     assert recording.zone == "Europe/Berlin"
+    assert recording.author == "Charles Babbage"
+    assert recording.metadata["author"] == recording.author
     assert [(n["text"], n["carried_from"]) for n in recording.notes] == [
         ("run", "1" * 32)
     ]
@@ -1644,9 +1677,11 @@ def test_a_derived_session_shows_when_its_source_was_recorded(physical, rsf_note
         extra_attributes={"derived_from": {"recording_id": "1" * 32, "session": None}},
     )
     assert older.derived_from["changes"] is None
+    assert older.derived_from["author"] is None
     assert older.started_at == "2026-10-21T08:00:00.000000Z"
     plain = physical("not-derived")
     assert plain.derived_from is None and plain.zone is None
+    assert plain.author is None
     assert plain.started_at == plain.record["started_at"]
 
 
