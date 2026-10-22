@@ -50,6 +50,9 @@ class _RunRecording:
     def environment(self, frame=None, **kwargs) -> dict:
         return {}
 
+    def channels(self) -> dict:
+        return {}
+
     def read(self, segment, start, length, channels=None) -> np.ndarray:
         self._segment(segment)
         potential = self._potential()
@@ -160,6 +163,7 @@ def _physical_session(
     conditions_items: Mapping | None = None,
     system: Mapping | None = None,
     extra_attributes: Mapping | None = None,
+    documents: Mapping[str, object] | None = None,
 ) -> str:
     import zarr
 
@@ -270,6 +274,11 @@ def _physical_session(
             _node(
                 os.path.join(rsf, "stimulation", f"{i:04d}"), {"stimulation": attribute}
             )
+
+    for name, document in (documents or {}).items():
+        os.makedirs(rsf, exist_ok=True)
+        with open(os.path.join(rsf, name), "w", encoding="utf-8") as f:
+            json.dump(document, f)
 
     for kind, versions in (notes or {}).items():
         folder = os.path.join(rsf, "notes", kind)

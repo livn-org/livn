@@ -57,6 +57,11 @@ class Recording(Protocol):
         its value and its ``basis``; ``{}`` for unknown."""
         ...
 
+    def channels(self) -> dict:
+        """The described channels that are not electrodes (aux inputs, digital words, the
+        reference, ...) by channel name, each with its ``kind``."""
+        ...
+
 
 def open(
     path_or_uri: str | os.PathLike, *, backend: str | None = None, **kw

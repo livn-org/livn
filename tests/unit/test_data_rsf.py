@@ -1650,6 +1650,226 @@ def test_a_derived_session_shows_when_its_source_was_recorded(physical, rsf_note
     assert plain.started_at == plain.record["started_at"]
 
 
+def _rig_channels(marks="light"):
+    def bit(weight, **more):
+        return {"weight": weight, "label": None, "source": None, "marks": None, **more}
+
+    channels = {
+        "e-ref": {"kind": "reference", "contact_id": "R", "label": "reference"},
+        "aux-0": {"kind": "analog_in", "label": "aux 0", "units": "V", "scale": 1e-6},
+        "aux-1": {"kind": "analog_in", "label": "aux 1", "units": "uV"},
+        "din": {
+            "kind": "digital_in",
+            "label": "digital in",
+            "bits": {
+                "0": bit(4, source="light trigger out", marks=marks),
+                "1": bit(8),
+            },
+        },
+        "dout": {"kind": "digital_out", "label": "digital out"},
+        "side": {"kind": "stim_sideband", "bits": {"0": bit(2, marks="electrode")}},
+        "chk": {"kind": "checksum"},
+        "clk-lo": {"kind": "clock", "part": "low"},
+        "clk-hi": {"kind": "clock", "part": "high"},
+    }
+    return {"kind": "channels", "backend": "sim-rig", "channels": channels}
+
+
+def test_the_channels_document_describes_what_is_not_an_electrode(physical):
+    recording = physical(
+        "rig",
+        channels=("e-00", "e-01", "e-02", "din"),
+        documents={"channels.json": _rig_channels()},
+    )
+    channels = recording.channels()
+    assert not {"e-00", "e-01", "e-02"} & set(channels)  # electrodes are the wiring's
+    assert len(channels) == 9
+    kinds = [c["kind"] for c in channels.values()]
+    assert kinds.count("analog_in") == 2 and kinds.count("clock") == 2
+    assert channels["e-ref"]["contact_id"] == "R"
+    assert (channels["aux-0"]["units"], channels["aux-0"]["scale"]) == ("V", 1e-6)
+    assert channels["aux-1"]["scale"] is None
+    assert [channels[f"clk-{p}"]["part"] for p in ("lo", "hi")] == ["low", "high"]
+    trigger = channels["din"]["bits"][0]
+    assert trigger == {
+        "weight": 4,
+        "label": None,
+        "source": "light trigger out",
+        "marks": "light",
+        "carried_from": None,
+    }
+    assert channels["dout"]["bits"] == {}
+    assert physical("plain").channels() == {}
+
+
+def test_a_channel_version_restates_what_was_learnt_later(physical, rsf_note):
+    uid = "{:032x}".format
+
+    def version(item, at, **members):
+        return {**rsf_note(item, at, ""), **members}
+
+    notes = {
+        "channel": [
+            # the cable, declared the day after
+            (
+                f"20261021T090000.000000Z-{uid(1)}.json",
+                version(
+                    "din/0",
+                    "2026-10-21T09:00:00Z",
+                    source="light trigger out",
+                    label="light trigger",
+                    marks="light",
+                    weight=64,  # a version never changes a weight
+                ),
+            ),
+            # carried from the source session, a channel's units and scale
+            (
+                f"20261020T120000.000000Z-{uid(2)}.json",
+                {
+                    **version(
+                        "aux-1",
+                        "2026-10-20T12:00:00Z",
+                        units="mW/mm2",
+                        scale=0.002,
+                        label="photodiode",
+                        kind="digital_in",  # nor a kind
+                    ),
+                    "carried_from": "1" * 32,
+                },
+            ),
+            # a version on a channel or a bit the document does not describe
+            (
+                f"20261021T090000.000000Z-{uid(3)}.json",
+                version("nowhere/0", "2026-10-21T09:00:00Z", source="x", marks="light"),
+            ),
+            (
+                f"20261021T090000.000000Z-{uid(4)}.json",
+                version("din/5", "2026-10-21T09:00:00Z", source="x", marks="light"),
+            ),
+        ]
+    }
+    recording = physical(
+        "learnt",
+        documents={"channels.json": _rig_channels(marks=None)},
+        notes=notes,
+    )
+    channels = recording.channels()
+    assert channels["din"]["bits"][0] == {
+        "weight": 4,
+        "label": "light trigger",
+        "source": "light trigger out",
+        "marks": "light",
+        "carried_from": None,
+    }
+    assert sorted(channels["din"]["bits"]) == [0, 1]
+    photodiode = channels["aux-1"]
+    assert (photodiode["kind"], photodiode["units"], photodiode["scale"]) == (
+        "analog_in",
+        "mW/mm2",
+        0.002,
+    )
+    assert photodiode["label"] == "photodiode"
+    assert photodiode["carried_from"] == "1" * 32
+    assert "nowhere" not in channels
+    # a version alone, without the document, describes nothing
+    assert physical("versions-alone", notes=notes).channels() == {}
+
+
+def test_the_marking_bit_of_a_program_is_found_by_marks(physical):
+    rows = [
+        (100, "light/s1", 1.0, 0, 0, "marker"),
+        (200, "light/s1", 0.0, 0, 1, "marker"),
+    ]
+    traces = np.zeros((1000, 2), dtype=np.int16)
+    traces[100:200, 1] = 4  # bit 0 alone, the light's
+    electrode = {
+        "started_at": "2026-10-04T09:13:00Z",
+        "kind": "electrode",
+        "channels": [
+            {
+                "id": "electrode/35",
+                "shape": {"kind": "contact", "contact_id": "35", "x": 0.0, "y": 0.0},
+                "full_scale": {"units": "uA", "value": 100.0},
+                "bipolar": True,
+                "wavelength_nm": None,
+            }
+        ],
+        "marker_channel": None,
+        "marker_edge": None,
+        "timing": "schedule",
+        "placement_lag_ms": 0,
+    }
+    recording = physical(
+        "marked",
+        channels=("e-00", "din"),
+        traces=traces,
+        stimulation=[_light_record(), electrode],
+        stim_events=rows,
+        documents={"channels.json": _rig_channels()},
+    )
+    light = recording.marking_bit(0)
+    assert light == {
+        "channel": "din",
+        "bit": 0,
+        "weight": 4,
+        "label": None,
+        "source": "light trigger out",
+        "marks": "light",
+        "gain_to_uV": 0.195,
+    }
+    # half the weight on the stored row, or on a scaled read once the gain is undone
+    scaled = recording.read(0, 0, 1000, channels=[light["channel"]])[:, 0]
+    raw = np.round(scaled / light["gain_to_uV"]).astype(np.int64)
+    high = raw >= light["weight"] / 2
+    np.testing.assert_array_equal(
+        np.flatnonzero(np.diff(high.astype(int)) == 1) + 1, [100]
+    )
+    # the electrode program is marked by the sideband word, not a row of this store
+    sideband = recording.marking_bit(recording.stimulation_records()[1])
+    assert (sideband["channel"], sideband["bit"], sideband["gain_to_uV"]) == (
+        "side",
+        0,
+        None,
+    )
+
+    # a bit naming one of the record's channels wins over one naming its kind
+    document = _rig_channels()
+    document["channels"]["side"]["bits"]["3"] = {
+        "weight": 16,
+        "label": None,
+        "source": None,
+        "marks": "light/s2",
+    }
+    named = physical(
+        "named",
+        stimulation=[_light_record()],
+        stim_events=rows,
+        documents={"channels.json": document},
+    )
+    assert (named.marking_bit(0)["channel"], named.marking_bit(0)["bit"]) == (
+        "side",
+        3,
+    )
+    # nothing marks it: None
+    unmarked = physical(
+        "unmarked",
+        stimulation=[_light_record()],
+        stim_events=rows,
+        documents={"channels.json": _rig_channels(marks=None)},
+    )
+    assert unmarked.marking_bit(0) is None
+    assert physical("bare", stimulation=[_light_record()]).marking_bit(0) is None
+
+
+def test_a_simulation_describes_no_other_channels(tmp_path):
+    session = str(tmp_path / "simulated")
+    store(_run(), session, _Env())
+    assert not os.path.exists(
+        os.path.join(session, "traces.zarr", "rsf", "channels.json")
+    )
+    assert rsf.RsfRecording(session).channels() == {}
+
+
 def test_a_growing_store_says_how_far_its_stimulus_is_final(
     physical, physical_session, tmp_path
 ):

@@ -42,6 +42,10 @@ NOTE_KINDS = ("label", "description", "note")
 CALIBRATION = "stimulus_calibration"
 
 CONDITION = "condition"
+CHANNEL = "channel"
+CHANNELS_DOCUMENT = "channels.json"
+# the kinds of channel whose bits can mark a stimulus, the digital input first
+MARKING_KINDS = ("digital_in", "stim_sideband")
 CONDITIONS = "conditions"
 CONDITION_COLUMNS = ("frame", "quantity", "item", "value", "units", "basis")
 
@@ -1996,6 +2000,128 @@ class RsfRecording:
             }
         return out
 
+    def channels(self) -> dict[str, dict]:
+        """The session's described channels that are not electrodes, by channel name, from
+        ``rsf/channels.json``: ``{"kind", "contact_id", "label", "units", "scale", "bits",
+        "part", "carried_from"}``, each ``None`` where the document does not say, with ``bits``
+        ``{index: {"weight", "label", "source", "marks", "carried_from"}}`` keyed by the bit's
+        integer index (``{}`` for a channel without bits).
+
+        The current ``rsf/notes/channel/`` version of the item ``<channel>`` restates the
+        channel's ``units``, ``scale`` and ``label``, and that of ``<channel>/<bit>`` (the bit a
+        decimal index after the last ``/``) a bit's ``source``, ``label`` and ``marks``; a
+        version never changes a ``kind`` or a ``weight``, and a version that names a channel
+        or a bit the document does not describe is ignored. ``carried_from`` is the source
+        session's ``recording_id`` of a version a derived session carried. The electrodes are
+        not here: what a row of the wiring is stays the wiring's. No document: ``{}``, the store
+        says nothing about its other channels."""
+        path = os.path.join(self._documents, CHANNELS_DOCUMENT)
+        if not os.path.isfile(path):
+            return {}
+        try:
+            with open(path, encoding="utf-8") as f:
+                document = json.load(f)
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(document, Mapping) or document.get("kind") != "channels":
+            return {}
+        described = document.get("channels")
+        if not isinstance(described, Mapping):
+            return {}
+        out = {
+            str(name): _channel_description(description)
+            for name, description in described.items()
+            if isinstance(description, Mapping)
+        }
+
+        versions = _read_notes(os.path.join(self._documents, "notes"), (CHANNEL,)).get(
+            CHANNEL, {}
+        )
+        for item, history in versions.items():
+            current = _current(history)
+            if current is None or current["removed"]:
+                continue
+            carried = _string(current.get("carried_from"))
+            if item in out:
+                out[item].update(
+                    units=_string(current.get("units")),
+                    scale=float(current["scale"])
+                    if _number(current.get("scale"))
+                    else None,
+                    label=_string(current.get("label")),
+                    carried_from=carried,
+                )
+                continue
+            name, _, index = item.rpartition("/")
+            if not re.fullmatch(r"[0-9]+", index) or name not in out:
+                continue
+            bit = out[name]["bits"].get(int(index))
+            if bit is None:
+                continue  # a version gives no bit its weight
+            bit.update(
+                source=_string(current.get("source")),
+                label=_string(current.get("label")),
+                marks=_string(current.get("marks")),
+                carried_from=carried,
+            )
+        return out
+
+    def marking_bit(self, record: Mapping | int) -> dict | None:
+        """The bit whose edges mark the stimulation record ``record`` (a record of
+        :meth:`stimulation_records`, or its index), or ``None`` when no described channel
+        says so: a ``digital_in`` or ``stim_sideband`` channel of :meth:`channels` with a bit
+        whose ``marks`` is a channel ``id`` of the record or the record's ``kind`` (``light``,
+        ``electrode``). Found by ``marks``, never by ``source``. Of several, the record's
+        ``marker_channel`` first, then a bit that names one of its channels over one that names
+        its kind, then ``digital_in`` before ``stim_sideband``, then by name and index.
+
+        Returns ``{"channel", "bit", "weight", "label", "source", "marks", "gain_to_uV"}``. A
+        caller finds the edges by thresholding the stored row (``traces_seg0`` as written) at
+        half the ``weight``; one that reads scaled traces (:meth:`read`) divides by the row's
+        ``gain_to_uV`` first, ``None`` when the channel is not a row of the store."""
+        if not isinstance(record, Mapping):
+            index = int(record)
+            record = next(
+                (r for r in self.stimulation_records() if r["index"] == index), None
+            )
+            if record is None:
+                raise IndexError(f"{self.path} has no stimulation record {index}")
+        ids = {
+            c["id"]
+            for c in record.get("channels") or ()
+            if isinstance(c, Mapping) and isinstance(c.get("id"), str)
+        }
+        kind = record.get("kind")
+        candidates = []
+        for name, channel in self.channels().items():
+            if channel["kind"] not in MARKING_KINDS:
+                continue
+            for index, bit in channel["bits"].items():
+                marks = bit["marks"]
+                if marks is None or not (marks in ids or (kind and marks == kind)):
+                    continue
+                rank = (
+                    name != record.get("marker_channel"),
+                    marks not in ids,
+                    MARKING_KINDS.index(channel["kind"]),
+                    name,
+                    index,
+                )
+                candidates.append((rank, name, index, bit))
+        if not candidates:
+            return None
+        _, name, index, bit = min(candidates, key=lambda c: c[0])
+        column = self._column.get(name)
+        return {
+            "channel": name,
+            "bit": index,
+            "weight": bit["weight"],
+            "label": bit["label"],
+            "source": bit["source"],
+            "marks": bit["marks"],
+            "gain_to_uV": None if column is None else float(self._gain[column]),
+        }
+
     def environment(
         self,
         frame: int | None = None,
@@ -2395,6 +2521,12 @@ class Session:
     def environment(self, frame=None, **kwargs) -> dict[tuple[str, str], Condition]:
         return self.recording.environment(frame, **kwargs)
 
+    def channels(self) -> dict[str, dict]:
+        return self.recording.channels()
+
+    def marking_bit(self, record) -> dict | None:
+        return self.recording.marking_bit(record)
+
 
 def load(path: str | os.PathLike) -> Session:
     return Session(RsfRecording(path))
@@ -2564,6 +2696,9 @@ def _read_notes(
             elif kind == CONDITION:
                 if not _condition(version):
                     continue
+            elif kind == CHANNEL:
+                if not item or version["frame"] is not None:
+                    continue
             elif item != "session":
                 continue
             out.setdefault(kind, {}).setdefault(item, []).append((at, name, version))
@@ -2586,6 +2721,39 @@ def _calibration(version: dict) -> bool:
     if value is None:
         return _wavelength(version.get("wavelength_nm")) is not None
     return _number(value) and value > 0
+
+
+def _channel_description(description: Mapping) -> dict:
+    """A channel description of ``rsf/channels.json`` with every member, ``None`` where
+    absent; bits keyed by integer index, those without a positive integer ``weight`` left
+    out (a reader cannot find their edges)."""
+    bits: dict[int, dict] = {}
+    described = description.get("bits")
+    if isinstance(described, Mapping):
+        for index, bit in described.items():
+            if not re.fullmatch(r"[0-9]+", str(index)) or not isinstance(bit, Mapping):
+                continue
+            weight = bit.get("weight")
+            if not _number(weight) or weight <= 0 or weight != int(weight):
+                continue
+            bits[int(index)] = {
+                "weight": int(weight),
+                "label": _string(bit.get("label")),
+                "source": _string(bit.get("source")),
+                "marks": _string(bit.get("marks")),
+                "carried_from": None,
+            }
+    scale = description.get("scale")
+    return {
+        "kind": _string(description.get("kind")),
+        "contact_id": _string(description.get("contact_id")),
+        "label": _string(description.get("label")),
+        "units": _string(description.get("units")),
+        "scale": float(scale) if _number(scale) else None,
+        "bits": dict(sorted(bits.items())),
+        "part": _string(description.get("part")),
+        "carried_from": None,
+    }
 
 
 def _condition(version: dict) -> bool:

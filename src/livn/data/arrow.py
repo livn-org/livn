@@ -259,6 +259,10 @@ class ArrowRecording:
         """``{}`` for unknown."""
         return {}
 
+    def channels(self) -> dict:
+        """``{}``: the Arrow layout describes no channels besides its electrodes."""
+        return {}
+
     def inputs(self, segment, start, length) -> np.ndarray:
         """The delivered input on the frame grid, float32 ``(length, channels)``."""
         if "in" not in self.columns:
