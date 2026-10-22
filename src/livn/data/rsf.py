@@ -41,6 +41,13 @@ TRACE_DTYPES = ("int16", "int32")
 NOTE_KINDS = ("label", "description", "note")
 CALIBRATION = "stimulus_calibration"
 
+CONDITION = "condition"
+CONDITIONS = "conditions"
+CONDITION_COLUMNS = ("frame", "quantity", "item", "value", "units", "basis")
+
+CONDITION_BASIS_RANK = {"measured": 2, "setpoint": 1}
+WAVELENGTH_BASES = ("measured", "stated", "device_default")
+
 TIMING_RANK = {
     "marker": 4,
     "from_marker": 3,
@@ -351,6 +358,8 @@ def _prepare(
     if "electrode_positions" not in masked:
         probe = _probe(operator, row_ids)
 
+    conditions_table = _simulated_conditions(env, simulator)
+
     stores = []
     if spikes is not None:
         stores.append("spikes")
@@ -391,6 +400,7 @@ def _prepare(
         "simulation": simulation,
         "group_attrs": group_attrs,
         "probe": probe,
+        "conditions": conditions_table,
         "stores": [
             {
                 "path": f"ground_truth/{name}.zarr",
@@ -520,6 +530,20 @@ def _write(plan: dict) -> None:
     _array(gaps, "frame", np.zeros(0, dtype=np.uint64))
     _array(gaps, "n_frames", np.zeros(0, dtype=np.uint64))
 
+    if plan["conditions"] is not None:
+        rows = plan["conditions"]["rows"]
+        table = zarr.open_group(
+            os.path.join(rsf, CONDITIONS),
+            mode="w",
+            attributes={"items": plan["conditions"]["items"]},
+        )
+        _array(table, "frame", np.asarray([r[0] for r in rows], dtype=np.uint64))
+        _strings(table, "quantity", [r[1] for r in rows])
+        _strings(table, "item", [r[2] for r in rows])
+        _array(table, "value", np.asarray([r[3] for r in rows], dtype=np.float64))
+        _strings(table, "units", [r[4] for r in rows])
+        _strings(table, "basis", [r[5] for r in rows])
+
     _write_json(os.path.join(rsf, "observe.json"), plan["observe"])
     _write_json(os.path.join(rsf, "simulation.json"), plan["simulation"])
     _write_json(os.path.join(rsf, "stores.json"), plan["stores"])
@@ -573,6 +597,18 @@ def _simulator_name(env) -> str:
             "a session is saved with the env of a livn backend"
         )
     return f"livn_{match.group(1)}"
+
+
+def _simulated_conditions(env, simulator: str) -> dict | None:
+    celsius = getattr(env, "_celsius", None)
+    if not isinstance(celsius, int | float) or isinstance(celsius, bool):
+        return None
+    if not math.isfinite(float(celsius)):
+        return None
+    return {
+        "rows": [(0, "temperature", "network", float(celsius), "C", "setpoint")],
+        "items": {"network": {"source": simulator}},
+    }
 
 
 def _observation(env):
@@ -1375,6 +1411,23 @@ class StimEvents:
         return len(self.frame)
 
 
+@dataclass(frozen=True)
+class Condition:
+    quantity: str
+    item: str
+    value: float
+    units: str | None
+    basis: str
+    origin: str
+    frames: np.ndarray
+    values: np.ndarray
+    source: str | None = None
+    method: str | None = None
+    text: str | None = None
+    at: str | None = None
+    author: str | None = None
+
+
 class RsfRecording:
     """A session opened lazily: the zarr arrays stay on disk and :meth:`read` touches only
     the chunks of the window it is asked for, so it is cheap to call from many threads
@@ -1503,6 +1556,10 @@ class RsfRecording:
             max_current_uA=self._electrode_range(),
         )
         self.bad_channels = np.zeros(0, dtype=np.int64)
+        self.created_at = group_attrs.get("created_at")
+        self.zone = _string(group_attrs.get("zone"))
+        self.derived_from = _derived_from(group_attrs.get("derived_from"))
+        self.prep = _prep((self.record.get("env") or {}).get("system"))
         notes = _read_notes(os.path.join(documents, "notes"))
         self.label = _current_label(notes, group_attrs.get("label", ""))
         self.description = _current_text(notes.get("description", {}).get("session"))
@@ -1511,6 +1568,7 @@ class RsfRecording:
                 {
                     "item": item,
                     **{k: v[k] for k in ("text", "frame", "author", "zone", "at")},
+                    "carried_from": _string(v.get("carried_from")),
                 }
                 for item, v in (
                     (item, _current(versions))
@@ -1529,7 +1587,18 @@ class RsfRecording:
             "description": self.description,
             "producer": self.producer,
             "gain_uV": float(self._gain[0]) if len(self._gain) else None,
+            "started_at": self.started_at,
+            "zone": self.zone,
+            "derived_from": self.derived_from,
+            "prep": self.prep,
         }
+
+    @property
+    def started_at(self) -> str | None:
+        derived = (self.derived_from or {}).get("started_at")
+        if derived is not None:
+            return derived
+        return _string(self.record.get("started_at")) or _string(self.created_at)
 
     def __getstate__(self) -> dict:
         return {"path": self.path, "growing": self.growing}
@@ -1891,6 +1960,104 @@ class RsfRecording:
             }
         return out
 
+    def stimulus_wavelengths(self) -> dict[str, dict]:
+        """The wavelength of each channel of :meth:`stimulus_channels`, in nm:
+        ``{"value", "basis", "source"}``. The channel's current ``stimulus_calibration``
+        version's ``wavelength_nm`` when that version has one (``source`` ``"calibration"``),
+        else the record's ``wavelength_nm`` (``source`` ``"record"``), else ``None`` with
+        ``source`` ``None``. ``basis`` comes with the value from the same place: its
+        ``wavelength_basis``, one of ``measured`` (a spectrometer), ``stated`` (a person) and
+        ``device_default`` (the instrument's documented source), or ``None`` when that place
+        does not say. Channels that are not light have no wavelength and are ``None`` too."""
+        out: dict[str, dict] = {}
+        for channel in self.stimulus_channels():
+            nm = _wavelength(channel.get("wavelength_nm"))
+            out[channel["id"]] = {
+                "value": nm,
+                "basis": None
+                if nm is None
+                else _string(channel.get("wavelength_basis")),
+                "source": None if nm is None else "record",
+            }
+        versions = _read_notes(
+            os.path.join(self._documents, "notes"), (CALIBRATION,)
+        ).get(CALIBRATION, {})
+        for item, history in versions.items():
+            current = _current(history)
+            if item not in out or current is None or current["removed"]:
+                continue
+            nm = _wavelength(current.get("wavelength_nm"))
+            if nm is None:
+                continue
+            out[item] = {
+                "value": nm,
+                "basis": _string(current.get("wavelength_basis")),
+                "source": "calibration",
+            }
+        return out
+
+    def environment(
+        self,
+        frame: int | None = None,
+        *,
+        start: int | None = None,
+        length: int | None = None,
+        basis: str | None = None,
+        segment: int = 0,
+    ) -> dict[tuple[str, str], Condition]:
+        """The session's conditions (e.g. temperature, ...), one :class:`Condition` per
+        ``(quantity, item)``, at ``frame``, over the window ``[start, start + length)``, or by
+        default over the whole session."""
+        self._segment(segment)
+        n = self.num_samples()
+        if frame is not None:
+            if start is not None or length is not None:
+                raise ValueError("environment() takes a frame or a window, not both")
+            a = int(frame)
+            if a < 0 or a > n:
+                raise IndexError(f"frame {a} is outside 0..{n}")
+            b = a + 1
+        else:
+            a = 0 if start is None else int(start)
+            a, length = _window(a, n - a if length is None else length, n)
+            b = a + max(length, 1)
+
+        out: dict[tuple[str, str], Condition] = {}
+        table = _table(self._root, CONDITIONS, CONDITION_COLUMNS)
+        if table is not None and len(table["frame"]):
+            items = _read_node(os.path.join(self._documents, CONDITIONS)).get("items")
+            items = items if isinstance(items, Mapping) else {}
+            out.update(_conditions_from_table(table, items, a, b, basis))
+
+        versions = _read_notes(
+            os.path.join(self._documents, "notes"), (CONDITION,)
+        ).get(CONDITION, {})
+        for key, history in versions.items():
+            current = _current(history)
+            if current is None or current["removed"]:
+                continue
+            quantity, item = key.split("/", 1)
+            if (quantity, item) in out:
+                continue
+            if basis is not None and current["basis"] != basis:
+                continue
+            value = float(current["value"])
+            out[(quantity, item)] = Condition(
+                quantity=quantity,
+                item=item,
+                value=value,
+                units=current["units"],
+                basis=current["basis"],
+                origin="note",
+                frames=np.asarray([a], dtype=np.int64),
+                values=np.asarray([value], dtype=np.float64),
+                method=_string(current.get("method")),
+                text=current["text"],
+                at=current["at"],
+                author=current["author"],
+            )
+        return dict(sorted(out.items()))
+
     @property
     def stimulus_final_to(self) -> int:
         """The frame before which the delivered stimulus is final: the store's length once it
@@ -1956,12 +2123,13 @@ class RsfRecording:
         if not channels:
             raise Missing(f"{self.path} has no delivered stimulus")
         scales = self.stimulus_full_scales()
+        wavelengths = self.stimulus_wavelengths()
         runs: list[list[tuple]] = []
         for channel in channels:
             group = (
                 channel["index"],
                 channel["kind"],
-                channel.get("wavelength_nm"),
+                wavelengths[channel["id"]]["value"],
                 scales[channel["id"]]["value"],
             )
             if runs and runs[-1][0][0] == group:
@@ -2224,6 +2392,9 @@ class Session:
         """See :meth:`RsfRecording.conditions`."""
         return self.recording.conditions(segment, start, length)
 
+    def environment(self, frame=None, **kwargs) -> dict[tuple[str, str], Condition]:
+        return self.recording.environment(frame, **kwargs)
+
 
 def load(path: str | os.PathLike) -> Session:
     return Session(RsfRecording(path))
@@ -2390,6 +2561,9 @@ def _read_notes(
             elif kind == CALIBRATION:
                 if not _calibration(version):
                     continue
+            elif kind == CONDITION:
+                if not _condition(version):
+                    continue
             elif item != "session":
                 continue
             out.setdefault(kind, {}).setdefault(item, []).append((at, name, version))
@@ -2409,7 +2583,180 @@ def _calibration(version: dict) -> bool:
     if version["removed"]:
         return not version["text"]
     value = scale.get("value")
-    return isinstance(value, int | float) and not isinstance(value, bool) and value > 0
+    if value is None:
+        return _wavelength(version.get("wavelength_nm")) is not None
+    return _number(value) and value > 0
+
+
+def _condition(version: dict) -> bool:
+    """A ``condition`` version: ``item`` ``<quantity>/<item>``, ``frame`` null, ``units`` and
+    ``basis`` strings, ``value`` a number (``null`` only when ``removed``) and ``method``."""
+    quantity, _, item = version["item"].partition("/")
+    if not quantity or not item or version["frame"] is not None:
+        return False
+    if not isinstance(version.get("units"), str) or not isinstance(
+        version.get("basis"), str
+    ):
+        return False
+    if "method" not in version:
+        return False
+    if version["removed"]:
+        return True
+    value = version.get("value")
+    return _number(value) and math.isfinite(value)
+
+
+def _conditions_from_table(
+    table: dict[str, np.ndarray],
+    items: Mapping,
+    a: int,
+    b: int,
+    basis: str | None,
+) -> dict[tuple[str, str], Condition]:
+    """The table's conditions over the frames ``[a, b)``: per ``(quantity, item)`` the steps
+    of the best basis in effect there (``measured``, then ``setpoint``, then any other)."""
+    frames = np.asarray(table["frame"]).astype(np.int64)
+    values = np.asarray(table["value"]).astype(np.float64)
+    columns = {
+        name: [str(v) for v in table[name]]
+        for name in ("quantity", "item", "units", "basis")
+    }
+    rows: dict[tuple[str, str, str], list[int]] = {}
+    for k in range(len(frames)):
+        key = (columns["quantity"][k], columns["item"][k], columns["basis"][k])
+        if basis is not None and key[2] != basis:
+            continue
+        rows.setdefault(key, []).append(k)
+
+    best: dict[tuple[str, str], tuple] = {}
+    for (quantity, item, b_name), ks in rows.items():
+        ks = np.asarray(ks)
+        # by frame; of rows at one frame the later in the table holds
+        ks = ks[np.lexsort((ks, frames[ks]))]
+        f, v = frames[ks], values[ks]
+        last = np.ones(len(f), dtype=bool)
+        last[:-1] = f[1:] != f[:-1]
+        ks, f, v = ks[last], f[last], v[last]
+        first = np.searchsorted(f, a, side="right") - 1
+        stop = np.searchsorted(f, b, side="left")
+        lo = max(first, 0)
+        steps_f, steps_v, steps_k = f[lo:stop], v[lo:stop], ks[lo:stop]
+        if not len(steps_f):
+            continue  # no row of this basis in effect over the frames asked for
+        rank = (CONDITION_BASIS_RANK.get(b_name, 0), b_name)
+        if (quantity, item) in best and best[(quantity, item)][0] >= rank:
+            continue
+        best[(quantity, item)] = (rank, b_name, steps_f, steps_v, steps_k)
+
+    out: dict[tuple[str, str], Condition] = {}
+    for (quantity, item), (_, b_name, steps_f, steps_v, steps_k) in best.items():
+        begins = np.maximum(steps_f, a)
+        ends = np.append(begins[1:], b)
+        weights = (ends - begins).astype(np.float64)
+        value = (
+            float(np.average(steps_v, weights=weights))
+            if weights.sum() > 0
+            else float(steps_v[-1])
+        )
+        entry = items.get(item)
+        source = entry.get("source") if isinstance(entry, Mapping) else None
+        out[(quantity, item)] = Condition(
+            quantity=quantity,
+            item=item,
+            value=value,
+            units=columns["units"][int(steps_k[0])],
+            basis=b_name,
+            origin="table",
+            frames=steps_f,
+            values=steps_v,
+            source=_string(source),
+        )
+    return out
+
+
+def _number(value) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool)
+
+
+def _string(value) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _wavelength(value) -> float | None:
+    """A wavelength in nm, or ``None`` when ``value`` is none."""
+    if not _number(value) or not math.isfinite(value) or value <= 0:
+        return None
+    return float(value)
+
+
+def _derived_from(value) -> dict | None:
+    """The ``derived_from`` attribute with every member RSF defines, ``None`` where absent:
+    ``recording_id``, ``session``, and the source's ``started_at`` and ``created_at`` and the
+    derivation's ``changes`` (``[{"what", "how", "params"}]``) when it says them."""
+    if not isinstance(value, Mapping):
+        return None
+    changes = value.get("changes")
+    if isinstance(changes, list):
+        changes = [
+            {
+                "what": _string(change.get("what")),
+                "how": _string(change.get("how")),
+                "params": dict(change["params"])
+                if isinstance(change.get("params"), Mapping)
+                else {},
+            }
+            for change in changes
+            if isinstance(change, Mapping)
+        ]
+    else:
+        changes = None
+    return {
+        "recording_id": _string(value.get("recording_id")),
+        "session": _string(value.get("session")),
+        "started_at": _string(value.get("started_at")),
+        "created_at": _string(value.get("created_at")),
+        "changes": changes,
+    }
+
+
+def _prep(system) -> dict | None:
+    """``env.system.prep`` with every member RSF defines, ``None`` where absent: ``id``,
+    ``label``, ``kind``, ``species``, ``age`` (``{"value", "units"}``) and ``expression``
+    (``[{"construct", "method", "since"}]``). ``None`` for a session whose system is not a
+    preparation (a simulation, or a system nobody named)."""
+    if not isinstance(system, Mapping) or not isinstance(system.get("prep"), Mapping):
+        return None
+    prep = system["prep"]
+    age = prep.get("age")
+    if (
+        isinstance(age, Mapping)
+        and _number(age.get("value"))
+        and isinstance(age.get("units"), str)
+    ):
+        age = {"value": float(age["value"]), "units": age["units"]}
+    else:
+        age = None
+    expression = prep.get("expression")
+    if isinstance(expression, list):
+        expression = [
+            {
+                "construct": _string(e.get("construct")),
+                "method": _string(e.get("method")),
+                "since": _string(e.get("since")),
+            }
+            for e in expression
+            if isinstance(e, Mapping)
+        ]
+    else:
+        expression = None
+    return {
+        "id": _string(prep.get("id")),
+        "label": _string(prep.get("label")),
+        "kind": _string(prep.get("kind")),
+        "species": _string(prep.get("species")),
+        "age": age,
+        "expression": expression,
+    }
 
 
 def _current(versions: list[tuple] | None) -> dict | None:

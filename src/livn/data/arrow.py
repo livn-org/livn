@@ -255,6 +255,10 @@ class ArrowRecording:
             raise Missing(f"{self.path} has no `cp` column: it holds no channel signal")
         return self._window("cp", segment, start, length, channels)
 
+    def environment(self, frame=None, **kwargs) -> dict:
+        """``{}`` for unknown."""
+        return {}
+
     def inputs(self, segment, start, length) -> np.ndarray:
         """The delivered input on the frame grid, float32 ``(length, channels)``."""
         if "in" not in self.columns:

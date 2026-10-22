@@ -51,6 +51,12 @@ class Recording(Protocol):
 
     def to_run(self, segment=0, start=0, length=None) -> Run: ...
 
+    def environment(self, frame=None, **kwargs) -> dict:
+        """The conditions the recording states (e.g. temperature, ...), per
+        ``(quantity, item)`` at ``frame`` or over a window (``start=``, ``length=``), each with
+        its value and its ``basis``; ``{}`` for unknown."""
+        ...
+
 
 def open(
     path_or_uri: str | os.PathLike, *, backend: str | None = None, **kw

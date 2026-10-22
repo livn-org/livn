@@ -993,6 +993,35 @@ def test_a_label_is_the_first_name_version(tmp_path):
     assert rsf.RsfRecording(str(tmp_path / "other")).label == "toy"
 
 
+def test_a_simulation_states_the_temperature_it_ran_at(tmp_path):
+    plain = str(tmp_path / "plain")
+    store(_run(), plain, _Env())
+    assert not os.path.exists(os.path.join(plain, "traces.zarr", "rsf", "conditions"))
+    recording = rsf.RsfRecording(plain)
+    assert recording.environment() == {} and recording.prep is None
+
+    env = _Env()
+    env._celsius = 23.0  # what the neuron and native backends hold h.celsius at
+    session = str(tmp_path / "warm")
+    store(_run(), session, env)
+    table = os.path.join(session, "traces.zarr", "rsf", "conditions")
+    assert _attrs(table) == {"items": {"network": {"source": "livn_native"}}}
+    recording = rsf.RsfRecording(session)
+    held = recording.environment()[("temperature", "network")]
+    assert (held.value, held.units, held.basis, held.origin, held.source) == (
+        23.0,
+        "C",
+        "setpoint",
+        "table",
+        "livn_native",
+    )
+    np.testing.assert_array_equal(held.frames, [0])
+    assert recording.prep is None
+    assert not os.path.exists(
+        os.path.join(session, "traces.zarr", "rsf", "notes", "condition")
+    )
+
+
 def test_int32_traces_hold_what_int16_cannot(tmp_path):
     run = _run()
     env = _Env()
@@ -1346,6 +1375,279 @@ def test_a_calibration_gives_a_light_its_full_scale(physical, rsf_note):
         "removed", stimulation=[_light_record(scale=2.0)], stim_events=rows, notes=notes
     )
     assert removed.stimulus_full_scales()["light/s1"]["value"] == 2.0
+
+
+def test_a_conditions_table_gives_each_item_its_value_and_basis(physical):
+    rows = [
+        (0, "temperature", "mea_base", 37.0, "C", "setpoint"),
+        (100, "temperature", "mea_base", 36.8, "C", "measured"),
+        (400, "temperature", "mea_base", 37.1, "C", "measured"),
+        (400, "temperature", "mea_base", 37.2, "C", "measured"),  # one frame: the later
+        (0, "temperature", "chamber", 30.0, "C", "measured"),
+    ]
+    items = {"mea_base": {"source": "MCS TC01 2434"}}
+    recording = physical("conditions", conditions=rows, conditions_items=items)
+
+    # before the first measurement only the setpoint holds
+    early = recording.environment(50)[("temperature", "mea_base")]
+    assert (early.value, early.basis, early.origin) == (37.0, "setpoint", "table")
+    assert early.units == "C" and early.source == "MCS TC01 2434"
+    # a measurement is taken before the setpoint, and holds until the next row
+    later = recording.environment(399)[("temperature", "mea_base")]
+    assert (later.value, later.basis) == (36.8, "measured")
+    assert recording.environment(400)[("temperature", "mea_base")].value == 37.2
+    assert (
+        recording.environment(399, basis="setpoint")[("temperature", "mea_base")].value
+        == 37.0
+    )
+    # over a window, the steps in effect and their frame-weighted mean
+    window = recording.environment(start=300, length=200)
+    held = window[("temperature", "mea_base")]
+    np.testing.assert_array_equal(held.frames, [100, 400])
+    np.testing.assert_allclose(held.values, [36.8, 37.2])
+    assert held.value == pytest.approx((36.8 * 100 + 37.2 * 100) / 200)
+    chamber = window[("temperature", "chamber")]
+    assert (chamber.value, chamber.basis, chamber.source) == (30.0, "measured", None)
+    assert list(recording.environment()) == [
+        ("temperature", "chamber"),
+        ("temperature", "mea_base"),
+    ]
+    # no table and no notes: unknown, not a value; an empty table states nothing either
+    assert physical("plain").environment() == {}
+    assert physical("empty", conditions=[]).environment(10) == {}
+
+
+def _condition_note(rsf_note, item, at, value, basis, *, removed=False):
+    return {
+        **rsf_note(item, at, "" if removed else "held its setpoint", removed=removed),
+        "value": None if removed else value,
+        "units": "C",
+        "basis": basis,
+        "method": None if removed else "MCS TC01 2434 held its setpoint; not read",
+    }
+
+
+def test_a_condition_note_states_what_the_table_does_not(physical, rsf_note):
+    uid = "{:032x}".format
+    notes = {
+        "condition": [
+            (
+                f"20261020T100000.000000Z-{uid(1)}.json",
+                _condition_note(
+                    rsf_note,
+                    "temperature/mea_base",
+                    "2026-10-20T10:00:00Z",
+                    36.0,
+                    "stated",
+                ),
+            ),
+            (
+                f"20261021T090000.000000Z-{uid(2)}.json",
+                _condition_note(
+                    rsf_note,
+                    "temperature/mea_base",
+                    "2026-10-21T09:00:00Z",
+                    37.0,
+                    "setpoint",
+                ),
+            ),
+            # a removed item is not stated
+            (
+                f"20261021T090000.000000Z-{uid(3)}.json",
+                _condition_note(
+                    rsf_note, "co2/chamber", "2026-10-21T09:00:00Z", 5.0, "stated"
+                ),
+            ),
+            (
+                f"20261021T100000.000000Z-{uid(4)}.json",
+                _condition_note(
+                    rsf_note,
+                    "co2/chamber",
+                    "2026-10-21T10:00:00Z",
+                    None,
+                    "stated",
+                    removed=True,
+                ),
+            ),
+            # an item that is not <quantity>/<item> is skipped
+            (
+                f"20261021T110000.000000Z-{uid(5)}.json",
+                _condition_note(
+                    rsf_note, "temperature", "2026-10-21T11:00:00Z", 20.0, "stated"
+                ),
+            ),
+        ]
+    }
+    recording = physical("noted", notes=notes)
+    environment = recording.environment(10)
+    assert list(environment) == [("temperature", "mea_base")]
+    noted = environment[("temperature", "mea_base")]
+    assert (noted.value, noted.units, noted.basis, noted.origin) == (
+        37.0,
+        "C",
+        "setpoint",
+        "note",
+    )
+    assert noted.method.startswith("MCS TC01 2434") and noted.author == "Mara Okafor"
+
+    # the table's row wins where one is in effect, the note elsewhere
+    both = physical(
+        "both",
+        notes=notes,
+        conditions=[(500, "temperature", "mea_base", 36.9, "C", "measured")],
+    )
+    assert both.environment(499)[("temperature", "mea_base")].origin == "note"
+    at = both.environment(500)[("temperature", "mea_base")]
+    assert (at.value, at.basis, at.origin) == (36.9, "measured", "table")
+
+
+def test_a_calibration_version_gives_a_channel_its_wavelength(physical, rsf_note):
+    rows = [(10, "light/s1", 1.0, 0, 0, "marker")]
+    uid = "{:032x}".format
+
+    def calibration(item, at, value, **wavelength):
+        return {
+            **rsf_note(item, at, "Polygon1000, operator"),
+            "full_scale": {"units": "mW/mm2", "value": value},
+            "measured_at": None if value is None else "2026-10-06T14:05:00Z",
+            "method": None if value is None else "power meter at the sample plane",
+            **wavelength,
+        }
+
+    notes = {
+        "stimulus_calibration": [
+            (
+                f"20261006T142208.311904Z-{uid(1)}.json",
+                calibration("light/s1", "2026-10-06T14:22:08.311904Z", 12.4),
+            ),
+            # a later version restates the power and adds the wavelength
+            (
+                f"20261021T090000.000000Z-{uid(2)}.json",
+                calibration(
+                    "light/s1",
+                    "2026-10-21T09:00:00Z",
+                    12.4,
+                    wavelength_nm=470.0,
+                    wavelength_basis="stated",
+                ),
+            ),
+            # the first version of a channel can be the wavelength alone
+            (
+                f"20261021T090000.000000Z-{uid(3)}.json",
+                calibration(
+                    "light/s2",
+                    "2026-10-21T09:00:00Z",
+                    None,
+                    wavelength_nm=473.0,
+                    wavelength_basis="measured",
+                ),
+            ),
+        ]
+    }
+    record = _light_record()
+    record["channels"][0]["wavelength_nm"] = 465.0
+    record["channels"][0]["wavelength_basis"] = "device_default"
+    recording = physical(
+        "wavelength", stimulation=[record], stim_events=rows, notes=notes
+    )
+    assert recording.stimulus_wavelengths() == {
+        "light/s1": {"value": 470.0, "basis": "stated", "source": "calibration"},
+        "light/s2": {"value": 473.0, "basis": "measured", "source": "calibration"},
+    }
+    scales = recording.stimulus_full_scales()
+    assert scales["light/s1"]["value"] == 12.4
+    # a version with no measured power states the power unknown
+    assert scales["light/s2"]["value"] is None
+    assert scales["light/s2"]["source"] == "calibration"
+    devices = recording.stimulus_io().devices
+    assert [d.wavelength for d in devices] == [470.0, 473.0]
+
+    # no versions: the record's wavelength and basis, else unknown
+    plain = physical("plain-light", stimulation=[record], stim_events=rows)
+    assert plain.stimulus_wavelengths() == {
+        "light/s1": {"value": 465.0, "basis": "device_default", "source": "record"},
+        "light/s2": {"value": None, "basis": None, "source": None},
+    }
+
+
+def test_the_preparation_says_what_it_is(physical):
+    prep = {
+        "id": "culture-8",
+        "label": "sample 8",
+        "kind": "culture",
+        "species": "mouse",
+        "age": {"value": 11, "units": "DIV"},
+        "expression": [
+            {"construct": "ChR2-YFP", "method": "line", "since": None},
+            {"construct": "jGCaMP8", "method": "transfection", "since": "2026-10-13"},
+        ],
+    }
+    recording = physical("prep", system={"prep": prep})
+    assert recording.prep == {**prep, "age": {"value": 11.0, "units": "DIV"}}
+    assert recording.metadata["prep"] == recording.prep
+    # the members RSF 1 had alone: the rest is None
+    old = physical("old-prep", system={"prep": {"id": "c1", "label": None}})
+    assert old.prep == {
+        "id": "c1",
+        "label": None,
+        "kind": None,
+        "species": None,
+        "age": None,
+        "expression": None,
+    }
+    assert physical("no-system").prep is None
+
+
+def test_a_derived_session_shows_when_its_source_was_recorded(physical, rsf_note):
+    derived_from = {
+        "recording_id": "1" * 32,
+        "session": "../invs2-calibration2-sample8-DIV11",
+        "started_at": "2026-10-20T14:02:11.000000Z",
+        "created_at": "2026-10-20T14:02:10.000000Z",
+        "changes": [
+            {
+                "what": "stim_events",
+                "how": "retimed_from_digital_in",
+                "params": {"marker_channel": "hs0-068", "tolerance_ms": 2.5},
+            }
+        ],
+        "acme": "kept, unknown",
+    }
+    carried = {
+        **rsf_note(
+            "5b1f0c3e9a7d4e2b8c64d0a1f3e79b52", "2026-10-20T14:10:00Z", "run", frame=5
+        ),
+        "carried_from": "1" * 32,
+    }
+    recording = physical(
+        "derived",
+        started_at="2026-10-21T08:00:00.000000Z",
+        extra_attributes={"derived_from": derived_from, "zone": "Europe/Berlin"},
+        notes={
+            "note": [(f"20261020T141000.000000Z-{'2' * 32}.json", carried)],
+        },
+    )
+    assert recording.derived_from == {
+        k: derived_from[k]
+        for k in ("recording_id", "session", "started_at", "created_at", "changes")
+    }
+    assert recording.started_at == "2026-10-20T14:02:11.000000Z"
+    assert recording.metadata["started_at"] == recording.started_at
+    assert recording.zone == "Europe/Berlin"
+    assert [(n["text"], n["carried_from"]) for n in recording.notes] == [
+        ("run", "1" * 32)
+    ]
+    # a derived session from before these members: its own time, no changes
+    older = physical(
+        "derived-old",
+        started_at="2026-10-21T08:00:00.000000Z",
+        extra_attributes={"derived_from": {"recording_id": "1" * 32, "session": None}},
+    )
+    assert older.derived_from["changes"] is None
+    assert older.started_at == "2026-10-21T08:00:00.000000Z"
+    plain = physical("not-derived")
+    assert plain.derived_from is None and plain.zone is None
+    assert plain.started_at == plain.record["started_at"]
 
 
 def test_a_growing_store_says_how_far_its_stimulus_is_final(

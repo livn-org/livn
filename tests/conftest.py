@@ -47,6 +47,9 @@ class _RunRecording:
     def valid_spans(self, segment: int = 0) -> np.ndarray:
         return np.asarray([[0, self.num_samples(segment)]], dtype=np.int64)
 
+    def environment(self, frame=None, **kwargs) -> dict:
+        return {}
+
     def read(self, segment, start, length, channels=None) -> np.ndarray:
         self._segment(segment)
         potential = self._potential()
@@ -153,6 +156,10 @@ def _physical_session(
     producer: str = "acme",
     label: str = "slice 3",
     started_at: str = _STARTED_AT,
+    conditions: Sequence[tuple] | None = None,
+    conditions_items: Mapping | None = None,
+    system: Mapping | None = None,
+    extra_attributes: Mapping | None = None,
 ) -> str:
     import zarr
 
@@ -174,7 +181,12 @@ def _physical_session(
     record = {
         "format": 1,
         "recording_id": _RECORDING_ID,
-        "env": {"substrate": "physical", "system": None, "model": None, "seed": None},
+        "env": {
+            "substrate": "physical",
+            "system": None if system is None else dict(system),
+            "model": None,
+            "seed": None,
+        },
         "space": "channel",
         "rows": {c: [unknown] for c in channels},
         "started_at": started_at,
@@ -229,8 +241,23 @@ def _physical_session(
             "frame": np.asarray([g[0] for g in gaps], dtype=np.uint64),
             "n_frames": np.asarray([g[1] for g in gaps], dtype=np.uint64),
         }
+    if conditions is not None:  # (frame, quantity, item, value, units, basis)
+        tables["conditions"] = {
+            "frame": np.asarray([r[0] for r in conditions], dtype=np.uint64),
+            "quantity": [r[1] for r in conditions],
+            "item": [r[2] for r in conditions],
+            "value": np.asarray([r[3] for r in conditions], dtype=np.float64),
+            "units": [r[4] for r in conditions],
+            "basis": [r[5] for r in conditions],
+        }
     for name, columns in tables.items():
-        table = zarr.open_group(os.path.join(rsf, name), mode="w")
+        table = zarr.open_group(
+            os.path.join(rsf, name),
+            mode="w",
+            attributes={"items": dict(conditions_items)}
+            if name == "conditions" and conditions_items is not None
+            else None,
+        )
         for column, values in columns.items():
             if isinstance(values, list):
                 _strings(table, column, values)
@@ -271,7 +298,7 @@ def _physical_session(
         attributes["finished_at"] = "2026-10-04T09:20:00.000000+00:00"
     if tick_rate is not None:
         attributes["hardware_tick_rate_hz"] = float(tick_rate)
-    _node(rsf, attributes)
+    _node(rsf, {**attributes, **(extra_attributes or {})})
     return path
 
 
