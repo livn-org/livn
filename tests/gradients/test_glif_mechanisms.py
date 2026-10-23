@@ -80,6 +80,34 @@ class Light(GlifMechanism):
         return self.gain * inputs["irradiance"], states
 
 
+class ThresholdIntegral(GlifMechanism):
+    states: tuple[str, ...] = eqx.field(
+        static=True, default=("int_theta_s", "int_theta_v", "int_shift"), kw_only=True
+    )
+    inputs: tuple[str, ...] = eqx.field(
+        static=True, default=("theta_s", "theta_v", "threshold"), kw_only=True
+    )
+    base: jax.Array  # V_threshold_base, per cell
+
+    def drift(self, t, v, states, inputs):
+        shift = inputs["threshold"] - self.base
+        rates = jnp.stack([inputs["theta_s"], inputs["theta_v"], shift], axis=-1)
+        return jnp.zeros_like(v), rates
+
+
+class ThresholdAtSpike(GlifMechanism):
+    states: tuple[str, ...] = eqx.field(static=True, default=("crossed",), kw_only=True)
+    inputs: tuple[str, ...] = eqx.field(
+        static=True, default=("threshold",), kw_only=True
+    )
+
+    def drift(self, t, v, states, inputs):
+        return jnp.zeros_like(v), jnp.zeros_like(states)
+
+    def on_spike(self, fired, states, inputs):
+        return inputs["threshold"][:, None]
+
+
 def _rheobase_pA(neurons):
     return np.asarray((neurons.V_threshold_base - neurons.E_L) * neurons.g_L)
 
@@ -432,3 +460,84 @@ def test_a_mechanism_state_records_through_the_env():
     q = np.asarray(run["q"].values)
     assert q.shape == (env.num_cells, 201)
     np.testing.assert_allclose(q[:, -1], 1.0 - np.exp(-0.5), atol=1e-3)
+
+
+def _threshold_case(coupled, level, mechanism_of):
+    if coupled:
+        plain = _network(level=level)
+        return _network((mechanism_of(plain),), level=level), _drive_first()
+    plain = GlifNeurons(2, level=level)
+    neurons = GlifNeurons(2, level=level, mechanisms=(mechanism_of(plain),))
+    return neurons, _driven(plain)
+
+
+@pytest.mark.parametrize("level", [5, 4, 1])
+@pytest.mark.parametrize("coupled", [False, True])
+def test_a_mechanism_reads_the_cells_own_threshold(coupled, level):
+    dt = 0.01
+    neurons, current = _threshold_case(
+        coupled, level, lambda plain: ThresholdIntegral(base=plain.V_threshold_base)
+    )
+    current = jnp.repeat(current, round(DT / dt), axis=0)
+    solution = neurons.solve(current, 0.0, DURATION, dt, stimulus_dt=dt)
+    assert int(solution.num_spikes[0]) >= 3, "the threshold has to jump to test this"
+
+    ts = np.asarray(solution.ts)
+    theta_s, theta_v = np.asarray(solution.theta_s), np.asarray(solution.theta_v)
+    shift = (
+        np.asarray(solution.threshold) - np.asarray(neurons.V_threshold_base)[:, None]
+    )
+    np.testing.assert_allclose(shift, theta_s + theta_v, atol=1e-5)
+    if level < 5:
+        assert np.abs(theta_v).max() == 0.0
+    if level == 1:
+        assert np.abs(theta_s).max() == 0.0
+    else:
+        assert theta_s.max() > 1.0
+
+    jumps = np.asarray(solution.spike_times)
+    if not coupled:
+        jumps = jumps + np.asarray(neurons.t_ref)[:, None]  # the jump ends the cut
+    near = np.abs(ts[None, :, None] - jumps[:, None, :]).min(axis=-1) < 0.25
+    smooth = ~(near[:, 1:] | near[:, :-1])
+    assert smooth.mean() > 0.8
+
+    columns = neurons.state_columns
+    for name, trace in [
+        ("int_theta_s", theta_s),
+        ("int_theta_v", theta_v),
+        ("int_shift", theta_s + theta_v),
+    ]:
+        seen = np.asarray(solution.column(columns[name]))
+        rate = np.diff(seen, axis=1) / np.diff(ts)
+        expected = (trace[:, 1:] + trace[:, :-1]) / 2
+        np.testing.assert_allclose(
+            rate[smooth], expected[smooth], rtol=1e-2, atol=0.1, err_msg=name
+        )
+
+
+@pytest.mark.parametrize("level", [5, 1])
+@pytest.mark.parametrize("coupled", [False, True])
+def test_on_spike_reads_the_threshold_it_crossed(coupled, level):
+    dt = 0.01
+    neurons, current = _threshold_case(coupled, level, lambda plain: ThresholdAtSpike())
+    current = jnp.repeat(current, round(DT / dt), axis=0)
+    solution = neurons.solve(current, 0.0, DURATION, dt, stimulus_dt=dt)
+
+    spikes = np.asarray(solution.spike_times)
+    crossed = np.asarray(solution.yT)[..., neurons.state_columns["crossed"]]
+    threshold = np.asarray(solution.threshold)
+    ts = np.asarray(solution.ts)
+    base = np.asarray(neurons.V_threshold_base)
+    for cell in range(spikes.shape[0]):
+        times = spikes[cell][np.isfinite(spikes[cell])]
+        if len(times) == 0:
+            assert crossed[cell] == 0.0
+            continue
+        # the hard threshold is crossed where V meets it, so read it just before
+        before = np.interp(times[-1] - dt, ts, threshold[cell])
+        np.testing.assert_allclose(crossed[cell], before, atol=0.05)
+        if level == 1:
+            assert crossed[cell] == pytest.approx(base[cell])
+        elif len(times) > 1:
+            assert crossed[cell] > base[cell] + 0.5

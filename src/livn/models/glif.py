@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import functools
+import inspect
 import math
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -621,7 +622,7 @@ def _active(layout: StateLayout, t, y):
 
 
 class GlifMechanism(eqx.Module):
-    """A extension mechanism inserted into the GLIF cell."""
+    """An extension mechanism inserted into the GLIF cell."""
 
     states: tuple[str, ...] = eqx.field(static=True, default=(), kw_only=True)
     inputs: tuple[str, ...] = eqx.field(static=True, default=(), kw_only=True)
@@ -631,16 +632,18 @@ class GlifMechanism(eqx.Module):
         return jnp.zeros((n_cells, len(self.states)))
 
     def drift(self, t, v, states, inputs):
-        """``(current [cells] in pA into V, d states / dt [cells, len(states)])``"""
+        """``(current [cells] in pA into V, d states / dt [cells, len(states)])``
+
+        ``inputs`` is ``{name: [cells]}`` at ``t`` for every name in ``inputs``.
+        """
         raise NotImplementedError(f"{type(self).__name__} has no drift")
 
-    def on_spike(self, fired, states):
+    def on_spike(self, fired, states, inputs=None):
         """The states after the cells marked in ``fired [cells]`` spiked.
 
         Applied at the spike time, before the refractory cut (the cell's own jumps
         land at its end, Allen's ordering).  Only the fired rows are kept, so the
-        rule need not mask.
-        """
+        rule need not mask."""
         return states
 
     def presynaptic(self, states):
@@ -650,12 +653,28 @@ class GlifMechanism(eqx.Module):
         """
 
 
-MECHANISM_INPUTS = ("current", "irradiance", "conductance", "current_density")
+MECHANISM_STIMULI = ("current", "irradiance", "conductance", "current_density")
+
+CELL_READS = ("theta_s", "theta_v", "threshold")
+
+MECHANISM_INPUTS = MECHANISM_STIMULI + CELL_READS
 
 
 def _mechanism_modes(mechanisms) -> tuple[str, ...]:
-    modes = (mode for m in mechanisms for mode in m.inputs if mode != "current")
+    skip = {"current", *CELL_READS}
+    modes = (mode for m in mechanisms for mode in m.inputs if mode not in skip)
     return tuple(dict.fromkeys(modes))
+
+
+def _cell_reads(p, y, theta_s=None) -> dict:
+    """``{name: value}`` of :data:`CELL_READS` from the state ``y``"""
+    theta_s = y[..., THETA_S] if theta_s is None else theta_s
+    theta_v = y[..., THETA_V]
+    return {
+        "theta_s": theta_s,
+        "theta_v": theta_v,
+        "threshold": p["V_threshold_base"] + theta_s + theta_v,
+    }
 
 
 def _check_mechanisms(mechanisms) -> None:
@@ -685,6 +704,22 @@ def _jumps(mechanism: GlifMechanism) -> bool:
     return type(mechanism).on_spike is not GlifMechanism.on_spike
 
 
+@functools.cache
+def _on_spike_reads(kind: type) -> bool:
+    kinds = [p.kind for p in inspect.signature(kind.on_spike).parameters.values()]
+    if inspect.Parameter.VAR_POSITIONAL in kinds:
+        return True
+    positional = (
+        inspect.Parameter.POSITIONAL_ONLY,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+    )
+    return sum(k in positional for k in kinds) >= 4
+
+
+def _broadcast_inputs(inputs, shape) -> dict:
+    return {mode: jnp.broadcast_to(x, shape).reshape(-1) for mode, x in inputs.items()}
+
+
 def _mechanism_terms(mechanisms, layout: StateLayout, t, v, states, inputs):
     """The summed current and the stacked derivatives, on ``[cells]`` / ``[cells, k]``."""
     current, derivatives = 0.0, []
@@ -697,12 +732,17 @@ def _mechanism_terms(mechanisms, layout: StateLayout, t, v, states, inputs):
     return current, jnp.concatenate(derivatives, axis=-1)
 
 
-def _mechanism_spiked(mechanisms, layout: StateLayout, fired, states):
+def _mechanism_spiked(mechanisms, layout: StateLayout, fired, states, inputs):
     out, start = [], layout.mechanism_start
     for mechanism, (lo, hi) in zip(mechanisms, layout.mechanism_columns(), strict=True):
         own = states[:, lo - start : hi - start]
         if _jumps(mechanism):
-            own = jnp.where(fired[:, None], mechanism.on_spike(fired, own), own)
+            if _on_spike_reads(type(mechanism)):
+                given = {mode: inputs[mode] for mode in mechanism.inputs}
+                jumped = mechanism.on_spike(fired, own, given)
+            else:
+                jumped = mechanism.on_spike(fired, own)
+            own = jnp.where(fired[:, None], jumped, own)
         out.append(own)
     return jnp.concatenate(out, axis=-1)
 
@@ -716,13 +756,16 @@ def _across_cut(
     held at its reset value, so the samples are the hold the event loop records
     and the last step lands on the resume.
     """
+
+    def given(t):
+        return {mode: jnp.reshape(x, (1,)) for mode, x in inputs_at(t).items()}
+
     fired = jnp.ones((1,), bool)
-    m0 = _mechanism_spiked(mechanisms, layout, fired, states[None])
+    m0 = _mechanism_spiked(mechanisms, layout, fired, states[None], given(t_event))
     h = (t_resume - t_event) / n
 
     def f(t, m):
-        inputs = {mode: jnp.reshape(x, (1,)) for mode, x in inputs_at(t).items()}
-        return _mechanism_terms(mechanisms, layout, t, v[None], m, inputs)[1]
+        return _mechanism_terms(mechanisms, layout, t, v[None], m, given(t))[1]
 
     def step(m, k):
         t = t_event + k * h
@@ -757,10 +800,8 @@ def _drift(p, layout: StateLayout, t, y, current, mechanisms=(), inputs=None):
     if mechanisms:
         # on the cell axis even for the one cell of the uncoupled solve
         cells = jnp.reshape(v, (-1,))
-        given = {"current": current, **(inputs or {})}
-        given = {
-            mode: jnp.broadcast_to(x, v.shape).reshape(-1) for mode, x in given.items()
-        }
+        given = {"current": current, **(inputs or {}), **_cell_reads(p, y)}
+        given = _broadcast_inputs(given, v.shape)
         width = sum(layout.mechanisms)
         states = jnp.reshape(y[..., layout.mechanism_start :], (cells.shape[0], width))
         injected, derivatives = _mechanism_terms(
@@ -858,7 +899,12 @@ def _solve_cell(
 
     def across_cut(t_event, y, t_resume, n):
         def given(t):
-            return {"current": current.evaluate(t), **inputs_at(t)}
+            theta_s = y[THETA_S] * jnp.exp(-p["theta_decay_rate"] * (t - t_event))
+            return {
+                "current": current.evaluate(t),
+                **inputs_at(t),
+                **_cell_reads(p, y, theta_s),
+            }
 
         start = layout.mechanism_start
         return _across_cut(
@@ -1105,7 +1151,13 @@ def _solve_network(
         if not mechanisms:
             return t_event, jnp.stack(columns_out, axis=-1)
         states = y[:, layout.mechanism_start :]
-        carried = _mechanism_spiked(mechanisms, layout, fired, states)
+        before = {
+            "current": current.evaluate(t_event),
+            **{mode: x.evaluate(t_event) for mode, x in series.items()},
+            **_cell_reads(p, y),
+        }
+        before = _broadcast_inputs(before, (n_cells,))
+        carried = _mechanism_spiked(mechanisms, layout, fired, states, before)
         return t_event, jnp.concatenate(
             [jnp.stack(columns_out, axis=-1), carried], axis=-1
         )

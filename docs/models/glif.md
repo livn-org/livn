@@ -163,10 +163,10 @@ run = env.run(100.0, Stimulus.from_current(current) + Stimulus.from_irradiance(l
 | member | | |
 |---|---|---|
 | `states` | static field (`eqx.field(static=True, kw_only=True)`) | names of its state columns; also what [`env.record()`](/guide/concepts/env#recording) takes once the model lists them in `recordable_states()` |
-| `inputs` | static field | modes it reads: `irradiance`, `conductance`, `current_density`, or `current` (the injected current in pA) |
+| `inputs` | static field | what it reads: the stimulus modes `irradiance`, `conductance`, `current_density`, or `current` (the injected current in pA), and the cell's own threshold state `theta_s`, `theta_v` or `threshold` |
 | `initial(n_cells)` | optional | `[cells, len(states)]` at t0; zeros by default |
 | `drift(t, v, states, inputs)` | required | `(current [cells] in pA, d states / dt [cells, len(states)])` between events; `inputs` is `{mode: [cells]}` at `t` |
-| `on_spike(fired, states)` | optional | the states after the cells in `fired [cells]` spiked; only fired rows are kept |
+| `on_spike(fired, states[, inputs])` | optional | the states after the cells in `fired [cells]` spiked; only fired rows are kept. If it takes `inputs`, they are read just before the spike |
 | `presynaptic(states)` | optional | `[cells]` scaling each cell's outgoing synaptic jumps (from the states before `on_spike`), or `None` |
 
 The cells are from `env.simulated_gids(everywhere=True)` with `cell_populations(env)` naming each one's population.
