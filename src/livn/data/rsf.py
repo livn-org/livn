@@ -6,9 +6,10 @@ import math
 import os
 import re
 import uuid
+import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import cached_property
 from typing import TYPE_CHECKING, Any
 
@@ -60,6 +61,68 @@ TIMING_RANK = {
     "simulated": 1,
 }
 STIM_COLUMNS = ("frame", "channel", "value", "program", "event", "timing")
+PLANNED_COLUMNS = ("t_ms", "channel", "value", "event", "load")
+
+PROGRAM_KEYS = (
+    "inputs",
+    "inputs_dt",
+    "policy",
+    "start",
+    "start_frame",
+    "stop",
+    "device",
+    "channels",
+    "origin",
+    "members",
+    "started_at",
+)
+RECORD_MEMBERS = (
+    "started_at",
+    "kind",
+    "channels",
+    "marker_channel",
+    "marker_edge",
+    "timing",
+    "placement_lag_ms",
+    "origin",
+    "planned",
+    "index",
+)
+CHANNEL_SOURCES = {"light": "livn PatternedLight", "electrode": "livn MEA"}
+
+EPOCH = "epoch"
+EPOCH_KINDS = ("protocol", "block", "baseline", "spontaneous", "spot_mapping")
+EPOCH_KEYS = (
+    "key",
+    "item",
+    "frame",
+    "end_frame",
+    "start",
+    "end",
+    "kind",
+    "text",
+    "parent",
+    "programs",
+    "origin",
+    "author",
+)
+NOTE_KEYS = ("text", "frame", "author", "at", "item")
+PREP_KEYS = ("id", "label", "kind", "species", "age", "expression", "models")
+
+CONNECTIONS = "connections"
+STIMULUS_COUPLING = "stimulus_coupling"
+CONNECTION_WEIGHT_UNITS = "1"
+CONNECTION_WEIGHT_REFERENCE = (
+    "the synapse's unitary conductance, which the weight scales"
+)
+OPSIN_CONDUCTANCES = {
+    "RhO3c": ("g0_pS", "pS", 1.0),
+    "ChR2H134R": ("gmax", "S/cm2", 4e-4),
+}
+
+PRODUCER_NAME = re.compile(r"[a-z0-9_-]+")
+DOCUMENT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\.json")
+HEX_ITEM = re.compile(r"[0-9a-f]{32}")
 
 
 class RSFError(ValueError):
@@ -103,6 +166,17 @@ def store(
     author: str | None = None,
     recording=None,
     conditions=None,
+    programs: Sequence[Mapping] | None = None,
+    prep: Mapping | None = None,
+    description: str | None = None,
+    notes: Sequence[Mapping] | None = None,
+    epochs: Sequence[Mapping] | None = None,
+    populations: bool = False,
+    expression: Mapping | bool | None = None,
+    connections: Mapping | bool = False,
+    stimulus_coupling: Mapping | bool = False,
+    ext: Mapping[str, Mapping[str, Any]] | None = None,
+    zone: str | bool | None = None,
 ) -> str | None:
     """Write ``run`` as an RSF session directory at ``path``.
 
@@ -137,6 +211,58 @@ def store(
         label: Free text for people; defaults to the system's name.
         author: Who made the session. ``None`` writes no ``author``.
         conditions: Further :class:`livn.conditions.Conditions` of the projection
+        programs: The stimulus as several programs, one stimulation record each, in place
+            of ``stimulus`` and ``inputs``. Each is a mapping of
+
+            - ``inputs`` ``(timestep, n)`` in the device's input units, over all of the
+              device's channels or over ``channels``, and ``inputs_dt`` in ms; or
+              ``policy``, a channel-space :class:`~livn.policy.Policy` whose rendering and
+              ``dt`` they default to;
+            - ``start`` (ms) or ``start_frame``, where it begins in the session (0);
+            - ``stop`` (ms after its start): a program stopped early closes with its plan's
+              last event at that frame, and its later edges are not delivered;
+            - ``device``, its device's index among the stimulating devices (0);
+            - ``channels``, the device channel ids it drives (by default those it sets
+              non-zero): the record's channels, and no others;
+            - ``origin``, what generated it (``{"generator", "software", "params",
+              "seed"}``), by default the policy's;
+            - ``members``, ``{"<producer>": {...}}``, other producers' members of the record;
+            - ``started_at``, the record's timestamp, by default the session's start plus
+              the program's start.
+
+            Each record states its plan (``planned``), its channels by site ``name`` and
+            ``source``, and its delivered rows; a channel is driven by one program at a
+            time
+        prep: The simulated preparation, ``{"id", "label", "kind", "species", "age",
+            "expression", "models"}``, every member optional: ``id`` is minted when not
+            given, ``models`` is the physical preparation it stands for. ``age`` is at
+            frame 0; an ``expression`` entry may carry an ``age`` of its own
+        description: The session's description, its first ``description`` version
+        notes: ``[{"text", "frame", "author", "at", "item"}]``, each a ``note`` version
+        epochs: The session's named spans, ``[{"key" or "item", "frame" or "start" (ms),
+            "end_frame" or "end" (ms), "kind", "text", "parent", "programs", "origin",
+            "author"}]``. ``key`` names an epoch within this call and is minted into an
+            ``item``; a given ``item`` (32 hex digits) is kept, so one run's epoch can be
+            written into several sessions. ``parent`` is a key or an item, ``programs``
+            indices into ``programs`` (``None`` when not said, ``[]`` for none)
+        populations: Write each source's population into ``simulation.json``
+        expression: Each source's opsin expression in ``simulation.json``: ``True`` takes
+            it from the model's opsin configuration (its conductance, ``0`` in a population
+            without the opsin), or ``{construct: {"units", "values", "reference"}}`` with
+            ``values`` parallel to the sources or keyed by gid (``0`` for one not named)
+        connections: Write ``ground_truth/connections.zarr``: ``True`` from
+            ``env.connections()`` (each weight the one in force, its strength applied, as a
+            multiple of the synapse's unitary conductance; the physical delay), or
+            ``{"pre", "post", "weight", "units", "reference", "sign", "delay", "receptor",
+            "inputs"}`` as columns, ``reference`` saying what a weight in units ``"1"`` is of
+        stimulus_coupling: Write ``ground_truth/stimulus_coupling.zarr``, what each record
+            channel at full scale puts on each source: ``True`` from the stimulating
+            devices, or ``{"gain", "units", "channel_ids", "source_ids"}``. Not written
+            under a mask on ``source_positions``
+        ext: ``{"<producer>": {"<name>.json": document}}``, other producers' documents,
+            written to ``rsf/ext/<producer>/``
+        zone: The IANA zone the session was made in, or ``True`` for the host's when it
+            can be told; ``None`` writes none
 
     Returns:
         The session directory on the root rank, ``None`` elsewhere
@@ -161,6 +287,17 @@ def store(
         author=author,
         recording=recording,
         conditions=conditions,
+        programs=programs,
+        prep=prep,
+        description=description,
+        notes=notes,
+        epochs=epochs,
+        populations=populations,
+        expression=expression,
+        connections=connections,
+        stimulus_coupling=stimulus_coupling,
+        ext=ext,
+        zone=zone,
     )
     _write(plan)
     return plan["path"]
@@ -183,6 +320,17 @@ def _prepare(
     author=None,
     recording=None,
     conditions=None,
+    programs=None,
+    prep=None,
+    description=None,
+    notes=None,
+    epochs=None,
+    populations=False,
+    expression=None,
+    connections=False,
+    stimulus_coupling=False,
+    ext=None,
+    zone=None,
 ):
     from livn.io.recording import as_composition
 
@@ -202,10 +350,27 @@ def _prepare(
             f"gain_uV must be a positive number of µV per LSB, not {gain_uV}"
         )
 
-    stimulus, delivered = _stimulus(stimulus, inputs, inputs_dt)
+    zone = _zone(zone)
+    prep = None if prep is None else _simulated_prep(prep)
+    extra_documents = _ext_documents(ext)
+    if description is not None and not isinstance(description, str):
+        raise RSFError(f"description is text, not {description!r}")
+
+    signal_series = run.channels.get("current")
+    planned_programs = None
+    if programs is not None:
+        if stimulus is not None or inputs is not None:
+            raise RSFError(
+                "programs= states the whole stimulus; pass it instead of stimulus= and "
+                "inputs=, with each program's policy or inputs"
+            )
+        dt_signal, n_signal = _signal_grid(run, signal_series)
+        planned_programs, series = _plan_programs(io, programs, dt_signal, n_signal)
+        delivered = {"values": series, "dt": dt_signal, "units": None}
+    else:
+        stimulus, delivered = _stimulus(stimulus, inputs, inputs_dt)
 
     # the channel signal, (n_channels, T) in uV
-    signal_series = run.channels.get("current")
     projected = None
     through_stack = False
     if signal_series is not None and signal_series.values is not None:
@@ -267,7 +432,7 @@ def _prepare(
         )
     traces = _quantize(uv, gain_uV, dtype)
 
-    if delivered is not None:
+    if delivered is not None and planned_programs is None:
         delivered = _delivered(io, delivered, dt, n_frames)
 
     # ground truth
@@ -302,12 +467,15 @@ def _prepare(
         "transform": {"observe": {"operator": OPERATOR_PATH}},
         "attribution": "livn MEA point-source model",
     }
+    system: dict[str, Any] = {"simulator": simulator, "spec": spec}
+    if prep is not None:
+        system["prep"] = prep
     record = {
         "format": FORMAT,
         "recording_id": recording_id,
         "env": {
             "substrate": "simulated",
-            "system": {"simulation": {"simulator": simulator, "spec": spec}},
+            "system": {"simulation": system},
             "model": model,
             "seed": seed,
         },
@@ -322,6 +490,10 @@ def _prepare(
     source_document: dict[str, Any] = {"ids": sources}
     if "source_positions" not in masked:
         source_document["coordinates_um"] = _source_coordinates(env, sources)
+    if populations:
+        source_document["populations"] = _source_populations(env, sources)
+    if expression is not None and expression is not False:
+        source_document["expression"] = _source_expression(env, sources, expression)
     simulation = {
         "simulator": {"name": simulator, "version": _version()},
         "spec": spec,
@@ -330,8 +502,20 @@ def _prepare(
         "sources": source_document,
         "stimulus": None if stimulus is None else _plain(stimulus),
     }
+    if prep is not None:
+        simulation["prep"] = prep
 
-    stimulation, stim_events = _programs(io, delivered, stimulus, masked, started_at)
+    channel_devices: dict[str, tuple] = {}
+    planned_tables: list[dict | None] = []
+    record_of: dict[int, int] = {}
+    if planned_programs is None:
+        stimulation, stim_events = _programs(
+            io, delivered, stimulus, masked, started_at, channel_devices
+        )
+    else:
+        stimulation, stim_events, planned_tables, record_of = _program_records(
+            planned_programs, masked, started_at, dt, channel_devices
+        )
     cited = [i for i, record in enumerate(stimulation) if "kind" in record]
     if cited:
         cite = {"record": cited[0]} if len(cited) == 1 else {"records": cited}
@@ -364,12 +548,29 @@ def _prepare(
     }
     if author is not None:
         group_attrs["author"] = author
+    if zone is not None:
+        group_attrs["zone"] = zone
 
     probe = None
     if "electrode_positions" not in masked:
         probe = _probe(operator, row_ids)
 
     conditions_table = _simulated_conditions(env, simulator)
+
+    tables: dict[str, dict] = {}
+    if connections is not None and connections is not False:
+        tables[CONNECTIONS] = _connection_table(env, sources, connections)
+    if stimulus_coupling is not None and stimulus_coupling is not False:
+        if "source_positions" in masked:
+            warnings.warn(
+                "stimulus_coupling.zarr is not written: it would reveal the source "
+                "positions the mask withholds",
+                stacklevel=3,
+            )
+        else:
+            tables[STIMULUS_COUPLING] = _coupling_table(
+                env, sources, stimulation, channel_devices, stimulus_coupling
+            )
 
     stores = []
     if spikes is not None:
@@ -380,12 +581,29 @@ def _prepare(
     if observe["kind"] == POINT_SOURCE:
         ext["observe.json"] = observe.pop("livn")
 
+    instant = _instant(started_at)
+    note_versions: list[tuple[str, dict]] = []
+    if description is not None:
+        note_versions.append(
+            ("description", _note_version("session", description, instant, zone))
+        )
+    note_versions += [
+        ("note", version) for version in _notes(notes, n_frames, instant, zone)
+    ]
+    note_versions += [
+        (EPOCH, version)
+        for version in _epoch_versions(
+            epochs, n_frames, dt, record_of, stimulation, instant, zone
+        )
+    ]
+
     for name, document in (
         ("observe.json", observe),
         ("simulation.json", simulation),
         ("the record", record),
         *(("a stimulation record", r) for r in stimulation),
         *ext.items(),
+        *((f"a {kind} version", v) for kind, v in note_versions),
     ):
         _json(document, name)
 
@@ -398,13 +616,17 @@ def _prepare(
         "gain_uV": gain_uV,
         "label_version": None
         if label is None
-        else _note_version("session", str(label), _instant(started_at)),
+        else _note_version("session", str(label), instant, zone),
+        "notes": note_versions,
         "ext": ext,
+        "producer_ext": extra_documents,
         "tick0": int(tick0),
         "spikes": spikes,
         "sources": sources,
         "truth": truth,
+        "tables": tables,
         "stimulation": stimulation,
+        "planned": planned_tables,
         "stim_events": stim_events,
         "record": record,
         "observe": observe,
@@ -419,6 +641,10 @@ def _prepare(
                 "written_by": PRODUCER,
             }
             for name in stores
+        ]
+        + [
+            {"path": f"ground_truth/{name}.zarr", "space": None, "written_by": PRODUCER}
+            for name in tables
         ],
     }
 
@@ -433,7 +659,7 @@ def _write(plan: dict) -> None:
         "space": "source",
     }
 
-    if plan["spikes"] is not None or plan["truth"]:
+    if plan["spikes"] is not None or plan["truth"] or plan["tables"]:
         os.makedirs(os.path.join(path, "ground_truth"), exist_ok=True)
 
     if plan["spikes"] is not None:
@@ -485,6 +711,11 @@ def _write(plan: dict) -> None:
             _strings(root, "properties/section", rows.sections)
         _minimal_group(store, plan["record"]["recording_id"])
 
+    for name, table in plan["tables"].items():
+        store = os.path.join(path, "ground_truth", f"{name}.zarr")
+        _write_table_store(zarr, store, name, table)
+        _minimal_group(store, plan["record"]["recording_id"])
+
     # traces.zarr, and last its rsf/zarr.json
     store = os.path.join(path, "traces.zarr")
     attributes = {
@@ -528,10 +759,16 @@ def _write(plan: dict) -> None:
     if plan["stimulation"]:
         _group_node(os.path.join(rsf, "stimulation"), {})
         for index, attribute in enumerate(plan["stimulation"]):
-            _group_node(
-                os.path.join(rsf, "stimulation", f"{index:04d}"),
-                {"stimulation": attribute},
-            )
+            node = os.path.join(rsf, "stimulation", f"{index:04d}")
+            _group_node(node, {"stimulation": attribute})
+            planned = plan["planned"][index] if plan["planned"] else None
+            if planned is not None:
+                table = zarr.open_group(os.path.join(node, "planned"), mode="w")
+                _array(table, "t_ms", np.asarray(planned["t_ms"], dtype=np.float64))
+                _strings(table, "channel", planned["channel"])
+                _array(table, "value", np.asarray(planned["value"], dtype=np.float32))
+                _array(table, "event", np.asarray(planned["event"], dtype=np.uint32))
+                _array(table, "load", np.asarray(planned["load"], dtype=np.uint32))
     dropped = zarr.open_group(os.path.join(rsf, "dropped_spans"), mode="w")
     _array(dropped, "frame_start", np.zeros(0, dtype=np.uint64))
     _array(dropped, "n_frames", np.zeros(0, dtype=np.uint32))
@@ -561,8 +798,14 @@ def _write(plan: dict) -> None:
     os.makedirs(os.path.join(rsf, "ext", PRODUCER), exist_ok=True)
     for name, document in plan["ext"].items():
         _write_json(os.path.join(rsf, "ext", PRODUCER, name), document)
+    for producer, documents in plan["producer_ext"].items():
+        os.makedirs(os.path.join(rsf, "ext", producer), exist_ok=True)
+        for name, document in documents.items():
+            _write_json(os.path.join(rsf, "ext", producer, name), document)
     if plan["label_version"] is not None:
         _add_note(rsf, "label", plan["label_version"])
+    for kind, version in plan["notes"]:
+        _add_note(rsf, kind, version)
     _group_node(rsf, {**plan["group_attrs"], "finished_at": _now()})
 
 
@@ -757,7 +1000,9 @@ def _no_events() -> dict:
     }
 
 
-def _programs(io, delivered, spec, masked: set[str], started_at: str):
+def _programs(
+    io, delivered, spec, masked: set[str], started_at: str, channel_devices=None
+):
     """``(records, stim_events)``: one stimulation record per stimulating device, in device
     order (a ``ComposedIO``'s ``InputDevices`` are several), and the rows of every program.
 
@@ -791,6 +1036,9 @@ def _programs(io, delivered, spec, masked: set[str], started_at: str):
             continue
         prefix = kind if len(devices) == 1 else f"{kind}/{program}"
         channels, fractions = _channels(device, kind, prefix, part, masked)
+        if channel_devices is not None:
+            for column, channel in enumerate(channels):
+                channel_devices[channel["id"]] = (device, column, kind)
         records.append(
             {
                 **record,
@@ -907,6 +1155,1111 @@ def _events(program: int, ids: list[str], fractions: np.ndarray) -> dict:
         "event": np.searchsorted(edges, frames).astype(np.uint32),
         "timing": ["simulated"] * len(frames),
     }
+
+
+def _signal_grid(run, signal_series) -> tuple[float, int]:
+    """The frame interval and count of the channel signal, before it is projected."""
+    if signal_series is not None and signal_series.values is not None:
+        return float(signal_series.dt), int(np.shape(signal_series.values)[-1])
+    potential = getattr(run, "potential", None)
+    if potential is not None:
+        return float(potential.dt), int(np.shape(potential.values)[1])
+    raise RSFError(
+        "a session is a channel-space recording, and this run holds nothing to put in "
+        f"traces.zarr: its channels are {sorted(run.channels) or 'none'}. Call "
+        "env.record_membrane_current() before env.run(...) so the MEA signal can be "
+        "projected from the membrane currents."
+    )
+
+
+def _nearest(x) -> np.ndarray:
+    """The nearest integer, halves up, as the format rounds a time onto frames."""
+    return np.floor(np.asarray(x, dtype=np.float64) + 0.5 + 1e-9).astype(np.int64)
+
+
+def _site_names(device, kind: str) -> list[str]:
+    """Each channel's site name: a spot's label (else its id), an electrode's contact."""
+    ids = [_id_str(c) for c in np.asarray(device.channel_ids).ravel()]
+    labels = getattr(device, "labels", None) if kind == "light" else None
+    names = list(labels) if labels else ids
+    if len(set(names)) != len(names):
+        raise RSFError(
+            f"the {kind} channels' names {names} repeat; a session names each stimulus "
+            "site once (give the PatternedLight distinct labels)"
+        )
+    return names
+
+
+def _program_fractions(device, kind: str, values: np.ndarray, what: str) -> np.ndarray:
+    """A program's commands as fractions of each channel's full scale."""
+    if kind == "light":
+        scale = float(device.irradiance)
+        if not scale > 0 or not math.isfinite(scale):
+            raise RSFError(
+                f"the PatternedLight's irradiance is {scale}; a session states it as the "
+                "channels' full scale, which is a positive number of mW/mm2"
+            )
+        fractions, low, knob = values, 0.0, "the PatternedLight's irradiance"
+        units = "mW/mm2"
+    else:
+        scale = float(device.max_current_uA)
+        fractions = values / _livn_scale(kind, scale)
+        low, knob, units = -1.0, "MEA(max_current_uA=...)", "uA"
+    if fractions.size and (fractions.max() > 1 + 1e-6 or fractions.min() < low - 1e-6):
+        peak = float(np.abs(values).max())
+        raise RSFError(
+            f"{what} reaches {peak:.6g} {device.input_units}, beyond its full scale "
+            f"{scale:g} ({units}); a session states it as a fraction of that, so raise "
+            f"{knob}"
+        )
+    return np.clip(fractions, low, 1.0).astype(np.float32)
+
+
+def _planned_edges(fractions: np.ndarray, dt_in: float, ids: list[str]) -> dict:
+    """What a program was to deliver, ``planned``'s five columns: an event per row of the
+    rendering where a channel changes, and last an event that sets every channel to 0."""
+    n_rows, n = fractions.shape
+    previous = np.zeros_like(fractions)
+    previous[1:] = fractions[:-1]
+    rows, columns = np.nonzero(fractions != previous)  # by row, then channel
+    values = fractions[rows, columns]
+    if len(rows):
+        last = rows[-1]
+        closing = (rows == last).sum() == n and not fractions[last].any()
+    else:
+        closing = False
+    if not closing:
+        rows = np.concatenate([rows, np.full(n, n_rows)])
+        columns = np.concatenate([columns, np.arange(n)])
+        values = np.concatenate([values, np.zeros(n, dtype=np.float32)])
+    event = np.searchsorted(np.unique(rows), rows)
+    return {
+        "t_ms": rows.astype(np.float64) * float(dt_in),
+        "channel": [ids[c] for c in columns.tolist()],
+        "value": values.astype(np.float32),
+        "event": event.astype(np.uint32),
+        "load": np.zeros(len(rows), dtype=np.uint32),
+    }
+
+
+def _delivered_rows(
+    planned: dict, start_frame: int, dt: float, n_frames: int, stop
+) -> dict:
+    """A plan placed on the session's frames from ``start_frame``: every row at the
+    aligned first event's frame plus its offset, rounded; a program the session ends or
+    ``stop`` cuts closes with its plan's last event there and delivers nothing after."""
+    t = np.asarray(planned["t_ms"], dtype=np.float64)
+    event = np.asarray(planned["event"], dtype=np.int64)
+    first = int(np.argmin(event))
+    frame0 = start_frame + int(_nearest(t[first] / dt))
+    frames = frame0 + _nearest((t - t[first]) / dt)
+    last = int(event.max())
+    end = n_frames
+    if stop is not None:
+        stop = float(stop)
+        if not stop >= 0 or not math.isfinite(stop):
+            raise RSFError(f"a program's stop is ms after its start, not {stop}")
+        end = min(end, start_frame + int(_nearest(stop / dt)))
+    closing = event == last
+    truncated = bool(np.any(~closing & (frames >= end)) or frames[closing].max() > end)
+    keep = np.ones(len(t), dtype=bool)
+    if truncated:
+        keep = closing | (frames < end)
+        frames = np.where(closing, end, frames)
+    return {
+        "frame": frames[keep].astype(np.uint64),
+        "channel": [c for c, k in zip(planned["channel"], keep, strict=True) if k],
+        "value": np.asarray(planned["value"], dtype=np.float32)[keep],
+        "event": event[keep].astype(np.uint32),
+        "stopped": truncated,
+    }
+
+
+def _policy_origin(policy) -> dict:
+    seed = getattr(policy, "seed", None)
+    return {
+        "generator": f"{type(policy).__module__}.{type(policy).__qualname__}",
+        "software": {"name": PRODUCER, "version": _version()},
+        "params": _plain(policy.serialize()),
+        "seed": int(seed) if isinstance(seed, int | np.integer) else None,
+    }
+
+
+def _check_origin(origin, what: str) -> dict:
+    if not isinstance(origin, Mapping):
+        raise RSFError(f"{what}'s origin is an object, not {origin!r}")
+    origin = _plain(origin)
+    generator = origin.get("generator")
+    software = origin.get("software")
+    if not isinstance(generator, str) or not generator:
+        raise RSFError(f"{what}'s origin names its generator, a non-empty string")
+    if not isinstance(software, Mapping) or not isinstance(software.get("name"), str):
+        raise RSFError(
+            f"{what}'s origin says which software generated it: "
+            '{"software": {"name": ..., "version": ...}}'
+        )
+    version = software.get("version")
+    if version is not None and not isinstance(version, str):
+        raise RSFError(f"{what}'s origin software version is a string or None")
+    seed = origin.get("seed")
+    if seed is not None and (not isinstance(seed, int) or isinstance(seed, bool)):
+        raise RSFError(f"{what}'s origin seed is an integer or None, not {seed!r}")
+    out = {
+        "generator": generator,
+        "software": {"name": software["name"], "version": version},
+        "params": origin.get("params"),
+        "seed": seed,
+    }
+    _json(out, f"{what}'s origin")
+    return out
+
+
+def _check_producer(name, what: str) -> str:
+    if not isinstance(name, str) or not PRODUCER_NAME.fullmatch(name) or name == RSF:
+        raise RSFError(
+            f"{what} {name!r} is not a producer name ([a-z0-9_-]+, never 'rsf')"
+        )
+    if name == PRODUCER:
+        raise RSFError(f"{what} {name!r} is livn's own; livn writes its own members")
+    return name
+
+
+def _check_members(members, what: str) -> dict:
+    if members is None:
+        return {}
+    if not isinstance(members, Mapping):
+        raise RSFError(f"{what}'s members are {{producer: {{...}}}}, not {members!r}")
+    out = {}
+    for name, member in members.items():
+        if name in RECORD_MEMBERS:
+            raise RSFError(
+                f"{what}'s member {name!r} is the format's, not a producer's"
+            )
+        _check_producer(name, f"{what}'s member")
+        if not isinstance(member, Mapping):
+            raise RSFError(f"{what}'s member {name!r} is an object")
+        out[name] = _plain(member)
+    return out
+
+
+def _plan_programs(io, programs, dt: float, n_frames: int):
+    """Each program's plan and delivered rows, and the delivered input on the frame grid
+    over every stimulating channel, in the devices' input units (for the projection)."""
+    from livn.io import MEA, PatternedLight
+    from livn.policy import Policy
+
+    if isinstance(programs, Mapping) or not isinstance(programs, Sequence):
+        raise RSFError("programs is a list of programs, each a mapping")
+    if not programs:
+        raise RSFError("programs is empty; pass None for a session without stimulus")
+    devices = _stimulating_devices(io)
+    offsets = np.cumsum([0, *(int(d.num_channels) for d in devices)])
+    series = np.zeros((n_frames, int(offsets[-1])), dtype=np.float32)
+    holding: dict[int, list] = {}
+    plans = []
+    for k, entry in enumerate(programs):
+        what = f"program {k}"
+        if not isinstance(entry, Mapping):
+            raise RSFError(f"{what} is a mapping, not {entry!r}")
+        unknown = sorted(set(entry) - set(PROGRAM_KEYS))
+        if unknown:
+            raise RSFError(
+                f"{what} has {unknown}; a program takes {', '.join(PROGRAM_KEYS)}"
+            )
+        index = entry.get("device", 0)
+        if not isinstance(index, int | np.integer) or not 0 <= index < len(devices):
+            raise RSFError(
+                f"{what}'s device is an index into the {len(devices)} stimulating "
+                f"device(s), not {index!r}"
+            )
+        index = int(index)
+        device = devices[index]
+        kind = (
+            "electrode"
+            if isinstance(device, MEA)
+            else "light"
+            if isinstance(device, PatternedLight)
+            else None
+        )
+
+        policy = entry.get("policy")
+        values, dt_in = entry.get("inputs"), entry.get("inputs_dt")
+        units, spec = getattr(device, "input_units", None), None
+        if policy is not None:
+            if not isinstance(policy, Policy):
+                raise RSFError(f"{what}'s policy is a livn Policy, not {policy!r}")
+            try:
+                policy.as_input_units(units)
+            except ValueError as e:
+                raise RSFError(f"{what}: {e}") from None
+            spec = {
+                "cls": f"{type(policy).__module__}.{type(policy).__qualname__}",
+                "kwargs": policy.serialize(),
+            }
+            if values is None:
+                values = policy.render()
+                dt_in = dt_in or getattr(policy, "dt", None)
+        if values is None:
+            raise RSFError(f"{what} has neither inputs nor a policy")
+        if dt_in is None or not float(dt_in) > 0:
+            raise RSFError(f"{what}'s inputs need inputs_dt, their interval in ms")
+        dt_in = float(dt_in)
+        values = np.asarray(values, dtype=np.float64)
+        if values.ndim != 2:
+            raise RSFError(
+                f"{what}'s inputs are (timestep, n_channels), not {values.shape}"
+            )
+        if not np.all(np.isfinite(values)):
+            raise RSFError(f"{what}'s inputs hold a NaN or an infinity")
+
+        ids = [_id_str(c) for c in np.asarray(device.channel_ids).ravel()]
+        chosen = entry.get("channels")
+        if chosen is not None:
+            chosen = [_id_str(c) for c in chosen]
+            missing = [c for c in chosen if c not in ids]
+            if missing or len(set(chosen)) != len(chosen) or not chosen:
+                raise RSFError(
+                    f"{what}'s channels {chosen} are not distinct channels of its "
+                    f"device ({ids})"
+                )
+        if values.shape[1] == len(ids):
+            full = values
+        elif chosen is not None and values.shape[1] == len(chosen):
+            full = np.zeros((len(values), len(ids)))
+            full[:, [ids.index(c) for c in chosen]] = values
+        else:
+            raise RSFError(
+                f"{what}'s inputs have {values.shape[1]} channels and its device "
+                f"{len(ids)}"
+            )
+        if chosen is None:
+            columns = [c for c in range(len(ids)) if full[:, c].any()]
+            if not columns:
+                raise RSFError(
+                    f"{what} sets no channel; name the channels it drives in channels="
+                )
+        else:
+            columns = sorted(ids.index(c) for c in chosen)
+            others = [c for c in range(len(ids)) if c not in columns]
+            if full[:, others].any():
+                raise RSFError(f"{what} sets channels that are not its channels=")
+
+        if "start" in entry and "start_frame" in entry:
+            raise RSFError(f"{what} starts at a time (start) or a frame (start_frame)")
+        if "start_frame" in entry:
+            start_frame = entry["start_frame"]
+            if not isinstance(start_frame, int | np.integer):
+                raise RSFError(f"{what}'s start_frame is an integer frame")
+            start_frame = int(start_frame)
+        else:
+            start = float(entry.get("start", 0.0))
+            if not math.isfinite(start):
+                raise RSFError(f"{what}'s start is ms, not {start}")
+            start_frame = int(_nearest(start / dt))
+        if not 0 <= start_frame < n_frames:
+            raise RSFError(
+                f"{what} starts at frame {start_frame}, outside the session's "
+                f"{n_frames} frames"
+            )
+
+        origin = entry.get("origin")
+        if origin is None and policy is not None:
+            origin = _policy_origin(policy)
+        origin = None if origin is None else _check_origin(origin, what)
+        started_at = entry.get("started_at")
+        if started_at is not None:
+            try:
+                _instant(started_at)
+            except (TypeError, ValueError):
+                raise RSFError(
+                    f"{what}'s started_at is an RFC 3339 timestamp, not {started_at!r}"
+                ) from None
+
+        plan: dict[str, Any] = {
+            "given": k,
+            "device_index": index,
+            "device": device,
+            "kind": kind,
+            "start_frame": start_frame,
+            "origin": origin,
+            "members": _check_members(entry.get("members"), what),
+            "started_at": started_at,
+            "livn": {
+                "channels": [_id_value(ids[c]) for c in columns],
+                "units": units,
+                "source_dt": dt_in,
+                "stimulus": None if spec is None else _plain(spec),
+                "device": index,
+            },
+        }
+        if kind is None:
+            # a device RSF has no channel object for: a record without rows
+            frames = np.arange(n_frames - start_frame)
+            rows = np.floor(frames * dt / dt_in + 1e-9).astype(np.int64)
+            inside = rows < len(full)
+            block = series[start_frame:, offsets[index] : offsets[index + 1]]
+            block[inside] = full[rows[inside]]
+            plans.append(plan)
+            continue
+
+        names = _site_names(device, kind)
+        prefix = kind if len(devices) == 1 else f"{kind}/{index}"
+        record_ids = [f"{prefix}/{names[c]}" for c in columns]
+        fractions = _program_fractions(device, kind, full[:, columns], what)
+        planned = _planned_edges(fractions, dt_in, record_ids)
+        delivered = _delivered_rows(
+            planned, start_frame, dt, n_frames, entry.get("stop")
+        )
+        factor = 1.0 if kind == "light" else _livn_scale(kind, device.max_current_uA)
+        for frame, channel, value, event in zip(
+            delivered["frame"].tolist(),
+            delivered["channel"],
+            delivered["value"].tolist(),
+            delivered["event"].tolist(),
+            strict=True,
+        ):
+            column = int(offsets[index]) + columns[record_ids.index(channel)]
+            holding.setdefault(column, []).append(
+                (frame, start_frame, k, event, value * factor, channel)
+            )
+        plan.update(
+            columns=columns,
+            names=[names[c] for c in columns],
+            ids=record_ids,
+            planned=planned,
+            delivered=delivered,
+        )
+        plans.append(plan)
+
+    # a channel is driven by one program at a time
+    for column, rows in holding.items():
+        spans: dict[int, tuple[int, int]] = {}
+        for frame, _, k, *_ in rows:
+            lo, hi = spans.get(k, (frame, frame))
+            spans[k] = (min(lo, frame), max(hi, frame))
+        ordered = sorted(spans.items(), key=lambda item: item[1])
+        for (a, (a_lo, a_hi)), (b, (b_lo, b_hi)) in itertools.combinations(ordered, 2):
+            if a_lo < b_hi and b_lo < a_hi:
+                raise RSFError(
+                    f"programs {a} and {b} both drive {rows[0][5]!r} between frames "
+                    f"{max(a_lo, b_lo)} and {min(a_hi, b_hi)}; a channel is driven by "
+                    "one program at a time"
+                )
+        # the held value, by frame, then the program's start and its events
+        rows.sort(key=lambda r: r[:4])
+        for i, (frame, *_, value, _) in enumerate(rows):
+            stop = rows[i + 1][0] if i + 1 < len(rows) else n_frames
+            series[min(frame, n_frames) : min(stop, n_frames), column] = value
+    return plans, series
+
+
+def _site_channel(device, kind: str, column: int, id_: str, name: str, unplaced):
+    """One channel object of a program's record, with its site's ``name`` and ``source``."""
+    if kind == "light":
+        row = np.asarray(device.spots, dtype=np.float64)[column]
+        labels = device.labels or [None] * device.num_channels
+        return {
+            "id": id_,
+            "shape": {"kind": "unplaced"}
+            if unplaced
+            else {
+                "kind": "disc",
+                "x": float(row[1]),
+                "y": float(row[2]),
+                "radius": float(row[3]),
+            },
+            "full_scale": {"units": "mW/mm2", "value": float(device.irradiance)},
+            "bipolar": False,
+            "wavelength_nm": float(device.wavelength),
+            "label": labels[column],
+            "name": name,
+            "source": CHANNEL_SOURCES[kind],
+        }
+    row = np.asarray(device.electrode_coordinates, dtype=np.float64)[column]
+    return {
+        "id": id_,
+        "shape": {"kind": "unplaced"}
+        if unplaced
+        else {
+            "kind": "contact",
+            "contact_id": _id_value(row[0]),
+            "x": float(row[1]),
+            "y": float(row[2]),
+        },
+        "full_scale": {"units": "uA", "value": float(device.max_current_uA)},
+        "bipolar": True,
+        "wavelength_nm": None,
+        "label": None,
+        "name": name,
+        "source": CHANNEL_SOURCES[kind],
+    }
+
+
+def _program_records(plans, masked, started_at: str, dt: float, channel_devices):
+    """``(records, stim_events, planned, record_of)``: one record per program in start
+    order, the rows of all, each record's plan, and each given program's record index."""
+    order = sorted(range(len(plans)), key=lambda k: (plans[k]["start_frame"], k))
+    record_of = {plans[k]["given"]: i for i, k in enumerate(order)}
+    session_start = _instant(started_at)
+    unplaced = "electrode_positions" in masked
+    records, planned_tables, tables = [], [], []
+    for index, k in enumerate(order):
+        plan = plans[k]
+        stamp = plan["started_at"] or (
+            session_start + timedelta(milliseconds=plan["start_frame"] * dt)
+        ).astimezone(UTC).isoformat(timespec="microseconds")
+        record: dict[str, Any] = {"started_at": stamp}
+        if plan["kind"] is None:
+            records.append({**record, PRODUCER: plan["livn"], **plan["members"]})
+            planned_tables.append(None)
+            continue
+        channels = [
+            _site_channel(plan["device"], plan["kind"], column, id_, name, unplaced)
+            for column, id_, name in zip(
+                plan["columns"], plan["ids"], plan["names"], strict=True
+            )
+        ]
+        for column, channel in zip(plan["columns"], channels, strict=True):
+            channel_devices[channel["id"]] = (plan["device"], column, plan["kind"])
+        record.update(
+            kind=plan["kind"],
+            channels=channels,
+            marker_channel=None,
+            marker_edge=None,
+            timing="simulated",
+            placement_lag_ms=0,
+        )
+        if plan["origin"] is not None:
+            record["origin"] = plan["origin"]
+        record[PRODUCER] = plan["livn"]
+        record.update(plan["members"])
+        records.append(record)
+        planned_tables.append(plan["planned"])
+        rows = plan["delivered"]
+        n = len(rows["frame"])
+        tables.append(
+            {
+                "frame": rows["frame"],
+                "channel": rows["channel"],
+                "value": rows["value"],
+                "program": np.full(n, index, dtype=np.uint32),
+                "event": rows["event"],
+                "timing": ["simulated"] * n,
+            }
+        )
+    if not tables:
+        return records, _no_events(), planned_tables, record_of
+    events = {
+        name: (
+            [v for t in tables for v in t[name]]
+            if name in ("channel", "timing")
+            else np.concatenate([t[name] for t in tables])
+        )
+        for name in STIM_COLUMNS
+    }
+    return records, events, planned_tables, record_of
+
+
+# the session's preparation, notes, epochs and documents
+
+
+def _zone(zone) -> str | None:
+    """The IANA zone to write: the one given, the host's for ``True`` when it can be
+    told, or none."""
+    import zoneinfo
+
+    if zone is None or zone is False:
+        return None
+    if zone is True:
+        zone = _host_zone()
+        if zone is None:
+            return None
+    if not isinstance(zone, str):
+        raise RSFError(f"zone is an IANA time zone name, not {zone!r}")
+    try:
+        zoneinfo.ZoneInfo(zone)
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError):
+        raise RSFError(f"zone {zone!r} is not an IANA time zone") from None
+    return zone
+
+
+def _host_zone() -> str | None:
+    """The host's IANA zone as its configuration names it, or ``None``; never a guess
+    from an offset."""
+    import zoneinfo
+
+    try:
+        import tzlocal  # ty: ignore[unresolved-import]
+
+        name = tzlocal.get_localzone_name()
+    except Exception:
+        name = os.environ.get("TZ", "").lstrip(":") or None
+        if name is None:
+            target = os.path.realpath("/etc/localtime")
+            _, found, tail = target.partition("zoneinfo/")
+            name = tail if found else None
+    if not name:
+        return None
+    try:
+        zoneinfo.ZoneInfo(name)
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError):
+        return None
+    return name
+
+
+def _age(age, what: str) -> dict | None:
+    if age is None:
+        return None
+    if (
+        not isinstance(age, Mapping)
+        or not _number(age.get("value"))
+        or not age["value"] >= 0
+        or not isinstance(age.get("units"), str)
+        or not age["units"]
+    ):
+        raise RSFError(f"{what} is {{'value': >= 0, 'units': str}}, not {age!r}")
+    return {"value": age["value"], "units": age["units"]}
+
+
+def _simulated_prep(prep) -> dict:
+    """``env.system.simulation.prep``, with an ``id`` minted when none is given."""
+    if not isinstance(prep, Mapping):
+        raise RSFError(f"prep is a mapping of {', '.join(PREP_KEYS)}, not {prep!r}")
+    unknown = sorted(set(prep) - set(PREP_KEYS))
+    if unknown:
+        raise RSFError(f"prep has {unknown}; a prep has {', '.join(PREP_KEYS)}")
+    out: dict[str, Any] = {}
+    id_ = prep.get("id")
+    out["id"] = uuid.uuid4().hex if id_ is None else id_
+    for name in ("id", "label", "kind", "species", "models"):
+        value = out["id"] if name == "id" else prep.get(name)
+        if value is not None and (not isinstance(value, str) or not value):
+            raise RSFError(f"prep {name} is a non-empty string or None, not {value!r}")
+        out[name] = value
+    if out["models"] is not None and out["models"] == out["id"]:
+        raise RSFError(
+            "prep models names the physical preparation the simulation stands for, "
+            f"never its own id {out['id']!r}"
+        )
+    out["age"] = _age(prep.get("age"), "prep age")
+    expression = prep.get("expression")
+    if expression is not None:
+        if not isinstance(expression, Sequence) or isinstance(expression, str):
+            raise RSFError("prep expression is a list of constructs")
+        entries = []
+        for entry in expression:
+            if not isinstance(entry, Mapping) or not isinstance(
+                entry.get("construct"), str
+            ):
+                raise RSFError(f"an expression entry names its construct: {entry!r}")
+            method = entry.get("method")
+            if not isinstance(method, str) or not method:
+                raise RSFError(f"expression {entry['construct']!r} states its method")
+            since = entry.get("since")
+            if since is not None and (
+                not isinstance(since, str)
+                or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", since)
+            ):
+                raise RSFError(f"expression since is a YYYY-MM-DD date, not {since!r}")
+            item: dict[str, Any] = {
+                "construct": entry["construct"],
+                "method": method,
+                "since": since,
+            }
+            age = _age(entry.get("age"), "an expression age")
+            if age is not None:
+                if out["age"] is not None and age["units"] != out["age"]["units"]:
+                    warnings.warn(
+                        f"expression {entry['construct']!r} states its age in "
+                        f"{age['units']!r} and the prep in {out['age']['units']!r}",
+                        stacklevel=4,
+                    )
+                item["age"] = age
+            entries.append(item)
+        out["expression"] = entries
+    _json(out, "prep")
+    return {k: v for k, v in out.items() if v is not None or k in ("label", "models")}
+
+
+def _ext_documents(ext) -> dict[str, dict[str, Any]]:
+    if ext is None:
+        return {}
+    if not isinstance(ext, Mapping):
+        raise RSFError("ext is {producer: {name.json: document}}")
+    out = {}
+    for producer, documents in ext.items():
+        _check_producer(producer, "ext producer")
+        if not isinstance(documents, Mapping):
+            raise RSFError(f"ext {producer!r} is {{name.json: document}}")
+        for name, document in documents.items():
+            if not isinstance(name, str) or not DOCUMENT_NAME.fullmatch(name):
+                raise RSFError(
+                    f"ext {producer!r} names its documents plainly, 'name.json', not "
+                    f"{name!r}"
+                )
+            _json(document, f"rsf/ext/{producer}/{name}")
+        out[producer] = {name: _plain(d) for name, d in documents.items()}
+    return out
+
+
+def _note_author(author, what: str):
+    if author is None:
+        return None
+    try:
+        _check_author(author)
+    except RSFError as e:
+        raise RSFError(f"{what}: {e}") from None
+    return author
+
+
+def _note_frame(frame, n_frames: int, what: str):
+    if frame is None:
+        return None
+    if not isinstance(frame, int | np.integer) or not 0 <= frame <= n_frames:
+        raise RSFError(f"{what}'s frame is a frame of 0..{n_frames}, not {frame!r}")
+    return int(frame)
+
+
+def _notes(notes, n_frames: int, instant: datetime, zone) -> list[dict]:
+    out = []
+    for k, note in enumerate(notes or ()):
+        what = f"note {k}"
+        if not isinstance(note, Mapping) or not isinstance(note.get("text"), str):
+            raise RSFError(f"{what} is {{'text', 'frame', 'author', 'at'}}")
+        unknown = sorted(set(note) - set(NOTE_KEYS))
+        if unknown:
+            raise RSFError(f"{what} has {unknown}; a note takes {', '.join(NOTE_KEYS)}")
+        item = note.get("item") or uuid.uuid4().hex
+        if not isinstance(item, str) or not HEX_ITEM.fullmatch(item):
+            raise RSFError(f"{what}'s item is 32 lowercase hex digits, not {item!r}")
+        at = instant
+        if note.get("at") is not None:
+            try:
+                at = _instant(note["at"])
+            except (TypeError, ValueError):
+                raise RSFError(f"{what}'s at is an RFC 3339 timestamp") from None
+        version = _note_version(item, note["text"], at, zone)
+        version["author"] = _note_author(note.get("author"), what)
+        version["frame"] = _note_frame(note.get("frame"), n_frames, what)
+        out.append(version)
+    return out
+
+
+def _epoch_versions(
+    epochs, n_frames: int, dt: float, record_of, stimulation, instant, zone
+) -> list[dict]:
+    """One ``epoch`` version per epoch, keys minted into items and parents resolved."""
+    if not epochs:
+        return []
+    items: dict[str, str] = {}
+    given = []
+    for k, epoch in enumerate(epochs):
+        what = f"epoch {k}"
+        if not isinstance(epoch, Mapping):
+            raise RSFError(f"{what} is a mapping of {', '.join(EPOCH_KEYS)}")
+        unknown = sorted(set(epoch) - set(EPOCH_KEYS))
+        if unknown:
+            raise RSFError(
+                f"{what} has {unknown}; an epoch takes {', '.join(EPOCH_KEYS)}"
+            )
+        item, key = epoch.get("item"), epoch.get("key")
+        if item is not None and key is not None:
+            raise RSFError(f"{what} is named by a key or an item, not both")
+        if item is not None:
+            if not isinstance(item, str) or not HEX_ITEM.fullmatch(item):
+                raise RSFError(
+                    f"{what}'s item is 32 lowercase hex digits, not {item!r}"
+                )
+        else:
+            item = uuid.uuid4().hex
+        name = key if key is not None else item
+        if name in items:
+            raise RSFError(f"{what} repeats the epoch {name!r}")
+        items[name] = item
+        if key is not None:
+            items.setdefault(item, item)
+        given.append((what, item, epoch))
+
+    def frame_of(epoch, frame_key, time_key, what):
+        if frame_key in epoch and time_key in epoch:
+            raise RSFError(f"{what} gives {frame_key} or {time_key}, not both")
+        if time_key in epoch:
+            value = epoch[time_key]
+            if value is None:
+                return None
+            return int(_nearest(float(value) / dt))
+        return epoch.get(frame_key)
+
+    out = []
+    spans = {}
+    for what, item, epoch in given:
+        frame = frame_of(epoch, "frame", "start", what)
+        end = frame_of(epoch, "end_frame", "end", what)
+        if frame is None:
+            raise RSFError(f"{what} starts at a frame (frame=) or a time (start=)")
+        frame = _note_frame(frame, n_frames, what)
+        end = _note_frame(end, n_frames, what)
+        if end is not None and end < frame:
+            raise RSFError(f"{what} ends at frame {end}, before it starts at {frame}")
+        kind = epoch.get("kind")
+        if not isinstance(kind, str) or not kind:
+            raise RSFError(f"{what} has a kind: one of {', '.join(EPOCH_KINDS)}")
+        if kind not in EPOCH_KINDS:
+            warnings.warn(
+                f"{what}'s kind {kind!r} is not one of {', '.join(EPOCH_KINDS)}; a "
+                "reader shows it as text",
+                stacklevel=4,
+            )
+        text = epoch.get("text", "")
+        if not isinstance(text, str):
+            raise RSFError(f"{what}'s text is a string")
+        parent = epoch.get("parent")
+        if parent is not None:
+            if parent in items:
+                parent = items[parent]
+            elif not isinstance(parent, str) or not HEX_ITEM.fullmatch(parent):
+                raise RSFError(f"{what}'s parent {parent!r} names no epoch")
+            if parent == item:
+                raise RSFError(f"{what} is its own parent")
+        programs = epoch.get("programs")
+        if programs is not None:
+            if isinstance(programs, str) or not isinstance(programs, Sequence):
+                raise RSFError(f"{what}'s programs are indices into programs=")
+            indices = []
+            for p in programs:
+                if not isinstance(p, int | np.integer) or int(p) not in record_of:
+                    raise RSFError(
+                        f"{what}'s programs name {p!r}, which is not an index into "
+                        "programs="
+                    )
+                index = record_of[int(p)]
+                if "kind" not in stimulation[index]:
+                    raise RSFError(
+                        f"{what} names program {p}, whose record has no neutral members"
+                    )
+                indices.append(index)
+            programs = sorted(indices)
+        origin = epoch.get("origin")
+        origin = None if origin is None else _check_origin(origin, what)
+        version = _note_version(item, text, instant, zone)
+        version.update(
+            author=_note_author(epoch.get("author"), what),
+            frame=frame,
+            end_frame=end,
+            kind=kind,
+            parent=parent,
+            programs=programs,
+            origin=origin,
+        )
+        spans[item] = (what, frame, end)
+        out.append(version)
+    for version in out:
+        parent = version["parent"]
+        if parent not in spans:
+            continue
+        what, frame, end = spans[version["item"]]
+        _, p_frame, p_end = spans[parent]
+        if frame < p_frame or (end is not None and p_end is not None and end > p_end):
+            raise RSFError(
+                f"{what} [{frame}, {end}) lies outside its parent [{p_frame}, {p_end})"
+            )
+    return out
+
+
+def _population_of(env, sources: list[int]) -> list[str | None]:
+    ranges = getattr(getattr(env, "system", None), "population_ranges", None)
+    if not isinstance(ranges, Mapping):
+        raise RSFError("the env's system states no population_ranges")
+    out = []
+    for gid in sources:
+        found = None
+        for name, (start, count) in ranges.items():
+            if int(start) <= gid < int(start) + int(count):
+                found = str(name)
+                break
+        out.append(found)
+    return out
+
+
+def _source_populations(env, sources: list[int]) -> list[str | None]:
+    return _population_of(env, sources)
+
+
+def _opsin_conductance(env) -> tuple[str, str, float, list] | None:
+    """``(construct, units, value, populations)`` of the model's opsin, or ``None``."""
+    model = getattr(env, "model", None)
+    config = None
+    for name in ("opsin_config", "native_opsin_config", "neuron_opsin_config"):
+        hook = getattr(model, name, None)
+        if callable(hook):
+            config = hook() or None
+            break
+    if not config:
+        return None
+    construct = str(config.get("mechanism", "RhO3c"))
+    params = dict(config.get("params") or {})
+    known = OPSIN_CONDUCTANCES.get(construct)
+    if known is None or not _number(params.get(known[0], known[2])):
+        raise RSFError(
+            f"the model's opsin {construct!r} states no conductance livn can read; pass "
+            "expression={construct: {'units', 'values'}}"
+        )
+    name, units, default = known
+    value = params.get(name, default)
+    populations = config.get("populations")
+    return (
+        construct,
+        units,
+        float(value),
+        None if populations is None else list(populations),
+    )
+
+
+def _source_expression(env, sources: list[int], expression) -> dict:
+    if expression is True:
+        found = _opsin_conductance(env)
+        if found is None:
+            raise RSFError(
+                "expression=True, but the env's model attaches no opsin; pass "
+                "expression={construct: {'units', 'values'}}"
+            )
+        construct, units, value, covered = found
+        owners = _population_of(env, sources)
+        values = [
+            value if covered is None or owner in covered else 0.0 for owner in owners
+        ]
+        return {construct: {"units": units, "values": values}}
+    if not isinstance(expression, Mapping):
+        raise RSFError("expression is True or {construct: {'units', 'values'}}")
+    out = {}
+    for construct, entry in expression.items():
+        what = f"expression {construct!r}"
+        if not isinstance(construct, str) or not isinstance(entry, Mapping):
+            raise RSFError(f"{what} is {{'units', 'values', 'reference'}}")
+        units = entry.get("units")
+        if not isinstance(units, str) or not units:
+            raise RSFError(f"{what} states its units")
+        values = entry.get("values")
+        if isinstance(values, Mapping):
+            by_gid = {int(g): v for g, v in values.items()}
+            unknown = sorted(set(by_gid) - set(sources))
+            if unknown:
+                raise RSFError(f"{what} names gids {unknown[:5]} that are not sources")
+            values = [by_gid.get(g, 0.0) for g in sources]
+        values = np.asarray(values, dtype=np.float64).ravel()
+        if len(values) != len(sources):
+            raise RSFError(
+                f"{what} has {len(values)} values for {len(sources)} sources"
+            )
+        if not np.all(np.isfinite(values)) or np.any(values < 0):
+            raise RSFError(f"{what}'s values are finite and >= 0")
+        item: dict[str, Any] = {"units": units, "values": values.tolist()}
+        reference = entry.get("reference")
+        if reference is not None:
+            if not isinstance(reference, str) or not reference:
+                raise RSFError(f"{what}'s reference is text")
+            item["reference"] = reference
+        elif units == "1":
+            raise RSFError(
+                f"{what} is a fraction (units '1') and says of what in reference"
+            )
+        out[construct] = item
+    return out
+
+
+def _connection_table(env, sources: list[int], given) -> dict:
+    """``connections.zarr``'s columns and its ``inputs``."""
+    source_ids = [str(g) for g in sources]
+    if given is True:
+        comm = getattr(env, "comm", None)
+        size = comm.Get_size() if hasattr(comm, "Get_size") else 1
+        if size > 1:
+            raise RSFError(
+                "connections=True reads this rank's connections only; under MPI gather "
+                "the table and pass it as connections={...}"
+            )
+        table = env.connections()
+        if table.get("weight") is None:
+            raise RSFError(
+                f"{type(env).__name__}.connections() states no weight; pass "
+                "connections={...}"
+            )
+        pre_gid = np.asarray(table["pre_gid"], dtype=np.int64)
+        known = set(sources)
+        pre_population = [str(p) for p in np.asarray(table["pre_population"]).tolist()]
+        post_population = [
+            str(p) for p in np.asarray(table["post_population"]).tolist()
+        ]
+        pre = [
+            str(g) if g in known else f"{population or 'input'}/{g}"
+            for g, population in zip(pre_gid.tolist(), pre_population, strict=True)
+        ]
+        synapses = (getattr(env.system, "connections_config", None) or {}).get(
+            "synapses", {}
+        )
+        signs = []
+        for post_name, pre_name in zip(post_population, pre_population, strict=True):
+            spec = (synapses.get(post_name) or {}).get(pre_name)
+            if not isinstance(spec, Mapping) or "type" not in spec:
+                raise RSFError(
+                    f"the system states no synapse type for {pre_name} -> {post_name}, "
+                    "so the sign of its connections is unknown"
+                )
+            signs.append(-1 if spec["type"] == "inhibitory" else 1)
+        given = {
+            "pre": pre,
+            "post": [str(g) for g in np.asarray(table["post_gid"]).tolist()],
+            "weight": np.asarray(table["weight"], dtype=np.float64),
+            "units": CONNECTION_WEIGHT_UNITS,
+            "reference": CONNECTION_WEIGHT_REFERENCE,
+            "sign": signs,
+            "inputs": sorted({p for p in pre if p not in source_ids}),
+        }
+        if table.get("delay") is not None:
+            given["delay"] = np.asarray(table["delay"], dtype=np.float32)
+        receptor = [str(r) for r in np.asarray(table.get("receptor", [])).tolist()]
+        if receptor and all(receptor) and len(receptor) == len(pre):
+            given["receptor"] = receptor
+    if not isinstance(given, Mapping):
+        raise RSFError("connections is True or {'pre', 'post', 'weight', ...}")
+    missing = [k for k in ("pre", "post", "weight", "units", "sign") if k not in given]
+    if missing:
+        raise RSFError(f"connections has no {missing}")
+    pre = [_id_str(p) for p in given["pre"]]
+    post = [_id_str(p) for p in given["post"]]
+    weight = np.asarray(given["weight"], dtype=np.float64).ravel()
+    sign = np.asarray(given["sign"]).ravel()
+    n = len(pre)
+    if not (len(post) == len(weight) == len(sign) == n):
+        raise RSFError("connections' columns are of one length")
+    if not np.all(np.isin(sign, (1, -1))):
+        raise RSFError("connections' sign is 1 (excitatory) or -1 (inhibitory)")
+    if not isinstance(given["units"], str) or not given["units"]:
+        raise RSFError("connections' weight states its units")
+    inputs = [str(i) for i in given.get("inputs") or ()]
+    if set(inputs) & set(source_ids):
+        raise RSFError("connections' inputs are inputs without a source, not sources")
+    known = set(source_ids)
+    outside = sorted({p for p in post if p not in known})
+    if outside:
+        raise RSFError(f"connections' post {outside[:5]} are not sources")
+    unnamed = sorted({p for p in pre if p not in known and p not in inputs})
+    if unnamed:
+        raise RSFError(
+            f"connections' pre {unnamed[:5]} are neither sources nor named in inputs"
+        )
+    if not np.all(np.isfinite(weight)):
+        raise RSFError("connections' weight holds a NaN or an infinity")
+    out = {
+        "arrays": {
+            "pre": pre,
+            "post": post,
+            "weight": weight,
+            "sign": sign.astype(np.int8),
+        },
+        "array_attributes": {"weight": {"units": given["units"]}},
+        "attributes": {"inputs": inputs},
+    }
+    reference = given.get("reference")
+    if reference is not None:
+        if not isinstance(reference, str) or not reference:
+            raise RSFError("connections' reference says what a weight of 1 is, as text")
+        out["array_attributes"]["weight"]["reference"] = reference
+    elif given["units"] == "1":
+        raise RSFError(
+            "connections' weight is a fraction (units '1') and says of what in reference"
+        )
+    if given.get("delay") is not None:
+        delay = np.asarray(given["delay"], dtype=np.float32).ravel()
+        if len(delay) != n:
+            raise RSFError("connections' delay is one per connection")
+        out["arrays"]["delay"] = delay
+    if given.get("receptor") is not None:
+        receptor = [str(r) for r in given["receptor"]]
+        if len(receptor) != n:
+            raise RSFError("connections' receptor is one per connection")
+        out["arrays"]["receptor"] = receptor
+    return out
+
+
+def _coupling_table(env, sources, stimulation, channel_devices, given) -> dict:
+    """``stimulus_coupling.zarr``: what each record channel at full scale puts on each
+    source, linearly."""
+    record_ids = [
+        c["id"] for r in stimulation if "kind" in r for c in r.get("channels") or ()
+    ]
+    record_ids = list(dict.fromkeys(record_ids))
+    if not record_ids:
+        raise RSFError(
+            "stimulus_coupling needs stimulus channels, and the session has none"
+        )
+    source_ids = [str(g) for g in sources]
+    if given is True:
+        kinds = {channel_devices[c][2] for c in record_ids}
+        if len(kinds) > 1:
+            raise RSFError(
+                "stimulus_coupling states one unit, and the session has light and "
+                "electrode channels; pass stimulus_coupling={...} for one kind"
+            )
+        (kind,) = kinds
+        xyz = np.asarray(_source_coordinates(env, sources), dtype=np.float64)
+        rows = np.column_stack([np.asarray(sources, dtype=np.float64), xyz])
+        reached: dict[int, np.ndarray] = {}
+        gain = np.zeros((len(record_ids), len(sources)), dtype=np.float32)
+        for i, channel in enumerate(record_ids):
+            device, column, kind = channel_devices[channel]
+            if id(device) not in reached:
+                reached[id(device)] = np.asarray(device.reach(rows), dtype=np.float64)
+            factor = (
+                1.0 if kind == "light" else _livn_scale(kind, device.max_current_uA)
+            )
+            gain[i] = reached[id(device)][column] * factor
+        given = {
+            "gain": gain,
+            "units": "mW/mm2" if kind == "light" else "mV",
+            "channel_ids": record_ids,
+            "source_ids": source_ids,
+        }
+    if not isinstance(given, Mapping):
+        raise RSFError(
+            "stimulus_coupling is True or {'gain', 'units', 'channel_ids', 'source_ids'}"
+        )
+    channel_ids = [str(c) for c in given.get("channel_ids") or ()]
+    sids = [_id_str(s) for s in given.get("source_ids") or ()]
+    gain = np.asarray(given.get("gain"), dtype=np.float32)
+    if gain.shape != (len(channel_ids), len(sids)):
+        raise RSFError(
+            f"stimulus_coupling's gain is [channels, sources], "
+            f"({len(channel_ids)}, {len(sids)}), not {gain.shape}"
+        )
+    unknown = sorted(set(channel_ids) - set(record_ids))
+    if unknown:
+        raise RSFError(f"stimulus_coupling names channels {unknown[:5]} of no record")
+    outside = sorted(set(sids) - set(source_ids))
+    if outside:
+        raise RSFError(f"stimulus_coupling names {outside[:5]}, which are not sources")
+    units = given.get("units")
+    if not isinstance(units, str) or not units:
+        raise RSFError("stimulus_coupling's gain states its units")
+    if not np.all(np.isfinite(gain)):
+        raise RSFError("stimulus_coupling's gain holds a NaN or an infinity")
+    return {
+        "arrays": {"gain": gain, "channel_ids": channel_ids, "source_ids": sids},
+        "array_attributes": {"gain": {"units": units}},
+        "attributes": {},
+    }
+
+
+def _write_table_store(zarr, store: str, name: str, table: dict) -> None:
+    root = zarr.open_group(store, mode="w", attributes=_plain(table["attributes"]))
+    for column, values in table["arrays"].items():
+        if isinstance(values, list):
+            _strings(root, column, values)
+        else:
+            _array(root, column, np.asarray(values))
+        attributes = table["array_attributes"].get(column)
+        if attributes:
+            root[column].attrs.update(attributes)
 
 
 def _sampling_frequency(dt: float) -> float:
@@ -1342,18 +2695,24 @@ def _minimal_group(store: str, recording_id: str) -> None:
     )
 
 
-def _note_version(item: str, text: str, at: datetime | None = None) -> dict:
+def _note_version(
+    item: str, text: str, at: datetime | None = None, zone: str | None = None
+) -> dict:
     """A version under ``rsf/notes/``."""
     at = datetime.now(UTC) if at is None else at
     return {
         "item": item,
-        "at": at.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
-        "zone": None,
+        "at": _stamp(at),
+        "zone": zone,
         "author": None,
         "removed": False,
         "text": text,
         "frame": None,
     }
+
+
+def _stamp(at: datetime) -> str:
+    return at.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def _add_note(rsf_dir: str, kind: str, version: dict) -> str:
@@ -1432,6 +2791,18 @@ class StimEvents:
 
     def __len__(self) -> int:
         return len(self.frame)
+
+
+@dataclass(frozen=True)
+class Planned:
+    time: np.ndarray
+    channel: np.ndarray
+    value: np.ndarray
+    event: np.ndarray
+    load: np.ndarray
+
+    def __len__(self) -> int:
+        return len(self.time)
 
 
 @dataclass(frozen=True)
@@ -1583,6 +2954,7 @@ class RsfRecording:
         self.zone = _string(group_attrs.get("zone"))
         self.author = _string(group_attrs.get("author"))
         self.derived_from = _derived_from(group_attrs.get("derived_from"))
+        self.substrate = _string((self.record.get("env") or {}).get("substrate"))
         self.prep = _prep((self.record.get("env") or {}).get("system"))
         notes = _read_notes(os.path.join(documents, "notes"))
         self.label = _current_label(notes, group_attrs.get("label", ""))
@@ -1893,6 +3265,116 @@ class RsfRecording:
                 records.append({**record, "index": int(name)})
         return records
 
+    def planned(self, index: int) -> Planned | None:
+        """The plan of the stimulation record ``index``, ``rsf/stimulation/NNNN/planned``
+        (:class:`Planned`: ``time``, ms from the program's start, ``channel``, ``value``,
+        ``event`` and ``load``), or ``None`` when the record states none."""
+        table = _table(
+            self._root, f"stimulation/{int(index):04d}/planned", PLANNED_COLUMNS
+        )
+        if table is None:
+            return None
+        return Planned(
+            time=np.asarray(table["t_ms"], dtype=np.float64),
+            channel=np.asarray([str(c) for c in table["channel"]], dtype=str),
+            value=np.asarray(table["value"]).astype(np.float32),
+            event=np.asarray(table["event"]).astype(np.int64),
+            load=np.asarray(table["load"]).astype(np.int64),
+        )
+
+    def check_delivered(self, index: int, tolerance: int = 1) -> dict:
+        """What the record ``index`` delivered against its plan."""
+        plan = self.planned(index)
+        report: dict[str, Any] = {
+            "index": int(index),
+            "planned": plan is not None,
+            "aligned": [],
+            "missing": [],
+            "extra": [],
+            "values": [],
+            "mistimed": [],
+            "stop": None,
+            "ok": plan is not None,
+        }
+        if plan is None:
+            return report
+        rows = self.stim_events()
+        mine = rows.program == int(index)
+        delivered = {
+            (int(e), str(c)): (int(f), float(v), str(t))
+            for e, c, f, v, t in zip(
+                rows.event[mine],
+                rows.channel[mine],
+                rows.frame[mine],
+                rows.value[mine],
+                rows.timing[mine],
+                strict=True,
+            )
+        }
+        planned = {
+            (int(e), str(c)): (float(t), float(v), int(load))
+            for e, c, t, v, load in zip(
+                plan.event, plan.channel, plan.time, plan.value, plan.load, strict=True
+            )
+        }
+        report["extra"] = sorted(set(delivered) - set(planned))
+        for key in sorted(set(planned) & set(delivered)):
+            if abs(planned[key][1] - delivered[key][1]) > 1e-6:
+                report["values"].append((*key, planned[key][1], delivered[key][1]))
+
+        def expected(key):
+            frame_a, t_a = anchors[planned[key][2]]
+            return frame_a + int(_nearest((planned[key][0] - t_a) * self.fs / 1000.0))
+
+        anchors: dict[int, tuple[int, float]] = {}
+        shared = [key for key in delivered if key in planned]
+        for load in sorted({p[2] for p in planned.values()}):
+            keys = [key for key in shared if planned[key][2] == load]
+            if not keys:
+                continue
+            best = max(TIMING_RANK.get(delivered[key][2], 0) for key in keys)
+            anchor = min(
+                key for key in keys if TIMING_RANK.get(delivered[key][2], 0) == best
+            )
+            anchors[load] = (delivered[anchor][0], planned[anchor][0])
+            report["aligned"].append(
+                {
+                    "load": load,
+                    "event": anchor[0],
+                    "frame": delivered[anchor][0],
+                    "timing": delivered[anchor][2],
+                }
+            )
+
+        # a stop: the plan's last event delivered, early or with keys before it missing
+        last = int(plan.event.max()) if len(plan) else None
+        absent = sorted(set(planned) - set(delivered))
+        closing = [key for key in shared if key[0] == last]
+        cut = [key for key in absent if last is not None and key[0] < last]
+        early = any(delivered[key][0] < expected(key) - tolerance for key in closing)
+        stopped = bool(closing) and bool(cut or early)
+        if stopped:
+            report["stop"] = {
+                "frame": min(delivered[key][0] for key in closing),
+                "event": last,
+                "undelivered": cut,
+            }
+            absent = [key for key in absent if key not in cut]
+        report["missing"] = absent
+
+        for key in sorted(shared):
+            if stopped and key[0] == last:
+                continue  # the closing event of a stopped program is at the stop
+            if abs(delivered[key][0] - expected(key)) > tolerance:
+                report["mistimed"].append((*key, delivered[key][0], expected(key)))
+        report["ok"] = not (
+            report["extra"]
+            or report["missing"]
+            or report["mistimed"]
+            or report["values"]
+        )
+        return report
+
     def stimulus_channels(self) -> list[dict]:
         """The channels of every record with the neutral members, each the channel object
         plus its record's ``kind`` and ``index``, once per ``id`` (one id is one shape and one
@@ -2020,6 +3502,194 @@ class RsfRecording:
                 "source": "calibration",
             }
         return out
+
+    def stimulus_calibrations(self) -> dict[str, dict]:
+        """The current ``stimulus_calibration`` version of each channel that has one (not
+        removed), by channel id: ``{"full_scale", "measured_at", "method", "text",
+        "wavelength_nm", "wavelength_basis", "latency_ms", "at", "author"}``, each ``None``
+        where the version does not say. ``latency_ms`` is how long after the delivered
+        edge the stimulus reaches the sample, stated by the version's measurement."""
+        versions = _read_notes(
+            os.path.join(self._documents, "notes"), (CALIBRATION,)
+        ).get(CALIBRATION, {})
+        out = {}
+        for item, history in sorted(versions.items()):
+            current = _current(history)
+            if current is None or current["removed"]:
+                continue
+            out[item] = {
+                "full_scale": dict(current["full_scale"]),
+                "measured_at": _string(current.get("measured_at")),
+                "method": _string(current.get("method")),
+                "text": current["text"],
+                "wavelength_nm": _wavelength(current.get("wavelength_nm")),
+                "wavelength_basis": _string(current.get("wavelength_basis")),
+                "latency_ms": _latency(current.get("latency_ms")),
+                "at": current["at"],
+                "author": current["author"],
+            }
+        return out
+
+    def epochs(self) -> list[dict]:
+        """The session's named spans, the current version of each ``rsf/notes/epoch/``
+        item that is not removed, ordered by ``frame`` and then ``end_frame``: ``{"item",
+        "frame", "end_frame", "kind", "text", "parent", "programs", "origin", "open",
+        "parent_missing", "author", "at", "carried_from"}``.
+
+        An epoch still open in a complete store ends at the store's length, with ``open``
+        ``True``; in a growing one ``end_frame`` is ``None``. A ``parent`` that names no
+        current epoch is read as ``None``, with ``parent_missing`` ``True``."""
+        versions = _read_notes(os.path.join(self._documents, "notes"), (EPOCH,)).get(
+            EPOCH, {}
+        )
+        current = {
+            item: version
+            for item, version in (
+                (item, _current(history)) for item, history in versions.items()
+            )
+            if version is not None and not version["removed"]
+        }
+        n = self.num_samples()
+        out = []
+        for item, version in current.items():
+            parent = version["parent"]
+            missing = parent is not None and parent not in current
+            end = version["end_frame"]
+            out.append(
+                {
+                    "item": item,
+                    "frame": int(version["frame"]),
+                    "end_frame": n if end is None and self.finished else end,
+                    "kind": version["kind"],
+                    "text": version["text"],
+                    "parent": None if missing else parent,
+                    "programs": None
+                    if version["programs"] is None
+                    else [int(p) for p in version["programs"]],
+                    "origin": version["origin"],
+                    "open": end is None,
+                    "parent_missing": missing,
+                    "author": version["author"],
+                    "at": version["at"],
+                    "carried_from": _string(version.get("carried_from")),
+                }
+            )
+        return sorted(
+            out,
+            key=lambda e: (
+                e["frame"],
+                math.inf if e["end_frame"] is None else e["end_frame"],
+                e["item"],
+            ),
+        )
+
+    def epoch_of(self, index: int) -> list[dict]:
+        """The epochs the stimulation record ``index`` belongs to: those that name it in
+        ``programs``, and of those whose ``programs`` is ``None`` the ones whose span holds
+        the record's first delivered frame."""
+        rows = self.stim_events()
+        frames = rows.frame[rows.program == int(index)]
+        first = int(frames.min()) if len(frames) else None
+        out = []
+        for epoch in self.epochs():
+            if epoch["programs"] is not None:
+                if int(index) in epoch["programs"]:
+                    out.append(epoch)
+                continue
+            end = epoch["end_frame"]
+            if (
+                first is not None
+                and epoch["frame"] <= first
+                and (end is None or first < end)
+            ):
+                out.append(epoch)
+        return out
+
+    def sources(self) -> dict | None:
+        """The simulated sources of ``simulation.json``: ``{"ids", "coordinates_um",
+        "populations", "expression"}``, each ``None`` where the run record does not say
+        (``coordinates_um`` under a mask on ``source_positions``); ``None`` for a session
+        that is not a simulation. ``expression`` is ``{construct: {"units", "values",
+        "reference"}}``."""
+        if not isinstance(self.simulation, Mapping):
+            return None
+        sources = self.simulation.get("sources")
+        if not isinstance(sources, Mapping):
+            return None
+        ids = sources.get("ids")
+        expression = sources.get("expression")
+        if isinstance(expression, Mapping):
+            expression = {
+                str(construct): {
+                    "units": _string(entry.get("units")),
+                    "values": np.asarray(entry.get("values"), dtype=np.float64),
+                    "reference": _string(entry.get("reference")),
+                }
+                for construct, entry in expression.items()
+                if isinstance(entry, Mapping)
+            }
+        else:
+            expression = None
+        coordinates = sources.get("coordinates_um")
+        populations = sources.get("populations")
+        return {
+            "ids": None if ids is None else _ids_array(ids),
+            "coordinates_um": None
+            if coordinates is None
+            else np.asarray(coordinates, dtype=np.float64).reshape(-1, 3),
+            "populations": None
+            if not isinstance(populations, list)
+            else [_string(p) for p in populations],
+            "expression": expression,
+        }
+
+    def connections(self) -> dict | None:
+        """``ground_truth/connections.zarr``, the simulated network at frame 0: ``{"pre",
+        "post", "weight", "units", "reference", "sign", "delay", "receptor", "inputs"}``
+        (``reference``, ``delay`` and ``receptor`` ``None`` when the store has none; ``pre``
+        a source id or one of ``inputs``, the inputs without a source), or ``None`` when the
+        session has none."""
+        root = self._table_store(CONNECTIONS)
+        if root is None:
+            return None
+        weight = _array_of(root, "weight")
+        return {
+            "pre": np.asarray([str(p) for p in _read(root, "pre")], dtype=str),
+            "post": np.asarray([str(p) for p in _read(root, "post")], dtype=str),
+            "weight": np.asarray(weight[...], dtype=np.float64),
+            "units": _string(weight.attrs.get("units")),
+            "reference": _string(weight.attrs.get("reference")),
+            "sign": np.asarray(_read(root, "sign")).astype(np.int8),
+            "delay": np.asarray(_read(root, "delay"), dtype=np.float32)
+            if _has(root, "delay")
+            else None,
+            "receptor": np.asarray([str(r) for r in _read(root, "receptor")], dtype=str)
+            if _has(root, "receptor")
+            else None,
+            "inputs": [str(i) for i in root.attrs.get("inputs") or ()],
+        }
+
+    def stimulus_coupling(self) -> dict | None:
+        """``ground_truth/stimulus_coupling.zarr``: what each stimulus channel at full scale
+        puts on each source, ``{"gain" [channels, sources], "units", "channel_ids",
+        "source_ids"}``; ``None`` when the session has none (as under a mask on
+        ``source_positions``)."""
+        root = self._table_store(STIMULUS_COUPLING)
+        if root is None:
+            return None
+        gain = _array_of(root, "gain")
+        return {
+            "gain": np.asarray(gain[...], dtype=np.float32),
+            "units": _string(gain.attrs.get("units")),
+            "channel_ids": [str(c) for c in _read(root, "channel_ids")],
+            "source_ids": [str(c) for c in _read(root, "source_ids")],
+        }
+
+    def _table_store(self, name: str):
+        store = os.path.join(self.path, "ground_truth", f"{name}.zarr")
+        if not _complete(store):
+            return None
+        return _zarr().open_group(store, mode="r")
 
     def channels(self) -> dict[str, dict]:
         """The session's described channels that are not electrodes, by channel name, from
@@ -2223,7 +3893,9 @@ class RsfRecording:
         lag = math.ceil(max(lags, default=0.0) * self.fs / 1000.0 - 1e-9)
         return max(0, n - lag)
 
-    def inputs(self, segment, start, length, *, physical: bool = False) -> np.ndarray:
+    def inputs(
+        self, segment, start, length, *, physical: bool = False, latency: bool = False
+    ) -> np.ndarray:
         """The delivered stimulus on the frame grid, float32 ``(length, channels)``, one column
         per :meth:`stimulus_channels` channel: each channel delivers 0 before its first event
         and holds an event's value until its next (the resolved :meth:`stim_events`).
@@ -2234,16 +3906,28 @@ class RsfRecording:
         uA for electrodes with cathodic current negative as livn's MEA reads it (the sign
         flips here and nowhere else); it raises when a channel's full scale is unknown.
 
+        ``latency=True`` gives the stimulus as it reaches the sample: each channel's edges
+        later by the ``latency_ms`` of its current calibration, when one states it
+        (:meth:`stimulus_calibrations`), rounded to the nearest frame.
+
         A growing store's rows are final up to :attr:`stimulus_final_to`.
         """
         self._segment(segment)
         start, length = _window(start, length, self.num_samples())
         channels, held = self._held_stimulus()
+        shifts = np.zeros(len(channels), dtype=np.int64)
+        if latency:
+            calibrations = self.stimulus_calibrations()
+            for column, channel in enumerate(channels):
+                ms = (calibrations.get(channel["id"]) or {}).get("latency_ms")
+                if ms:
+                    shifts[column] = int(_nearest(ms * self.fs / 1000.0))
         out = np.zeros((length, len(channels)), dtype=np.float32)
         at = np.arange(start, start + length)
         for column, (frames, values) in enumerate(held):
             if not len(frames):
                 continue
+            frames = frames + shifts[column]
             k = np.searchsorted(frames, at, side="right") - 1
             out[:, column] = np.where(k >= 0, values[np.maximum(k, 0)], 0.0)
         if not physical:
@@ -2553,6 +4237,70 @@ def load(path: str | os.PathLike) -> Session:
     return Session(RsfRecording(path))
 
 
+def same_preparation(a: RsfRecording, b: RsfRecording) -> bool:
+    """Whether two sessions are of one preparation: equal ``substrate`` and ``prep.id``. A
+    physical preparation and a simulation of it are two (the simulation ``models`` it)."""
+    if a.prep is None or b.prep is None or a.prep["id"] is None:
+        return False
+    return a.substrate == b.substrate and a.prep["id"] == b.prep["id"]
+
+
+def preparations(recordings) -> dict[tuple[str | None, str], list[RsfRecording]]:
+    """The sessions of each preparation, keyed by ``(substrate, prep id)``, each ordered by
+    the preparation's age and then by ``created_at``. A session without a prep id is left
+    out."""
+    out: dict[tuple[str | None, str], list[RsfRecording]] = {}
+    for recording in recordings:
+        prep = recording.prep
+        if prep is None or prep["id"] is None:
+            continue
+        out.setdefault((recording.substrate, prep["id"]), []).append(recording)
+
+    def order(recording):
+        age = recording.prep["age"]
+        created = recording.created_at
+        return (
+            age is None,
+            0.0 if age is None else age["value"],
+            _instant(created) if isinstance(created, str) else datetime.max,
+        )
+
+    return {key: sorted(group, key=order) for key, group in out.items()}
+
+
+def join_epochs(recordings) -> list[dict]:
+    """The epochs of several sessions joined by ``item``: one run that spans sessions
+    (the days of a preparation, the members of a group) is one entry, ``{"item", "kind",
+    "text", "parent", "origin", "sessions": [{"recording_id", "frame", "end_frame",
+    "programs", "open"}]}``, sessions in the order given. ``kind``, ``text``, ``parent``
+    and ``origin`` are those of the first session that has the epoch."""
+    joined: dict[str, dict] = {}
+    for recording in recordings:
+        recording_id = recording.record.get("recording_id")
+        for epoch in recording.epochs():
+            entry = joined.setdefault(
+                epoch["item"],
+                {
+                    "item": epoch["item"],
+                    "kind": epoch["kind"],
+                    "text": epoch["text"],
+                    "parent": epoch["parent"],
+                    "origin": epoch["origin"],
+                    "sessions": [],
+                },
+            )
+            entry["sessions"].append(
+                {
+                    "recording_id": recording_id,
+                    "frame": epoch["frame"],
+                    "end_frame": epoch["end_frame"],
+                    "programs": epoch["programs"],
+                    "open": epoch["open"],
+                }
+            )
+    return list(joined.values())
+
+
 def _read(group, name: str) -> np.ndarray:
     zarr = _zarr()
 
@@ -2720,10 +4468,48 @@ def _read_notes(
             elif kind == CHANNEL:
                 if not item or version["frame"] is not None:
                     continue
+            elif kind == EPOCH:
+                if not _epoch(version):
+                    continue
             elif item != "session":
                 continue
             out.setdefault(kind, {}).setdefault(item, []).append((at, name, version))
     return out
+
+
+def _epoch(version: dict) -> bool:
+    """An ``epoch`` version: a hex ``item``, an integer ``frame`` and ``end_frame`` at or
+    after it (or ``null``), a ``kind``, and ``parent``, ``programs`` and ``origin``."""
+    if not HEX_ITEM.fullmatch(version["item"]):
+        return False
+    frame, end = version["frame"], version.get("end_frame", False)
+    if not isinstance(frame, int) or isinstance(frame, bool) or frame < 0:
+        return False
+    if end is not None and (
+        not isinstance(end, int) or isinstance(end, bool) or end < frame
+    ):
+        return False
+    if not isinstance(version.get("kind"), str):
+        return False
+    if not all(m in version for m in ("parent", "programs", "origin")):
+        return False
+    parent = version["parent"]
+    if parent is not None and not isinstance(parent, str):
+        return False
+    programs = version["programs"]
+    if programs is not None and (
+        not isinstance(programs, list)
+        or not all(isinstance(p, int) and not isinstance(p, bool) for p in programs)
+    ):
+        return False
+    return version["origin"] is None or isinstance(version["origin"], dict)
+
+
+def _latency(value) -> float | None:
+    """A stimulus edge's latency in ms, or ``None`` when none is stated."""
+    if not _number(value) or not math.isfinite(value) or value < 0:
+        return None
+    return float(value)
 
 
 def _calibration(version: dict) -> bool:
@@ -2740,7 +4526,10 @@ def _calibration(version: dict) -> bool:
         return not version["text"]
     value = scale.get("value")
     if value is None:
-        return _wavelength(version.get("wavelength_nm")) is not None
+        return (
+            _wavelength(version.get("wavelength_nm")) is not None
+            or _latency(version.get("latency_ms")) is not None
+        )
     return _number(value) and value > 0
 
 
@@ -2910,43 +4699,62 @@ def _derived_from(value) -> dict | None:
 
 
 def _prep(system) -> dict | None:
-    """``env.system.prep`` with every member RSF defines, ``None`` where absent: ``id``,
-    ``label``, ``kind``, ``species``, ``age`` (``{"value", "units"}``) and ``expression``
-    (``[{"construct", "method", "since"}]``). ``None`` for a session whose system is not a
-    preparation (a simulation, or a system nobody named)."""
-    if not isinstance(system, Mapping) or not isinstance(system.get("prep"), Mapping):
+    """The preparation of ``env.system``, with every member RSF defines, ``None`` where
+    absent: ``id``, ``label``, ``kind``, ``species``, ``age`` (``{"value", "units"}``) and
+    ``expression`` (``[{"construct", "method", "since"}]``, with an ``age`` where an entry
+    states one). A physical ``prep``, or a ``simulation``'s ``prep``, which also has
+    ``models``: the physical preparation the simulation stands for. ``None`` for a session
+    whose system names no preparation."""
+    if not isinstance(system, Mapping):
         return None
-    prep = system["prep"]
-    age = prep.get("age")
+    simulated = False
+    prep = system.get("prep")
+    if not isinstance(prep, Mapping):
+        simulation = system.get("simulation")
+        prep = simulation.get("prep") if isinstance(simulation, Mapping) else None
+        simulated = True
+    if not isinstance(prep, Mapping):
+        return None
+    expression = prep.get("expression")
+    if isinstance(expression, list):
+        entries = []
+        for e in expression:
+            if not isinstance(e, Mapping):
+                continue
+            entry = {
+                "construct": _string(e.get("construct")),
+                "method": _string(e.get("method")),
+                "since": _string(e.get("since")),
+            }
+            age = _read_age(e.get("age"))
+            if age is not None:
+                entry["age"] = age
+            entries.append(entry)
+        expression = entries
+    else:
+        expression = None
+    out = {
+        "id": _string(prep.get("id")),
+        "label": _string(prep.get("label")),
+        "kind": _string(prep.get("kind")),
+        "species": _string(prep.get("species")),
+        "age": _read_age(prep.get("age")),
+        "expression": expression,
+    }
+    if simulated:
+        models = _string(prep.get("models"))
+        out["models"] = None if models == out["id"] else models
+    return out
+
+
+def _read_age(age) -> dict | None:
     if (
         isinstance(age, Mapping)
         and _number(age.get("value"))
         and isinstance(age.get("units"), str)
     ):
-        age = {"value": float(age["value"]), "units": age["units"]}
-    else:
-        age = None
-    expression = prep.get("expression")
-    if isinstance(expression, list):
-        expression = [
-            {
-                "construct": _string(e.get("construct")),
-                "method": _string(e.get("method")),
-                "since": _string(e.get("since")),
-            }
-            for e in expression
-            if isinstance(e, Mapping)
-        ]
-    else:
-        expression = None
-    return {
-        "id": _string(prep.get("id")),
-        "label": _string(prep.get("label")),
-        "kind": _string(prep.get("kind")),
-        "species": _string(prep.get("species")),
-        "age": age,
-        "expression": expression,
-    }
+        return {"value": float(age["value"]), "units": age["units"]}
+    return None
 
 
 def _current(versions: list[tuple] | None) -> dict | None:

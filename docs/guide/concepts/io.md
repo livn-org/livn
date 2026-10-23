@@ -46,7 +46,7 @@ mea = MEA(
 )
 ```
 
-`max_current_uA` is the stimulator's range limit. livn does not clip the simulated current, but it is used to store in a way that is consistent with real recordings ([Storing a run](/guide/concepts/env#storing-a-run)). The default, 100 µA, is a common MEA stimulator's range.
+`max_current_uA` is the stimulator's range limit. livn does not clip the simulated current, but it is used to store in a way that is consistent with real recordings ([Storing a run](/guide/advanced/recording-sessions)). The default, 100 µA, is a common MEA stimulator's range.
 
 ### Electrode layout
 

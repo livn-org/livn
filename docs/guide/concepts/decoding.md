@@ -144,7 +144,7 @@ result = env(decoding=AvalancheAnalysis(duration=5000))
 
 ### Saving raw output
 
-To keep raw simulation output as an Arrow dataset, gather it with `GatherAndMerge` and write it with [`livn.data.arrow.store`](/guide/concepts/env#storing-a-run). Each call adds one row (a shard) to the split, so the dataset is readable after every call, and `ground_truth` chooses the cell-space columns (`it`/`tt`, `iv`/`vv`, `im`/`mp`) that are kept beside the channel-space ones:
+To keep raw simulation output as an Arrow dataset, gather it with `GatherAndMerge` and write it with [`livn.data.arrow.store`](/guide/advanced/recording-sessions#arrow-datasets). Each call adds one row (a shard) to the split, so the dataset is readable after every call, and `ground_truth` chooses the cell-space columns (`it`/`tt`, `iv`/`vv`, `im`/`mp`) that are kept beside the channel-space ones:
 
 ```python
 from livn.data import arrow, open

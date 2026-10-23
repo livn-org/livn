@@ -18,6 +18,8 @@ def connection_table(env) -> dict[str, np.ndarray]:
             "post_population": names,
             "receptor": names,
             "strength": np.zeros(0),
+            "weight": np.zeros(0),
+            "delay": np.zeros(0),
         }
 
     def named(codes, table: dict) -> np.ndarray:
@@ -40,6 +42,8 @@ def connection_table(env) -> dict[str, np.ndarray]:
         "post_population": named(conn.post_pop, env._pop_code),
         "receptor": named(conn.receptor, env._receptor_code),
         "strength": np.asarray(strength),
+        "weight": np.asarray(conn.weight, dtype=np.float64),
+        "delay": np.asarray(conn.delay, dtype=np.float64),
     }
 
 

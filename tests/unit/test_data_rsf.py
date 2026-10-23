@@ -1,5 +1,6 @@
 import json
 import os
+import re
 
 import numpy as np
 import pytest
@@ -1620,7 +1621,7 @@ def test_the_preparation_says_what_it_is(physical):
 def test_a_derived_session_shows_when_its_source_was_recorded(physical, rsf_note):
     derived_from = {
         "recording_id": "1" * 32,
-        "session": "../invs2-calibration2-sample8-DIV11",
+        "session": "../calibration2-sample8-DIV11",
         "started_at": "2026-10-20T14:02:11.000000Z",
         "created_at": "2026-10-20T14:02:10.000000Z",
         "changes": [
@@ -1969,3 +1970,611 @@ def test_the_rsf_conformance_fixtures_read(tmp_path):
         with pytest.raises(RSFError):
             recording = rsf.RsfRecording(os.path.join(root, "broken", name))
             recording.stim_markers()
+
+
+def _two_light_programs(stop=1.6):
+    first = np.zeros((20, 2), dtype=np.float32)
+    first[2:7, 0] = 1.0
+    second = np.zeros((30, 2), dtype=np.float32)
+    second[0:5, 1] = 0.5
+    second[10:15, 1] = 0.25
+    second[18:25, 1] = 0.75
+    origin = {
+        "generator": "example.SpotProtocol",
+        "software": {"name": "example", "version": "1.0"},
+        "params": {"block": 0, "hash": "ab12"},
+        "seed": 4,
+    }
+    return [
+        {"inputs": first, "inputs_dt": DT, "origin": origin},
+        {
+            "inputs": second,
+            "inputs_dt": DT,
+            "start": 1.0,
+            "stop": stop,
+            "members": {"example": {"round": 2}},
+        },
+    ]
+
+
+def test_each_program_is_a_record_with_its_plan(tmp_path):
+    session = str(tmp_path / "programs")
+    store(_run(), session, _Env(io=_light_io(470.0)), programs=_two_light_programs())
+    recording = load(session).recording
+
+    first, second = recording.stimulation_records()
+    # each record states the channels its program drives, by site name and instrument
+    assert [c["id"] for c in first["channels"]] == ["light/near"]
+    assert [c["id"] for c in second["channels"]] == ["light/far"]
+    assert first["channels"][0]["name"] == "near"
+    assert first["channels"][0]["source"] == "livn PatternedLight"
+    assert first["channels"][0]["shape"] == {
+        "kind": "disc",
+        "x": 0.0,
+        "y": 0.0,
+        "radius": 30.0,
+    }
+    assert first["origin"]["generator"] == "example.SpotProtocol"
+    assert first["origin"]["params"] == {"block": 0, "hash": "ab12"}
+    assert "origin" not in second and second["example"] == {"round": 2}
+    assert second["livn"]["device"] == 0 and second["livn"]["channels"] == [7]
+    assert load(session).simulation["stimulus"] == {"records": [0, 1]}
+
+    # the plan, from each program's start, closing with an event that zeroes the channel
+    plan = recording.planned(1)
+    np.testing.assert_allclose(plan.time, [0.0, 0.5, 1.0, 1.5, 1.8, 2.5])
+    np.testing.assert_allclose(plan.value, [0.5, 0, 0.25, 0, 0.75, 0])
+    np.testing.assert_array_equal(plan.event, np.arange(6))
+    np.testing.assert_array_equal(plan.load, np.zeros(6))
+    assert set(plan.channel) == {"light/far"}
+    assert recording.planned(0).event.tolist() == [0, 1]
+
+    # program 0 delivered its plan; program 1 was stopped at its frame 16, frame 26
+    assert recording.check_delivered(0)["ok"]
+    report = recording.check_delivered(1)
+    assert report["ok"] and not report["mistimed"] and not report["missing"]
+    assert report["stop"] == {
+        "frame": 26,
+        "event": 5,
+        "undelivered": [(4, "light/far")],
+    }
+    assert report["aligned"] == [
+        {"load": 0, "event": 0, "frame": 10, "timing": "simulated"}
+    ]
+    rows = recording.stim_events()
+    mine = rows.program == 1
+    np.testing.assert_array_equal(rows.frame[mine], [10, 15, 20, 25, 26])
+    np.testing.assert_array_equal(rows.event[mine], [0, 1, 2, 3, 5])  # no new ordinal
+
+    # the delivered stimulus holds each program's values; the two overlap on two spots
+    got = recording.inputs(0, 0, N_FRAMES)
+    want = np.zeros((N_FRAMES, 2), dtype=np.float32)
+    want[2:7, 0] = 1.0
+    want[10:15, 1], want[20:25, 1], want[25:26, 1] = 0.5, 0.25, 0.0
+    np.testing.assert_allclose(got, want)
+
+
+def test_a_check_reports_what_does_not_match_the_plan(tmp_path):
+    session = str(tmp_path / "programs")
+    store(_run(), session, _Env(io=_light_io(470.0)), programs=_two_light_programs())
+    # the same session with one delivered row moved and one value changed
+    events = os.path.join(session, "traces.zarr", "rsf", "stim_events")
+    import zarr
+
+    table = zarr.open_group(events, mode="r+")
+    frames, values = table["frame"][...], table["value"][...]
+    frames[1] += 3  # program 0's offset
+    values[2] = 0.4  # program 1's first value
+    table["frame"][...] = frames
+    table["value"][...] = values
+    recording = rsf.RsfRecording(session)
+    report = recording.check_delivered(0)
+    assert report["mistimed"] == [(1, "light/near", 10, 7)] and not report["ok"]
+    assert recording.check_delivered(1)["values"] == [
+        (0, "light/far", 0.5, pytest.approx(0.4))
+    ]
+    # a record without a plan is not compared
+    plain = str(tmp_path / "plain")
+    store(_run(), plain, _Env(), inputs=np.ones((5, 3)), inputs_dt=1.0)
+    assert rsf.RsfRecording(plain).planned(0) is None
+    assert rsf.RsfRecording(plain).check_delivered(0)["planned"] is False
+
+
+def test_a_policy_program_states_its_origin(tmp_path):
+    from livn.policy import BiphasicPulsePolicy
+
+    policy = BiphasicPulsePolicy(
+        n_channels=3,
+        channels=[1],
+        dt=0.1,
+        amplitude_uA=2.0,
+        phase_duration=0.2,
+        interphase_gap=0.1,
+        pulse_times=[0.5],
+    )
+    session = str(tmp_path / "policy")
+    store(_run(), session, _Env(), programs=[{"policy": policy}])
+    recording = load(session).recording
+    (record,) = recording.stimulation_records()
+    assert record["origin"] == {
+        "generator": "livn.policy.BiphasicPulsePolicy",
+        "software": {"name": "livn", "version": rsf._version()},
+        "params": json.loads(json.dumps(policy.serialize())),
+        "seed": None,
+    }
+    assert [(c["id"], c["name"], c["source"]) for c in record["channels"]] == [
+        ("electrode/1", "1", "livn MEA")
+    ]
+    assert recording.check_delivered(0)["ok"]
+    delivered = recording.inputs(0, 0, N_FRAMES, physical=True)
+    np.testing.assert_allclose(delivered[5:11, 0], [-2, -2, 0, 2, 2, 0], rtol=1e-6)
+
+
+def test_programs_that_cannot_be_one_session_are_refused(tmp_path):
+    io = _light_io(470.0)
+    on = np.ones((10, 2), dtype=np.float32) * [1.0, 0.0]
+    with pytest.raises(RSFError, match="one program at a time"):
+        store(
+            _run(),
+            str(tmp_path / "a"),
+            _Env(io=io),
+            programs=[
+                {"inputs": on, "inputs_dt": DT},
+                {"inputs": on, "inputs_dt": DT, "start": 0.5},
+            ],
+        )
+    with pytest.raises(RSFError, match="livn's own"):
+        store(
+            _run(),
+            str(tmp_path / "b"),
+            _Env(io=io),
+            programs=[{"inputs": on, "inputs_dt": DT, "members": {"livn": {}}}],
+        )
+    with pytest.raises(RSFError, match="the format's"):
+        store(
+            _run(),
+            str(tmp_path / "c"),
+            _Env(io=io),
+            programs=[{"inputs": on, "inputs_dt": DT, "members": {"origin": {}}}],
+        )
+    with pytest.raises(RSFError, match="instead of stimulus"):
+        store(
+            _run(),
+            str(tmp_path / "d"),
+            _Env(io=io),
+            inputs=on,
+            inputs_dt=DT,
+            programs=[{"inputs": on, "inputs_dt": DT}],
+        )
+    with pytest.raises(RSFError, match="sets channels that are not"):
+        store(
+            _run(),
+            str(tmp_path / "e"),
+            _Env(io=io),
+            programs=[{"inputs": on, "inputs_dt": DT, "channels": [7]}],
+        )
+    for name in "abcde":
+        assert not os.path.exists(tmp_path / name)
+
+
+def _prep(**extra):
+    return {
+        "id": "sim-culture-1",
+        "label": "simulated culture 1",
+        "kind": "culture",
+        "species": "rat",
+        "expression": [
+            {
+                "construct": "ChR2H134R",
+                "method": "transduction",
+                "since": None,
+                "age": {"value": 7, "units": "DIV"},
+            }
+        ],
+        "models": "c-2026-0412",
+        **extra,
+    }
+
+
+def test_sessions_of_one_simulated_preparation_read_as_one(tmp_path):
+    day15 = store(
+        _run(),
+        str(tmp_path / "day15"),
+        _Env(),
+        prep=_prep(age={"value": 15, "units": "DIV"}),
+    )
+    day14 = store(
+        _run(),
+        str(tmp_path / "day14"),
+        _Env(),
+        prep=_prep(age={"value": 14, "units": "DIV"}),
+    )
+    other = store(_run(), str(tmp_path / "other"), _Env(), prep={"label": "another"})
+    a, b, c = (rsf.RsfRecording(p) for p in (day15, day14, other))
+
+    # the run record repeats the record's prep, so it stands alone
+    system = a.record["env"]["system"]["simulation"]
+    assert system["prep"] == a.simulation["prep"]
+    assert a.substrate == "simulated" and a.prep["models"] == "c-2026-0412"
+    assert a.prep["expression"][0]["age"] == {"value": 7.0, "units": "DIV"}
+    assert a.prep["age"] == {"value": 15.0, "units": "DIV"}
+
+    assert rsf.same_preparation(a, b) and not rsf.same_preparation(a, c)
+    # a simulated id is minted when none is given, and never the one it models
+    assert re.fullmatch(r"[0-9a-f]{32}", c.prep["id"]) and c.prep["models"] is None
+    groups = rsf.preparations([a, c, b])
+    assert [r.path for r in groups[("simulated", "sim-culture-1")]] == [day14, day15]
+    assert len(groups) == 2
+
+    with pytest.raises(RSFError, match="never its own id"):
+        store(_run(), str(tmp_path / "self"), _Env(), prep={"id": "x", "models": "x"})
+    with pytest.raises(RSFError, match="prep has"):
+        store(_run(), str(tmp_path / "bad"), _Env(), prep={"day": 3})
+
+
+def test_a_run_epoch_over_two_blocks_joins_across_sessions(tmp_path):
+    run_item = "c0ffee" + "0" * 26
+    epochs = [
+        {
+            "item": run_item,
+            "frame": 0,
+            "end_frame": N_FRAMES,
+            "kind": "protocol",
+            "text": "spot mapping run",
+            "programs": [0, 1],
+            "origin": {
+                "generator": "example.Protocol",
+                "software": {"name": "example", "version": None},
+                "params": {"hash": "ab12"},
+                "seed": None,
+            },
+        },
+        {
+            "key": "block 0",
+            "frame": 0,
+            "end": 1.0,
+            "kind": "block",
+            "parent": run_item,
+            "programs": [0],
+        },
+        {
+            "key": "block 1",
+            "start": 1.0,
+            "end_frame": N_FRAMES,
+            "kind": "block",
+            "parent": run_item,
+            "programs": [1],
+        },
+    ]
+    first = store(
+        _run(),
+        str(tmp_path / "day1"),
+        _Env(io=_light_io(470.0)),
+        programs=_two_light_programs(),
+        epochs=epochs,
+    )
+    second = store(
+        _run(),
+        str(tmp_path / "day2"),
+        _Env(io=_light_io(470.0)),
+        programs=_two_light_programs()[:1],
+        epochs=[
+            {**epochs[0], "programs": [0], "end_frame": 30},
+            {
+                "key": "the block",
+                "frame": 0,
+                "end_frame": 30,
+                "kind": "block",
+                "parent": run_item,
+            },
+        ],
+    )
+    one, two = rsf.RsfRecording(first), rsf.RsfRecording(second)
+
+    spans = one.epochs()
+    assert [(e["kind"], e["frame"], e["end_frame"]) for e in spans] == [
+        ("block", 0, 10),
+        ("protocol", 0, N_FRAMES),
+        ("block", 10, N_FRAMES),
+    ]
+    run = spans[1]
+    assert run["item"] == run_item and run["programs"] == [0, 1]
+    assert run["origin"]["params"] == {"hash": "ab12"} and not run["open"]
+    assert {e["parent"] for e in (spans[0], spans[2])} == {run_item}
+    assert [e["kind"] for e in one.epoch_of(1)] == ["protocol", "block"]
+    # without programs, a record belongs to the epochs holding its first frame
+    assert sorted(e["kind"] for e in two.epoch_of(0)) == ["block", "protocol"]
+
+    joined = rsf.join_epochs([one, two])
+    (entry,) = [e for e in joined if e["item"] == run_item]
+    assert entry["text"] == "spot mapping run"
+    assert [(s["frame"], s["end_frame"], s["programs"]) for s in entry["sessions"]] == [
+        (0, N_FRAMES, [0, 1]),
+        (0, 30, [0]),
+    ]
+    assert [s["recording_id"] for s in entry["sessions"]] == [
+        one.record["recording_id"],
+        two.record["recording_id"],
+    ]
+    assert len(joined) == 4  # the run once, and the three blocks
+
+
+def test_epochs_that_are_not_spans_of_the_session_are_refused(tmp_path):
+    def attempt(name, epochs, **kwargs):
+        store(_run(), str(tmp_path / name), _Env(), epochs=epochs, **kwargs)
+
+    with pytest.raises(RSFError, match="outside its parent"):
+        attempt(
+            "nest",
+            [
+                {"key": "run", "frame": 10, "end_frame": 20, "kind": "protocol"},
+                {
+                    "key": "b",
+                    "frame": 5,
+                    "end_frame": 15,
+                    "kind": "block",
+                    "parent": "run",
+                },
+            ],
+        )
+    with pytest.raises(RSFError, match="names no epoch"):
+        attempt("parent", [{"frame": 0, "kind": "block", "parent": "nobody"}])
+    with pytest.raises(RSFError, match="not an index into programs"):
+        attempt("programs", [{"frame": 0, "kind": "block", "programs": [0]}])
+    with pytest.raises(RSFError, match=r"frame of 0\.\.50"):
+        attempt("bounds", [{"frame": 0, "end_frame": N_FRAMES + 1, "kind": "block"}])
+    with pytest.warns(UserWarning, match="not one of"):
+        attempt("kind", [{"frame": 0, "kind": "wash_in"}])
+
+
+def test_an_epoch_whose_parent_is_missing_reads_at_the_top(tmp_path):
+    session = store(
+        _run(),
+        str(tmp_path / "orphan"),
+        _Env(),
+        epochs=[{"frame": 3, "kind": "block", "parent": "a" * 32}],
+    )
+    (epoch,) = rsf.RsfRecording(session).epochs()
+    assert epoch["parent"] is None and epoch["parent_missing"]
+    assert (
+        epoch["open"] and epoch["end_frame"] == N_FRAMES and epoch["programs"] is None
+    )
+
+
+def test_the_description_notes_zone_and_other_documents_are_written(tmp_path):
+    session = store(
+        _run(),
+        str(tmp_path / "noted"),
+        _Env(),
+        description="a simulated day",
+        notes=[{"text": "bath change", "frame": 12, "author": "Ada"}],
+        zone="Europe/Berlin",
+        ext={"example": {"day.json": {"drift": [0.1, 0.2]}}},
+    )
+    recording = rsf.RsfRecording(session)
+    assert (
+        recording.description == "a simulated day" and recording.zone == "Europe/Berlin"
+    )
+    (note,) = recording.notes
+    assert (note["text"], note["frame"], note["author"]) == ("bath change", 12, "Ada")
+    assert note["zone"] == "Europe/Berlin"
+    assert recording.ext("example", "day.json") == {"drift": [0.1, 0.2]}
+    with pytest.raises(RSFError, match="livn's own"):
+        store(_run(), str(tmp_path / "x"), _Env(), ext={"livn": {"a.json": {}}})
+    with pytest.raises(RSFError, match="plainly"):
+        store(_run(), str(tmp_path / "y"), _Env(), ext={"example": {"../a.json": {}}})
+    with pytest.raises(RSFError, match="IANA"):
+        store(_run(), str(tmp_path / "z"), _Env(), zone="Mars/Olympus")
+
+
+class _CultureSystem(_System):
+    def __init__(self):
+        self.population_ranges = {"EXC": (0, 2), "INH": (2, 1)}
+        self.connections_config = {
+            "synapses": {
+                "EXC": {
+                    "EXC": {"type": "excitatory"},
+                    "INH": {"type": "inhibitory"},
+                    "STIM": {"type": "excitatory"},
+                },
+                "INH": {"EXC": {"type": "excitatory"}},
+            }
+        }
+
+
+class _OpsinModel:
+    def opsin_config(self):
+        return {
+            "mechanism": "ChR2H134R",
+            "populations": ["EXC"],
+            "params": {"gmax": 5e-4},
+        }
+
+
+class _CultureEnv(_Env):
+    def __init__(self, io=None):
+        super().__init__(io)
+        self.system = _CultureSystem()
+        self.model = _OpsinModel()
+
+    def connections(self):
+        names = np.asarray
+        return {
+            "pre_gid": np.array([0, 1, 2, 7]),
+            "post_gid": np.array([1, 2, 0, 0]),
+            "syn_id": np.arange(4),
+            "pre_population": names(["EXC", "EXC", "INH", "STIM"], dtype=object),
+            "post_population": names(["EXC", "INH", "EXC", "EXC"], dtype=object),
+            "receptor": names(["AMPA", "AMPA", "GABA_A", "AMPA"], dtype=object),
+            "strength": np.ones(4),
+            "weight": np.array([0.5, 0.4, 1.2, 0.3]),
+            "delay": np.array([1.0, 1.5, 0.8, 0.0]),
+        }
+
+
+_CultureEnv.__module__ = "livn.backend.native.env"
+
+
+def test_the_ground_truth_tables_round_trip(tmp_path):
+    io = _light_io(470.0)
+    env = _CultureEnv(io=io)
+    session = store(
+        _run(),
+        str(tmp_path / "truth"),
+        env,
+        programs=_two_light_programs(),
+        populations=True,
+        expression=True,
+        connections=True,
+        stimulus_coupling=True,
+    )
+    recording = rsf.RsfRecording(session)
+
+    sources = recording.sources()
+    np.testing.assert_array_equal(sources["ids"], [0, 1, 2])
+    assert sources["populations"] == ["EXC", "EXC", "INH"]
+    construct = sources["expression"]["ChR2H134R"]
+    assert construct["units"] == "S/cm2"
+    np.testing.assert_allclose(construct["values"], [5e-4, 5e-4, 0.0])
+
+    table = recording.connections()
+    np.testing.assert_array_equal(table["pre"], ["0", "1", "2", "STIM/7"])
+    np.testing.assert_array_equal(table["post"], ["1", "2", "0", "0"])
+    np.testing.assert_array_equal(table["sign"], [1, 1, -1, 1])
+    np.testing.assert_allclose(table["weight"], [0.5, 0.4, 1.2, 0.3])
+    np.testing.assert_allclose(table["delay"], [1.0, 1.5, 0.8, 0.0])
+    assert table["units"] == "1" and table["inputs"] == ["STIM/7"]
+    assert table["reference"] == rsf.CONNECTION_WEIGHT_REFERENCE
+    np.testing.assert_array_equal(table["receptor"], ["AMPA", "AMPA", "GABA_A", "AMPA"])
+
+    coupling = recording.stimulus_coupling()
+    assert coupling["channel_ids"] == ["light/near", "light/far"]
+    assert coupling["source_ids"] == ["0", "1", "2"] and coupling["units"] == "mW/mm2"
+    soma = np.asarray(env.active_neuron_coordinates())
+    np.testing.assert_allclose(
+        coupling["gain"], np.asarray(io.inputs.reach(soma)), rtol=1e-6
+    )
+
+    # table stores carry no record, and the index lists them without a space
+    for name in ("connections", "stimulus_coupling"):
+        attributes = _attrs(os.path.join(session, "ground_truth", f"{name}.zarr"))
+        assert "annotations" not in attributes
+    index = _doc(os.path.join(session, "traces.zarr", "rsf", "stores.json"))
+    assert {
+        "path": "ground_truth/connections.zarr",
+        "space": None,
+        "written_by": "livn",
+    } in index
+    assert {
+        "path": "ground_truth/stimulus_coupling.zarr",
+        "space": None,
+        "written_by": "livn",
+    } in index
+
+
+def test_the_coupling_is_absent_under_a_source_position_mask(tmp_path):
+    with pytest.warns(UserWarning, match="source positions"):
+        session = store(
+            _run(),
+            str(tmp_path / "masked"),
+            _CultureEnv(io=_light_io(470.0)),
+            programs=_two_light_programs(),
+            connections=True,
+            stimulus_coupling=True,
+            withhold=[{"mask": {"fields": ["source_positions"]}}],
+        )
+    recording = rsf.RsfRecording(session)
+    assert recording.stimulus_coupling() is None
+    assert recording.connections() is not None  # it reveals no position
+    assert not os.path.exists(
+        os.path.join(session, "ground_truth", "stimulus_coupling.zarr")
+    )
+    assert recording.sources()["coordinates_um"] is None
+
+
+def test_ground_truth_tables_given_by_the_caller_are_checked(tmp_path):
+    def attempt(name, **kwargs):
+        store(_run(), str(tmp_path / name), _Env(io=_light_io(470.0)), **kwargs)
+
+    table = {
+        "pre": ["0", "poisson"],
+        "post": ["1", "2"],
+        "weight": [0.1, 0.2],
+        "units": "nS",
+        "sign": [1, 1],
+        "inputs": ["poisson"],
+    }
+    attempt("given", connections=table)
+    assert rsf.RsfRecording(str(tmp_path / "given")).connections()["inputs"] == [
+        "poisson"
+    ]
+    with pytest.raises(RSFError, match="neither sources nor named in inputs"):
+        attempt("unnamed", connections={**table, "inputs": []})
+    with pytest.raises(RSFError, match="not sources"):
+        attempt("post", connections={**table, "post": ["1", "9"]})
+    with pytest.raises(RSFError, match="says of what"):
+        attempt("fraction", expression={"ChR2": {"units": "1", "values": [1, 1, 0]}})
+    attempt(
+        "expressed",
+        expression={
+            "ChR2": {"units": "1", "values": {0: 1.0}, "reference": "the maximum"}
+        },
+    )
+    expressed = rsf.RsfRecording(str(tmp_path / "expressed")).sources()["expression"]
+    np.testing.assert_allclose(expressed["ChR2"]["values"], [1.0, 0.0, 0.0])
+    assert expressed["ChR2"]["reference"] == "the maximum"
+
+
+def test_without_the_new_keywords_a_session_is_written_as_before(tmp_path):
+    inputs = np.zeros((N_FRAMES, 2), dtype=np.float32)
+    inputs[5:20, 0] = 1.0
+    session = store(
+        _run(),
+        str(tmp_path / "plain"),
+        _Env(io=_light_io(470.0)),
+        inputs=inputs,
+        inputs_dt=DT,
+    )
+    rsf_dir = os.path.join(session, "traces.zarr", "rsf")
+    (record,) = rsf.RsfRecording(session).stimulation_records()
+    assert [c["id"] for c in record["channels"]] == ["light/3", "light/7"]
+    assert not {"name", "source"} & set(record["channels"][0])
+    assert "origin" not in record
+    assert not os.path.exists(os.path.join(rsf_dir, "stimulation", "0000", "planned"))
+    assert not os.path.exists(os.path.join(rsf_dir, "notes"))
+    assert os.listdir(os.path.join(rsf_dir, "ext")) == ["livn"]
+    group = _attrs(rsf_dir)
+    assert "zone" not in group
+    simulation = _doc(os.path.join(rsf_dir, "simulation.json"))
+    assert "prep" not in simulation
+    assert set(simulation["sources"]) == {"ids", "coordinates_um"}
+    assert sorted(os.listdir(os.path.join(session, "ground_truth"))) == ["spikes.zarr"]
+    assert rsf.RsfRecording(session).epochs() == []
+
+
+def test_a_calibration_states_the_latency_of_a_channel(physical, rsf_note):
+    rows = [
+        (100, "light/s1", 1.0, 0, 0, "marker"),
+        (300, "light/s1", 0.0, 0, 1, "marker"),
+    ]
+    uid = "0123456789abcdef0123456789abcdef"
+    version = {
+        **rsf_note("light/s1", "2026-10-06T14:22:08.311904Z", "photodiode"),
+        "full_scale": {"units": "mW/mm2", "value": 12.4},
+        "measured_at": "2026-10-06T14:05:00Z",
+        "method": "photodiode at the sample plane",
+        "latency_ms": 2.0,
+    }
+    notes = {"stimulus_calibration": [(f"20261006T142208.311904Z-{uid}.json", version)]}
+    recording = physical(
+        "latency", stimulation=[_light_record()], stim_events=rows, notes=notes
+    )
+    calibrations = recording.stimulus_calibrations()
+    assert calibrations["light/s1"]["latency_ms"] == 2.0
+    assert calibrations["light/s1"]["full_scale"] == {"units": "mW/mm2", "value": 12.4}
+    assert "light/s2" not in calibrations
+    # 2 ms at 10 kHz: the light reaches the sample 20 frames after the delivered edge
+    delivered = recording.inputs(0, 0, 400)[:, 0]
+    at_sample = recording.inputs(0, 0, 400, latency=True)[:, 0]
+    np.testing.assert_array_equal(np.flatnonzero(delivered), np.arange(100, 300))
+    np.testing.assert_array_equal(np.flatnonzero(at_sample), np.arange(120, 320))

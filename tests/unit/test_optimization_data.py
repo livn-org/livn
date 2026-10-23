@@ -456,3 +456,63 @@ def test_inputs_of_rsf_sessions_come_from_their_stimulus_events(
         frames = start + 2 * np.arange(25)
         want = np.where(frames < 8_000, 0.2, np.where(frames < 12_000, -0.2, 0.0))
         np.testing.assert_allclose(got, want)
+
+
+def test_window_inputs_arrive_after_the_latency_a_calibration_states(
+    tmp_path, physical_session, rsf_note
+):
+    """A channel whose calibration states the edge-to-sample latency reaches the windows
+    that much later; one without a stated latency as delivered."""
+    pytest.importorskip("zarr", minversion="3")
+    from livn.data.rsf import RsfRecording
+
+    record = {
+        "started_at": "2026-10-04T09:12:34Z",
+        "kind": "light",
+        "channels": [
+            {
+                "id": "light/s1",
+                "shape": {"kind": "disc", "x": 0.0, "y": 0.0, "radius": 25.0},
+                "full_scale": {"units": "mW/mm2", "value": None},
+                "bipolar": False,
+                "wavelength_nm": None,
+            }
+        ],
+        "marker_channel": None,
+        "marker_edge": None,
+        "timing": "schedule",
+        "placement_lag_ms": 0,
+    }
+    rows = [(8_000, "light/s1", 1.0, 0, 0, "schedule")]
+    uid = "0123456789abcdef0123456789abcdef"
+    version = {
+        **rsf_note("light/s1", "2026-10-06T14:22:08.311904Z", "photodiode"),
+        "full_scale": {"units": "mW/mm2", "value": None},
+        "measured_at": "2026-10-06T14:05:00Z",
+        "method": "photodiode at the sample plane",
+        "latency_ms": 3.0,
+    }
+    path = physical_session(
+        str(tmp_path / "latency"),
+        n_frames=T,
+        stimulation=[record],
+        stim_events=rows,
+        notes={
+            "stimulus_calibration": [(f"20261006T142208.311904Z-{uid}.json", version)]
+        },
+    )
+    pipe = windows(
+        RsfRecording(path),
+        context=5.0,
+        batch_size=12,
+        per_segment=6,
+        threads=2,
+        inputs=True,
+        mask_bad_channels=False,
+        window_policy=lambda item, rng, recording: {**item, "start": 7_990},
+    )
+    batch = pipe.batch(0)
+    assert set(batch.start.tolist()) == {7_990}
+    want = np.where(7_990 + np.arange(50) >= 8_030, 1.0, 0.0)  # 3 ms at 10 kHz
+    for got in batch.inputs[:, :, 0]:
+        np.testing.assert_allclose(got, want)

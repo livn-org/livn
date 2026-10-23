@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import inspect
 import json
 import os
 from collections.abc import Callable, Sequence
@@ -350,7 +351,9 @@ class _Windower:
         if self.spikes:
             out["spikes"] = self.events(item)
         if self.inputs:
-            frames = rec.inputs(item["segment"], item["start"], item["length"])
+            frames = _stimulus_at_sample(
+                rec, item["segment"], item["start"], item["length"]
+            )
             out["inputs"] = np.ascontiguousarray(
                 frames[:: self.q][: self.total], np.float32
             )
@@ -359,6 +362,16 @@ class _Windower:
         out["segment"] = np.int32(item["segment"])
         out["start"] = np.int64(item["start"])
         return Window(**out)
+
+
+def _stimulus_at_sample(rec, segment, start, length) -> np.ndarray:
+    try:
+        takes_latency = "latency" in inspect.signature(rec.inputs).parameters
+    except (TypeError, ValueError):
+        takes_latency = False
+    if takes_latency:
+        return rec.inputs(segment, start, length, latency=True)
+    return rec.inputs(segment, start, length)
 
 
 class Windows:
@@ -618,7 +631,8 @@ def windows(
         spikes: Set ``Window.spikes``, ``(U, max_spikes)`` per unit of the recordings' spikes,
             ``U`` = the union of unit ids over the selected segments (``Windows.unit_ids``)
         inputs: Set ``Window.inputs``, the delivered stimulus (``Recording.inputs``, strided
-            to the target rate, not filtered) on the window's grid.
+            to the target rate, not filtered) on the window's grid, as it reaches the sample:
+            a channel whose calibration states a ``latency_ms`` has its edges later by it.
             Raises :class:`livn.data.Missing` here if a recording has none.
         max_spikes: Capacity of a unit's row in a window
         mask_bad_channels: Zero the recording's bad channels and exclude them from ``CMR``;

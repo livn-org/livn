@@ -195,64 +195,18 @@ second.t0                  # 100.0 on backends that track simulation time
 
 ### Storing a run
 
-`livn.data.rsf` ("recording session format") offers a neutral format to `store(run, path, env)` and `load(path)` a run. It needs `zarr` 3 or later, which livn does not install for you (`pip install 'zarr>=3'`).
-
-To stay compatible with real recordings, a session must hold membrane currents from which the channel signal can be projected.
+`livn.data.rsf` saves a run as a session in a neutral recording format (it needs `zarr` 3 or later) and loads it back:
 
 ```python
 from livn.data.rsf import load, store
 
-env = env.record_spikes()
-env = env.record_membrane_current()   # the channel signal is projected from these
-env = env.record_voltage()
-
-run = env.run(1000)
-store(run, "sessions/spontaneous-1", env, voltage=True, currents=True)
-
+env = env.record_spikes().record_membrane_current()
+store(env.run(1000), "sessions/spontaneous-1", env)
 session = load("sessions/spontaneous-1")
 session.run.potential      # the channel signal in uV, one row per electrode
-session.run.spike_times    # on the frame grid of the signal
-session.io                 # the MEA it was recorded through
-session.simulation["seed"] # meta data
-session.record             # and the provenance record
 ```
 
-The directory is directly compatible with SpikeInterface via `spikeinterface.read_zarr("sessions/spontaneous-1/traces.zarr")`.
-
-Under MPI, gather first, e.g. `store(run.gather(env.comm), path, env)` writes on the root rank and does nothing on the others.
-
-To keep what drove the run, pass the channel-space `stimulus=policy` (its spec is recorded and its rendered array is the delivered input) or `inputs=array, inputs_dt=ms`, in the stimulating IO's input units. The session stores any delivered stimulus, simulated or recorded.
-
-Reading, which works the same on a recorded session:
-
-```python
-recording = load("sessions/stimulated-1").recording
-recording.stimulus_channels()      # the channel objects, the columns of inputs()
-recording.inputs(0, 0, 1000)       # fractions of full scale, [frames, channels]
-recording.inputs(0, 0, 1000, physical=True)  # mW/mm2 and uA (cathodic negative)
-recording.stimulus_full_scales()   # {id: {"units", "value", "source", ...}}
-recording.stim_events()            # the resolved rows
-recording.stimulus_io()            # PatternedLight / MEA / InputDevices of the channels
-```
-
-The channel signal is projected through the env's [recording composition](/guide/concepts/io#recording-compositions) (`env.io.recording`, or `store(..., recording=Chain(...))`), with the delivered inputs as its `inputs`, so a `LightArtifact` is in the traces. A plain point-source stack is stored in the RSF point-source document, any other composition in livn's own (`livn.io/1`), and `session.io` rebuilds it. `session.conditions()` gives the stored run's conditions (the ground-truth currents and their gids when saved with `currents=True`, the delivered inputs in the stimulating devices' units, `dt`) to project it again: `env.potential_recording(session.io.recording, session.conditions())`.
-
-### Opening recordings lazily
-
-`load` reads nothing until asked. For windowed access, open the location with `livn.data.open`, which returns a `Recording` (one object whatever the format): `read(segment, start, length, channels=None)` gives float32 `[t, c]` in uV, `spikes`, `inputs`, `ground_truth` and `to_run(segment, start, length)` follow. A recording is safe to read from several threads and pickles by reference.
-
-```python
-from livn.data import open as open_recording
-
-recording = open_recording("sessions/spontaneous-1")         # rsf
-recording = open_recording("./systems/datasets/spe1/c16")    # a saved HF dataset (Arrow)
-recording = open_recording("hf://frthjf/spe1-zhao2026-benchmark/c16", split="test")
-
-window = recording.read(0, start=30_000, length=15_000)     # [15000, 384]
-units = recording.spikes(0)                                  # Events, ids = unit ids
-```
-
-`hf://<owner>/<repo>/<config>` downloads only that config's files (`huggingface_hub.snapshot_download`), never through `datasets.load_dataset`. The Arrow layout (`cp`, `cit`, `ctt`, optional `in` and cell-space ground truth columns, plus `conversion_metadata.json`, `templates.npz` and `dataset_stats.json`) is also written by `livn.data.arrow.store(run, path, env=env, ground_truth=("spikes", "voltage"))`, one row per call.
+See [Recording sessions (RSF)](/guide/advanced/recording-sessions) for more details and advanced features.
 
 ### Providing stimulus
 
