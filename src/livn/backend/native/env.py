@@ -40,6 +40,7 @@ DEFAULT_DT = 0.025
 NOISE_H = 0.025  # Gfluct3's update interval parameter
 
 SUPPORTED_MODES = ("extracellular", "current", "current_density", "irradiance")
+BLOCK_MARGIN = 4
 
 _OPSIN_PARAMS = ("g0_pS", "E", "v0", "k_a", "k_r", "p", "q", "Gd", "Gr0", "phi_m")
 _OPSIN_DEFAULTS = {
@@ -163,6 +164,7 @@ class _ModeState:
         self.row_sections: list[int] = []
         self.dt: float | None = None
         self.block: np.ndarray | None = None
+        self.block_start = 0
         self.streams: list[dict] = []
         self.bounds: tuple[float, float] | None = None
         self.scale = 1.0
@@ -176,6 +178,7 @@ class _ModeState:
         self.row_sections = []
         self.dt = None
         self.block = None
+        self.block_start = 0
         self.streams = []
         self.bounds = None
         self.scale = 1.0
@@ -195,7 +198,7 @@ class _ModeState:
         return found
 
     def extent(self) -> int:
-        end = 0 if self.block is None else int(self.block.shape[1])
+        end = 0 if self.block is None else self.block_start + int(self.block.shape[1])
         for stream in self.streams:
             end = max(end, int(stream["start_step"] + stream["n_steps"]))
         return end
@@ -958,18 +961,22 @@ class Env(EnvProtocol):
         values = np.asarray(stimulus.array)
         check_bounds(values, state.bounds, stimulus.input_mode, stimulus.units)
         dtype = np.promote_types(values.dtype, np.float32)
-        end_step = start_step + values.shape[0]
-        width = end_step
+        lo, hi = start_step, start_step + values.shape[0]
         previous = state.block
         if previous is not None:
-            width = max(width, previous.shape[1])
+            lo = min(lo, state.block_start)
+            hi = max(hi, state.block_start + previous.shape[1])
             dtype = np.promote_types(dtype, previous.dtype)
-        block = np.zeros((len(state.rows), width), dtype=dtype)
+        block = np.zeros((len(state.rows), hi - lo), dtype=dtype)
         if previous is not None:
-            block[: previous.shape[0], : previous.shape[1]] = previous
+            at = state.block_start - lo
+            block[: previous.shape[0], at : at + previous.shape[1]] = previous
         for row, column in zip(rows, columns, strict=False):
-            block[row, start_step:end_step] = values[:, column]
+            block[row, start_step - lo : start_step - lo + values.shape[0]] = values[
+                :, column
+            ]
         state.block = block
+        state.block_start = lo
         state.window = None
 
     def _install_stream(self, state, stimulus, rows, columns, start_step) -> None:
@@ -992,9 +999,21 @@ class Env(EnvProtocol):
 
     def _prune_streams(self, current_time: float) -> None:
         for state in self._stim.values():
-            if not state.streams or not state.dt:
+            if not state.dt:
                 continue
             idx = int(current_time / state.dt)
+            if state.block is not None:
+                # a refill may ask for a sample or two behind the current step
+                drop = idx - BLOCK_MARGIN - state.block_start
+                if drop >= state.block.shape[1]:
+                    state.block, state.block_start = None, 0
+                    state.window = None
+                elif drop > 0:
+                    state.block = state.block[:, drop:].copy()
+                    state.block_start += drop
+                    state.window = None
+            if not state.streams:
+                continue
             kept = [
                 stream
                 for stream in state.streams
@@ -1009,10 +1028,12 @@ class Env(EnvProtocol):
         field = np.zeros((n, len(state.rows)), dtype=np.float64)
         block = state.block
         if block is not None:
-            lo = max(first, 0)
-            hi = min(first + n, block.shape[1])
+            lo = max(first, state.block_start)
+            hi = min(first + n, state.block_start + block.shape[1])
             if hi > lo:
-                field[lo - first : hi - first, : block.shape[0]] = block[:, lo:hi].T
+                field[lo - first : hi - first, : block.shape[0]] = block[
+                    :, lo - state.block_start : hi - state.block_start
+                ].T
         for stream in state.streams:
             stimulus = stream["stimulus"]
             lo = max(first, stream["start_step"])
@@ -1114,6 +1135,10 @@ class Env(EnvProtocol):
     @property
     def _stim_block(self):
         return self._stim["extracellular"].block
+
+    @property
+    def _stim_block_start(self) -> int:
+        return self._stim["extracellular"].block_start
 
     @property
     def _stim_streams(self) -> list:
