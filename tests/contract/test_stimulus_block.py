@@ -106,10 +106,6 @@ def test_the_pulse_lands_at_the_offset_the_run_had_reached():
     assert (_start(env) + driven.min()) * DT == pytest.approx(STEP + 5 * DT, abs=DT)
 
 
-@pytest.mark.skipif(
-    os.environ.get("LIVN_BACKEND") != "native",
-    reason="the neuron backend still holds a block's whole history",
-)
 def test_the_block_holds_what_is_to_come_not_the_whole_history():
     env = _env()
     gids = np.asarray(env.active_neuron_coordinates())[:, 0].astype(int)
@@ -121,3 +117,60 @@ def test_the_block_holds_what_is_to_come_not_the_whole_history():
 
     # each run's command is one run long: the block must not grow with the runs before it
     assert max(widths) <= 2 * round(STEP / DT), widths
+
+
+def _lit_env():
+    from livn.models.rcsd import ReducedCalciumSomaDendrite
+
+    env = livn_test_env(model=ReducedCalciumSomaDendrite(input_mode="irradiance"))
+    env.selection(CELLS)
+    env.init()
+    _OPEN_ENVS.append(env)
+    return env
+
+
+def _light(gids, n_steps, at=5):
+    from livn.stimulus import Stimulus
+
+    values = np.zeros((n_steps, len(gids)))
+    values[at : at + 2, :] = 1.0
+    return Stimulus.from_irradiance(values, dt=DT, gids=gids)
+
+
+def _light_block(env):
+    """`(block, its first step, the number of opsin sites it can drive)`."""
+    if hasattr(env, "_opsin_block"):
+        return env._opsin_block, env._opsin_block_start, len(env._opsin_rows)
+    state = env._stim["irradiance"]
+    return state.block, state.block_start, len(state.rows)
+
+
+def test_a_site_driven_by_many_installs_keeps_one_row():
+    env = _lit_env()
+    gids = np.asarray(env.active_neuron_coordinates())[:, 0].astype(int)
+
+    heights, widths = [], []
+    for _ in range(20):
+        env.run(STEP, stimulus=_light(gids, n_steps=round(STEP / DT)))
+        block, _start_step, sites = _light_block(env)
+        heights.append(block.shape[0])
+        widths.append(block.shape[1])
+
+    assert len(set(heights)) == 1, f"the light block grew a row per install: {heights}"
+    assert heights[0] == sites
+    assert max(widths) <= 2 * round(STEP / DT), widths
+
+
+def test_a_later_shorter_light_command_does_not_truncate_an_earlier_one():
+    env = _lit_env()
+    gids = np.asarray(env.active_neuron_coordinates())[:, 0].astype(int)
+
+    # 100 ms of light, lit in its second half, into a 50 ms run
+    n = round(STEP / DT)
+    env.run(STEP, stimulus=_light(gids, n_steps=2 * n, at=n + 50))
+
+    env.run(STEP, stimulus=_light(gids, n_steps=2))
+    block, start, _sites = _light_block(env)
+    lit = np.flatnonzero(np.abs(block).max(axis=0) > 0) + start
+    assert lit.size, "nothing was written into the block"
+    assert lit.max() == n + 51, "the earlier command's second half was dropped"

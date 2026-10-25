@@ -43,6 +43,39 @@ except ImportError as _missing:
 logger = logging.getLogger(__name__)
 logger.setLevel(os.getenv("LIVN_NEURON_LOGGING", "WARNING"))
 
+BLOCK_MARGIN = 4
+
+
+def _widen_block(previous, previous_start, n_rows, start_step, end_step, dtype):
+    """A zeroed block spanning the previous one and `[start_step, end_step)`."""
+    lo, hi = start_step, end_step
+    if previous is not None:
+        lo = min(lo, previous_start)
+        hi = max(hi, previous_start + previous.shape[1])
+    block = np.zeros((n_rows, hi - lo), dtype=dtype)
+    if previous is not None:
+        at = previous_start - lo
+        block[: previous.shape[0], at : at + previous.shape[1]] = previous
+    return block, lo
+
+
+def _prune_block(block, start, idx):
+    """Drop the columns more than BLOCK_MARGIN behind `idx`, keeping the last."""
+    if block is None:
+        return None, 0
+    drop = min(idx - BLOCK_MARGIN - start, block.shape[1] - 1)
+    if drop <= 0:
+        return block, start
+    return block[:, drop:].copy(), start + drop
+
+
+def _held_column(block, start, idx):
+    """The block's column at step `idx`, holding the last one after its end."""
+    at = min(idx, start + block.shape[1] - 1) - start
+    if at < 0:
+        return np.zeros(block.shape[0], dtype=block.dtype)
+    return block[:, at]
+
 
 class _EnvCallback:
     __slots__ = ("_env", "_flag", "_method")
@@ -293,6 +326,7 @@ class Env(EnvProtocol):
         self._stim_play_times = None
         self._stim_sources: list[dict] = []
         self._stim_block: np.ndarray | None = None
+        self._stim_block_start = 0
         self._stim_bounds: tuple[float, float] | None = None
         self._stim_streams: list[dict] = []
         self._stim_idle = False
@@ -308,8 +342,11 @@ class Env(EnvProtocol):
         self._opsin_refs: dict[tuple[int, int], list] = {}
         self._opsin_variable = "phi"
         self._opsin_units = "photon_flux"
+        # (gid, sec_id, site index) -> block row; _opsin_pps holds the sites in row order
+        self._opsin_rows: dict[tuple[int, int, int], int] = {}
         self._opsin_pps: list = []
         self._opsin_block: np.ndarray | None = None
+        self._opsin_block_start = 0
         self._opsin_dt: float | None = None
         self._opsin_step = 0
         self._opsin_registered = False
@@ -639,7 +676,7 @@ class Env(EnvProtocol):
         h = self._h
         self.duration = duration
         current_time = self.t
-        self._prune_stim_streams(current_time)
+        self._prune_stim(current_time)
         self._stim_idle = False
         self._stim_last_key = None
 
@@ -1163,26 +1200,29 @@ class Env(EnvProtocol):
             clamp.amp = 0.0
 
     def _install_stim_block(self, stimulus, rows, columns, start_step) -> None:
-        """Hold the whole command, indexed `[section, absolute step]`."""
+        """Hold the command, indexed `[section, step - _stim_block_start]`."""
         from livn.stimulus import check_bounds
 
         values = np.asarray(stimulus.array)
         check_bounds(values, self._stim_bounds, stimulus.input_mode, stimulus.units)
         dtype = np.promote_types(values.dtype, np.float32)
-        end_step = start_step + values.shape[0]
-
-        width = end_step
         previous = self._stim_block
         if previous is not None:
-            width = max(width, previous.shape[1])
             dtype = np.promote_types(dtype, previous.dtype)
 
-        block = np.zeros((len(self._stim_rows), width), dtype=dtype)
-        if previous is not None:
-            block[: previous.shape[0], : previous.shape[1]] = previous
+        block, lo = _widen_block(
+            previous,
+            self._stim_block_start,
+            len(self._stim_rows),
+            start_step,
+            start_step + values.shape[0],
+            dtype,
+        )
+        at = start_step - lo
         for row, column in zip(rows, columns, strict=False):
-            block[row, start_step:end_step] = values[:, column]
+            block[row, at : at + values.shape[0]] = values[:, column]
         self._stim_block = block
+        self._stim_block_start = lo
 
     def _install_stim_stream(self, stimulus, rows, columns, start_step) -> None:
         from livn.stimulus import chunk_bytes
@@ -1204,15 +1244,22 @@ class Env(EnvProtocol):
             }
         )
 
-    def _prune_stim_streams(self, current_time: float) -> None:
-        if not self._stim_streams or not self._stim_dt:
-            return
-        idx = int(current_time / self._stim_dt)
-        self._stim_streams = [
-            stream
-            for stream in self._stim_streams
-            if idx < stream["start_step"] + stream["n_steps"]
-        ]
+    def _prune_stim(self, current_time: float) -> None:
+        if self._stim_dt:
+            idx = int(current_time / self._stim_dt)
+            self._stim_block, self._stim_block_start = _prune_block(
+                self._stim_block, self._stim_block_start, idx
+            )
+            self._stim_streams = [
+                stream
+                for stream in self._stim_streams
+                if idx < stream["start_step"] + stream["n_steps"]
+            ]
+        if self._opsin_dt:
+            idx = int(current_time / self._opsin_dt)
+            self._opsin_block, self._opsin_block_start = _prune_block(
+                self._opsin_block, self._opsin_block_start, idx
+            )
 
     def _update_extracellular(self) -> None:
         if self._closed or not self._stim_clamps:
@@ -1229,17 +1276,18 @@ class Env(EnvProtocol):
         idx = int(current_time / self._stim_dt) if self._stim_dt else 0
         self._stim_step += 1
 
-        key = idx if streams else min(idx, block.shape[1] - 1)
+        start = self._stim_block_start
+        key = idx if streams else min(idx, start + block.shape[1] - 1)
         if key == self._stim_last_key:
             return
         self._stim_last_key = key
 
         if not streams:
-            col = block[:, key]
+            col = _held_column(block, start, key)
         else:
             col = np.zeros(len(self._stim_rows), dtype=np.float64)
             if block is not None:
-                held = block[:, min(idx, block.shape[1] - 1)]
+                held = _held_column(block, start, idx)
                 col[: len(held)] = held
             for stream in streams:
                 self._accumulate_stim_stream(stream, idx, col)
@@ -1341,26 +1389,35 @@ class Env(EnvProtocol):
 
         start_step = round(current_time / phi_stim.dt)
 
-        pending: list[tuple[object, np.ndarray]] = []
+        # one row per site, reused by every install that drives it
+        pending: list[tuple[int, np.ndarray]] = []
         for gid, section_id, series in phi_stim:
             gid, section_id = int(gid), int(section_id)
             values = np.asarray(series, dtype=np.float64)
-            pending.extend(
-                (site, values) for site in self._opsin_refs.get((gid, section_id), ())
-            )
+            for k, site in enumerate(self._opsin_refs.get((gid, section_id), ())):
+                row = self._opsin_rows.get((gid, section_id, k))
+                if row is None:
+                    row = len(self._opsin_pps)
+                    self._opsin_rows[(gid, section_id, k)] = row
+                    self._opsin_pps.append(site)
+                pending.append((row, values))
 
         if not pending:
             return
 
-        end_step = start_step + max(len(v) for _pp, v in pending)
-        base = len(self._opsin_pps)
-        block = np.zeros((base + len(pending), end_step), dtype=np.float64)
-        if self._opsin_block is not None:
-            block[:base, : self._opsin_block.shape[1]] = self._opsin_block
-        for j, (pp, values) in enumerate(pending):
-            self._opsin_pps.append(pp)
-            block[base + j, start_step : start_step + len(values)] = values
+        block, lo = _widen_block(
+            self._opsin_block,
+            self._opsin_block_start,
+            len(self._opsin_pps),
+            start_step,
+            start_step + max(len(v) for _row, v in pending),
+            np.float64,
+        )
+        at = start_step - lo
+        for row, values in pending:
+            block[row, at : at + len(values)] = values
         self._opsin_block = block
+        self._opsin_block_start = lo
 
         if not self._opsin_registered:
             _register_callback(self._h.cvode, self._opsin_cb)
@@ -1372,9 +1429,7 @@ class Env(EnvProtocol):
             return
         current_time = self._opsin_step * (self._dt or 0.025)
         idx = int(current_time / self._opsin_dt) if self._opsin_dt else 0
-        if idx >= block.shape[1]:
-            idx = block.shape[1] - 1
-        col = block[:, idx]
+        col = _held_column(block, self._opsin_block_start, idx)
         variable = self._opsin_variable
         for i, site in enumerate(self._opsin_pps):
             setattr(site, variable, float(col[i]))
@@ -2065,6 +2120,7 @@ class Env(EnvProtocol):
         self._stim_play_times = None
         self._stim_sources = []
         self._stim_block = None
+        self._stim_block_start = 0
         self._stim_streams = []
         self._stim_idle = False
         self._stim_dt = None
@@ -2072,8 +2128,10 @@ class Env(EnvProtocol):
         self._stim_last_key = None
         for site in self._opsin_pps:
             setattr(site, self._opsin_variable, 0.0)
+        self._opsin_rows = {}
         self._opsin_pps = []
         self._opsin_block = None
+        self._opsin_block_start = 0
         self._opsin_dt = None
         self._opsin_step = 0
         self._iclamp_pps = []
@@ -2105,9 +2163,12 @@ class Env(EnvProtocol):
         self._stim_play_times = None
         self._stim_sources = []
         self._stim_block = None
+        self._stim_block_start = 0
         self._stim_streams = []
+        self._opsin_rows = {}
         self._opsin_pps = []
         self._opsin_block = None
+        self._opsin_block_start = 0
         self._opsin_refs.clear()
         self._iclamp_pps = []
         self._iclamp_block = None

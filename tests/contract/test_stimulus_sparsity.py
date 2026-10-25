@@ -195,8 +195,10 @@ def _drive(env, n_steps):
 
     block = env._stim_block
     if block is not None:
-        width = min(n_steps, block.shape[1])
-        peak[:width] = np.abs(block[:, :width]).max(axis=0)
+        lo = getattr(env, "_stim_block_start", 0)
+        hi = min(n_steps, lo + block.shape[1])
+        if hi > lo:
+            peak[lo:hi] = np.abs(block[:, : hi - lo]).max(axis=0)
 
     for stream in getattr(env, "_stim_streams", []):
         stimulus = stream["stimulus"]
