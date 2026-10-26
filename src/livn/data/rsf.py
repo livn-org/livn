@@ -50,6 +50,24 @@ MARKING_KINDS = ("digital_in", "stim_sideband")
 CONDITIONS = "conditions"
 CONDITION_COLUMNS = ("frame", "quantity", "item", "value", "units", "basis")
 
+
+PROBE_FRAME = "probe"
+RECORD_MEMBERS = frozenset(
+    (
+        "started_at",
+        "kind",
+        "channels",
+        "marker_channel",
+        "marker_edge",
+        "timing",
+        "placement_lag_ms",
+        "origin",
+        "index",
+    )
+)
+
+CALIBRATION_FIT_TOLERANCE = 5.0
+
 CONDITION_BASIS_RANK = {"measured": 2, "setpoint": 1}
 WAVELENGTH_BASES = ("measured", "stated", "device_default")
 
@@ -2944,11 +2962,22 @@ class RsfRecording:
                 self.simulation = json.load(f)
         self._documents = documents
         self._held = None
+        max_current_uA = self._electrode_range()
         self.io = _read_operator(
             os.path.join(documents, "observe.json"),
             os.path.join(documents, "ext", PRODUCER, "observe.json"),
-            max_current_uA=self._electrode_range(),
+            max_current_uA=max_current_uA,
         )
+        self.electrode_map = dict(group_attrs.get("electrode_map") or {})
+        self._contacts = _probe_contacts(
+            attrs.get("probe") or _json_file(os.path.join(documents, "probe.json")),
+            self._keys,
+            self.row_property("channel"),
+            set(self.channels()),
+        )
+        self.electrode_rows = {c["id"]: c["row"] for c in self._contacts}
+        if self.io is None:
+            self.io = _probe_io(self._contacts, max_current_uA)
         self.bad_channels = np.zeros(0, dtype=np.int64)
         self.created_at = group_attrs.get("created_at")
         self.zone = _string(group_attrs.get("zone"))
@@ -3945,14 +3974,49 @@ class RsfRecording:
         )
         return (out * factor).astype(np.float32)
 
-    def stimulus_io(self, medium=None):
+    def stimulus_frame(self, record: Mapping | int) -> dict:
+        """Which frame a stimulation record's light shapes are in, and how they reach the
+        probe's: ``{"frame", "placement", "by", "why"}``.
+
+        RSF places a channel's ``shape`` in the probe's coordinates, and a record that says
+        nothing else is read so (``frame`` ``"probe"``, ``placement`` ``None``). A producer
+        may state otherwise in its own member's ``target``: a ``frame`` and a camera
+        ``calibration`` taken on some electrode layout. When that layout is the session's
+        electrode map the spots are in the probe frame already. When it is another layout and
+        the calibration's points are labelled with electrodes the probe has, the affine map
+        from those points to their contacts is ``placement`` (a 3x3 matrix, ``by``
+        ``"calibration"``). Otherwise the spots are in a frame of their own, which ``frame``
+        names (the stated frame and the calibration layout's hash), and ``placement`` is
+        ``None``: only a placement given to :meth:`stimulus_io` puts them over the
+        electrodes. ``why`` says which of these it was."""
+        if not isinstance(record, Mapping):
+            found = [r for r in self.stimulation_records() if r["index"] == int(record)]
+            if not found:
+                raise KeyError(f"{self.path} has no stimulation record {record}")
+            record = found[0]
+        return _spot_frame(record, self.electrode_map.get("wiring"), self._contacts)
+
+    def stimulus_io(self, medium=None, *, placement=None):
         """livn's stimulating devices for :meth:`stimulus_channels`, in their order, so the
-        IO's channels are the columns of :meth:`inputs`."""
+        IO's channels are the columns of :meth:`inputs`.
+
+        Each :class:`~livn.io.PatternedLight` carries ``frame``, the frame its spots are in
+        (``"probe"`` when they are over the electrodes of :attr:`io`), and ``placement``,
+        ``{"matrix", "by"}`` or ``None``, the transform its recorded discs went through
+        (:meth:`stimulus_frame`). Spots left in a frame of their own raise a warning.
+
+        ``placement`` overrides that: a 2D transform from the recorded disc coordinates into
+        the probe frame, applied to every light channel: a similarity or affine as a 2x3
+        ``[[a, b, tx], [c, d, ty]]`` or a 3x3 matrix, or a 3x3 projective one (a camera map,
+        say). A centre maps through it and a radius scales by the square root of its local
+        area scale. Electrode contacts are in the map's frame and stay put."""
         from livn.io import MEA, InputDevices, PatternedLight
 
+        given = None if placement is None else _placement_matrix(placement)
         channels = self.stimulus_channels()
         if not channels:
             raise Missing(f"{self.path} has no delivered stimulus")
+        records = {r["index"]: r for r in self.stimulation_records()}
         scales = self.stimulus_full_scales()
         wavelengths = self.stimulus_wavelengths()
         runs: list[list[tuple]] = []
@@ -3975,13 +4039,35 @@ class RsfRecording:
             if kind == "light":
                 if wavelength is not None:
                     extra["wavelength"] = float(wavelength)
-                devices.append(
-                    PatternedLight.from_channels(
-                        members,
-                        irradiance=1.0 if scale is None else float(scale),
-                        **extra,
+                stated = self.stimulus_frame(records[run[0][0][0]])
+                if given is not None:
+                    matrix, by, frame = given, "caller", PROBE_FRAME
+                else:
+                    matrix, by, frame = (
+                        stated["placement"],
+                        stated["by"],
+                        stated["frame"],
                     )
+                if frame != PROBE_FRAME:
+                    warnings.warn(
+                        f"{self.path}: the spots of stimulation record {run[0][0][0]} are "
+                        f"in their own frame {frame!r}, not the probe's ({stated['why']}); "
+                        "their PatternedLight is not placed over the electrodes. Pass "
+                        "stimulus_io(placement=...) to place them",
+                        stacklevel=2,
+                    )
+                if matrix is not None:
+                    members = [_placed(c, matrix) for c in members]
+                device = PatternedLight.from_channels(
+                    members,
+                    irradiance=1.0 if scale is None else float(scale),
+                    **extra,
                 )
+                device.frame = frame
+                device.placement = (
+                    None if matrix is None else {"matrix": matrix.copy(), "by": by}
+                )
+                devices.append(device)
                 continue
             rows = []
             for channel in members:
@@ -4410,6 +4496,213 @@ def _read_operator(
     if not transfers:
         return mea
     return ComposedIO(None, [mea, *transfers], medium=medium)
+
+
+def _json_file(path: str):
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _probe_contacts(probe, keys: list[str], names, described: set[str]) -> list[dict]:
+    """The probe's connected contacts that are electrodes, in row order: ``{"id", "row",
+    "x", "y", "radius"}``, ``row`` the row's key and ``radius`` ``None`` for a shape that is
+    not a circle. A row ``rsf/channels.json`` describes (a reference, an auxiliary input) is
+    not an electrode, whatever the probe says."""
+    if not isinstance(probe, Mapping):
+        return []
+    contacts: list[tuple[int, dict]] = []
+    for one in probe.get("probes") or ():
+        if not isinstance(one, Mapping):
+            continue
+        ids = one.get("contact_ids") or ()
+        positions = one.get("contact_positions") or ()
+        rows = one.get("device_channel_indices") or ()
+        shapes = one.get("contact_shapes") or ()
+        params = one.get("contact_shape_params") or ()
+        for k, (id_, position, row) in enumerate(
+            zip(ids, positions, rows, strict=False)
+        ):
+            if not isinstance(row, int) or not 0 <= row < len(keys):
+                continue  # unconnected
+            name = keys[row] if names is None else str(names[row])
+            if name in described or keys[row] in described:
+                continue
+            radius = None
+            if k < len(shapes) and shapes[k] == "circle" and k < len(params):
+                value = (params[k] or {}).get("radius")
+                if isinstance(value, int | float) and not isinstance(value, bool):
+                    radius = float(value)
+            contacts.append(
+                (
+                    row,
+                    {
+                        "id": str(id_),
+                        "row": keys[row],
+                        "x": float(position[0]),
+                        "y": float(position[1]),
+                        "radius": radius,
+                    },
+                )
+            )
+    contacts.sort(key=lambda c: c[0])
+    return [contact for _, contact in contacts]
+
+
+def _probe_io(contacts: list[dict], max_current_uA: float | None):
+    """An MEA of the probe's electrodes at their positions, in row order; ``None`` when there
+    are none, or when an id is not a number (livn's MEA numbers its electrodes)."""
+    from livn.io import MEA
+
+    if not contacts or not all(re.fullmatch(r"-?[0-9]+", c["id"]) for c in contacts):
+        return None
+    if len({int(c["id"]) for c in contacts}) != len(contacts):
+        return None
+    kwargs: dict[str, Any] = {}
+    radii = {c["radius"] for c in contacts}
+    if len(radii) == 1 and None not in radii:
+        kwargs["electrode_radius"] = radii.pop()
+    if max_current_uA is not None:
+        kwargs["max_current_uA"] = max_current_uA
+    return MEA(
+        [[int(c["id"]), c["x"], c["y"], 0.0] for c in contacts],
+        **kwargs,
+    )
+
+
+def _stated_target(record: Mapping) -> Mapping | None:
+    """The ``target`` a producer's own member of ``record`` states a frame in, if any."""
+    for key, member in record.items():
+        if key in RECORD_MEMBERS or not isinstance(member, Mapping):
+            continue
+        target = member.get("target")
+        if isinstance(target, Mapping) and isinstance(target.get("frame"), str):
+            return target
+    return None
+
+
+def _spot_frame(record: Mapping, wiring, contacts: list[dict]) -> dict:
+    """See :meth:`RsfRecording.stimulus_frame`."""
+
+    def own(frame, why):
+        return {"frame": frame, "placement": None, "by": None, "why": why}
+
+    def probe(why, placement=None, by="record"):
+        return {"frame": PROBE_FRAME, "placement": placement, "by": by, "why": why}
+
+    target = _stated_target(record)
+    if target is None:
+        return probe("the record states no other frame, and RSF's is the probe's")
+    stated = target["frame"]
+    key = re.sub(r"[^a-z]", "", stated.lower())
+    if key in ("probe", "probeinterfaceum"):
+        return probe(f"the record states the frame {stated!r}")
+    if key != "sampleum":
+        return own(stated, f"the record states the device frame {stated!r}")
+    calibration = target.get("calibration")
+    if not isinstance(calibration, Mapping):
+        return own(
+            stated,
+            f"the record states the frame {stated!r} and no calibration that relates it "
+            "to the probe",
+        )
+    layout = _string(calibration.get("wiring"))
+    name = stated if layout is None else f"{stated}:{layout[:12]}"
+    if layout is not None and layout == wiring:
+        return probe(
+            f"the record's frame {stated!r} was calibrated on the session's own electrode map"
+        )
+    fit = _labelled_fit(calibration.get("sample_points"), contacts)
+    if isinstance(fit, str):
+        return own(
+            name,
+            f"the record's frame {stated!r} is calibrated on another electrode layout "
+            f"({layout or 'not named'}), and {fit}",
+        )
+    matrix, n, rms = fit
+    return probe(
+        f"the record's frame {stated!r} is calibrated on another electrode layout "
+        f"({layout or 'not named'}); its {n} labelled calibration points fit their probe "
+        f"contacts to {rms:.2g} um RMS",
+        placement=matrix,
+        by="calibration",
+    )
+
+
+def _labelled_fit(points, contacts: list[dict]):
+    """The affine map from a calibration's labelled points to the probe contacts their labels
+    name, as ``(matrix, n, rms)``, or why there is none. A label names a contact by its id,
+    with or without a leading letter prefix (``"e21"`` for contact ``"21"``)."""
+    position = {c["id"]: (c["x"], c["y"]) for c in contacts}
+    source, destination = [], []
+    for point in points if isinstance(points, Sequence) else ():
+        if not isinstance(point, Mapping):
+            continue
+        label, to = _string(point.get("label")), point.get("to")
+        if label is None or not isinstance(to, Sequence) or len(to) != 2:
+            continue
+        contact = label if label in position else re.sub(r"^[A-Za-z]+", "", label)
+        if contact in position:
+            source.append([float(to[0]), float(to[1]), 1.0])
+            destination.append(position[contact])
+    if len(source) < 3:
+        return (
+            f"only {len(source)} of its calibration points name an electrode of the "
+            "probe, too few to fit"
+        )
+    a = np.asarray(source)
+    b = np.asarray(destination, dtype=np.float64)
+    if np.linalg.matrix_rank(a, tol=1e-6 * max(1.0, np.abs(a).max())) < 3:
+        return "its labelled calibration points are collinear"
+    solution, *_ = np.linalg.lstsq(a, b, rcond=None)
+    rms = float(np.sqrt(np.mean(np.sum((a @ solution - b) ** 2, axis=1))))
+    if rms > CALIBRATION_FIT_TOLERANCE:
+        return (
+            f"its labelled calibration points fit their probe contacts only to {rms:.3g} "
+            "um RMS"
+        )
+    matrix = np.eye(3)
+    matrix[:2, :] = solution.T
+    return matrix, len(source), rms
+
+
+def _placement_matrix(placement) -> np.ndarray:
+    """A 2x3 affine or a 3x3 (affine or projective) transform as a 3x3 matrix, checked."""
+    matrix = np.asarray(placement, dtype=np.float64)
+    if matrix.shape == (2, 3):
+        matrix = np.vstack([matrix, [0.0, 0.0, 1.0]])
+    if matrix.shape != (3, 3):
+        raise ValueError(
+            f"a placement is a 2D transform, 2x3 or 3x3, not shape {matrix.shape}"
+        )
+    if not np.all(np.isfinite(matrix)) or abs(np.linalg.det(matrix)) < 1e-12:
+        raise ValueError("a placement is finite and not singular")
+    return matrix / matrix[2, 2] if matrix[2, 2] != 0 else matrix
+
+
+def _placed(channel: Mapping, matrix: np.ndarray) -> dict:
+    """A light channel with its disc's centre moved by ``matrix``, its radius scaled by the
+    square root of the transform's local area scale there."""
+    shape = channel.get("shape") or {}
+    if shape.get("kind") != "disc" or any(shape.get(k) is None for k in "xy"):
+        return dict(channel)  # what is not a disc, from_channels refuses as it is
+    x, y = float(shape["x"]), float(shape["y"])
+    u, v, w = matrix @ np.asarray([x, y, 1.0])
+    if w == 0:
+        raise ValueError(
+            f"the placement sends channel {channel.get('id')!r} to infinity"
+        )
+    out = {**shape, "x": float(u / w), "y": float(v / w)}
+    if shape.get("radius") is not None:
+        # the Jacobian of (u/w, v/w) at the centre; for an affine, the linear part
+        jacobian = (matrix[:2, :2] - np.outer([u / w, v / w], matrix[2, :2])) / w
+        scale = abs(float(np.linalg.det(jacobian))) ** 0.5
+        out["radius"] = float(shape["radius"]) * scale
+    return {**channel, "shape": out}
 
 
 def _table(group, name: str, columns: Sequence[str]) -> dict[str, np.ndarray] | None:

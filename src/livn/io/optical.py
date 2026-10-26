@@ -162,6 +162,9 @@ class LightArray(_Light):
 class PatternedLight(_Light):
     """Spots of light projected onto a monolayer."""
 
+    frame: str = "probe"
+    placement: dict | None = None
+
     def __init__(
         self,
         spots: Float[Array, "n_spots ixyr=4"],
