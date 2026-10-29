@@ -651,6 +651,8 @@ class Env(EnvProtocol):
         self.i_dt[population] = dt
         for gid, cell in cells.items():
             for sec_id, sec in enumerate(cell.sections[:spn]):
+                if (int(gid), sec_id) in self.i_recs:
+                    continue
                 vec = self._h.Vector()
                 vec.record(sec(0.5)._ref_i_membrane_, dt)
                 self.i_recs[(int(gid), sec_id)] = vec

@@ -59,14 +59,12 @@ def test_currents_are_not_kept_unless_asked_for(recorded):
 
 
 def test_the_projection_equals_the_projected_currents(recorded):
-    env, projected_only, both = recorded
+    env, _, both = recorded
     conditions = both.conditions()
     from_currents = np.asarray(
         env.potential_recording(conditions=conditions.replace(extracellular_uV=None))
     )
-    projected = np.asarray(
-        env.potential_recording(conditions=projected_only.conditions())
-    )
+    projected = np.asarray(env.potential_recording(conditions=conditions))
 
     assert np.abs(from_currents).max() > 0, "a silent run tests nothing"
     np.testing.assert_allclose(
