@@ -232,6 +232,7 @@ int rcsd_clear_stimulus(RCSDSim* sim, int mode) {
     }
     rcsd_stimulus_free(&sim->stim[mode]);
     if (mode == RCSD_STIM_EXTRACELLULAR) {
+        RCSD_ACC_LOOP(sim)
         for (i = 0; i < sim->n_nodes; ++i) {
             sim->ext_amp[i] = 0.0;
         }
@@ -322,6 +323,39 @@ static int apply_or_check(RCSDSim* sim, long step, int check, int* need, int* ne
         if (check) {
             continue;
         }
+#if defined(RCSD_OPENACC)
+        /* on the device, behind the kernel that cleared stim_rhs; a sample
+         * is an offset into the values, -1 for none (zero) */
+        if (m == RCSD_STIM_CURRENT) {
+            const double* a = sample(s, i0);
+            const double* b = sample(s, i1);
+            long oa = a ? (long) (a - s->values) : -1, ob = b ? (long) (b - s->values) : -1;
+            double x = t_mid / s->stim_dt - (double) i0;
+            int n_rows = s->n_rows, r;
+            RCSD_ACC_LOOP(sim)
+            for (r = 0; r < n_rows; ++r) {
+                const Stimulus* st = &sim->stim[RCSD_STIM_CURRENT];
+                double va = oa >= 0 ? st->values[oa + r] : 0.0;
+                double vb = ob >= 0 ? st->values[ob + r] : 0.0;
+                double amp = (1.0 - x) * va + x * vb;
+                int node = st->node[r];
+                RCSD_ACC_ATOMIC_UPDATE
+                sim->stim_rhs[node] += amp * 1e2 / sim->area[node];
+            }
+        } else if (m == RCSD_STIM_CURRENT_DENSITY) {
+            const double* a = sample(s, i0);
+            long oa = a ? (long) (a - s->values) : -1;
+            int n_rows = s->n_rows, r;
+            if (a) {
+                RCSD_ACC_LOOP(sim)
+                for (r = 0; r < n_rows; ++r) {
+                    const Stimulus* st = &sim->stim[RCSD_STIM_CURRENT_DENSITY];
+                    RCSD_ACC_ATOMIC_UPDATE
+                    sim->stim_rhs[st->node[r]] += st->values[oa + r];
+                }
+            }
+        }
+#else
         if (m == RCSD_STIM_CURRENT) {
             const double* a = sample(s, i0);
             const double* b = sample(s, i1);
@@ -343,6 +377,7 @@ static int apply_or_check(RCSDSim* sim, long step, int check, int* need, int* ne
                 }
             }
         }
+#endif
     }
     return RCSD_OK;
 }
@@ -354,6 +389,7 @@ int rcsd_stimulus_apply(RCSDSim* sim, long step, int* need, int* need_mode) {
     }
     /* the field's equivalent currents, set for this step by the previous one;
      * every injected current lands in the IClamp slot of the node */
+    RCSD_ACC_LOOP(sim)
     for (i = 0; i < sim->n_nodes; ++i) {
         sim->stim_rhs[i] = 0.0;
         if (sim->ext_amp[i] != 0.0) {
@@ -363,6 +399,119 @@ int rcsd_stimulus_apply(RCSDSim* sim, long step, int* need, int* need_mode) {
     return apply_or_check(sim, step, 0, NULL, NULL);
 }
 
+#if defined(RCSD_OPENACC)
+typedef struct {
+    int cell, section, row;
+} RowKey;
+
+static int compare_row_key(const void* a, const void* b) {
+    const RowKey* x = (const RowKey*) a;
+    const RowKey* y = (const RowKey*) b;
+    if (x->cell != y->cell) return (x->cell > y->cell) - (x->cell < y->cell);
+    if (x->section != y->section) return (x->section > y->section) - (x->section < y->section);
+    return (x->row > y->row) - (x->row < y->row);
+}
+
+/* the photon-flux row of each opsin and ChR2 segment: the last row naming
+ * its cell and section, as the host loop's later rows overwrite earlier
+ * ones; -1 for none. Rebuilt by rcsd_run, so the device reads one index a
+ * step instead of comparing every row with every opsin */
+int rcsd_stimulus_prepare(RCSDSim* sim) {
+    const Stimulus* phi = &sim->stim[RCSD_STIM_PHOTON_FLUX];
+    RowKey* keys;
+    int* opsin_row;
+    int* chr2_row;
+    int n = phi->n_rows, r;
+    size_t o;
+    if (!phi->active || n == 0) {
+        return RCSD_OK;
+    }
+    keys = (RowKey*) malloc((size_t) n * sizeof(RowKey));
+    opsin_row = (int*) realloc(sim->opsin_row, (sim->opsins.n + 1) * sizeof(int));
+    if (opsin_row) sim->opsin_row = opsin_row;
+    chr2_row = (int*) realloc(sim->chr2_row, (sim->chr2.n + 1) * sizeof(int));
+    if (chr2_row) sim->chr2_row = chr2_row;
+    if (!keys || !opsin_row || !chr2_row) {
+        free(keys);
+        rcsd_set_error("out of memory");
+        return RCSD_ERROR;
+    }
+    for (r = 0; r < n; ++r) {
+        keys[r].cell = phi->cell[r];
+        keys[r].section = phi->section[r];
+        keys[r].row = r;
+    }
+    qsort(keys, (size_t) n, sizeof(RowKey), compare_row_key);
+    for (o = 0; o < sim->opsins.n + sim->chr2.n; ++o) {
+        int is_opsin = o < sim->opsins.n;
+        size_t k = is_opsin ? o : o - sim->opsins.n;
+        int cell = is_opsin ? sim->opsins.data[k].cell : sim->chr2.data[k].cell;
+        int section = is_opsin ? sim->opsins.data[k].section : sim->chr2.data[k].section;
+        /* past the last key at or below (cell, section, n) */
+        int lo = 0, hi = n, row = -1;
+        while (lo < hi) {
+            int mid = lo + (hi - lo) / 2;
+            RowKey probe = {cell, section, n};
+            if (compare_row_key(&keys[mid], &probe) < 0) lo = mid + 1; else hi = mid;
+        }
+        if (lo > 0 && keys[lo - 1].cell == cell && keys[lo - 1].section == section) {
+            row = keys[lo - 1].row;
+        }
+        if (is_opsin) {
+            sim->opsin_row[k] = row;
+        } else {
+            sim->chr2_row[k] = row;
+        }
+    }
+    free(keys);
+    return RCSD_OK;
+}
+
+void rcsd_stimulus_after_update(RCSDSim* sim, long step) {
+    Stimulus* ext = &sim->stim[RCSD_STIM_EXTRACELLULAR];
+    Stimulus* phi = &sim->stim[RCSD_STIM_PHOTON_FLUX];
+    /* the callback's current_time is step * dt */
+    double t = (double) step * sim->dt;
+    if (ext->active && ext->n_rows > 0) {
+        const double* col = sample(ext, index_at(ext, t));
+        long oc = col ? (long) (col - ext->values) : -1;
+        int n_nodes = sim->n_nodes, nj = ext->n_junctions, i, j;
+        RCSD_ACC_LOOP(sim)
+        for (i = 0; i < n_nodes; ++i) {
+            sim->ext_amp[i] = 0.0;
+        }
+        if (oc >= 0) {
+            RCSD_ACC_LOOP(sim)
+            for (j = 0; j < nj; ++j) {
+                const Stimulus* e = &sim->stim[RCSD_STIM_EXTRACELLULAR];
+                const double* c = e->values + oc;
+                double delta = (c[e->j_row_b[j]] - c[e->j_row_a[j]]) * e->j_inv_r[j];
+                RCSD_ACC_ATOMIC_UPDATE
+                sim->ext_amp[e->j_node_a[j]] += delta;
+                RCSD_ACC_ATOMIC_UPDATE
+                sim->ext_amp[e->j_node_b[j]] -= delta;
+            }
+        }
+    }
+    if (phi->active && phi->n_rows > 0) {
+        const double* col = sample(phi, index_at(phi, t));
+        long oc = col ? (long) (col - phi->values) : -1;
+        int n_op = (int) sim->opsins.n, n_ch = (int) sim->chr2.n, o;
+        RCSD_ACC_LOOP(sim)
+        for (o = 0; o < n_op; ++o) {
+            int r = sim->opsin_row[o];
+            sim->opsins.data[o].phi =
+                (oc >= 0 && r >= 0) ? sim->stim[RCSD_STIM_PHOTON_FLUX].values[oc + r] : 0.0;
+        }
+        RCSD_ACC_LOOP(sim)
+        for (o = 0; o < n_ch; ++o) {
+            int r = sim->chr2_row[o];
+            sim->chr2.data[o].irr =
+                (oc >= 0 && r >= 0) ? sim->stim[RCSD_STIM_PHOTON_FLUX].values[oc + r] : 0.0;
+        }
+    }
+}
+#else
 void rcsd_stimulus_after_update(RCSDSim* sim, long step) {
     Stimulus* ext = &sim->stim[RCSD_STIM_EXTRACELLULAR];
     Stimulus* phi = &sim->stim[RCSD_STIM_PHOTON_FLUX];
@@ -371,6 +520,7 @@ void rcsd_stimulus_after_update(RCSDSim* sim, long step) {
     if (ext->active && ext->n_rows > 0) {
         const double* col = sample(ext, index_at(ext, t));
         int i;
+        RCSD_ACC_LOOP(sim)
         for (i = 0; i < sim->n_nodes; ++i) {
             sim->ext_amp[i] = 0.0;
         }
@@ -412,3 +562,4 @@ void rcsd_stimulus_after_update(RCSDSim* sim, long step) {
         }
     }
 }
+#endif

@@ -9,13 +9,15 @@
  * never on timing, so the split a given thread count produces is deterministic.
  *
  * POSIX threads only. Windows and Emscripten fall back to running the kernel
- * inline on the calling thread, which is what the backend did before this
+ * inline on the calling thread (as does an OpenACC build, whose kernels are the
+ * GPU's to split), which is what the backend did before this
  * existed; RCSD_NO_THREADS forces that fallback anywhere.
  */
 #ifndef RCSD_THREAD_H
 #define RCSD_THREAD_H
 
-#if defined(RCSD_NO_THREADS) || defined(_WIN32) || defined(__EMSCRIPTEN__)
+#if defined(RCSD_NO_THREADS) || defined(RCSD_OPENACC) || defined(_WIN32) || \
+    defined(__EMSCRIPTEN__)
 #define RCSD_THREADS_AVAILABLE 0
 #else
 #define RCSD_THREADS_AVAILABLE 1

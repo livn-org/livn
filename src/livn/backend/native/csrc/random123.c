@@ -14,6 +14,7 @@
 #define PHILOX_W0 0x9E3779B9u
 #define PHILOX_W1 0xBB67AE85u
 
+RCSD_ACC_ROUTINE
 static void philox4x32_10(const uint32_t ctr[4], const uint32_t key[2], uint32_t out[4]) {
     uint32_t c0 = ctr[0], c1 = ctr[1], c2 = ctr[2], c3 = ctr[3];
     uint32_t k0 = key[0], k1 = key[1];
@@ -59,6 +60,7 @@ void r123_seed(R123Stream* s, uint32_t id1, uint32_t id2, uint32_t id3) {
     r123_setseq(s, 0, 0);
 }
 
+RCSD_ACC_ROUTINE
 static uint32_t r123_ipick(R123Stream* s) {
     uint32_t rval = s->r[s->which++];
     if (s->which > 3) {
@@ -69,11 +71,13 @@ static uint32_t r123_ipick(R123Stream* s) {
     return rval;
 }
 
+RCSD_ACC_ROUTINE
 static double r123_dblpick(R123Stream* s) {
     /* open (0, 1): ((double) u + 1) / (2^32 + 1) */
     return ((double) r123_ipick(s) + 1.0) * (1.0 / 4294967297.0);
 }
 
+RCSD_ACC_ROUTINE
 double r123_normal(R123Stream* s) {
     double w, x, y, u1, u2;
     do {

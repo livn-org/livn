@@ -11,6 +11,71 @@
 #define M_PI 3.14159265358979323846
 #endif
 
+/* --- OpenACC offload ------------------------------------------------------------ */
+/* RCSD_OPENACC builds the per-node, per-site and per-cell loops as GPU
+ * kernels. It assumes memory the device can address without data clauses:
+ * coherent unified memory on a Grace Hopper (nvc -gpu=mem:unified), or
+ * managed memory on a discrete GPU (-gpu=mem:managed), where every heap
+ * allocation the library makes is managed. So a kernel names the pointers it
+ * dereferences as deviceptr and nothing is copied; what stays on the host
+ * (stimulus rows, recording, external spike trains) touches the same memory.
+ *
+ * Inside rcsd_run every kernel goes on one async queue (sim->acc_async), and
+ * the host waits on it only where it reads or writes what the kernels use:
+ * the spike history it collects the recorded spikes from, a voltage trace
+ * that is due, an active stimulus, an external spike train's events. Spikes
+ * never come back to the host to make events: the device keeps the cells
+ * that fired at each recent step and pulls each step's events out of that
+ * history (see rcsd_events_deliver). Outside rcsd_run, acc_async is
+ * acc_async_sync and every kernel is synchronous.
+ *
+ * The device rounds exp and pow differently from the host libm and may fuse
+ * multiply-adds, so a GPU build does not reproduce NEURON to the bit the way
+ * the CPU build does; nor does it sum a site's events in the CPU build's
+ * order. One thread per iteration, and every loop inside a kernel
+ * sequential (nvc -acc=noautopar): a node's currents are summed in NEURON's
+ * order on the device too, not as a parallel reduction. Without RCSD_OPENACC
+ * the macros expand to nothing. */
+#if defined(RCSD_OPENACC)
+#include <openacc.h>
+#define RCSD_PRAGMA_(x) _Pragma(#x)
+#define RCSD_ACC_LOOP(...) \
+    RCSD_PRAGMA_(acc parallel loop gang vector deviceptr(__VA_ARGS__) async(sim->acc_async))
+#define RCSD_ACC_GANG(...) \
+    RCSD_PRAGMA_(acc parallel loop gang deviceptr(__VA_ARGS__) async(sim->acc_async))
+#define RCSD_ACC_SERIAL(...) RCSD_PRAGMA_(acc serial deviceptr(__VA_ARGS__) async(sim->acc_async))
+#define RCSD_ACC_VECTOR RCSD_PRAGMA_(acc loop vector)
+#define RCSD_ACC_VECTOR_SUM(x) RCSD_PRAGMA_(acc loop vector reduction(+ : x))
+#define RCSD_ACC_ROUTINE RCSD_PRAGMA_(acc routine seq)
+#define RCSD_ACC_SEQ RCSD_PRAGMA_(acc loop seq)
+#define RCSD_ACC_ATOMIC_CAPTURE RCSD_PRAGMA_(acc atomic capture)
+#define RCSD_ACC_ATOMIC_UPDATE RCSD_PRAGMA_(acc atomic update)
+#define RCSD_ACC_WAIT RCSD_PRAGMA_(acc wait)
+/* node state and parameters a variable at a time, cap_nodes apart, so the
+ * threads of a warp, a node each, read adjacent memory */
+#define RCSD_STATE(sim, node, s) \
+    (sim)->state[(size_t) (s) * (size_t) (sim)->cap_nodes + (size_t) (node)]
+#define RCSD_PARAM(sim, node, p) \
+    (sim)->param[(size_t) (p) * (size_t) (sim)->cap_nodes + (size_t) (node)]
+/* how often rcsd_run collects the recorded spikes from the spike history */
+#define RCSD_HARVEST_STEPS 64
+#else
+/* a node's state and parameters together, which is what a CPU thread
+ * walking the nodes in order wants */
+#define RCSD_STATE(sim, node, s) (sim)->state[(size_t) (node) * RCSD_NSTATE + (size_t) (s)]
+#define RCSD_PARAM(sim, node, p) (sim)->param[(size_t) (node) * RCSD_NPARAM + (size_t) (p)]
+#define RCSD_ACC_LOOP(...)
+#define RCSD_ACC_GANG(...)
+#define RCSD_ACC_SERIAL(...)
+#define RCSD_ACC_VECTOR
+#define RCSD_ACC_VECTOR_SUM(x)
+#define RCSD_ACC_ROUTINE
+#define RCSD_ACC_SEQ
+#define RCSD_ACC_ATOMIC_CAPTURE
+#define RCSD_ACC_ATOMIC_UPDATE
+#define RCSD_ACC_WAIT
+#endif
+
 /* --- physical constants, as NEURON compiles them (CODATA 2018) --------------- */
 /* h.FARADAY and h.R of NEURON 9 (CODATA 2018), which nrn_nernst and the
  * FARADAY of the .mod files share to the last digit */
@@ -126,6 +191,7 @@ typedef struct {
 
 typedef struct {
     int conn;
+    int site; /* the connection's, so the OpenACC build can group a bucket by it */
     double te;
 } Event;
 
@@ -199,6 +265,12 @@ typedef struct {
     DYN(double) values;
 } Trace;
 
+/* a row of samples a recording group wrote at stage_val + at */
+typedef struct {
+    int group;
+    size_t at;
+} StageRow;
+
 /* --- the simulation ------------------------------------------------------------------ */
 struct RCSDSim {
     double celsius;
@@ -228,8 +300,8 @@ struct RCSDSim {
     double* sav_rhs;
     double* sav_d;
     double* v;
-    double* state;   /* [n_nodes][RCSD_NSTATE], v excluded (kept in v[]) */
-    double* param;   /* [n_nodes][RCSD_NPARAM] */
+    double* state;   /* RCSD_NSTATE per node, v excluded (kept in v[]); see RCSD_STATE */
+    double* param;   /* RCSD_NPARAM per node; see RCSD_PARAM */
     unsigned* mech;
     double* dinadv;
     double* dikdv;
@@ -240,6 +312,45 @@ struct RCSDSim {
     double* stim_rhs;  /* what the current stimuli add to rhs this step (the IClamp slot) */
     double* hold_amp;  /* nA, a steady holding current per node: an IClamp held on,
                         * created before any stimulus's, so summed ahead of them */
+    int tile_nodes;    /* n_nodes when cells_tile_nodes last looked, -1 to look again */
+    int tiled;         /* what it found: one tree per cell, cells end to end */
+    /* the OpenACC build. The kernels' queue inside rcsd_run. The spike
+     * history: for the last hist_len steps, which cells fired (hist_cells
+     * slots a step), when, and which step a slot holds (-1: none); the
+     * recorded spikes are collected from it up to step `harvested`. Each
+     * cell's outgoing connections sorted by out_off, their delay in steps,
+     * which lies in [min_off, max_off]. Where each site's events start in a
+     * step's sorted bucket of external spike-train events. */
+    int acc_async;
+    int hist_len, hist_cells;
+    int* hist;
+    int* hist_n;
+    double* hist_te;
+    long* hist_step;
+    long harvested;
+    int* out_off;
+    int min_off, max_off;
+    int* seg;
+    size_t seg_cap;
+    /* recording on the device. The traces, grouped at the start of a run by
+     * the dt and next sample they share, so a group comes due as one: rec_node
+     * holds each member's node (-(node + 1) for a membrane current) and
+     * rec_trace its trace (a v_traces index, or -(i_traces index + 1)), the
+     * members of group g from rec_start[g]. A due group is a row of samples a
+     * kernel writes into stage_val at stage_n; the rows rcsd_run has not yet
+     * collected are listed in stage_rows */
+    int* rec_node;
+    int* rec_trace;
+    int* rec_start;
+    long* rec_next;
+    double* rec_dt;
+    int n_rec, n_rec_groups;
+    double* stage_val;
+    size_t stage_n, stage_cap;
+    DYN(StageRow) stage_rows;
+    /* each opsin's and ChR2 segment's photon-flux row (rcsd_stimulus_prepare) */
+    int* opsin_row;
+    int* chr2_row;
 
     /* point-process instances per node and slot, in NEURON's order */
     int* pp_start[PP_N]; /* [n_nodes + 1] */
@@ -287,6 +398,18 @@ struct RCSDSim {
     int* record_spikes; /* per cell */
     DYN(Trace) v_traces;
     DYN(Trace) i_traces;
+    /* arrival buckets: a spike's connections, filed when the spike is new
+     * under the step each event arrives at, so a step reads only its own.
+     * arr_len buckets of arr_cap; one counted past arr_cap overflowed and
+     * that step scans the history instead (arr_overflow counts them, and
+     * the next harvest grows the cap). arr_next: the step the buckets are
+     * filed for, -1 to refile them from the history */
+    int arr_len, arr_cap;
+    int* arr_n;
+    int* arr_conn;
+    double* arr_te;
+    int* arr_overflow;
+    long arr_next;
 };
 
 /* shared helpers */
@@ -315,16 +438,19 @@ void rcsd_chr2_currents(RCSDSim* sim);
 void rcsd_stimulus_free(Stimulus* s);
 int rcsd_stimulus_apply(RCSDSim* sim, long step, int* need_refill, int* need_mode);
 void rcsd_stimulus_after_update(RCSDSim* sim, long step);
+int rcsd_stimulus_prepare(RCSDSim* sim);
 int rcsd_events_enqueue(RCSDSim* sim, int conn, double te);
 void rcsd_events_clear(RCSDSim* sim);
 int rcsd_events_deliver(RCSDSim* sim, long step);
-void rcsd_synapse_receive(RCSDSim* sim, int conn, double te);
+int rcsd_events_harvest(RCSDSim* sim);
 void rcsd_synapse_currents(RCSDSim* sim);
 void rcsd_synapse_state_step(RCSDSim* sim);
 void rcsd_synapse_finalize_factor(RCSDSim* sim, int site);
 
 void r123_seed(R123Stream* s, uint32_t id1, uint32_t id2, uint32_t id3);
 void r123_setseq(R123Stream* s, uint32_t seq, int which);
+/* drawn on the device by the noise kernel */
+RCSD_ACC_ROUTINE
 double r123_normal(R123Stream* s);
 
 #endif

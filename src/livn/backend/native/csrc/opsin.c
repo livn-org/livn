@@ -10,6 +10,7 @@
 
 #include "internal.h"
 #include "mech.h"
+#include "thread.h"
 
 int rcsd_add_opsin(RCSDSim* sim, int cell, int section, double x) {
     Opsin op;
@@ -96,10 +97,11 @@ void rcsd_opsin_init(RCSDSim* sim) {
     }
 }
 
-void rcsd_opsin_currents(RCSDSim* sim);
-void rcsd_opsin_currents(RCSDSim* sim) {
-    size_t i;
-    for (i = 0; i < sim->opsins.n; ++i) {
+static void opsin_currents_range(void* vctx, int begin, int end) {
+    RCSDSim* sim = (RCSDSim*) vctx;
+    int i;
+    RCSD_ACC_LOOP(sim)
+    for (i = begin; i < end; ++i) {
         Opsin* op = &sim->opsins.data[i];
         double v = sim->v[op->node];
         double i1 = rho3c_current(v + 0.001, op->O, op->g0, op->E, op->v0, op->v1);
@@ -111,11 +113,18 @@ void rcsd_opsin_currents(RCSDSim* sim) {
     }
 }
 
+void rcsd_opsin_currents(RCSDSim* sim);
+void rcsd_opsin_currents(RCSDSim* sim) {
+    rcsd_parallel_for((int) sim->opsins.n, RCSD_PAR_GRAIN, opsin_currents_range, sim);
+}
+
 /* implicit Euler on (O, D) with C = 1 - O - D */
-void rcsd_opsin_state_step(RCSDSim* sim) {
+static void opsin_state_range(void* vctx, int begin, int end) {
+    RCSDSim* sim = (RCSDSim*) vctx;
     const double dt = sim->dt;
-    size_t i;
-    for (i = 0; i < sim->opsins.n; ++i) {
+    int i;
+    RCSD_ACC_LOOP(sim)
+    for (i = begin; i < end; ++i) {
         Opsin* op = &sim->opsins.data[i];
         double Ga, Gr;
         double O0 = op->O, D0 = 1.0 - op->C - op->O;
@@ -137,6 +146,10 @@ void rcsd_opsin_state_step(RCSDSim* sim) {
         op->O = O1;
         op->C = 1.0 - O1 - D1;
     }
+}
+
+void rcsd_opsin_state_step(RCSDSim* sim) {
+    rcsd_parallel_for((int) sim->opsins.n, RCSD_PAR_GRAIN, opsin_state_range, sim);
 }
 
 /* --- ChR2H134R ----------------------------------------------------------------- */
@@ -244,9 +257,11 @@ void rcsd_chr2_init(RCSDSim* sim) {
 }
 
 /* nrn_cur: the current density and its numerical conductance */
-void rcsd_chr2_currents(RCSDSim* sim) {
-    size_t i;
-    for (i = 0; i < sim->chr2.n; ++i) {
+static void chr2_currents_range(void* vctx, int begin, int end) {
+    RCSDSim* sim = (RCSDSim*) vctx;
+    int i;
+    RCSD_ACC_LOOP(sim)
+    for (i = begin; i < end; ++i) {
         ChR2* ch = &sim->chr2.data[i];
         double v = sim->v[ch->node];
         double i1 = chr2_current(v + .001, ch->param, ch->O1, ch->O2);
@@ -256,13 +271,23 @@ void rcsd_chr2_currents(RCSDSim* sim) {
     }
 }
 
+void rcsd_chr2_currents(RCSDSim* sim) {
+    rcsd_parallel_for((int) sim->chr2.n, RCSD_PAR_GRAIN, chr2_currents_range, sim);
+}
+
 /* nrn_state: rates at the new voltage and this step's irradiance */
-void rcsd_chr2_state_step(RCSDSim* sim) {
-    size_t i;
-    for (i = 0; i < sim->chr2.n; ++i) {
+static void chr2_state_range(void* vctx, int begin, int end) {
+    RCSDSim* sim = (RCSDSim*) vctx;
+    int i;
+    RCSD_ACC_LOOP(sim)
+    for (i = begin; i < end; ++i) {
         ChR2* ch = &sim->chr2.data[i];
         ChR2Rates r;
         chr2_rates(sim->v[ch->node], ch->irr, sim->celsius, ch->param, &r);
         chr2_states(&ch->O1, &ch->O2, &ch->C1, &ch->p, &r, ch->param[RCSD_CHR2_TAU], sim->dt);
     }
+}
+
+void rcsd_chr2_state_step(RCSDSim* sim) {
+    rcsd_parallel_for((int) sim->chr2.n, RCSD_PAR_GRAIN, chr2_state_range, sim);
 }

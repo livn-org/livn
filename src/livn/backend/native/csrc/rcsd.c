@@ -35,8 +35,14 @@ void rcsd_set_error(const char* fmt, ...) {
     va_end(ap);
 }
 
+/* an OpenACC build says so, so that the loader can refuse a CPU library in
+ * its place and the other way round */
 const char* rcsd_version(void) {
+#if defined(RCSD_OPENACC)
+    return RCSD_VERSION "+openacc";
+#else
     return RCSD_VERSION;
+#endif
 }
 
 const char* rcsd_last_error(void) {
@@ -74,6 +80,9 @@ RCSDSim* rcsd_create(double celsius, double v_init) {
         return NULL;
     }
     sim->celsius = celsius;
+#if defined(RCSD_OPENACC)
+    sim->acc_async = acc_async_sync;
+#endif
     sim->v_init = v_init;
     sim->dt = 0.025;
     sim->cj = 2.0 / sim->dt;
@@ -160,6 +169,25 @@ void rcsd_destroy(RCSDSim* sim) {
     }
     DYN_FREE(sim->spike_cells);
     DYN_FREE(sim->spike_times);
+    free(sim->hist);
+    free(sim->hist_n);
+    free(sim->hist_te);
+    free(sim->hist_step);
+    free(sim->out_off);
+    free(sim->arr_n);
+    free(sim->arr_conn);
+    free(sim->arr_te);
+    free(sim->arr_overflow);
+    free(sim->seg);
+    free(sim->rec_node);
+    free(sim->rec_trace);
+    free(sim->rec_start);
+    free(sim->rec_next);
+    free(sim->rec_dt);
+    free(sim->stage_val);
+    DYN_FREE(sim->stage_rows);
+    free(sim->opsin_row);
+    free(sim->chr2_row);
     free(sim->record_spikes);
     free_traces(sim->v_traces.data, sim->v_traces.n);
     DYN_FREE(sim->v_traces);
@@ -183,6 +211,27 @@ void rcsd_destroy(RCSDSim* sim) {
         (ptr) = grown;                                                   \
     } while (0)
 
+#if defined(RCSD_OPENACC)
+/* a variable-at-a-time array from old_cap nodes to cap: each variable's
+ * column moves to its new offset, and the new nodes start at zero */
+static int grow_columns(double** a, int n_var, int old_cap, int cap) {
+    double* grown = (double*) calloc((size_t) n_var * (size_t) cap, sizeof(double));
+    int k;
+    if (grown == NULL) {
+        rcsd_set_error("out of memory");
+        return RCSD_ERROR;
+    }
+    if (*a != NULL) {
+        for (k = 0; k < n_var; ++k) {
+            memcpy(grown + (size_t) k * cap, *a + (size_t) k * old_cap, (size_t) old_cap * sizeof(double));
+        }
+        free(*a);
+    }
+    *a = grown;
+    return RCSD_OK;
+}
+#endif
+
 int rcsd_alloc_nodes(RCSDSim* sim, int n) {
     int want = sim->n_nodes + n;
     int cap;
@@ -205,8 +254,15 @@ int rcsd_alloc_nodes(RCSDSim* sim, int n) {
     GROW(sim->sav_rhs, double, sim->cap_nodes, cap);
     GROW(sim->sav_d, double, sim->cap_nodes, cap);
     GROW(sim->v, double, sim->cap_nodes, cap);
+#if defined(RCSD_OPENACC)
+    if (grow_columns(&sim->state, RCSD_NSTATE, sim->cap_nodes, cap) != RCSD_OK ||
+        grow_columns(&sim->param, RCSD_NPARAM, sim->cap_nodes, cap) != RCSD_OK) {
+        return RCSD_ERROR;
+    }
+#else
     GROW(sim->state, double, (size_t) sim->cap_nodes * RCSD_NSTATE, (size_t) cap * RCSD_NSTATE);
     GROW(sim->param, double, (size_t) sim->cap_nodes * RCSD_NPARAM, (size_t) cap * RCSD_NPARAM);
+#endif
     GROW(sim->mech, unsigned, sim->cap_nodes, cap);
     GROW(sim->dinadv, double, sim->cap_nodes, cap);
     GROW(sim->dikdv, double, sim->cap_nodes, cap);
@@ -231,27 +287,27 @@ static int new_node(RCSDSim* sim, int parent, int section, int centre) {
     sim->is_centre[i] = centre;
     sim->area[i] = 100.0;
     sim->mech[i] = 0;
-    sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_CAO] = 2.0;
-    sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_CAI0] = 1e-5;
-    sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_KD_KCA] = 0.0005;
-    sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_D_NA] = 0.2;
-    sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_BETA_NA] = 0.075;
-    sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_NAI0] = 15.0;
-    sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_NAO0] = 145.0;
-    sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_D_K] = 0.2;
-    sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_BETA_K] = 0.075;
-    sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_KI0] = 145.0;
-    sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_KO0] = 5.0;
-    sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_F_CA] = 0.004;
-    sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_KCA_CA] = 8.0;
-    sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_ALPHA_CA] = 1.0;
-    sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_VHALF_NAS] = -35.0;
-    sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_SLOPE_NAS] = 7.8;
-    sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_S_ON_NAS] = 0.0;
-    sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_S_FLOOR_NAS] = 0.4;
-    sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_S_SPEED_NAS] = 1.0;
-    sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_E_PAS] = -70.0;
-    sim->param[(size_t) i * RCSD_NPARAM + RCSD_P_CM] = 1.0;
+    RCSD_PARAM(sim, i, RCSD_P_CAO) = 2.0;
+    RCSD_PARAM(sim, i, RCSD_P_CAI0) = 1e-5;
+    RCSD_PARAM(sim, i, RCSD_P_KD_KCA) = 0.0005;
+    RCSD_PARAM(sim, i, RCSD_P_D_NA) = 0.2;
+    RCSD_PARAM(sim, i, RCSD_P_BETA_NA) = 0.075;
+    RCSD_PARAM(sim, i, RCSD_P_NAI0) = 15.0;
+    RCSD_PARAM(sim, i, RCSD_P_NAO0) = 145.0;
+    RCSD_PARAM(sim, i, RCSD_P_D_K) = 0.2;
+    RCSD_PARAM(sim, i, RCSD_P_BETA_K) = 0.075;
+    RCSD_PARAM(sim, i, RCSD_P_KI0) = 145.0;
+    RCSD_PARAM(sim, i, RCSD_P_KO0) = 5.0;
+    RCSD_PARAM(sim, i, RCSD_P_F_CA) = 0.004;
+    RCSD_PARAM(sim, i, RCSD_P_KCA_CA) = 8.0;
+    RCSD_PARAM(sim, i, RCSD_P_ALPHA_CA) = 1.0;
+    RCSD_PARAM(sim, i, RCSD_P_VHALF_NAS) = -35.0;
+    RCSD_PARAM(sim, i, RCSD_P_SLOPE_NAS) = 7.8;
+    RCSD_PARAM(sim, i, RCSD_P_S_ON_NAS) = 0.0;
+    RCSD_PARAM(sim, i, RCSD_P_S_FLOOR_NAS) = 0.4;
+    RCSD_PARAM(sim, i, RCSD_P_S_SPEED_NAS) = 1.0;
+    RCSD_PARAM(sim, i, RCSD_P_E_PAS) = -70.0;
+    RCSD_PARAM(sim, i, RCSD_P_CM) = 1.0;
     return i;
 }
 
@@ -433,7 +489,7 @@ int rcsd_add_section(RCSDSim* sim, int cell, int kind, int nseg, double L, doubl
             return RCSD_ERROR;
         }
         sim->mech[node] = mechanisms;
-        sim->param[(size_t) node * RCSD_NPARAM + RCSD_P_CM] = cm;
+        RCSD_PARAM(sim, node, RCSD_P_CM) = cm;
         prev = node;
     }
     sec.end_node = new_node(sim, prev, index, 0);
@@ -487,7 +543,7 @@ int rcsd_section_set(RCSDSim* sim, int section, int param, double value) {
         return RCSD_ERROR;
     }
     for (j = 0; j < sec->nseg; ++j) {
-        sim->param[(size_t) (sec->node0 + j) * RCSD_NPARAM + param] = value;
+        RCSD_PARAM(sim, sec->node0 + j, param) = value;
     }
     return RCSD_OK;
 }
@@ -510,7 +566,7 @@ double rcsd_section_get(RCSDSim* sim, int section, int param) {
         return NAN;
     }
     node = rcsd_section_node(sim, section, 0.5);
-    return sim->param[(size_t) node * RCSD_NPARAM + param];
+    return RCSD_PARAM(sim, node, param);
 }
 
 int rcsd_section_geometry(RCSDSim* sim, int section, double L, double diam, double Ra) {
@@ -565,7 +621,7 @@ double rcsd_node_state(RCSDSim* sim, int node, int state) {
     if (state < 0 || state >= RCSD_NSTATE) {
         return NAN;
     }
-    return sim->state[(size_t) node * RCSD_NSTATE + state];
+    return RCSD_STATE(sim, node, state);
 }
 
 double rcsd_node_area(RCSDSim* sim, int node) {
@@ -607,8 +663,8 @@ int rcsd_build_geometry(RCSDSim* sim) {
 /* membrane mechanisms                                                        */
 /* ------------------------------------------------------------------------- */
 
-#define ST(node, s) sim->state[(size_t) (node) * RCSD_NSTATE + (s)]
-#define PR(node, p) sim->param[(size_t) (node) * RCSD_NPARAM + (p)]
+#define ST(node, s) RCSD_STATE(sim, node, s)
+#define PR(node, p) RCSD_PARAM(sim, node, p)
 
 /* Every density mechanism's BREAKPOINT at the present states, with the
  * numerical conductance NEURON derives from `_nrn_current(v + .001)`.
@@ -736,6 +792,7 @@ static void eval_membrane_range(void* vctx, int begin, int end) {
     const double fN = c->fN;
     const double fL = c->fL;
     int i;
+    RCSD_ACC_LOOP(sim)
     for (i = begin; i < end; ++i) {
         unsigned mech = sim->mech[i];
         double v = sim->v[i];
@@ -907,6 +964,7 @@ static void membrane_states_range(void* vctx, int begin, int end) {
     RCSDSim* sim = c->sim;
     const double dt = c->dt;
     int i;
+    RCSD_ACC_LOOP(sim)
     for (i = begin; i < end; ++i) {
         unsigned mech = sim->mech[i];
         double v = sim->v[i];
@@ -1070,6 +1128,7 @@ int rcsd_init(RCSDSim* sim) {
     if (sim->geometry_dirty) {
         rcsd_build_geometry(sim);
     }
+    sim->tile_nodes = -1; /* cells_tile_nodes looks again */
     if (rcsd_wire(sim) != RCSD_OK) {
         return RCSD_ERROR;
     }
@@ -1118,6 +1177,7 @@ int rcsd_init(RCSDSim* sim) {
     rcsd_chr2_init(sim);
     rcsd_events_clear(sim);
     sim->step = 0;
+    sim->harvested = 0;
     sim->t = 0.0;
     sim->spike_cells.n = 0;
     sim->spike_times.n = 0;
@@ -1138,7 +1198,7 @@ int rcsd_pin_resting(RCSDSim* sim) {
         rcsd_build_geometry(sim);
     }
     v_saved = (double*) malloc((size_t) sim->n_nodes * sizeof(double));
-    state_saved = (double*) malloc((size_t) sim->n_nodes * RCSD_NSTATE * sizeof(double));
+    state_saved = (double*) malloc((size_t) sim->cap_nodes * RCSD_NSTATE * sizeof(double));
     if (v_saved == NULL || state_saved == NULL) {
         free(v_saved);
         free(state_saved);
@@ -1146,7 +1206,7 @@ int rcsd_pin_resting(RCSDSim* sim) {
         return RCSD_ERROR;
     }
     memcpy(v_saved, sim->v, (size_t) sim->n_nodes * sizeof(double));
-    memcpy(state_saved, sim->state, (size_t) sim->n_nodes * RCSD_NSTATE * sizeof(double));
+    memcpy(state_saved, sim->state, (size_t) sim->cap_nodes * RCSD_NSTATE * sizeof(double));
     for (c = 0; c < sim->cells.n; ++c) {
         init_states(sim, (int) c, sim->cells.data[c].v_hold);
     }
@@ -1155,7 +1215,7 @@ int rcsd_pin_resting(RCSDSim* sim) {
         pin_cell(sim, (int) c);
     }
     memcpy(sim->v, v_saved, (size_t) sim->n_nodes * sizeof(double));
-    memcpy(sim->state, state_saved, (size_t) sim->n_nodes * RCSD_NSTATE * sizeof(double));
+    memcpy(sim->state, state_saved, (size_t) sim->cap_nodes * RCSD_NSTATE * sizeof(double));
     free(v_saved);
     free(state_saved);
     return RCSD_OK;
@@ -1279,9 +1339,172 @@ const double* rcsd_current_record(RCSDSim* sim, int index) {
 }
 
 /* samples whose grid time has been reached by the simulation time */
+#if defined(RCSD_OPENACC)
+/* the traces in groups that come due together: the same dt and the same
+ * next sample. Rebuilt at the start of each rcsd_run from the traces' own
+ * counters, which the groups advance in step. Each trace gets room for the
+ * whole run up front: one allocation a trace, not a doubling series of them,
+ * which under managed memory is a CUDA allocation each */
+static int prepare_recording(RCSDSim* sim, long n_steps) {
+    int n_v = (int) sim->v_traces.n, n = n_v + (int) sim->i_traces.n;
+    int* group_of;
+    int* fill;
+    int k, g;
+    for (k = 0; k < n; ++k) {
+        Trace* tr = k < n_v ? &sim->v_traces.data[k] : &sim->i_traces.data[k - n_v];
+        size_t more = (size_t) ceil((double) n_steps * sim->dt / tr->dt) + 2;
+        if (!dyn_reserve((void**) &tr->values.data, &tr->values.cap, tr->values.n + more,
+                         sizeof(double))) {
+            return RCSD_ERROR;
+        }
+    }
+    sim->n_rec = n;
+    sim->n_rec_groups = 0;
+    if (n == 0) {
+        return RCSD_OK;
+    }
+    group_of = (int*) malloc((size_t) n * sizeof(int));
+    fill = (int*) calloc((size_t) n + 1, sizeof(int));
+    free(sim->rec_node);
+    free(sim->rec_trace);
+    free(sim->rec_start);
+    free(sim->rec_next);
+    free(sim->rec_dt);
+    sim->rec_node = (int*) malloc((size_t) n * sizeof(int));
+    sim->rec_trace = (int*) malloc((size_t) n * sizeof(int));
+    sim->rec_start = (int*) calloc((size_t) n + 1, sizeof(int));
+    sim->rec_next = (long*) malloc((size_t) n * sizeof(long));
+    sim->rec_dt = (double*) malloc((size_t) n * sizeof(double));
+    if (!group_of || !fill || !sim->rec_node || !sim->rec_trace || !sim->rec_start ||
+        !sim->rec_next || !sim->rec_dt) {
+        free(group_of);
+        free(fill);
+        rcsd_set_error("out of memory");
+        return RCSD_ERROR;
+    }
+    for (k = 0; k < n; ++k) {
+        const Trace* tr = k < n_v ? &sim->v_traces.data[k] : &sim->i_traces.data[k - n_v];
+        for (g = 0; g < sim->n_rec_groups; ++g) {
+            if (sim->rec_dt[g] == tr->dt && sim->rec_next[g] == tr->next) {
+                break;
+            }
+        }
+        if (g == sim->n_rec_groups) {
+            sim->rec_dt[g] = tr->dt;
+            sim->rec_next[g] = tr->next;
+            sim->n_rec_groups += 1;
+        }
+        group_of[k] = g;
+        sim->rec_start[g + 1] += 1;
+    }
+    for (g = 0; g < sim->n_rec_groups; ++g) {
+        sim->rec_start[g + 1] += sim->rec_start[g];
+    }
+    for (k = 0; k < n; ++k) {
+        const Trace* tr = k < n_v ? &sim->v_traces.data[k] : &sim->i_traces.data[k - n_v];
+        int at = sim->rec_start[group_of[k]] + fill[group_of[k]]++;
+        sim->rec_trace[at] = k < n_v ? k : -(k - n_v) - 1;
+        sim->rec_node[at] = k < n_v ? tr->node : -tr->node - 1;
+    }
+    free(group_of);
+    free(fill);
+    return RCSD_OK;
+}
+
+/* the collected rows into their traces, each trace's samples in time order */
+static int flush_traces(RCSDSim* sim) {
+    size_t r;
+    if (sim->stage_rows.n == 0) {
+        return RCSD_OK;
+    }
+    RCSD_ACC_WAIT
+    for (r = 0; r < sim->stage_rows.n; ++r) {
+        int g = sim->stage_rows.data[r].group, k;
+        const double* row = sim->stage_val + sim->stage_rows.data[r].at;
+        for (k = sim->rec_start[g]; k < sim->rec_start[g + 1]; ++k) {
+            int id = sim->rec_trace[k];
+            Trace* tr = id >= 0 ? &sim->v_traces.data[id] : &sim->i_traces.data[-id - 1];
+            DYN_PUSH(tr->values, row[k - sim->rec_start[g]]);
+        }
+    }
+    sim->stage_rows.n = 0;
+    sim->stage_n = 0;
+    return RCSD_OK;
+}
+
+/* what rcsd_run hands back from the device: the recorded spikes and samples */
+static int collect(RCSDSim* sim) {
+    if (rcsd_events_harvest(sim) != RCSD_OK) {
+        return RCSD_ERROR;
+    }
+    return flush_traces(sim);
+}
+
+/* the groups that are due: a row of samples each, read on the device from
+ * the state at this point in the queue; the host only counts */
+static int record_pending(RCSDSim* sim) {
+    double t = (double) sim->step * sim->dt;
+    int g;
+    for (g = 0; g < sim->n_rec_groups; ++g) {
+        int first = sim->rec_start[g], size = sim->rec_start[g + 1] - first;
+        while ((double) sim->rec_next[g] * sim->rec_dt[g] <= t + 1e-9) {
+            StageRow row;
+            size_t at;
+            int k;
+            if (sim->stage_n + (size_t) size > sim->stage_cap) {
+                /* a kernel may still be filling the buffer: collect first */
+                size_t cap = sim->stage_cap ? 2 * sim->stage_cap : 64 * (size_t) sim->n_rec;
+                double* grown;
+                if (flush_traces(sim) != RCSD_OK) {
+                    return RCSD_ERROR;
+                }
+                while (cap < (size_t) size) cap *= 2;
+                grown = (double*) realloc(sim->stage_val, cap * sizeof(double));
+                if (grown == NULL) {
+                    rcsd_set_error("out of memory");
+                    return RCSD_ERROR;
+                }
+                sim->stage_val = grown;
+                sim->stage_cap = cap;
+            }
+            at = sim->stage_n;
+            RCSD_ACC_LOOP(sim)
+            for (k = 0; k < size; ++k) {
+                int node = sim->rec_node[first + k];
+                sim->stage_val[at + (size_t) k] =
+                    node >= 0 ? sim->v[node] : ST(-node - 1, RCSD_S_IMEM);
+            }
+            row.group = g;
+            row.at = at;
+            DYN_PUSH(sim->stage_rows, row);
+            sim->stage_n += (size_t) size;
+            sim->rec_next[g] += 1;
+            for (k = first; k < first + size; ++k) {
+                int id = sim->rec_trace[k];
+                Trace* tr = id >= 0 ? &sim->v_traces.data[id] : &sim->i_traces.data[-id - 1];
+                tr->next += 1;
+            }
+        }
+    }
+    return RCSD_OK;
+}
+#else
 static int record_pending(RCSDSim* sim) {
     double t = (double) sim->step * sim->dt;
     size_t i;
+#if defined(RCSD_OPENACC)
+    int due = 0;
+    for (i = 0; i < sim->v_traces.n && !due; ++i) {
+        due = (double) sim->v_traces.data[i].next * sim->v_traces.data[i].dt <= t + 1e-9;
+    }
+    for (i = 0; i < sim->i_traces.n && !due; ++i) {
+        due = (double) sim->i_traces.data[i].next * sim->i_traces.data[i].dt <= t + 1e-9;
+    }
+    if (!due) {
+        return RCSD_OK;
+    }
+    RCSD_ACC_WAIT
+#endif
     for (i = 0; i < sim->v_traces.n; ++i) {
         Trace* tr = &sim->v_traces.data[i];
         while ((double) tr->next * tr->dt <= t + 1e-9) {
@@ -1298,10 +1521,28 @@ static int record_pending(RCSDSim* sim) {
     }
     return RCSD_OK;
 }
+#endif
 
 /* ------------------------------------------------------------------------- */
 /* the timestep                                                               */
 /* ------------------------------------------------------------------------- */
+
+/* the axial terms of the matrix: each node's coupling to its parent */
+static void axial_terms(RCSDSim* sim) {
+    int i;
+    for (i = 0; i < sim->n_nodes; ++i) {
+        int p = sim->parent[i];
+        double dv;
+        if (p < 0) {
+            continue;
+        }
+        dv = sim->v[p] - sim->v[i];
+        sim->rhs[i] -= sim->coef_b[i] * dv;
+        sim->rhs[p] += sim->coef_a[i] * dv;
+        sim->d[i] -= sim->coef_b[i];
+        sim->d[p] -= sim->coef_a[i];
+    }
+}
 
 static void solve(RCSDSim* sim) {
     int i;
@@ -1326,6 +1567,145 @@ static void solve(RCSDSim* sim) {
     }
 }
 
+/* Whether the cells' node ranges lie end to end over [0, n_nodes), each node's
+ * parent inside its own cell and ahead of it. Then the matrix is one tree per
+ * cell and axial_solve_range can take the cells one at a time. */
+static int cells_tile_nodes(RCSDSim* sim) {
+    int next = 0;
+    size_t c;
+    if (sim->tile_nodes == sim->n_nodes) {
+        return sim->tiled;
+    }
+    sim->tile_nodes = sim->n_nodes;
+    sim->tiled = 0;
+    for (c = 0; c < sim->cells.n; ++c) {
+        const Cell* cell = &sim->cells.data[c];
+        int i;
+        if (cell->node0 != next) {
+            return 0;
+        }
+        for (i = cell->node0; i < cell->node0 + cell->nnode; ++i) {
+            int p = sim->parent[i];
+            if (p >= 0 && (p < cell->node0 || p >= i)) {
+                return 0;
+            }
+        }
+        next += cell->nnode;
+    }
+    sim->tiled = (next == sim->n_nodes);
+    return sim->tiled;
+}
+
+/* A cell's work is a few tens of nodes, three passes each. */
+#define RCSD_CELL_GRAIN 32
+
+/* axial_terms and solve for the cells in [begin, end). A cell's nodes are
+ * visited in the order the whole-network loops visit them, and no other
+ * cell's are touched, so a cell's arithmetic is the same whether the network
+ * is solved at once or cell by cell, on any number of threads or on a GPU. */
+static void axial_solve_range(void* vctx, int begin, int end) {
+    RCSDSim* sim = (RCSDSim*) vctx;
+    int c;
+    RCSD_ACC_LOOP(sim)
+    for (c = begin; c < end; ++c) {
+        const int first = sim->cells.data[c].node0;
+        const int last = first + sim->cells.data[c].nnode;
+        int i;
+        RCSD_ACC_SEQ
+        for (i = first; i < last; ++i) {
+            int p = sim->parent[i];
+            double dv;
+            if (p < 0) {
+                continue;
+            }
+            dv = sim->v[p] - sim->v[i];
+            sim->rhs[i] -= sim->coef_b[i] * dv;
+            sim->rhs[p] += sim->coef_a[i] * dv;
+            sim->d[i] -= sim->coef_b[i];
+            sim->d[p] -= sim->coef_a[i];
+        }
+        RCSD_ACC_SEQ
+        for (i = last - 1; i >= first; --i) {
+            int p = sim->parent[i];
+            double q;
+            if (p < 0) {
+                continue;
+            }
+            q = sim->coef_a[i] / sim->d[i];
+            sim->d[p] -= q * sim->coef_b[i];
+            sim->rhs[p] -= q * sim->rhs[i];
+        }
+        RCSD_ACC_SEQ
+        for (i = first; i < last; ++i) {
+            int p = sim->parent[i];
+            if (p < 0) {
+                sim->rhs[i] /= sim->d[i];
+            } else {
+                sim->rhs[i] -= sim->coef_b[i] * sim->rhs[p];
+                sim->rhs[i] /= sim->d[i];
+            }
+        }
+    }
+}
+
+#if defined(RCSD_OPENACC)
+/* the threshold test on the device, into this step's slot of the spike
+ * history, which the event delivery of later steps reads and rcsd_run
+ * collects the recorded spikes from; the host never sees the voltages */
+static int detect_spikes(RCSDSim* sim, double t_new) {
+    int n_cells = (int) sim->cells.n;
+    double te = t_new + 1e-10;
+    long step = sim->step;
+    int slot, c;
+    if (sim->hist == NULL) {
+        return RCSD_OK; /* never wired: nothing to deliver or record */
+    }
+    slot = (int) (step % sim->hist_len);
+    RCSD_ACC_SERIAL(sim)
+    {
+        sim->hist_n[slot] = 0;
+        sim->hist_te[slot] = te;
+        sim->hist_step[slot] = step;
+    }
+    RCSD_ACC_LOOP(sim)
+    for (c = 0; c < n_cells; ++c) {
+        Cell* cell = &sim->cells.data[c];
+        if (sim->v[cell->soma_node] >= cell->v_threshold) {
+            if (!cell->above) {
+                cell->above = 1;
+                /* SpikeFilter: an absolute refractory window */
+                if (!(te - cell->t_last_spike < cell->tref)) {
+                    int k;
+                    cell->t_last_spike = te;
+                    RCSD_ACC_ATOMIC_CAPTURE
+                    k = sim->hist_n[slot]++;
+                    sim->hist[(size_t) slot * sim->hist_cells + k] = c;
+                }
+            }
+        } else {
+            cell->above = 0;
+        }
+    }
+    return RCSD_OK;
+}
+#else
+/* a cell that crossed: recorded, and an event queued on each of its outgoing
+ * connections */
+static int emit_spike(RCSDSim* sim, int c, double te) {
+    int k;
+    if (sim->record_spikes && sim->record_spikes[c]) {
+        DYN_PUSH(sim->spike_cells, c);
+        DYN_PUSH(sim->spike_times, te);
+    }
+    for (k = sim->out_start[c]; k < sim->out_start[c + 1]; ++k) {
+        int conn = sim->out_conn[k];
+        if (rcsd_events_enqueue(sim, conn, te + sim->connections.data[conn].eff_delay) != RCSD_OK) {
+            return RCSD_ERROR;
+        }
+    }
+    return RCSD_OK;
+}
+
 static int detect_spikes(RCSDSim* sim, double t_new) {
     size_t c;
     for (c = 0; c < sim->cells.n; ++c) {
@@ -1333,7 +1713,6 @@ static int detect_spikes(RCSDSim* sim, double t_new) {
         double v = sim->v[cell->soma_node];
         if (v >= cell->v_threshold) {
             double te;
-            int k;
             if (cell->above) {
                 continue;
             }
@@ -1344,16 +1723,8 @@ static int detect_spikes(RCSDSim* sim, double t_new) {
                 continue;
             }
             cell->t_last_spike = te;
-            if (sim->record_spikes && sim->record_spikes[c]) {
-                DYN_PUSH(sim->spike_cells, (int) c);
-                DYN_PUSH(sim->spike_times, te);
-            }
-            for (k = sim->out_start[c]; k < sim->out_start[c + 1]; ++k) {
-                int conn = sim->out_conn[k];
-                if (rcsd_events_enqueue(sim, conn, te + sim->connections.data[conn].eff_delay) !=
-                    RCSD_OK) {
-                    return RCSD_ERROR;
-                }
+            if (emit_spike(sim, (int) c, te) != RCSD_OK) {
+                return RCSD_ERROR;
             }
         } else {
             cell->above = 0;
@@ -1361,6 +1732,7 @@ static int detect_spikes(RCSDSim* sim, double t_new) {
     }
     return RCSD_OK;
 }
+#endif
 
 static int play_inputs(RCSDSim* sim, double horizon) {
     size_t n;
@@ -1392,6 +1764,7 @@ static void cap_range(void* vctx, int begin, int end) {
     RCSDSim* sim = c->sim;
     const double cfac = c->cfac;
     int i;
+    RCSD_ACC_LOOP(sim)
     for (i = begin; i < end; ++i) {
         if (sim->is_centre[i]) {
             sim->d[i] += cfac * PR(i, RCSD_P_CM);
@@ -1404,6 +1777,7 @@ static void cap_range(void* vctx, int begin, int end) {
 static void update_range(void* vctx, int begin, int end) {
     RCSDSim* sim = (RCSDSim*) vctx;
     int i;
+    RCSD_ACC_LOOP(sim)
     for (i = begin; i < end; ++i) {
         double dvh = sim->rhs[i];
         if (sim->is_centre[i]) {
@@ -1421,7 +1795,6 @@ static int advance(RCSDSim* sim) {
     const long s = sim->step;
     const double cfac = 1e-3 * sim->cj;
     double t_mid, t_new;
-    int i;
 #ifdef RCSD_PROFILE
     double prof_t = prof_now();
 #endif
@@ -1460,22 +1833,16 @@ static int advance(RCSDSim* sim) {
         cc.cfac = cfac;
         rcsd_parallel_for(sim->n_nodes, RCSD_PAR_GRAIN, cap_range, &cc);
     }
-    for (i = 0; i < sim->n_nodes; ++i) {
-        int p = sim->parent[i];
-        double dv;
-        if (p < 0) {
-            continue;
-        }
-        dv = sim->v[p] - sim->v[i];
-        sim->rhs[i] -= sim->coef_b[i] * dv;
-        sim->rhs[p] += sim->coef_a[i] * dv;
-        sim->d[i] -= sim->coef_b[i];
-        sim->d[p] -= sim->coef_a[i];
-    }
 
-    /* 4. solve for the half-step change, correct the ion currents to the
-     *    midpoint, update the voltage and the fast membrane current */
-    solve(sim);
+    /* 4. the axial terms, then solve for the half-step change; correct the
+     *    ion currents to the midpoint, update the voltage and the fast
+     *    membrane current */
+    if (cells_tile_nodes(sim)) {
+        rcsd_parallel_for((int) sim->cells.n, RCSD_CELL_GRAIN, axial_solve_range, sim);
+    } else {
+        axial_terms(sim);
+        solve(sim);
+    }
     PROF_MARK(5);
     rcsd_parallel_for(sim->n_nodes, RCSD_PAR_GRAIN, update_range, sim);
 
@@ -1503,7 +1870,7 @@ static int advance(RCSDSim* sim) {
     return RCSD_OK;
 }
 
-int rcsd_run(RCSDSim* sim, long n_steps, long* done) {
+static int run_steps(RCSDSim* sim, long n_steps, long* done) {
     long k;
     if (done) {
         *done = 0;
@@ -1535,9 +1902,34 @@ int rcsd_run(RCSDSim* sim, long n_steps, long* done) {
         if (advance(sim) != RCSD_OK) {
             return RCSD_ERROR;
         }
+#if defined(RCSD_OPENACC)
+        if (sim->step - sim->harvested >= RCSD_HARVEST_STEPS && collect(sim) != RCSD_OK) {
+            return RCSD_ERROR;
+        }
+#endif
     }
     if (done) {
         *done = n_steps;
     }
     return RCSD_OK;
+}
+
+int rcsd_run(RCSDSim* sim, long n_steps, long* done) {
+#if defined(RCSD_OPENACC)
+    /* the kernels queue up behind each other; whatever the outcome, the
+     * caller gets the simulation back synchronous and the spikes collected */
+    int rc;
+    if (rcsd_stimulus_prepare(sim) != RCSD_OK || prepare_recording(sim, n_steps) != RCSD_OK) {
+        return RCSD_ERROR;
+    }
+    sim->acc_async = 1;
+    rc = run_steps(sim, n_steps, done);
+    if (collect(sim) != RCSD_OK) {
+        rc = RCSD_ERROR;
+    }
+    sim->acc_async = acc_async_sync;
+    return rc;
+#else
+    return run_steps(sim, n_steps, done);
+#endif
 }

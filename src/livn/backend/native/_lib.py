@@ -353,6 +353,18 @@ def library_path(build_if_missing: bool = False) -> str | None:
     given = os.environ.get(LIBRARY_ENV)
     if given:
         return given if os.path.isfile(given) else None
+    if build.gpu_mode() is not None:
+        # never the shipped CPU library in place of a GPU build that failed:
+        # the build error is the answer
+        if not os.path.isdir(build.SOURCE_DIR):
+            raise ImportError(
+                f"{build.GPU_ENV} asks for a GPU build of librcsd, which needs the "
+                "C sources of a source checkout; this install ships only the CPU library"
+            )
+        found = build.cached_library()
+        if found is None and build_if_missing:
+            found = build.compile_library()
+        return found
     if os.path.isdir(build.SOURCE_DIR):
         found = build.cached_library()
         if found is None and build_if_missing:
@@ -388,6 +400,13 @@ def _load_library(build_if_missing: bool = True) -> ctypes.CDLL:
     version = lib.rcsd_version().decode()
     if version.split(".")[0] != "0":
         raise ImportError(f"librcsd at {path} is version {version}, expected 0.x")
+    if (build.gpu_mode() is not None) != version.endswith("+openacc"):
+        raise ImportError(
+            f"librcsd at {path} is version {version}, which is "
+            + ("not " if build.gpu_mode() is not None else "")
+            + f"an OpenACC build, and {build.GPU_ENV} is "
+            + (repr(os.environ.get(build.GPU_ENV)) if build.gpu_mode() else "unset")
+        )
     _loaded, _loaded_path = lib, path
     return lib
 

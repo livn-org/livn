@@ -405,6 +405,11 @@ double* rcsd_connection_weights(RCSDSim* sim) {
     return sim->w;
 }
 
+#if defined(RCSD_OPENACC)
+static int events_device_setup(RCSDSim* sim);
+static int arrivals_alloc(RCSDSim* sim, int len, int cap);
+#endif
+
 int rcsd_set_connection_delays(RCSDSim* sim, int n, const double* delay) {
     size_t i;
     int s, pending = 0;
@@ -430,7 +435,13 @@ int rcsd_set_connection_delays(RCSDSim* sim, int n, const double* delay) {
     }
     sim->max_delay = max_delay;
     if ((int) ceil(max_delay / sim->dt) + 4 <= sim->n_slots) {
+#if defined(RCSD_OPENACC)
+        /* the device delivers from the history, so spikes already in it
+         * arrive with the new delays */
+        return events_device_setup(sim);
+#else
         return RCSD_OK;
+#endif
     }
     /* the ring is too short for the longest delay: rebuilt, which is only
      * safe while it holds no events */
@@ -447,6 +458,127 @@ int rcsd_set_connection_delays(RCSDSim* sim, int n, const double* delay) {
 }
 
 /* outgoing lists per cell and per input, delays floored at 2 dt, ring size */
+#if defined(RCSD_OPENACC)
+typedef struct {
+    int off, conn;
+} OffConn;
+
+static int compare_off_conn(const void* a, const void* b) {
+    const OffConn* x = (const OffConn*) a;
+    const OffConn* y = (const OffConn*) b;
+    if (x->off != y->off) return (x->off > y->off) - (x->off < y->off);
+    return (x->conn > y->conn) - (x->conn < y->conn);
+}
+
+/* the device's event delivery: each cell's outgoing connections sorted by
+ * their delay in steps, and the spike history long enough for the longest
+ * delay plus the steps rcsd_run lets pass between collecting the spikes. A
+ * connection's step offset is nominal; the exact arrival step is computed
+ * at delivery as rcsd_events_enqueue computes it, and lies within one of it */
+static int events_device_setup(RCSDSim* sim) {
+    int n_cells = (int) sim->cells.n, c, k, len;
+    int min_off = 1 << 30, max_off = 0;
+    OffConn* tmp = NULL;
+    size_t tmp_cap = 0;
+    int* out_off = (int*) realloc(sim->out_off, (sim->connections.n + 1) * sizeof(int));
+    if (out_off == NULL) {
+        rcsd_set_error("out of memory");
+        return RCSD_ERROR;
+    }
+    sim->out_off = out_off;
+    for (c = 0; c < n_cells; ++c) {
+        int b = sim->out_start[c], e = sim->out_start[c + 1];
+        if ((size_t) (e - b) > tmp_cap) {
+            OffConn* grown = (OffConn*) realloc(tmp, (size_t) (e - b) * sizeof(OffConn));
+            if (grown == NULL) {
+                free(tmp);
+                rcsd_set_error("out of memory");
+                return RCSD_ERROR;
+            }
+            tmp = grown;
+            tmp_cap = (size_t) (e - b);
+        }
+        for (k = b; k < e; ++k) {
+            int conn = sim->out_conn[k];
+            tmp[k - b].conn = conn;
+            tmp[k - b].off = (int) ceil(sim->connections.data[conn].eff_delay / sim->dt + 0.5);
+        }
+        qsort(tmp, (size_t) (e - b), sizeof(OffConn), compare_off_conn);
+        for (k = b; k < e; ++k) {
+            sim->out_conn[k] = tmp[k - b].conn;
+            sim->out_off[k] = tmp[k - b].off;
+            if (tmp[k - b].off < min_off) min_off = tmp[k - b].off;
+            if (tmp[k - b].off > max_off) max_off = tmp[k - b].off;
+        }
+    }
+    free(tmp);
+    if (min_off > max_off) {
+        min_off = max_off = 1;
+    }
+    sim->min_off = min_off;
+    sim->max_off = max_off;
+    len = max_off + 4 + RCSD_HARVEST_STEPS;
+    if (len != sim->hist_len || n_cells != sim->hist_cells || sim->hist == NULL) {
+        free(sim->hist);
+        free(sim->hist_n);
+        free(sim->hist_te);
+        free(sim->hist_step);
+        sim->hist = (int*) malloc((size_t) len * (size_t) (n_cells > 0 ? n_cells : 1) * sizeof(int));
+        sim->hist_n = (int*) calloc((size_t) len, sizeof(int));
+        sim->hist_te = (double*) calloc((size_t) len, sizeof(double));
+        sim->hist_step = (long*) malloc((size_t) len * sizeof(long));
+        if (!sim->hist || !sim->hist_n || !sim->hist_te || !sim->hist_step) {
+            rcsd_set_error("out of memory");
+            return RCSD_ERROR;
+        }
+        sim->hist_len = len;
+        sim->hist_cells = n_cells;
+        for (k = 0; k < len; ++k) {
+            sim->hist_step[k] = -1;
+        }
+        sim->harvested = sim->step;
+    }
+    /* a bucket a step an event can arrive ahead, each room for twice the
+     * events of a step in which every cell fired once over the delay range */
+    {
+        long cap = 2 * (long) sim->connections.n / (max_off + 1);
+        if (cap < 4096) cap = 4096;
+        if (cap > (long) sim->connections.n + 1) cap = (long) sim->connections.n + 1;
+        if (sim->arr_cap > cap) cap = sim->arr_cap; /* grown by an overflow */
+#ifdef RCSD_ARRIVAL_CAP
+        cap = RCSD_ARRIVAL_CAP; /* tests: overflow, the history scan, growth */
+#endif
+        if (arrivals_alloc(sim, max_off + 3, (int) cap) != RCSD_OK) {
+            return RCSD_ERROR;
+        }
+    }
+    return RCSD_OK;
+}
+
+static int arrivals_alloc(RCSDSim* sim, int len, int cap) {
+    size_t n = (size_t) len * (size_t) cap;
+    if (len != sim->arr_len || cap != sim->arr_cap || sim->arr_n == NULL) {
+        free(sim->arr_n);
+        free(sim->arr_conn);
+        free(sim->arr_te);
+        sim->arr_n = (int*) calloc((size_t) len, sizeof(int));
+        sim->arr_conn = (int*) malloc(n * sizeof(int));
+        sim->arr_te = (double*) malloc(n * sizeof(double));
+        if (sim->arr_overflow == NULL) {
+            sim->arr_overflow = (int*) calloc(1, sizeof(int));
+        }
+        if (!sim->arr_n || !sim->arr_conn || !sim->arr_te || !sim->arr_overflow) {
+            rcsd_set_error("out of memory");
+            return RCSD_ERROR;
+        }
+        sim->arr_len = len;
+        sim->arr_cap = cap;
+    }
+    sim->arr_next = -1;
+    return RCSD_OK;
+}
+#endif
+
 int rcsd_wire(RCSDSim* sim) {
     size_t n_cells = sim->cells.n, n_inputs = sim->inputs.n, i;
     int* out_start;
@@ -534,7 +666,11 @@ int rcsd_wire(RCSDSim* sim) {
     }
     sim->n_slots = n_slots;
     sim->wired = 1;
+#if defined(RCSD_OPENACC)
+    return events_device_setup(sim);
+#else
     return RCSD_OK;
+#endif
 }
 
 /* ------------------------------------------------------------------------- */
@@ -543,12 +679,21 @@ int rcsd_wire(RCSDSim* sim) {
 
 void rcsd_events_clear(RCSDSim* sim) {
     int s;
+#if defined(RCSD_OPENACC)
+    sim->arr_next = -1; /* what was filed is no longer in flight */
+#endif
     if (sim->buckets == NULL) {
         return;
     }
     for (s = 0; s < sim->n_slots; ++s) {
         sim->buckets[s].n = 0;
     }
+#if defined(RCSD_OPENACC)
+    for (s = 0; s < sim->hist_len; ++s) {
+        sim->hist_step[s] = -1;
+    }
+    sim->harvested = sim->step;
+#endif
 }
 
 int rcsd_clear_events(RCSDSim* sim) {
@@ -570,6 +715,7 @@ int rcsd_events_enqueue(RCSDSim* sim, int conn, double te) {
         return RCSD_ERROR;
     }
     ev.conn = conn;
+    ev.site = sim->connections.data[conn].site;
     ev.te = te;
     bucket = &sim->buckets[target % sim->n_slots];
     DYN_PUSH(*bucket, ev);
@@ -584,6 +730,268 @@ static int compare_event(const void* a, const void* b) {
     return (x->conn > y->conn) - (x->conn < y->conn);
 }
 
+static void synapse_receive(RCSDSim* sim, int conn, double te);
+
+#if defined(RCSD_OPENACC)
+/* a site's events in the CPU build's order, (te, conn) */
+static int compare_site_event(const void* a, const void* b) {
+    const Event* x = (const Event*) a;
+    const Event* y = (const Event*) b;
+    if (x->site != y->site) return (x->site > y->site) - (x->site < y->site);
+    return compare_event(a, b);
+}
+
+static int compare_int(const void* a, const void* b) {
+    int x = *(const int*) a, y = *(const int*) b;
+    return (x > y) - (x < y);
+}
+
+/* the recorded spikes of the steps since the last call, from the history,
+ * in the CPU build's order: by step, then by cell */
+int rcsd_events_harvest(RCSDSim* sim) {
+    long s;
+    if (sim->hist == NULL || sim->harvested >= sim->step) {
+        return RCSD_OK;
+    }
+    RCSD_ACC_WAIT
+    if (sim->arr_overflow != NULL && *sim->arr_overflow > 0) {
+        /* a step overflowed its bucket and scanned the history: double the
+         * cap, refiled from the history at the next delivery */
+        long cap = 2 * (long) sim->arr_cap;
+        if (cap > (long) sim->connections.n + 1) cap = (long) sim->connections.n + 1;
+        *sim->arr_overflow = 0;
+        if (cap > sim->arr_cap && arrivals_alloc(sim, sim->arr_len, (int) cap) != RCSD_OK) {
+            return RCSD_ERROR;
+        }
+    }
+    for (s = sim->harvested; s < sim->step; ++s) {
+        int slot = (int) (s % sim->hist_len);
+        int* fired = &sim->hist[(size_t) slot * sim->hist_cells];
+        int n, k;
+        if (sim->hist_step[slot] != s || sim->record_spikes == NULL) {
+            continue;
+        }
+        n = sim->hist_n[slot];
+        if (n > 1) {
+            qsort(fired, (size_t) n, sizeof(int), compare_int);
+        }
+        for (k = 0; k < n; ++k) {
+            if (sim->record_spikes[fired[k]]) {
+                DYN_PUSH(sim->spike_cells, fired[k]);
+                DYN_PUSH(sim->spike_times, sim->hist_te[slot]);
+            }
+        }
+    }
+    sim->harvested = sim->step;
+    return RCSD_OK;
+}
+
+/* A connection's exact arrival step for a spike of step `sp` at `te`, as
+ * rcsd_events_enqueue computes it, never the spike's own step */
+#define ARRIVAL_STEP(sim, conn, te, sp, t_ev, target)                     \
+    do {                                                                  \
+        (t_ev) = (te) + (sim)->connections.data[conn].eff_delay;          \
+        (target) = (long) ceil((t_ev) / (sim)->dt - 0.5);                 \
+        if ((target) <= (sp)) (target) = (sp) + 1;                        \
+    } while (0)
+
+/* Gangs for filing and for delivering a bucket; each takes every
+ * RCSD_ARRIVAL_GANGS-th spike or event, a vector lane each */
+#define RCSD_ARRIVAL_GANGS 256
+
+/* every connection of the spikes of steps [from, step - 1] whose event
+ * arrives at `step` or later, into that step's bucket. `done`, unless -1,
+ * is the bucket the last step delivered: emptied here (and counted if it
+ * overflowed), which no event filed now can land in, since an event lands
+ * at most max_off + 1 steps on and there are max_off + 3 buckets */
+static void file_arrivals(RCSDSim* sim, long from, long step, int done) {
+    const int G = RCSD_ARRIVAL_GANGS;
+    int nwin = (int) (step - from), w;
+    if (nwin <= 0) {
+        return;
+    }
+    RCSD_ACC_GANG(sim)
+    for (w = 0; w < nwin * G; ++w) {
+        long sp = from + w / G;
+        int slot = (int) (sp % sim->hist_len);
+        int nf, f;
+        double te;
+        if (w == 0 && done >= 0) {
+            if (sim->arr_n[done] > sim->arr_cap) {
+                *sim->arr_overflow += 1;
+            }
+            sim->arr_n[done] = 0;
+        }
+        if (sim->hist_step[slot] != sp) {
+            continue;
+        }
+        nf = sim->hist_n[slot];
+        te = sim->hist_te[slot];
+        RCSD_ACC_SEQ
+        for (f = w % G; f < nf; f += G) {
+            int c = sim->hist[(size_t) slot * sim->hist_cells + f];
+            int k;
+            RCSD_ACC_VECTOR
+            for (k = sim->out_start[c]; k < sim->out_start[c + 1]; ++k) {
+                int conn = sim->out_conn[k];
+                double t_ev;
+                long target;
+                int bucket, at;
+                ARRIVAL_STEP(sim, conn, te, sp, t_ev, target);
+                if (target < step) {
+                    continue; /* delivered already: a refile's older spikes */
+                }
+                bucket = (int) (target % sim->arr_len);
+                RCSD_ACC_ATOMIC_CAPTURE
+                at = sim->arr_n[bucket]++;
+                if (at < sim->arr_cap) {
+                    size_t q = (size_t) bucket * sim->arr_cap + at;
+                    sim->arr_conn[q] = conn;
+                    sim->arr_te[q] = t_ev;
+                }
+            }
+        }
+    }
+}
+
+/* NET_RECEIVE on the device for the events that arrive at `step`, from
+ * their bucket. The buckets are filed a step at a time as spikes become
+ * deliverable, and refiled from the history when that sequence breaks (at
+ * init, after a clear, a change of delays or of the cap). A bucket that
+ * overflowed is delivered as before the buckets: every spike in the history
+ * whose step offset could land here, and of its cell's connections the ones
+ * whose exact arrival step is this one. One kernel does either: its first
+ * RCSD_ARRIVAL_GANGS gangs the bucket, the rest a step of the history each,
+ * and each part only if the bucket did (or did not) overflow. A connection
+ * receives at most one event a step, so its own state is one thread's; a
+ * site's conductance is the sum of its events, taken with atomic adds in
+ * whatever order the threads reach them. Two launches a step, filing and
+ * delivery, where launches dominate a small network's step */
+static void deliver_spikes(RCSDSim* sim, long step) {
+    long lo = step - sim->max_off - 1, hi = step - sim->min_off + 1;
+    const int G = RCSD_ARRIVAL_GANGS;
+    int nwin, bucket, g;
+    if (hi > step - 1) hi = step - 1;
+    if (lo < 0) lo = 0;
+    if (sim->hist == NULL || sim->arr_n == NULL) {
+        return;
+    }
+    bucket = (int) (step % sim->arr_len);
+    if (sim->arr_next != step) {
+        int b;
+        RCSD_ACC_LOOP(sim)
+        for (b = 0; b < sim->arr_len; ++b) {
+            sim->arr_n[b] = 0;
+        }
+        file_arrivals(sim, lo, step, -1);
+    } else {
+        file_arrivals(sim, step - 1, step, (int) ((step - 1) % sim->arr_len));
+    }
+    sim->arr_next = step + 1;
+
+    nwin = hi >= lo ? (int) (hi - lo + 1) : 0;
+    RCSD_ACC_GANG(sim)
+    for (g = 0; g < G + nwin; ++g) {
+        int n = sim->arr_n[bucket];
+        if (g < G) {
+            int j;
+            if (n > sim->arr_cap) {
+                continue;
+            }
+            RCSD_ACC_VECTOR
+            for (j = 0; j < 128; ++j) {
+                int i;
+                for (i = g * 128 + j; i < n; i += G * 128) {
+                    size_t q = (size_t) bucket * sim->arr_cap + i;
+                    synapse_receive(sim, sim->arr_conn[q], sim->arr_te[q]);
+                }
+            }
+        } else {
+            long sp = lo + (g - G);
+            int slot = (int) (sp % sim->hist_len);
+            int o = (int) (step - sp);
+            int nf, f;
+            double te;
+            if (n <= sim->arr_cap || sim->hist_step[slot] != sp) {
+                continue;
+            }
+            nf = sim->hist_n[slot];
+            te = sim->hist_te[slot];
+            RCSD_ACC_VECTOR
+            for (f = 0; f < nf; ++f) {
+                int c = sim->hist[(size_t) slot * sim->hist_cells + f];
+                int a = sim->out_start[c], b = sim->out_start[c + 1], k;
+                /* the first connection with an offset of at least o - 1 */
+                while (a < b) {
+                    int m = a + (b - a) / 2;
+                    if (sim->out_off[m] < o - 1) a = m + 1; else b = m;
+                }
+                for (k = a; k < sim->out_start[c + 1] && sim->out_off[k] <= o + 1; ++k) {
+                    int conn = sim->out_conn[k];
+                    double t_ev;
+                    long target;
+                    ARRIVAL_STEP(sim, conn, te, sp, t_ev, target);
+                    if (target == step) {
+                        synapse_receive(sim, conn, t_ev);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/* the step's events: the network's from the device's history, then the
+ * external spike trains', which the host queues in the bucket and the
+ * device takes one site to a thread, in the CPU build's order */
+int rcsd_events_deliver(RCSDSim* sim, long step) {
+    EventList* bucket;
+    Event* ev;
+    int* seg;
+    int n, nseg, g, i;
+    deliver_spikes(sim, step);
+    if (sim->buckets == NULL) {
+        return RCSD_OK;
+    }
+    bucket = &sim->buckets[step % sim->n_slots];
+    n = (int) bucket->n;
+    if (n == 0) {
+        return RCSD_OK;
+    }
+    RCSD_ACC_WAIT /* the previous bucket's kernel may still read seg */
+    if (n > 1) {
+        qsort(bucket->data, bucket->n, sizeof(Event), compare_site_event);
+    }
+    if (sim->seg_cap < bucket->n + 1) {
+        seg = (int*) realloc(sim->seg, (bucket->n + 1) * sizeof(int));
+        if (seg == NULL) {
+            rcsd_set_error("out of memory");
+            return RCSD_ERROR;
+        }
+        sim->seg = seg;
+        sim->seg_cap = bucket->n + 1;
+    }
+    nseg = 0;
+    for (i = 0; i < n; ++i) {
+        if (i == 0 || bucket->data[i].site != bucket->data[i - 1].site) {
+            sim->seg[nseg++] = i;
+        }
+    }
+    sim->seg[nseg] = n;
+    ev = bucket->data;
+    seg = sim->seg;
+    RCSD_ACC_LOOP(sim, ev, seg)
+    for (g = 0; g < nseg; ++g) {
+        int k;
+        RCSD_ACC_SEQ
+        for (k = seg[g]; k < seg[g + 1]; ++k) {
+            synapse_receive(sim, ev[k].conn, ev[k].te);
+        }
+    }
+    RCSD_ACC_WAIT /* before the host refills the bucket */
+    bucket->n = 0;
+    return RCSD_OK;
+}
+#else
 int rcsd_events_deliver(RCSDSim* sim, long step) {
     EventList* bucket;
     size_t i;
@@ -595,17 +1003,18 @@ int rcsd_events_deliver(RCSDSim* sim, long step) {
         qsort(bucket->data, bucket->n, sizeof(Event), compare_event);
     }
     for (i = 0; i < bucket->n; ++i) {
-        rcsd_synapse_receive(sim, bucket->data[i].conn, bucket->data[i].te);
+        synapse_receive(sim, bucket->data[i].conn, bucket->data[i].te);
     }
     bucket->n = 0;
     return RCSD_OK;
 }
+#endif
 
 /* ------------------------------------------------------------------------- */
 /* NET_RECEIVE                                                                */
 /* ------------------------------------------------------------------------- */
 
-void rcsd_synapse_receive(RCSDSim* sim, int conn, double te) {
+static void synapse_receive(RCSDSim* sim, int conn, double te) {
     Connection* c = &sim->connections.data[conn];
     int site = c->site;
     int kind = sim->synapses.data[site].kind;
@@ -652,9 +1061,11 @@ void rcsd_synapse_receive(RCSDSim* sim, int conn, double te) {
     tau_decay = SP(site, RCSD_SP_TAU_DECAY);
     primary = (SS(site, RCSD_SS_A) + inc) - SS(site, RCSD_SS_A);
     primary += (1.0 - SC(site, SC_HALF_RISE)) * (-(0.0) / ((-1.0) / tau_rise) - primary);
+    RCSD_ACC_ATOMIC_UPDATE
     SS(site, RCSD_SS_A) += primary;
     primary = (SS(site, RCSD_SS_B) + inc) - SS(site, RCSD_SS_B);
     primary += (1.0 - SC(site, SC_HALF_DECAY)) * (-(0.0) / ((-1.0) / tau_decay) - primary);
+    RCSD_ACC_ATOMIC_UPDATE
     SS(site, RCSD_SS_B) += primary;
 }
 
@@ -709,6 +1120,7 @@ static double site_current(RCSDSim* sim, int site, int kind, double v) {
 static void synapse_currents_range(void* vctx, int begin, int end) {
     RCSDSim* sim = (RCSDSim*) vctx;
     size_t s;
+    RCSD_ACC_LOOP(sim)
     for (s = (size_t) begin; s < (size_t) end; ++s) {
         Synapse* syn = &sim->synapses.data[s];
         int node = syn->node;
@@ -731,6 +1143,7 @@ static void synapse_state_range(void* vctx, int begin, int end) {
     RCSDSim* sim = (RCSDSim*) vctx;
     const double dt = sim->dt;
     size_t s;
+    RCSD_ACC_LOOP(sim)
     for (s = (size_t) begin; s < (size_t) end; ++s) {
         int kind = sim->synapses.data[s].kind;
         /* mod2c's `-(0.0)/((-1.0)/tau) - A` is `+0.0 - A` for any positive tau */

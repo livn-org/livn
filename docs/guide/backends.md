@@ -53,6 +53,10 @@ native.num_threads()        # what is in effect
 native.available_threads()  # what "auto" would resolve to
 ```
 
+### GPU
+
+On Linux with an NVIDIA GPU, the native backend can also run its time step on the GPU using the same library, see [NVIDIA GPUs (Linux)](/installation/nvidia-gpu).
+
 ## brian2
 
 [brian2](https://brian2.readthedocs.io/) is a lightweight backend suitable for rapid prototyping and small-to-medium systems. It models neurons as point processes using brian2's equation-based description language.
@@ -188,7 +192,7 @@ CoreNEURON can speed up the integration but it comes with the following limitati
 | Feature | native | brian2 | Diffrax | NEURON |
 |---------|--------|--------|---------|--------|
 | Differentiable | No | No | **Yes** | No |
-| GPU support | No | No | **Yes** | No |
+| GPU support | Linux, NVIDIA ([opt in](/installation/nvidia-gpu)) | No | **Yes** | No |
 | Multi-compartment models | **Yes** (the rcsd templates) | No | **Yes** | **Yes** |
 | Built-in opsins | **Yes** (RhO3c) | No | **Yes** (RhO3c) | **Yes** (RhO3c, RhO6c) |
 | MPI parallelism | No | No | No | **Yes** |

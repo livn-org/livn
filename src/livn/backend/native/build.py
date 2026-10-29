@@ -43,6 +43,40 @@ EMSCRIPTEN_FLAGS = (
     "-D_USE_MATH_DEFINES",
     "-sSIDE_MODULE=1",
 )
+GPU_ENV = "LIVN_NATIVE_GPU"
+GPU_MODES = ("unified", "managed")
+
+
+def gpu_mode() -> str | None:
+    mode = os.environ.get(GPU_ENV, "").strip().lower()
+    if not mode:
+        return None
+    if mode not in GPU_MODES:
+        raise ValueError(
+            f"{GPU_ENV}={mode!r}; expected one of {', '.join(GPU_MODES)}, or unset "
+            "for the CPU build"
+        )
+    return mode
+
+
+def _gpu_flags(compiler: list[str]) -> list[str]:
+    mode = gpu_mode()
+    if mode is None:
+        return []
+    exe = os.path.basename(compiler[0]).lower()
+    if exe.startswith("nvc"):
+        # noautopar: the loops inside a kernel stay sequential, so a node's
+        # currents are summed in order rather than as a parallel reduction
+        return [
+            "-acc=gpu,noautopar",
+            f"-gpu=mem:{mode}",
+            "-Minfo=accel",
+            "-DRCSD_OPENACC",
+        ]
+    # gcc offloads only where an nvptx offload compiler is installed; without
+    # one the kernels run on the host, which is how the OpenACC code paths are
+    # checked against the CPU build on a machine with no NVIDIA toolchain
+    return ["-fopenacc", "-DRCSD_OPENACC"]
 
 
 def library_name() -> str:
@@ -98,6 +132,7 @@ def source_digest(compiler: list[str] | None = None) -> str:
     digest.update(platform.machine().encode())
     digest.update(platform.system().encode())
     digest.update(os.environ.get("ARCHFLAGS", "").encode())
+    digest.update((gpu_mode() or "cpu").encode())
     return digest.hexdigest()[:16]
 
 
@@ -134,7 +169,20 @@ def _command(compiler: list[str], output: str, sources: list[str]) -> list[str]:
             *sources,
             "-lm",
         ]
-    return [*compiler, *POSIX_FLAGS, "-shared", "-o", output, *sources, "-lm"]
+    flags = POSIX_FLAGS
+    if exe.startswith("nvc"):
+        # nvc spells "no fast math" as strict IEEE arithmetic
+        flags = tuple("-Kieee" if f == "-fno-fast-math" else f for f in flags)
+    return [
+        *compiler,
+        *flags,
+        *_gpu_flags(compiler),
+        "-shared",
+        "-o",
+        output,
+        *sources,
+        "-lm",
+    ]
 
 
 def compile_library(output_dir: str | None = None, force: bool = False) -> str:

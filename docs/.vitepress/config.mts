@@ -132,6 +132,7 @@ export default defineConfig({
                     items: [
                         { text: "via uv (recommended)", link: "/installation/" },
                         { text: "Building parallel HDF5", link: "/installation/phdf5" },
+                        { text: "NVIDIA GPUs (Linux)", link: "/installation/nvidia-gpu" },
                     ],
                 },
                 {

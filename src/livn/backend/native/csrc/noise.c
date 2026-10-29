@@ -202,6 +202,7 @@ static void noise_advance_range(void* vctx, int begin, int end) {
     RCSDSim* sim = c->sim;
     const double t_mid = c->t_mid;
     size_t i;
+    RCSD_ACC_LOOP(sim)
     for (i = (size_t) begin; i < (size_t) end; ++i) {
         Noise* n = &sim->noise.data[i];
         if ((n->tau_e != 0.0) || (n->tau_i != 0.0)) {
@@ -244,9 +245,11 @@ void rcsd_noise_advance(RCSDSim* sim, double t_mid) {
 
 /* nrn_cur of every site: the current and its numerical dI/dV, scaled to the
  * node, which eval_membrane sums at the Gfluct3 position */
-void rcsd_noise_currents(RCSDSim* sim) {
+static void noise_currents_range(void* vctx, int begin, int end) {
+    RCSDSim* sim = (RCSDSim*) vctx;
     size_t i;
-    for (i = 0; i < sim->noise.n; ++i) {
+    RCSD_ACC_LOOP(sim)
+    for (i = (size_t) begin; i < (size_t) end; ++i) {
         Noise* n = &sim->noise.data[i];
         double v = sim->v[n->node];
         double g_e, g_i, i0, i1, g, scale;
@@ -274,4 +277,8 @@ void rcsd_noise_currents(RCSDSim* sim) {
         n->cur = i0 * scale;
         n->dcur = g * scale;
     }
+}
+
+void rcsd_noise_currents(RCSDSim* sim) {
+    rcsd_parallel_for((int) sim->noise.n, RCSD_PAR_GRAIN, noise_currents_range, sim);
 }
