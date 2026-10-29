@@ -861,6 +861,7 @@ def test_a_light_session_round_trips(tmp_path):
     )
     assert light.irradiance == 2.0 and light.wavelength == 470.0
     assert light.labels == ["near", "far"]
+    assert light.frame == "probe" and light.placement is None
 
 
 def test_several_devices_are_several_programs(tmp_path):
@@ -2578,3 +2579,299 @@ def test_a_calibration_states_the_latency_of_a_channel(physical, rsf_note):
     at_sample = recording.inputs(0, 0, 400, latency=True)[:, 0]
     np.testing.assert_array_equal(np.flatnonzero(delivered), np.arange(100, 300))
     np.testing.assert_array_equal(np.flatnonzero(at_sample), np.arange(120, 320))
+
+
+# -- a rig session's geometry: the probe as the IO, and where the spots are --------------
+
+_RIG_ROWS = ("hs0-000", "hs0-001", "hs0-002", "hs0-003", "hs0-004")
+_MAP_WIRING = "a" * 64
+
+
+def _probe_document(ids=("22", "12", "21", "15")):
+    """The contacts on rows 1, 0, 2 and 3 (the reference); row 4 is an auxiliary input."""
+    positions = {"12": [-700.0, 500.0], "21": [-500.0, 700.0], "22": [-500.0, 500.0]}
+    positions["15"] = [-700.0, -100.0]
+    return {
+        "specification": "probeinterface",
+        "version": "0.3.2",
+        "probes": [
+            {
+                "ndim": 2,
+                "si_units": "um",
+                "annotations": {"model_name": "60MEA200/30iR"},
+                "contact_positions": [positions.get(i, [0.0, 0.0]) for i in ids],
+                "contact_shapes": ["circle"] * len(ids),
+                "contact_shape_params": [{"radius": 15.0}] * len(ids),
+                "contact_ids": list(ids),
+                "device_channel_indices": [1, 0, 2, 3][: len(ids)],
+            }
+        ],
+    }
+
+
+_CHANNELS_DOCUMENT = {
+    "kind": "channels",
+    "channels": {
+        "hs0-003": {"kind": "reference", "contact_id": "15", "label": "reference"},
+        "hs0-004": {"kind": "analog_in", "label": "aux 1", "units": "uV"},
+    },
+}
+
+
+def _calibrated_record(wiring="f" * 64, points=None):
+    """A light record whose producer states its spots in a calibrated device frame: a
+    corner-origin layout with y down, so contact 12 (column 1, row 2) is at (0, 200)."""
+    points = (
+        [
+            {"from": [0, 0], "to": [0.0, 200.0], "label": "e12"},
+            {"from": [0, 0], "to": [200.0, 0.0], "label": "e21"},
+            {"from": [0, 0], "to": [200.0, 200.0], "label": "e22"},
+        ]
+        if points is None
+        else points
+    )
+    record = _light_record(scale=1.0)
+    record["acme"] = {
+        "program": [1, 2],
+        "target": {
+            "frame": "sample_um",
+            "calibration": {
+                "camera_to_sample": [1, 0, 0, 0, 1, 0, 0, 0, 1],
+                "sample_points": points,
+                "wiring": wiring,
+            },
+        },
+    }
+    return record
+
+
+def _rig(physical, name, **kwargs):
+    return physical(
+        name,
+        channels=_RIG_ROWS,
+        documents={
+            "probe.json": _probe_document(),
+            "channels.json": _CHANNELS_DOCUMENT,
+        },
+        extra_attributes={"electrode_map": {"design": "d" * 64, "wiring": _MAP_WIRING}},
+        **kwargs,
+    )
+
+
+def test_a_session_without_an_operator_has_its_probe_as_its_io(physical):
+    recording = _rig(physical, "probe")
+    io = recording.io
+    assert isinstance(io, MEA)
+    # the electrodes in row order; the reference and the aux input are not electrodes
+    np.testing.assert_array_equal(
+        io.electrode_coordinates,
+        [[12, -700.0, 500.0, 0.0], [22, -500.0, 500.0, 0.0], [21, -500.0, 700.0, 0.0]],
+    )
+    assert io.electrode_radius == 15.0
+    assert recording.electrode_rows == {
+        "12": "hs0-000",
+        "22": "hs0-001",
+        "21": "hs0-002",
+    }
+    assert load(recording.path).io.num_channels == 3
+
+    # livn's MEA numbers its electrodes: a probe of named contacts gives rows, not an IO
+    named = physical(
+        "named",
+        channels=_RIG_ROWS,
+        documents={"probe.json": _probe_document(("A1", "A2", "B1", "R"))},
+    )
+    assert named.io is None
+    assert named.electrode_rows["A1"] == "hs0-001"
+    # no probe, no electrodes
+    assert physical("bare").io is None and physical("bare2").electrode_rows == {}
+
+
+def test_spots_in_a_frame_of_their_own_are_named_and_warned_about(physical):
+    # a calibration on another layout whose points name no electrode of the probe
+    record = _calibrated_record(points=[{"from": [0, 0], "to": [0, 0], "label": "x"}])
+    recording = _rig(physical, "own", stimulation=[record])
+    stated = recording.stimulus_frame(0)
+    assert stated["frame"] == "sample_um:ffffffffffff" and stated["placement"] is None
+    assert "another electrode layout" in stated["why"]
+    with pytest.warns(UserWarning, match="their own frame 'sample_um:ffffffffffff'"):
+        light = recording.stimulus_io()
+    assert light.frame == "sample_um:ffffffffffff" and light.placement is None
+    # the discs are as recorded, not presented as electrode positions
+    np.testing.assert_array_equal(
+        np.asarray(light.spots)[:, 1:], [[0.0, 0.0, 25.0], [100.0, 0.0, 25.0]]
+    )
+
+    # a frame the format does not relate to the probe at all
+    mirrors = _light_record()
+    mirrors["acme"] = {"target": {"frame": "mirror"}}
+    with pytest.warns(UserWarning, match="'mirror'"):
+        assert _rig(physical, "mirrors", stimulation=[mirrors]).stimulus_io().frame == (
+            "mirror"
+        )
+
+
+def test_a_record_without_a_stated_frame_is_in_the_probe_frame(physical, recwarn):
+    plain = _rig(physical, "plain", stimulation=[_light_record(scale=1.0)])
+    assert plain.stimulus_frame(0)["frame"] == "probe"
+    # calibrated on the session's own electrode map: the probe's frame too
+    own_map = _rig(physical, "map", stimulation=[_calibrated_record(_MAP_WIRING)])
+    for recording in (plain, own_map):
+        light = recording.stimulus_io()
+        assert light.frame == "probe" and light.placement is None
+        np.testing.assert_array_equal(np.asarray(light.spots)[:, 1], [0.0, 100.0])
+    assert not [w for w in recwarn if issubclass(w.category, UserWarning)]
+
+
+def test_labelled_calibration_points_place_the_spots(physical, recwarn):
+    recording = _rig(physical, "fit", stimulation=[_calibrated_record()])
+    stated = recording.stimulus_frame(0)
+    assert stated["frame"] == "probe" and stated["by"] == "calibration"
+    # layout (x, y) -> probe (x - 700, 700 - y)
+    np.testing.assert_allclose(
+        stated["placement"], [[1, 0, -700], [0, -1, 700], [0, 0, 1]], atol=1e-9
+    )
+    light = recording.stimulus_io()
+    assert light.frame == "probe" and light.placement["by"] == "calibration"
+    np.testing.assert_allclose(
+        np.asarray(light.spots)[:, 1:], [[-700.0, 700.0, 25.0], [-600.0, 700.0, 25.0]]
+    )
+    assert not [w for w in recwarn if issubclass(w.category, UserWarning)]
+
+
+def test_a_given_placement_moves_the_spots_into_the_probe_frame(physical, recwarn):
+    record = _calibrated_record(points=[])
+    recording = _rig(physical, "placed", stimulation=[record])
+    # a similarity: rotate 90 degrees, scale 2, then shift
+    placement = [[0.0, -2.0, 10.0], [2.0, 0.0, -20.0]]
+    light = recording.stimulus_io(placement=placement)
+    assert light.frame == "probe" and light.placement["by"] == "caller"
+    np.testing.assert_allclose(light.placement["matrix"][:2], placement)
+    np.testing.assert_allclose(
+        np.asarray(light.spots)[:, 1:], [[10.0, -20.0, 50.0], [10.0, 180.0, 50.0]]
+    )
+    assert not [w for w in recwarn if issubclass(w.category, UserWarning)]
+
+    # a given placement overrides one the calibration's points would give
+    fitted = _rig(physical, "override", stimulation=[_calibrated_record()])
+    shift = np.array([[1.0, 0.0, 5.0], [0.0, 1.0, 7.0], [0.0, 0.0, 1.0]])
+    np.testing.assert_allclose(
+        np.asarray(fitted.stimulus_io(placement=shift).spots)[:, 1:3],
+        [[5.0, 7.0], [105.0, 7.0]],
+    )
+    # a projective placement maps the centre exactly; the radius by its local scale
+    projective = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.001, 0.0, 1.0]])
+    spots = np.asarray(recording.stimulus_io(placement=projective).spots)
+    np.testing.assert_allclose(spots[1, 1:3], [100.0 / 1.1, 0.0])
+    np.testing.assert_allclose(spots[1, 3], 25.0 / 1.1**1.5)
+
+    for bad in ([[1.0, 0.0], [0.0, 1.0]], [[0.0, 0.0, 1.0], [0.0, 0.0, 2.0]]):
+        with pytest.raises(ValueError, match="placement"):
+            recording.stimulus_io(placement=bad)
+
+
+def _position_version(rsf_note, item, at, x, y, wiring=_MAP_WIRING, **stated):
+    """A calibration version that restates the full scale and places ``item`` at (x, y)
+    in the probe frame of the electrode map ``wiring``."""
+    return {
+        **rsf_note(item, at, "1 mW/mm2, restated; placed again from a camera frame"),
+        "full_scale": {"units": "mW/mm2", "value": 1.0},
+        "measured_at": None,
+        "method": None,
+        "ext": {
+            "livn": {
+                "position_um": {"x": x, "y": y},
+                "frame": "probe",
+                "electrode_map": {"design": "d" * 64, "wiring": wiring},
+                "position_uncertainty_um": 75,
+                "position_basis": "camera placement",
+                **stated,
+            }
+        },
+    }
+
+
+def test_a_calibration_version_states_where_a_spot_is(physical, rsf_note, recwarn):
+    uid = "0123456789abcdef0123456789abcdef"
+    first = _position_version(
+        rsf_note, "light/s1", "2026-10-25T10:00:00.000001Z", -650, 640
+    )
+    second = _position_version(
+        rsf_note, "light/s2", "2026-10-25T10:00:00.000002Z", -520, 480, radius_um=40.0
+    )
+    notes = {
+        "stimulus_calibration": [
+            (f"20261025T100000.000001Z-{uid}.json", first),
+            (f"20261025T100000.000002Z-{uid}.json", second),
+        ]
+    }
+    # the record's own calibration fit would put the spots at (-700, 700) and (-600, 700)
+    recording = _rig(physical, "noted", stimulation=[_calibrated_record()], notes=notes)
+    calibrations = recording.stimulus_calibrations()
+    assert calibrations["light/s1"]["position"] == {
+        "x": -650.0,
+        "y": 640.0,
+        "radius": None,
+        "uncertainty": 75.0,
+        "basis": "camera placement",
+    }
+    assert calibrations["light/s2"]["position"]["radius"] == 40.0
+    stated = recording.stimulus_frame(0)
+    assert stated["frame"] == "probe" and stated["by"] == "note"
+    assert stated["placement"] is None
+    light = recording.stimulus_io()
+    assert light.frame == "probe"
+    assert light.placement == {"matrix": None, "by": "note"}
+    # the noted centres; the shape's radius unless the version states one
+    np.testing.assert_allclose(
+        np.asarray(light.spots)[:, 1:], [[-650.0, 640.0, 25.0], [-520.0, 480.0, 40.0]]
+    )
+    assert not [w for w in recwarn if issubclass(w.category, UserWarning)]
+
+    # a given placement still wins over everything
+    shift = [[1.0, 0.0, 5.0], [0.0, 1.0, 7.0]]
+    placed = recording.stimulus_io(placement=shift)
+    assert placed.placement["by"] == "caller"
+    np.testing.assert_allclose(
+        np.asarray(placed.spots)[:, 1:3], [[5.0, 7.0], [105.0, 7.0]]
+    )
+
+    # one spot noted: it moves, the other goes through the record's calibration fit
+    one = _rig(
+        physical,
+        "one",
+        stimulation=[_calibrated_record()],
+        notes={
+            "stimulus_calibration": [(f"20261025T100000.000001Z-{uid}.json", first)]
+        },
+    )
+    assert one.stimulus_frame(0)["by"] == "calibration"
+    light = one.stimulus_io()
+    assert light.placement["by"] == "calibration"
+    assert light.placement["noted"] == ["light/s1"]
+    np.testing.assert_allclose(
+        np.asarray(light.spots)[:, 1:3], [[-650.0, 640.0], [-600.0, 700.0]]
+    )
+
+    # a position placed on another electrode map, or in no stated frame, is not this
+    # probe's: the record's own placement stands
+    other = _position_version(
+        rsf_note, "light/s1", "2026-10-25T10:00:00.000001Z", 0, 0, wiring="b" * 64
+    )
+    unframed = _position_version(
+        rsf_note, "light/s2", "2026-10-25T10:00:00.000002Z", 0, 0
+    )
+    unframed["ext"]["livn"]["frame"] = "sample_um"
+    ignored = _rig(
+        physical,
+        "ignored",
+        stimulation=[_calibrated_record()],
+        notes={
+            "stimulus_calibration": [
+                (f"20261025T100000.000001Z-{uid}.json", other),
+                (f"20261025T100000.000002Z-{uid}.json", unframed),
+            ]
+        },
+    )
+    assert ignored.stimulus_calibrations()["light/s1"]["position"] is None
+    assert ignored.stimulus_io().placement["by"] == "calibration"

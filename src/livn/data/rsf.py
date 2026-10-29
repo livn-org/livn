@@ -3535,9 +3535,11 @@ class RsfRecording:
     def stimulus_calibrations(self) -> dict[str, dict]:
         """The current ``stimulus_calibration`` version of each channel that has one (not
         removed), by channel id: ``{"full_scale", "measured_at", "method", "text",
-        "wavelength_nm", "wavelength_basis", "latency_ms", "at", "author"}``, each ``None``
-        where the version does not say. ``latency_ms`` is how long after the delivered
-        edge the stimulus reaches the sample, stated by the version's measurement."""
+        "wavelength_nm", "wavelength_basis", "latency_ms", "position", "at", "author"}``,
+        each ``None`` where the version does not say. ``latency_ms`` is how long after the
+        delivered edge the stimulus reaches the sample, stated by the version's measurement.
+        ``position`` is where the version places the channel in the probe frame, ``{"x",
+        "y", "radius", "uncertainty", "basis"}``."""
         versions = _read_notes(
             os.path.join(self._documents, "notes"), (CALIBRATION,)
         ).get(CALIBRATION, {})
@@ -3554,6 +3556,7 @@ class RsfRecording:
                 "wavelength_nm": _wavelength(current.get("wavelength_nm")),
                 "wavelength_basis": _string(current.get("wavelength_basis")),
                 "latency_ms": _latency(current.get("latency_ms")),
+                "position": _noted_position(current, self.electrode_map.get("wiring")),
                 "at": current["at"],
                 "author": current["author"],
             }
@@ -3994,7 +3997,31 @@ class RsfRecording:
             if not found:
                 raise KeyError(f"{self.path} has no stimulation record {record}")
             record = found[0]
+        discs = [
+            c["id"]
+            for c in record.get("channels") or ()
+            if isinstance(c, Mapping) and (c.get("shape") or {}).get("kind") == "disc"
+        ]
+        noted = self._noted_positions()
+        if discs and all(i in noted for i in discs):
+            return {
+                "frame": PROBE_FRAME,
+                "placement": None,
+                "by": "note",
+                "why": (
+                    f"the newest stimulus_calibration version of each of its {len(discs)} "
+                    "discs states its position in the probe frame"
+                ),
+            }
         return _spot_frame(record, self.electrode_map.get("wiring"), self._contacts)
+
+    def _noted_positions(self) -> dict[str, dict]:
+        """The positions the channels' current calibration versions state, by channel id."""
+        return {
+            item: calibration["position"]
+            for item, calibration in self.stimulus_calibrations().items()
+            if calibration["position"] is not None
+        }
 
     def stimulus_io(self, medium=None, *, placement=None):
         """livn's stimulating devices for :meth:`stimulus_channels`, in their order, so the
@@ -4005,11 +4032,18 @@ class RsfRecording:
         ``{"matrix", "by"}`` or ``None``, the transform its recorded discs went through
         (:meth:`stimulus_frame`). Spots left in a frame of their own raise a warning.
 
-        ``placement`` overrides that: a 2D transform from the recorded disc coordinates into
-        the probe frame, applied to every light channel: a similarity or affine as a 2x3
-        ``[[a, b, tx], [c, d, ty]]`` or a 3x3 matrix, or a 3x3 projective one (a camera map,
-        say). A centre maps through it and a radius scales by the square root of its local
-        area scale. Electrode contacts are in the map's frame and stay put."""
+        A channel whose newest ``stimulus_calibration`` version states its position in the
+        probe frame is put there instead of where its record's ``shape`` and frame say,
+        with the shape's radius unless the version states one (``position`` in
+        :meth:`stimulus_calibrations`). A device whose spots all have one is ``frame``
+        ``"probe"`` with ``placement`` ``{"matrix": None, "by": "note"}``; when only some
+        do, ``placement["noted"]`` lists them.
+
+        ``placement`` overrides all of that: a 2D transform from the recorded disc
+        coordinates into the probe frame, applied to every light channel: a similarity or
+        affine as a 2x3 ``[[a, b, tx], [c, d, ty]]`` or a 3x3 matrix, or a 3x3 projective
+        one (a camera map, say). A centre maps through it and a radius scales by the square
+        root of its local area scale. Electrode contacts are in the map's frame and stay put."""
         from livn.io import MEA, InputDevices, PatternedLight
 
         given = None if placement is None else _placement_matrix(placement)
@@ -4019,6 +4053,7 @@ class RsfRecording:
         records = {r["index"]: r for r in self.stimulation_records()}
         scales = self.stimulus_full_scales()
         wavelengths = self.stimulus_wavelengths()
+        noted = self._noted_positions()
         runs: list[list[tuple]] = []
         for channel in channels:
             group = (
@@ -4039,25 +4074,41 @@ class RsfRecording:
             if kind == "light":
                 if wavelength is not None:
                     extra["wavelength"] = float(wavelength)
-                stated = self.stimulus_frame(records[run[0][0][0]])
+                # what the record states itself; a calibration version's position wins
+                stated = _spot_frame(
+                    records[run[0][0][0]],
+                    self.electrode_map.get("wiring"),
+                    self._contacts,
+                )
                 if given is not None:
                     matrix, by, frame = given, "caller", PROBE_FRAME
+                    ids = []
                 else:
                     matrix, by, frame = (
                         stated["placement"],
                         stated["by"],
                         stated["frame"],
                     )
+                    ids = [c["id"] for c in members if c["id"] in noted]
+                    if len(ids) == len(members):
+                        matrix, by, frame = None, "note", PROBE_FRAME
                 if frame != PROBE_FRAME:
                     warnings.warn(
-                        f"{self.path}: the spots of stimulation record {run[0][0][0]} are "
-                        f"in their own frame {frame!r}, not the probe's ({stated['why']}); "
-                        "their PatternedLight is not placed over the electrodes. Pass "
+                        f"{self.path}: the spots of stimulation record {run[0][0][0]} "
+                        f"{'without a stated position ' if ids else ''}are in their own "
+                        f"frame {frame!r}, not the probe's ({stated['why']}); their "
+                        "PatternedLight is not placed over the electrodes. Pass "
                         "stimulus_io(placement=...) to place them",
                         stacklevel=2,
                     )
-                if matrix is not None:
-                    members = [_placed(c, matrix) for c in members]
+                members = [
+                    _noted(c, noted[c["id"]])
+                    if c["id"] in ids
+                    else c
+                    if matrix is None
+                    else _placed(c, matrix)
+                    for c in members
+                ]
                 device = PatternedLight.from_channels(
                     members,
                     irradiance=1.0 if scale is None else float(scale),
@@ -4065,7 +4116,13 @@ class RsfRecording:
                 )
                 device.frame = frame
                 device.placement = (
-                    None if matrix is None else {"matrix": matrix.copy(), "by": by}
+                    None
+                    if matrix is None and not ids
+                    else {
+                        "matrix": None if matrix is None else matrix.copy(),
+                        "by": by,
+                        **({"noted": ids} if ids and by != "note" else {}),
+                    }
                 )
                 devices.append(device)
                 continue
@@ -4702,6 +4759,55 @@ def _placed(channel: Mapping, matrix: np.ndarray) -> dict:
         jacobian = (matrix[:2, :2] - np.outer([u / w, v / w], matrix[2, :2])) / w
         scale = abs(float(np.linalg.det(jacobian))) ** 0.5
         out["radius"] = float(shape["radius"]) * scale
+    return {**channel, "shape": out}
+
+
+def _noted_position(version: Mapping, wiring) -> dict | None:
+    """The position a ``stimulus_calibration`` version states for its channel, or ``None``.
+
+    The format has no member for it, so it is livn's own, under ``ext.livn``:
+    ``position_um`` ``{"x", "y"}`` in the probe frame (``frame`` ``"probe"``), and
+    optionally ``radius_um``, ``position_uncertainty_um``, ``position_basis`` and the
+    ``electrode_map`` ``{"design", "wiring"}`` it was placed on. A position placed on
+    another electrode map than the session's is not in this probe's frame and is ignored.
+    """
+    ext = version.get("ext")
+    stated = ext.get(PRODUCER) if isinstance(ext, Mapping) else None
+    if not isinstance(stated, Mapping) or stated.get("frame") != PROBE_FRAME:
+        return None
+    position = stated.get("position_um")
+    if not isinstance(position, Mapping):
+        return None
+    x, y = position.get("x"), position.get("y")
+    if not (_number(x) and _number(y) and math.isfinite(x) and math.isfinite(y)):
+        return None
+    on = stated.get("electrode_map")
+    placed_on = _string(on.get("wiring")) if isinstance(on, Mapping) else None
+    if placed_on is not None and wiring is not None and placed_on != wiring:
+        return None
+
+    def positive(value):
+        ok = _number(value) and math.isfinite(value) and value > 0
+        return float(value) if ok else None
+
+    return {
+        "x": float(x),
+        "y": float(y),
+        "radius": positive(stated.get("radius_um")),
+        "uncertainty": positive(stated.get("position_uncertainty_um")),
+        "basis": _string(stated.get("position_basis")),
+    }
+
+
+def _noted(channel: Mapping, position: Mapping) -> dict:
+    """A light channel with its disc at a ``position`` a calibration version states; the
+    radius stays the shape's unless the version states one."""
+    shape = channel.get("shape") or {}
+    if shape.get("kind") != "disc":
+        return dict(channel)
+    out = {**shape, "x": position["x"], "y": position["y"]}
+    if position["radius"] is not None:
+        out["radius"] = position["radius"]
     return {**channel, "shape": out}
 
 

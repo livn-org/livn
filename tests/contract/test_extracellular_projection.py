@@ -31,7 +31,6 @@ def recorded():
     env = env.record("extracellular", dt=0.1)
     projected_only = env.run(20, dt=0.025)
     env = env.record_membrane_current(dt=0.1)
-    env.clear(reseed=False)
     both = env.run(20, dt=0.025)
     yield env, projected_only, both
     with contextlib.suppress(Exception):
