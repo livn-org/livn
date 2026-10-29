@@ -39,7 +39,8 @@ def recorded():
 
 def test_the_channel_is_a_row_per_recording_channel(recorded):
     env, projected_only, both = recorded
-    channel = projected_only.channel("extracellular")
+    assert projected_only.channel("extracellular") is not None
+    channel = both.channel("extracellular")
     assert channel is not None
     assert channel.projection is not None
     # sampled as the backend samples currents (diffrax: its integration step)

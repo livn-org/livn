@@ -1153,7 +1153,17 @@ class Env(Protocol):
             population if isinstance(population, (list, tuple)) else (population,)
         )
         env = self
+        projected = self.__dict__.get("_extracellular") or {}
         for p in populations:
+            if what == "membrane_current" and p in projected.get("populations", ()):
+                dt = kwargs.get("dt", projected["dt"])
+                if abs(dt - projected["dt"]) > 1e-12:
+                    raise ValueError(
+                        f"membrane currents of {p} are recorded at dt="
+                        f"{projected['dt']} ms for the extracellular channels, "
+                        f"so they cannot also be recorded at {dt} ms"
+                    )
+                continue
             recorded = getattr(env, name)(p, **kwargs)
             if recorded is not None:
                 env = recorded
