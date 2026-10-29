@@ -40,7 +40,12 @@ def logged(document: dict) -> set[tuple[str, str | None]]:
     for name, recording in (document.get("recordings") or {}).items():
         channels = [c["channel"] for c in (recording.get("channels") or ())]
         date = re.match(r"\d{4}-(\d{2}-\d{2})_", name)
-        if not channels or date is None:
+        if channels and date is None:
+            stated = recording.get("sample") or {}
+            if stated.get("sample"):
+                found.add((stated["sample"], stated.get("composition")))
+            continue
+        if not channels:
             continue
         array = f"MEA_{chr(ord('A') + min(channels) // 128)}"
         entry = ((experiments.get(date.group(1)) or {}).get("samples") or {}).get(
