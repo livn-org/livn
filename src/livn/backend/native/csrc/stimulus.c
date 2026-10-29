@@ -38,20 +38,38 @@ static double half_axial(const Section* sec) {
     return sec->Ra * half_length_cm / (M_PI * radius_cm * radius_cm) * 1e-6;
 }
 
-static int find_row(const Stimulus* s, int cell, int section) {
+/* the first row naming each section, by global section index, -1 for none:
+ * one pass over the rows instead of a scan of them per junction, which made
+ * building the junctions quadratic in the network (120 s at 100k cells) */
+static int* first_rows(const RCSDSim* sim, const Stimulus* s) {
+    int* first = (int*) malloc((sim->sections.n + 1) * sizeof(int));
+    size_t i;
     int r;
-    for (r = 0; r < s->n_rows; ++r) {
-        if (s->cell[r] == cell && s->section[r] == section) {
-            return r;
-        }
+    if (first == NULL) {
+        return NULL;
     }
-    return -1;
+    for (i = 0; i < sim->sections.n; ++i) {
+        first[i] = -1;
+    }
+    for (r = s->n_rows - 1; r >= 0; --r) {
+        const Cell* cell;
+        if (s->cell[r] < 0 || (size_t) s->cell[r] >= sim->cells.n) {
+            continue;
+        }
+        cell = &sim->cells.data[s->cell[r]];
+        if (s->section[r] < 0 || s->section[r] >= cell->nsec) {
+            continue;
+        }
+        first[cell->sec0 + s->section[r]] = r;
+    }
+    return first;
 }
 
 /* the junctions of every cell the field reaches on both sides */
 static int build_junctions(RCSDSim* sim, Stimulus* s) {
     size_t sec_index;
     int cap = 0, n = 0, dropped = 0;
+    int* first;
     free(s->j_row_a);
     free(s->j_row_b);
     free(s->j_node_a);
@@ -59,23 +77,26 @@ static int build_junctions(RCSDSim* sim, Stimulus* s) {
     free(s->j_inv_r);
     s->j_row_a = s->j_row_b = s->j_node_a = s->j_node_b = NULL;
     s->j_inv_r = NULL;
+    first = first_rows(sim, s);
+    if (first == NULL) {
+        rcsd_set_error("out of memory");
+        return RCSD_ERROR;
+    }
     for (sec_index = 0; sec_index < sim->sections.n; ++sec_index) {
         const Section* child = &sim->sections.data[sec_index];
         const Section* parent;
-        const Cell* cell;
         int row_a, row_b, node_a, node_b, j;
         double resistance;
         if (child->parent_section < 0) {
             continue;
         }
         parent = &sim->sections.data[child->parent_section];
-        cell = &sim->cells.data[child->cell];
         resistance = half_axial(child) + half_axial(parent);
         if (resistance <= 0.0) {
             continue;
         }
-        row_a = find_row(s, child->cell, (int) sec_index - cell->sec0);
-        row_b = find_row(s, child->cell, child->parent_section - cell->sec0);
+        row_a = first[sec_index];
+        row_b = first[child->parent_section];
         if (row_a < 0 || row_b < 0) {
             dropped += 1;
             continue;
@@ -102,6 +123,7 @@ static int build_junctions(RCSDSim* sim, Stimulus* s) {
             nb = (int*) realloc(s->j_node_b, (size_t) cap * sizeof(int));
             ir = (double*) realloc(s->j_inv_r, (size_t) cap * sizeof(double));
             if (!ra || !rb || !na || !nb || !ir) {
+                free(first);
                 rcsd_set_error("out of memory");
                 return RCSD_ERROR;
             }
@@ -118,6 +140,7 @@ static int build_junctions(RCSDSim* sim, Stimulus* s) {
         s->j_inv_r[n] = 1.0 / resistance;
         n += 1;
     }
+    free(first);
     s->n_junctions = n;
     s->dropped_junctions = dropped;
     return RCSD_OK;
