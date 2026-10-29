@@ -473,8 +473,9 @@ class Env(EnvProtocol):
         dend_type = self.model.section_name(population, "dend")
         tref = self._refractory_period
         cells: dict[int, NativeCell] = {}
-        for gid in gids:
-            params = self._scaled(base, population, gid)
+        scales = self._size_scales(population, gids)
+        for gid, scale in zip(gids, scales, strict=True):
+            params = self._scaled(base, scale)
             template = template_cls(params)
             # the model's detector, as the NEURON backend reads it
             threshold = float(
@@ -513,12 +514,22 @@ class Env(EnvProtocol):
             found = self.__dict__["_pop_code_cells"] = {}
         return found
 
-    def _scaled(self, params: dict, population: str, gid: int) -> dict:
-        """The parameters with the cell's size factor folded into its diameters."""
+    def _size_scales(self, population: str, gids: list[int]) -> list[float | None]:
+        """Each cell's size factor, None where the model draws none.
+
+        Drawn for the whole population at once; each factor depends on its gid
+        alone, so it is the one a cell would be given on its own.
+        """
         size_cv = getattr(self.model, "size_cv_for", None)
         if size_cv is None or size_cv(population) <= 0.0:
+            return [None] * len(gids)
+        return [float(s) for s in self.model.size_scales(population, gids)]
+
+    @staticmethod
+    def _scaled(params: dict, scale: float | None) -> dict:
+        """The parameters with the cell's size factor folded into its diameters."""
+        if scale is None:
             return dict(params)
-        scale = float(self.model.size_scales(population, [gid])[0])
         out = dict(params)
         for key in ("global_diam", "axon_diam"):
             if params.get(key) is not None:
@@ -1291,11 +1302,14 @@ class Env(EnvProtocol):
                 continue
             rows = np.flatnonzero(mask)
             self._sp[column, rows] = float(value)
-            if name in ("tau_rise", "tau_decay", "U", "tau_rec"):
-                for row in rows:
-                    L.check(
-                        self._lib.rcsd_synapse_refresh(self._sim, int(row)), self._lib
-                    )
+            if name in ("tau_rise", "tau_decay", "U", "tau_rec") and len(rows):
+                sites = L.as_int_array(rows)
+                L.check(
+                    self._lib.rcsd_synapse_refresh_sites(
+                        self._sim, len(sites), L.int_ptr(sites)
+                    ),
+                    self._lib,
+                )
         return self
 
     def set_weights(self, weights: dict) -> Self:
@@ -1538,8 +1552,22 @@ class Env(EnvProtocol):
         merged = self._noise_by_population(dict(self._noise_state))
         base = int(self.seed if self.seed is not None else 0)
         lib, sim = self._lib, self._sim
+        scales, _keys = getattr(self, "_noise_scale", ({}, ()))
+        # What `neuron_noise_configure` leaves a site with depends on the
+        # population, the cell's noise scale and what the site held before
+        # (its section name among it), so it is called once per distinct
+        # combination and its result copied to the sites that share it.
+        configured: dict[tuple, dict] = {}
+        where, values, on, streams = [], [], [], []
         for population, cells in self.cells.items():
+            by_scale: dict[float, dict] = {}
             for gid, cell in cells.items():
+                scale = float(scales.get(int(gid), 1.0))
+                params = by_scale.get(scale)
+                if params is None:
+                    params = by_scale[scale] = scaled_noise(
+                        self, gid, merged[population]
+                    )
                 for idx, name in enumerate(cell.section_names):
                     key = f"{gid}-{idx}"
                     found = self._flucts.get(key)
@@ -1550,42 +1578,68 @@ class Env(EnvProtocol):
                     else:
                         site = found[2]
                         fresh = False
-                    self.model.neuron_noise_configure(
-                        population,
-                        site,
-                        None,
-                        **scaled_noise(self, gid, merged[population]),
-                    )
-                    L.check(
-                        lib.rcsd_set_noise(
-                            sim,
-                            cell.index,
-                            idx,
-                            float(site.g_e0),
-                            float(site.g_i0),
-                            float(site.std_e),
-                            float(site.std_i),
-                            float(site.tau_e),
-                            float(site.tau_i),
-                            float(site.E_e),
-                            float(site.E_i),
-                            float(site.h),
-                            int(site.on),
-                        ),
-                        lib,
-                    )
-                    if fresh:
-                        L.check(
-                            lib.rcsd_set_noise_stream(
-                                sim,
-                                cell.index,
-                                idx,
-                                int(gid) + 1,
-                                int(idx) + 1,
-                                base + self._noise_stream * NOISE_STREAM_STRIDE,
-                            ),
-                            lib,
+                    state = (population, scale, *vars(site).items())
+                    after = configured.get(state)
+                    if after is None:
+                        self.model.neuron_noise_configure(
+                            population, site, None, **params
                         )
+                        configured[state] = dict(vars(site))
+                    else:
+                        vars(site).update(after)
+                    where.append((cell.index, idx))
+                    values.append(
+                        (
+                            site.g_e0,
+                            site.g_i0,
+                            site.std_e,
+                            site.std_i,
+                            site.tau_e,
+                            site.tau_i,
+                            site.E_e,
+                            site.E_i,
+                            site.h,
+                        )
+                    )
+                    on.append(int(site.on))
+                    if fresh:
+                        streams.append((cell.index, idx, int(gid) + 1, int(idx) + 1))
+        if where:
+            at = np.asarray(where, dtype=np.int32)
+            cell_at, section_at = L.as_int_array(at[:, 0]), L.as_int_array(at[:, 1])
+            values = L.as_double_array(np.asarray(values, dtype=np.float64))
+            on = L.as_int_array(on)
+            L.check(
+                lib.rcsd_set_noise_many(
+                    sim,
+                    len(on),
+                    L.int_ptr(cell_at),
+                    L.int_ptr(section_at),
+                    L.double_ptr(values),
+                    L.int_ptr(on),
+                ),
+                lib,
+            )
+        if streams:
+            # what ctypes' c_uint makes of each, modulo 2**32
+            ids = np.asarray(streams, dtype=np.int64)
+            cell_at, section_at = L.as_int_array(ids[:, 0]), L.as_int_array(ids[:, 1])
+            id1 = np.ascontiguousarray(ids[:, 2].astype(np.uint32))
+            id2 = np.ascontiguousarray(ids[:, 3].astype(np.uint32))
+            third = base + self._noise_stream * NOISE_STREAM_STRIDE
+            id3 = np.full(len(ids), third % 2**32, dtype=np.uint32)
+            L.check(
+                lib.rcsd_set_noise_streams(
+                    sim,
+                    len(ids),
+                    L.int_ptr(cell_at),
+                    L.int_ptr(section_at),
+                    L.uint_ptr(id1),
+                    L.uint_ptr(id2),
+                    L.uint_ptr(id3),
+                ),
+                lib,
+            )
         return self
 
     def _noise_by_population(self, state: dict) -> dict[str, dict]:

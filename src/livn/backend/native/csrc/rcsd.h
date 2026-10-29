@@ -205,6 +205,9 @@ RCSD_API int rcsd_add_section(RCSDSim* sim, int cell, int kind, int nseg, double
                               double diam, double Ra, double cm, unsigned mechanisms,
                               int parent_section, double parent_x);
 RCSD_API int rcsd_section_set(RCSDSim* sim, int section, int param, double value);
+/* rcsd_section_set for each of `n` (section, param, value) triples in turn */
+RCSD_API int rcsd_sections_set(RCSDSim* sim, int n, const int* section, const int* param,
+                               const double* value);
 RCSD_API double rcsd_section_get(RCSDSim* sim, int section, int param);
 RCSD_API int rcsd_section_geometry(RCSDSim* sim, int section, double L, double diam,
                                    double Ra);
@@ -230,6 +233,9 @@ RCSD_API int rcsd_define_shape(RCSDSim* sim);
 
 /* --- synapses -------------------------------------------------------------- */
 RCSD_API int rcsd_add_synapse(RCSDSim* sim, int cell, int section, double x, int kind);
+/* rcsd_add_synapse for each of `n` sites in turn; returns the first one's index */
+RCSD_API int rcsd_add_synapses(RCSDSim* sim, int n, const int* cell, const int* section,
+                               const double* x, const int* kind);
 RCSD_API int rcsd_add_input(RCSDSim* sim, int gid);
 RCSD_API int rcsd_set_input_spikes(RCSDSim* sim, int input, const double* times, int n);
 /* `source` >= 0 is a cell index, < 0 is an input: -(input + 1). The
@@ -253,6 +259,8 @@ RCSD_API int rcsd_synapse_node(RCSDSim* sim, int site);
 /* recompute the normalisation `factor` of a site from its time constants
  * (NEURON does this in INITIAL, so call it after changing tau_rise/tau_decay) */
 RCSD_API int rcsd_synapse_refresh(RCSDSim* sim, int site);
+/* rcsd_synapse_refresh for each of `n` sites in turn */
+RCSD_API int rcsd_synapse_refresh_sites(RCSDSim* sim, int n, const int* site);
 
 /* --- noise (Gfluct3) ------------------------------------------------------- */
 RCSD_API int rcsd_set_noise(RCSDSim* sim, int cell, int section, double g_e0, double g_i0,
@@ -260,6 +268,14 @@ RCSD_API int rcsd_set_noise(RCSDSim* sim, int cell, int section, double g_e0, do
                             double E_e, double E_i, double h, int on);
 RCSD_API int rcsd_set_noise_stream(RCSDSim* sim, int cell, int section, unsigned id1,
                                    unsigned id2, unsigned id3);
+/* rcsd_set_noise for each of `n` sites in turn; `values` holds g_e0, g_i0,
+ * std_e, std_i, tau_e, tau_i, E_e, E_i and h for each */
+RCSD_API int rcsd_set_noise_many(RCSDSim* sim, int n, const int* cell, const int* section,
+                                 const double* values, const int* on);
+/* rcsd_set_noise_stream for each of `n` sites in turn */
+RCSD_API int rcsd_set_noise_streams(RCSDSim* sim, int n, const int* cell, const int* section,
+                                    const unsigned* id1, const unsigned* id2,
+                                    const unsigned* id3);
 RCSD_API int rcsd_noise_count(RCSDSim* sim);
 /* one site's cell, section, node and its state: g_e1, g_i1, g_e, g_i, ival, t_last */
 RCSD_API int rcsd_noise_state(RCSDSim* sim, int index, int* cell, int* section, int* node,

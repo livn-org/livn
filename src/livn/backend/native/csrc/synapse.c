@@ -159,6 +159,21 @@ int rcsd_add_synapse(RCSDSim* sim, int cell, int section, double x, int kind) {
     return site;
 }
 
+int rcsd_add_synapses(RCSDSim* sim, int n, const int* cell, const int* section,
+                      const double* x, const int* kind) {
+    int first = (int) sim->synapses.n;
+    int i;
+    if (n > 0 && grow_sites(sim, sim->synapses.n + (size_t) n) != RCSD_OK) {
+        return RCSD_ERROR;
+    }
+    for (i = 0; i < n; ++i) {
+        if (rcsd_add_synapse(sim, cell[i], section[i], x[i], kind[i]) < 0) {
+            return RCSD_ERROR;
+        }
+    }
+    return first;
+}
+
 int rcsd_synapse_count(RCSDSim* sim) {
     return (int) sim->synapses.n;
 }
@@ -225,6 +240,16 @@ int rcsd_synapse_refresh(RCSDSim* sim, int site) {
         return RCSD_ERROR;
     }
     rcsd_synapse_finalize_factor(sim, site);
+    return RCSD_OK;
+}
+
+int rcsd_synapse_refresh_sites(RCSDSim* sim, int n, const int* site) {
+    int i;
+    for (i = 0; i < n; ++i) {
+        if (rcsd_synapse_refresh(sim, site[i]) != RCSD_OK) {
+            return RCSD_ERROR;
+        }
+    }
     return RCSD_OK;
 }
 

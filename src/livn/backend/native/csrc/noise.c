@@ -3,20 +3,39 @@
  * a Random123 stream that restarts with every initialisation.
  */
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "internal.h"
 #include "thread.h"
 
 static Noise* find_noise(RCSDSim* sim, int cell, int section) {
-    size_t i;
-    for (i = 0; i < sim->noise.n; ++i) {
-        Noise* n = &sim->noise.data[i];
-        if (n->cell == cell && n->section == section) {
-            return n;
-        }
+    int sec = rcsd_cell_section(sim, cell, section);
+    if (sec < 0 || (size_t) sec >= sim->noise_at_n || sim->noise_at[sec] == 0) {
+        return NULL;
     }
-    return NULL;
+    return &sim->noise.data[sim->noise_at[sec] - 1];
+}
+
+/* remember that section `sec` carries the noise site last pushed */
+static int index_noise(RCSDSim* sim, int sec) {
+    if ((size_t) sec >= sim->noise_at_n) {
+        size_t want = sim->noise_at_n ? sim->noise_at_n : 256;
+        int* grown;
+        while (want <= (size_t) sec) {
+            want *= 2;
+        }
+        grown = (int*) realloc(sim->noise_at, want * sizeof(int));
+        if (grown == NULL) {
+            rcsd_set_error("out of memory");
+            return RCSD_ERROR;
+        }
+        memset(grown + sim->noise_at_n, 0, (want - sim->noise_at_n) * sizeof(int));
+        sim->noise_at = grown;
+        sim->noise_at_n = want;
+    }
+    sim->noise_at[sec] = (int) sim->noise.n;
+    return RCSD_OK;
 }
 
 static double exptrap(double x) {
@@ -61,6 +80,9 @@ int rcsd_set_noise(RCSDSim* sim, int cell, int section, double g_e0, double g_i0
         fresh.node = rcsd_section_node(sim, sec, 0.5);
         fresh.t_last = 0.0;
         DYN_PUSH(sim->noise, fresh);
+        if (index_noise(sim, sec) != RCSD_OK) {
+            return RCSD_ERROR;
+        }
         n = &sim->noise.data[sim->noise.n - 1];
         r123_seed(&n->stream, 0, 0, 0);
         sim->pp_dirty = 1;
@@ -91,6 +113,31 @@ int rcsd_set_noise_stream(RCSDSim* sim, int cell, int section, unsigned id1, uns
     n->id3 = id3;
     n->seeded = 1;
     r123_seed(&n->stream, id1, id2, id3);
+    return RCSD_OK;
+}
+
+int rcsd_set_noise_many(RCSDSim* sim, int n, const int* cell, const int* section,
+                        const double* values, const int* on) {
+    int i;
+    for (i = 0; i < n; ++i) {
+        const double* v = values + (size_t) i * 9;
+        if (rcsd_set_noise(sim, cell[i], section[i], v[0], v[1], v[2], v[3], v[4], v[5], v[6],
+                           v[7], v[8], on[i]) != RCSD_OK) {
+            return RCSD_ERROR;
+        }
+    }
+    return RCSD_OK;
+}
+
+int rcsd_set_noise_streams(RCSDSim* sim, int n, const int* cell, const int* section,
+                           const unsigned* id1, const unsigned* id2, const unsigned* id3) {
+    int i;
+    for (i = 0; i < n; ++i) {
+        if (rcsd_set_noise_stream(sim, cell[i], section[i], id1[i], id2[i], id3[i]) !=
+            RCSD_OK) {
+            return RCSD_ERROR;
+        }
+    }
     return RCSD_OK;
 }
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import math
 from dataclasses import dataclass, field
 
@@ -486,8 +487,30 @@ TEMPLATES = {"BoothRinzelKiehn": BRKTemplate, "BRK": BRKTemplate, "V1In": V1InTe
 
 
 def push_section_params(lib, sim, section: int, spec: SectionSpec) -> None:
-    for param, value in spec.params.items():
-        L.check(lib.rcsd_section_set(sim, section, param, float(value)), lib)
+    push_params(lib, sim, [(section, spec)])
+
+
+def push_params(lib, sim, sections) -> None:
+    """Every `(section, spec)`'s parameters, in one call."""
+    triples = [
+        (section, param, float(value))
+        for section, spec in sections
+        for param, value in spec.params.items()
+    ]
+    if not triples:
+        return
+    n = len(triples)
+    at, params, values = zip(*triples, strict=True)
+    L.check(
+        lib.rcsd_sections_set(
+            sim,
+            n,
+            (ctypes.c_int * n)(*at),
+            (ctypes.c_int * n)(*params),
+            (ctypes.c_double * n)(*values),
+        ),
+        lib,
+    )
 
 
 class NativeCell(Cell):
@@ -551,6 +574,15 @@ class NativeCell(Cell):
         elif loc > 1.0:
             loc = 1.0
         return self._dend_index, float(loc)
+
+    def place_many(self, swc_type, loc) -> tuple[np.ndarray, np.ndarray]:
+        """`place` for arrays of sites, element by element."""
+        swc_type = np.asarray(swc_type)
+        soma = swc_type == SWC_SOMA
+        section = np.where(soma, self._soma_index, self._dend_index)
+        loc = np.asarray(loc, dtype=np.float64)
+        x = np.where(loc < 0.0, 0.0, np.where(loc > 1.0, 1.0, loc))
+        return section, np.where(soma, 0.5, x)
 
     def dest_sec_type(self, swc_type: int) -> str:
         if swc_type == SWC_SOMA:
@@ -718,6 +750,6 @@ def build_cell(
             ),
             lib,
         )
-        push_section_params(lib, sim, section, spec)
         sections.append(section)
+    push_params(lib, sim, zip(sections, template.sections, strict=True))
     return cell, sections

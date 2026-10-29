@@ -272,6 +272,9 @@ struct RCSDSim {
 
     /* noise, opsins */
     DYN(Noise) noise;
+    /* per section, 1 + its index in `noise`, 0 where it carries none */
+    int* noise_at;
+    size_t noise_at_n;
     DYN(Opsin) opsins;
     DYN(ChR2) chr2;
 

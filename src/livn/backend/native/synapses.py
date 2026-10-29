@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+import math
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -57,30 +58,26 @@ class ConnectionTable:
         return len(self.pre_gid)
 
 
-@dataclass
-class _Growable:
-    post_gid: list = field(default_factory=list)
-    swc_type: list = field(default_factory=list)
-    dest_sectype: list = field(default_factory=list)
-    mech_id: list = field(default_factory=list)
-    receptor: list = field(default_factory=list)
-    syn_id: list = field(default_factory=list)
-    site_params: list = field(default_factory=list)  # (site, [(column, value)])
+def _codes(*columns) -> np.ndarray:
+    """One int64 per row of `columns` that compares and orders as the rows do."""
+    columns = [np.asarray(c, dtype=np.int64) for c in columns]
+    if not len(columns[0]):
+        return np.zeros(0, dtype=np.int64)
+    lows = [int(c.min()) for c in columns]
+    spans = [int(c.max()) - low + 1 for c, low in zip(columns, lows, strict=True)]
+    if math.prod(spans) < 2**62:
+        code = np.zeros(len(columns[0]), dtype=np.int64)
+        for c, low, span in zip(columns, lows, spans, strict=True):
+            code = code * span + (c - low)
+        return code
+    rows = np.stack(columns, axis=1)
+    return np.unique(rows, axis=0, return_inverse=True)[1].reshape(-1)
 
-    c_source: list = field(default_factory=list)
-    c_site: list = field(default_factory=list)
-    c_delay: list = field(default_factory=list)
-    c_w0: list = field(default_factory=list)  # [4] per connection
-    c_pre_gid: list = field(default_factory=list)
-    c_syn_row: list = field(default_factory=list)
-    c_post_pop: list = field(default_factory=list)
-    c_pre_pop: list = field(default_factory=list)
-    c_mech_id: list = field(default_factory=list)
-    c_receptor: list = field(default_factory=list)
-    c_swc_type: list = field(default_factory=list)
-    c_dest_sectype: list = field(default_factory=list)
-    c_weight: list = field(default_factory=list)
-    c_wslot: list = field(default_factory=list)
+
+def _first_seen(values) -> np.ndarray:
+    """The distinct `values`, in the order they first appear."""
+    unique, first = np.unique(values, return_index=True)
+    return unique[np.argsort(first, kind="stable")]
 
 
 def _edge_syn_ids_distances(projection, n: int):
@@ -174,18 +171,30 @@ class SynapseBuilder:
         return blocks
 
     def _read_placement(self, population: str, local_gids: set[int]):
-        """gid -> {syn_id: (swc_type, loc)} for the local cells of a population."""
-        out: dict[int, dict[int, tuple[int, float]]] = {}
-        if not local_gids:
-            return out
-        for gid, (syn_ids, swc, locs) in self.system.placement(
-            population, local_gids
-        ).items():
-            out[int(gid)] = {
-                int(syn_ids[i]): (int(swc[i]), float(locs[i]))
-                for i in range(len(syn_ids))
-            }
-        return out
+        """`(gid, syn_id, swc_type, loc)` of the local cells' sites, by `(gid, syn_id)`.
+
+        A syn_id a cell lists twice keeps its last entry.
+        """
+        gids, syn_ids, swc_types, locs = [], [], [], []
+        if local_gids:
+            for gid, (sids, swc, loc) in self.system.placement(
+                population, local_gids
+            ).items():
+                gids.append(np.full(len(sids), int(gid), dtype=np.int64))
+                syn_ids.append(np.asarray(sids).astype(np.int64))
+                swc_types.append(np.asarray(swc).astype(np.int64))
+                locs.append(np.asarray(loc).astype(np.float64))
+        if not gids:
+            empty = np.zeros(0, dtype=np.int64)
+            return empty, empty, empty, np.zeros(0)
+        gid, syn_id = np.concatenate(gids), np.concatenate(syn_ids)
+        swc_type, loc = np.concatenate(swc_types), np.concatenate(locs)
+        order = np.lexsort((np.arange(len(gid)), syn_id, gid))
+        gid, syn_id = gid[order], syn_id[order]
+        last = np.ones(len(gid), dtype=bool)
+        last[:-1] = (gid[1:] != gid[:-1]) | (syn_id[1:] != syn_id[:-1])
+        keep = order[last]
+        return gid[last], syn_id[last], swc_type[keep], loc[keep]
 
     def _mech_specs(self, active: dict) -> list:
         specs = []
@@ -229,22 +238,29 @@ class SynapseBuilder:
 
     def build(self, cells_by_pop: dict[str, dict[int, object]]):
         lib, sim = self.env._lib, self.env._sim
-        g = _Growable()
-        site_rows: dict[tuple[int, int, str], int] = {}
-        cell_index = {
-            int(gid): cell.index
+        local = [
+            (int(gid), cell)
             for cells in cells_by_pop.values()
             for gid, cell in cells.items()
-        }
+        ]
+        cell_gids = np.asarray([gid for gid, _ in local], dtype=np.int64)
+        cell_indices = np.asarray([cell.index for _, cell in local], dtype=np.int64)
+        order = np.argsort(cell_gids, kind="stable")
+        cell_gids, cell_indices = cell_gids[order], cell_indices[order]
         connections_config = self.system.connections_config["synapses"]
         simulated = (
             self._simulated_pops
             if self._simulated_pops is not None
             else set(cells_by_pop.keys())
         )
-        selected = self._selected_gids
+        selected = (
+            None
+            if self._selected_gids is None
+            else np.asarray(sorted(self._selected_gids), dtype=np.int64)
+        )
 
         VEL = conduction_velocity(self.system)
+        projections = []
         for post in cells_by_pop:
             if post in self._ignored:
                 continue
@@ -267,93 +283,61 @@ class SynapseBuilder:
                 specs_by_swc = {
                     swc: self._mech_specs(mechs) for swc, mechs in active.items()
                 }
-                default_specs = specs_by_swc.get(None)
                 sel = None if (is_input or self._microcircuit_inputs) else selected
+                found = self._projection(
+                    pre,
+                    post,
+                    cells,
+                    placement,
+                    specs_by_swc,
+                    sel,
+                    is_input,
+                    (cell_gids, cell_indices),
+                )
+                if found is not None:
+                    found.update(post_pop=post_id, pre_pop=pre_id, cells=cells)
+                    projections.append(found)
 
-                for post_gid, (pre_gids, projection) in self.system.edges(
-                    pre, post, set(cells.keys())
-                ):
-                    post_gid = int(post_gid)
-                    if post_gid not in cells:
-                        continue
-                    cell = cells[post_gid]
-                    place = placement.get(post_gid, {})
-                    pre_gids = np.asarray(pre_gids).astype(np.int64)
-                    syn_ids, distances = _edge_syn_ids_distances(
-                        projection, len(pre_gids)
-                    )
-                    dest_code: dict[int, int] = {}
-                    for k in range(len(pre_gids)):
-                        pre_gid = int(pre_gids[k])
-                        if sel is not None and pre_gid not in sel:
-                            continue
-                        sid = int(syn_ids[k])
-                        site = place.get(sid)
-                        if site is None:
-                            continue
-                        swc_type, loc = site
-                        specs = specs_by_swc.get(swc_type, default_specs)
-                        if specs is None:
-                            continue
-                        source = cell_index.get(pre_gid)
-                        if source is None:
-                            if not is_input and sel is not None:
-                                continue
-                            source = -(self._input(pre_gid) + 1)
-                        section, x = cell.place(swc_type, loc)
-                        dsec = dest_code.get(swc_type)
-                        if dsec is None:
-                            dsec = self._sectype_id(cell.dest_sec_type(swc_type))
-                            dest_code[swc_type] = dsec
-                        phys = float(distances[k]) / VEL
+        for found in projections:
+            self._connect_inputs(found)
+            self._place(found)
+        rows = self._expand(projections, VEL)
+        n_conn = len(rows["source"])
 
-                        for spec in specs:
-                            _, kind, set_params, mid, wslot, w0, wval, rid = spec
-                            # by receptor: two receptors on one mechanism are
-                            # still two sites, each with its own kinetics
-                            key = (post_gid, sid, rid)
-                            row = site_rows.get(key)
-                            if row is None:
-                                c_site = L.check(
-                                    lib.rcsd_add_synapse(
-                                        sim, cell.index, section, x, kind
-                                    ),
-                                    lib,
-                                )
-                                row = len(g.post_gid)
-                                if c_site != row:
-                                    raise RuntimeError(
-                                        "synapse table and librcsd disagree on site order"
-                                    )
-                                site_rows[key] = row
-                                g.post_gid.append(post_gid)
-                                g.swc_type.append(swc_type)
-                                g.dest_sectype.append(dsec)
-                                g.mech_id.append(mid)
-                                g.receptor.append(rid)
-                                g.syn_id.append(sid)
-                                g.site_params.append((row, set_params))
-                            g.c_source.append(source)
-                            g.c_site.append(row)
-                            g.c_delay.append(phys)
-                            g.c_w0.append(w0)
-                            g.c_pre_gid.append(pre_gid)
-                            g.c_syn_row.append(row)
-                            g.c_post_pop.append(post_id)
-                            g.c_pre_pop.append(pre_id)
-                            g.c_mech_id.append(mid)
-                            g.c_receptor.append(rid)
-                            g.c_swc_type.append(swc_type)
-                            g.c_dest_sectype.append(dsec)
-                            g.c_weight.append(wval)
-                            g.c_wslot.append(wslot)
+        site_codes = _codes(rows["post_gid"], rows["syn_id"], rows["receptor"])
+        unique, first, inverse = np.unique(
+            site_codes, return_index=True, return_inverse=True
+        )
+        by_first = np.argsort(first, kind="stable")
+        site_of = np.empty(len(unique), dtype=np.int64)
+        site_of[by_first] = np.arange(len(unique))
+        site_row = site_of[inverse.reshape(-1)] if n_conn else inverse
+        made = first[by_first]
+        n_sites = len(made)
 
-        n_conn = len(g.c_source)
+        if n_sites:
+            c_cell = L.as_int_array(rows["cell"][made])
+            c_section = L.as_int_array(rows["section"][made])
+            c_x = L.as_double_array(rows["x"][made])
+            c_kind = L.as_int_array(rows["kind"][made])
+            first_site = L.check(
+                lib.rcsd_add_synapses(
+                    sim,
+                    n_sites,
+                    L.int_ptr(c_cell),
+                    L.int_ptr(c_section),
+                    L.double_ptr(c_x),
+                    L.int_ptr(c_kind),
+                ),
+                lib,
+            )
+            if first_site != 0:
+                raise RuntimeError("synapse table and librcsd disagree on site order")
         if n_conn:
-            source = L.as_int_array(g.c_source)
-            site = L.as_int_array(g.c_site)
-            delay = L.as_double_array(g.c_delay)
-            w0 = L.as_double_array(np.asarray(g.c_w0, dtype=np.float64))
+            source = L.as_int_array(rows["source"])
+            site = L.as_int_array(site_row)
+            delay = L.as_double_array(rows["delay"])
+            w0 = L.as_double_array(rows["w0"])
             L.check(
                 lib.rcsd_add_connections(
                     sim,
@@ -365,35 +349,36 @@ class SynapseBuilder:
                 ),
                 lib,
             )
-        n_sites = len(g.post_gid)
         if n_sites:
             sp = L.site_view(lib, sim, lib.rcsd_synapse_params(sim), L.SP_N)
-            for row, set_params in g.site_params:
-                for column, value in set_params:
-                    sp[column, row] = value
-            for row in range(n_sites):
-                L.check(lib.rcsd_synapse_refresh(sim, row), lib)
+            site_params = rows["set_params"][made]
+            for spec in np.unique(site_params):
+                at = np.flatnonzero(site_params == spec)
+                for column, value in rows["set_params_table"][spec]:
+                    sp[column, at] = value
+            every = L.as_int_array(np.arange(n_sites))
+            L.check(lib.rcsd_synapse_refresh_sites(sim, n_sites, L.int_ptr(every)), lib)
 
         syn = SynapseTable(
-            post_gid=np.asarray(g.post_gid, dtype=np.int32),
-            swc_type=np.asarray(g.swc_type, dtype=np.int8),
-            dest_sectype=np.asarray(g.dest_sectype, dtype=np.int8),
-            mech_id=np.asarray(g.mech_id, dtype=np.int16),
-            receptor=np.asarray(g.receptor, dtype=np.int8),
-            syn_id=np.asarray(g.syn_id, dtype=np.int64),
+            post_gid=rows["post_gid"][made].astype(np.int32),
+            swc_type=rows["swc_type"][made].astype(np.int8),
+            dest_sectype=rows["dest_sectype"][made].astype(np.int8),
+            mech_id=rows["mech_id"][made].astype(np.int16),
+            receptor=rows["receptor"][made].astype(np.int8),
+            syn_id=rows["syn_id"][made].astype(np.int64),
         )
         conn = ConnectionTable(
-            pre_gid=np.asarray(g.c_pre_gid, dtype=np.int32),
-            syn_row=np.asarray(g.c_syn_row, dtype=np.int32),
-            post_pop=np.asarray(g.c_post_pop, dtype=np.int8),
-            pre_pop=np.asarray(g.c_pre_pop, dtype=np.int8),
-            mech_id=np.asarray(g.c_mech_id, dtype=np.int16),
-            receptor=np.asarray(g.c_receptor, dtype=np.int8),
-            swc_type=np.asarray(g.c_swc_type, dtype=np.int8),
-            dest_sectype=np.asarray(g.c_dest_sectype, dtype=np.int8),
-            weight=np.asarray(g.c_weight, dtype=np.float64),
-            delay=np.asarray(g.c_delay, dtype=np.float64),
-            wslot=np.asarray(g.c_wslot, dtype=np.int8),
+            pre_gid=rows["pre_gid"].astype(np.int32),
+            syn_row=site_row.astype(np.int32),
+            post_pop=rows["post_pop"].astype(np.int8),
+            pre_pop=rows["pre_pop"].astype(np.int8),
+            mech_id=rows["mech_id"].astype(np.int16),
+            receptor=rows["receptor"].astype(np.int8),
+            swc_type=rows["swc_type"].astype(np.int8),
+            dest_sectype=rows["dest_sectype"].astype(np.int8),
+            weight=rows["weight"].astype(np.float64),
+            delay=rows["delay"].astype(np.float64),
+            wslot=rows["wslot"].astype(np.int8),
         )
         return (
             syn,
@@ -404,6 +389,200 @@ class SynapseBuilder:
             dict(self.input_indices),
             dict(self._receptor_code),
         )
+
+    def _projection(
+        self, pre, post, cells, placement, specs_by_swc, sel, is_input, local
+    ):
+        """The edges of one projection that become connections, as arrays."""
+        post_gids, pre_gids, syn_ids, distances = [], [], [], []
+        for post_gid, (pres, projection) in self.system.edges(
+            pre, post, set(cells.keys())
+        ):
+            post_gid = int(post_gid)
+            if post_gid not in cells:
+                continue
+            pres = np.asarray(pres).astype(np.int64)
+            sids, dist = _edge_syn_ids_distances(projection, len(pres))
+            post_gids.append(np.full(len(pres), post_gid, dtype=np.int64))
+            pre_gids.append(pres)
+            syn_ids.append(sids)
+            distances.append(dist)
+        if not post_gids:
+            return None
+        post_gid = np.concatenate(post_gids)
+        pre_gid = np.concatenate(pre_gids)
+        syn_id = np.concatenate(syn_ids)
+        distance = np.concatenate(distances)
+
+        keep = np.ones(len(pre_gid), dtype=bool)
+        if sel is not None:
+            keep &= np.isin(pre_gid, sel)
+
+        p_gid, p_syn_id, p_swc, p_loc = placement
+        codes = _codes(
+            np.concatenate([p_gid, post_gid]), np.concatenate([p_syn_id, syn_id])
+        )
+        sites, wanted = codes[: len(p_gid)], codes[len(p_gid) :]
+        at = np.minimum(np.searchsorted(sites, wanted), max(len(sites) - 1, 0))
+        if len(sites):
+            keep &= sites[at] == wanted
+        else:
+            keep[:] = False
+        swc_type = p_swc[at] if len(sites) else np.zeros(len(keep), dtype=np.int64)
+        loc = p_loc[at] if len(sites) else np.zeros(len(keep))
+
+        default_specs = specs_by_swc.get(None)
+        spec_lists, spec_group = [], np.full(len(keep), -1, dtype=np.int64)
+        for swc in np.unique(swc_type[keep]).tolist():
+            here = keep & (swc_type == swc)
+            specs = specs_by_swc.get(swc, default_specs)
+            if specs is None:
+                keep &= ~here
+                continue
+            spec_group[here] = len(spec_lists)
+            spec_lists.append(specs)
+
+        cell_gids, cell_indices = local
+        at = np.minimum(np.searchsorted(cell_gids, pre_gid), max(len(cell_gids) - 1, 0))
+        simulated = cell_gids[at] == pre_gid if len(cell_gids) else np.zeros_like(keep)
+        if not is_input and sel is not None:
+            keep &= simulated
+        source = np.where(simulated, cell_indices[at] if len(cell_gids) else 0, -1)
+
+        return {
+            "source": source[keep],
+            "post_gid": post_gid[keep],
+            "pre_gid": pre_gid[keep],
+            "syn_id": syn_id[keep],
+            "distance": distance[keep],
+            "swc_type": swc_type[keep],
+            "loc": loc[keep],
+            "spec_group": spec_group[keep],
+            "spec_lists": spec_lists,
+        }
+
+    def _connect_inputs(self, found: dict) -> None:
+        """An input for each presynaptic cell not simulated here, on first sight."""
+        source = found["source"]
+        outside = source < 0
+        if not outside.any():
+            return
+        gids = found["pre_gid"][outside]
+        for gid in _first_seen(gids).tolist():
+            self._input(gid)
+        unique = np.unique(gids)
+        index = np.asarray([self.input_indices[g] for g in unique.tolist()])
+        source[outside] = -(index[np.searchsorted(unique, gids)] + 1)
+
+    def _place(self, found: dict) -> None:
+        """Section, position and destination section type of every connection."""
+        post_gid, swc_type = found["post_gid"], found["swc_type"]
+        cells = found["cells"]
+        n = len(post_gid)
+        section = np.zeros(n, dtype=np.int64)
+        x = np.zeros(n)
+        cell_index = np.zeros(n, dtype=np.int64)
+        names: dict[str, int] = {}
+        name_code = np.zeros(n, dtype=np.int64)
+        # a post cell's edges arrive together
+        starts = np.flatnonzero(np.r_[True, post_gid[1:] != post_gid[:-1]][:n])
+        ends = [*starts[1:].tolist(), n] if n else []
+        for lo, hi in zip(starts.tolist(), ends, strict=True):
+            cell = cells[int(post_gid[lo])]
+            section[lo:hi], x[lo:hi] = cell.place_many(
+                swc_type[lo:hi], found["loc"][lo:hi]
+            )
+            cell_index[lo:hi] = cell.index
+            for swc in np.unique(swc_type[lo:hi]).tolist():
+                name = cell.dest_sec_type(swc)
+                code = names.setdefault(name, len(names))
+                name_code[lo:hi][swc_type[lo:hi] == swc] = code
+        by_code = list(names)
+        dest = np.zeros(len(names), dtype=np.int64)
+        for code in _first_seen(name_code).tolist():
+            dest[code] = self._sectype_id(by_code[code])
+        found.update(
+            section=section, x=x, cell=cell_index, dest_sectype=dest[name_code]
+        )
+
+    @staticmethod
+    def _expand(projections: list[dict], velocity: float) -> dict:
+        """One row per connection: each edge once for every mechanism of its site."""
+        columns = (
+            "post_gid",
+            "pre_gid",
+            "syn_id",
+            "swc_type",
+            "dest_sectype",
+            "source",
+            "cell",
+            "section",
+            "x",
+            "kind",
+            "mech_id",
+            "receptor",
+            "wslot",
+            "weight",
+            "w0",
+            "set_params",
+            "delay",
+            "post_pop",
+            "pre_pop",
+        )
+        parts: dict[str, list] = {c: [] for c in columns}
+        set_params_table: list = []
+        for found in projections:
+            specs = [spec for group in found["spec_lists"] for spec in group]
+            if not specs:
+                continue
+            sizes = np.asarray([len(g) for g in found["spec_lists"]], dtype=np.int64)
+            base = np.cumsum(sizes) - sizes
+            per_edge = sizes[found["spec_group"]]
+            edge = np.repeat(np.arange(len(per_edge)), per_edge)
+            offset = np.arange(len(edge)) - np.repeat(
+                np.cumsum(per_edge) - per_edge, per_edge
+            )
+            spec = base[found["spec_group"]][edge] + offset
+
+            # _, kind, set_params, mid, wslot, w0, wval, rid
+            table = list(zip(*specs, strict=True))
+            for name in (
+                "post_gid",
+                "pre_gid",
+                "syn_id",
+                "swc_type",
+                "dest_sectype",
+                "source",
+                "cell",
+                "section",
+                "x",
+            ):
+                parts[name].append(found[name][edge])
+            parts["delay"].append(found["distance"][edge] / velocity)
+            parts["kind"].append(np.asarray(table[1], dtype=np.int64)[spec])
+            parts["mech_id"].append(np.asarray(table[3], dtype=np.int64)[spec])
+            parts["wslot"].append(np.asarray(table[4], dtype=np.int64)[spec])
+            parts["w0"].append(
+                np.asarray(table[5], dtype=np.float64).reshape(len(specs), -1)[spec]
+            )
+            parts["weight"].append(np.asarray(table[6], dtype=np.float64)[spec])
+            parts["receptor"].append(np.asarray(table[7], dtype=np.int64)[spec])
+            parts["set_params"].append(spec + len(set_params_table))
+            set_params_table.extend(table[2])
+            parts["post_pop"].append(
+                np.full(len(edge), found["post_pop"], dtype=np.int64)
+            )
+            parts["pre_pop"].append(
+                np.full(len(edge), found["pre_pop"], dtype=np.int64)
+            )
+        rows = {
+            c: np.concatenate(v) if v else np.zeros(0, dtype=np.int64)
+            for c, v in parts.items()
+        }
+        if not parts["w0"]:
+            rows["w0"] = np.zeros((0, L.NWEIGHT))
+        rows["set_params_table"] = set_params_table
+        return rows
 
     def _input(self, gid: int) -> int:
         index = self.input_indices.get(gid)

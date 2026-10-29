@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ctypes
 import os
-import sys
 from ctypes import (
     POINTER,
     c_char_p,
@@ -16,6 +15,7 @@ from ctypes import (
 import numpy as np
 
 from livn.backend.native import build
+from livn.utils import available_threads
 
 LIBRARY_ENV = "LIVN_NATIVE_LIB"
 
@@ -200,6 +200,10 @@ _SIGNATURES = {
         ],
     ),
     "rcsd_section_set": (c_int, [c_void_p, c_int, c_int, c_double]),
+    "rcsd_sections_set": (
+        c_int,
+        [c_void_p, c_int, _c_int_p, _c_int_p, _c_double_p],
+    ),
     "rcsd_section_get": (c_double, [c_void_p, c_int, c_int]),
     "rcsd_section_geometry": (c_int, [c_void_p, c_int, c_double, c_double, c_double]),
     "rcsd_section_info": (
@@ -218,6 +222,10 @@ _SIGNATURES = {
     "rcsd_node_rinv": (c_double, [c_void_p, c_int]),
     "rcsd_define_shape": (c_int, [c_void_p]),
     "rcsd_add_synapse": (c_int, [c_void_p, c_int, c_int, c_double, c_int]),
+    "rcsd_add_synapses": (
+        c_int,
+        [c_void_p, c_int, _c_int_p, _c_int_p, _c_double_p, _c_int_p],
+    ),
     "rcsd_add_input": (c_int, [c_void_p, c_int]),
     "rcsd_set_input_spikes": (c_int, [c_void_p, c_int, _c_double_p, c_int]),
     "rcsd_add_connections": (
@@ -234,6 +242,7 @@ _SIGNATURES = {
     "rcsd_connection_weights": (_c_double_p, [c_void_p]),
     "rcsd_synapse_node": (c_int, [c_void_p, c_int]),
     "rcsd_synapse_refresh": (c_int, [c_void_p, c_int]),
+    "rcsd_synapse_refresh_sites": (c_int, [c_void_p, c_int, _c_int_p]),
     "rcsd_set_noise": (
         c_int,
         [
@@ -253,6 +262,14 @@ _SIGNATURES = {
         ],
     ),
     "rcsd_set_noise_stream": (c_int, [c_void_p, c_int, c_int, c_uint, c_uint, c_uint]),
+    "rcsd_set_noise_many": (
+        c_int,
+        [c_void_p, c_int, _c_int_p, _c_int_p, _c_double_p, _c_int_p],
+    ),
+    "rcsd_set_noise_streams": (
+        c_int,
+        [c_void_p, c_int, _c_int_p, _c_int_p, _c_uint_p, _c_uint_p, _c_uint_p],
+    ),
     "rcsd_noise_count": (c_int, [c_void_p]),
     "rcsd_noise_state": (
         c_int,
@@ -388,58 +405,6 @@ def load(build_if_missing: bool = True) -> ctypes.CDLL:
 
 THREADS_ENV = "LIVN_NATIVE_THREADS"
 
-# What a launcher tells a rank about how many of its siblings share this node.
-# Read from the environment rather than from MPI, so that asking the question
-# never initializes MPI in a process that was not going to use it.
-_LOCAL_RANK_VARS = (
-    "OMPI_COMM_WORLD_LOCAL_SIZE",  # Open MPI
-    "MV2_COMM_WORLD_LOCAL_SIZE",  # MVAPICH2
-    "MPI_LOCALNRANKS",  # MPICH / Hydra
-    "SLURM_NTASKS_PER_NODE",
-)
-
-
-def _local_ranks() -> int:
-    """How many processes of this job share this node, as far as we can tell."""
-    for name in _LOCAL_RANK_VARS:
-        raw = os.environ.get(name)
-        if not raw:
-            continue
-        # SLURM_NTASKS_PER_NODE can read "4(x2)" for a heterogeneous allocation
-        head = raw.split("(")[0].strip()
-        try:
-            found = int(head)
-        except ValueError:
-            continue
-        if found > 0:
-            return found
-    # only if MPI is already up; importing it here to count would be a side
-    # effect out of all proportion to the question
-    mpi = sys.modules.get("mpi4py.MPI")
-    if mpi is not None:
-        try:
-            return max(1, int(mpi.COMM_WORLD.Get_size()))
-        except Exception:
-            pass
-    return 1
-
-
-def available_threads() -> int:
-    """The thread count `"auto"` resolves to: this process's share of the cores.
-
-    Cores come from the affinity mask where there is one, so a `taskset` or a
-    cgroup quota is respected rather than the machine's total, and are divided
-    by the processes of this job on this node. It cannot see siblings that no
-    launcher announced -- a shell loop over N invocations looks like one process
-    to each of them -- which is why `"auto"` is something to ask for rather than
-    the default.
-    """
-    if hasattr(os, "sched_getaffinity"):
-        cores = len(os.sched_getaffinity(0))
-    else:  # macOS, Windows
-        cores = os.cpu_count() or 1
-    return max(1, cores // _local_ranks())
-
 
 def set_num_threads(n: int | str) -> int:
     """Use `n` threads for the per-node and per-site loops; returns the count set.
@@ -544,6 +509,10 @@ def as_double_array(values) -> np.ndarray:
 
 def int_ptr(array: np.ndarray):
     return array.ctypes.data_as(_c_int_p)
+
+
+def uint_ptr(array: np.ndarray):
+    return array.ctypes.data_as(_c_uint_p)
 
 
 def double_ptr(array: np.ndarray):

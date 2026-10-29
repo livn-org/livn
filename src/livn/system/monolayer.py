@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import math
+import threading
 from collections.abc import Iterator, Sequence
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
@@ -38,6 +39,10 @@ INHIBITORY = ("gabaergic", "glycinergic")
 
 # how far a chunked kernel reaches in one block of postsynaptic columns
 CONNECTIVITY_CHUNK = 2048
+# pairs a thread holds at once while drawing, about 1 MB of float32 per array
+DRAW_SLICE_ELEMENTS = 1 << 18
+# distinct column requests remembered per system
+COLUMN_CACHE_SIZE = 4
 
 GRAPH_FORMAT_VERSION = 1
 
@@ -55,6 +60,9 @@ class SWCType(IntEnum):
     hillock = 8
 
 
+_PHILOX = threading.local()
+
+
 class StableRandom:
     """A Philox stream addressed by position rather than by draw order."""
 
@@ -70,7 +78,27 @@ class StableRandom:
 
     def _raw(self, n: int, at: int | None) -> numpy.ndarray:
         counter = self._pos if at is None else int(at)
-        raw = numpy.random.Philox(key=self._key, counter=counter).random_raw(n)
+        # what `Philox(key=..., counter=...)` starts from, set on a generator
+        # kept per thread: constructing one also seeds an unused SeedSequence
+        # from the OS, which costs more than the draw of a short column
+        generator = getattr(_PHILOX, "generator", None)
+        if generator is None:
+            generator = _PHILOX.generator = numpy.random.Philox(key=self._key)
+        generator.state = {
+            "bit_generator": "Philox",
+            "state": {
+                "counter": numpy.array(
+                    [(counter >> (64 * i)) & 0xFFFFFFFFFFFFFFFF for i in range(4)],
+                    dtype=numpy.uint64,
+                ),
+                "key": self._key,
+            },
+            "buffer": numpy.zeros(4, dtype=numpy.uint64),
+            "buffer_pos": 4,
+            "has_uint32": 0,
+            "uinteger": 0,
+        }
+        raw = generator.random_raw(n)
         if at is None:
             self._pos += n
         return raw
@@ -707,6 +735,7 @@ class Monolayer(Jsonable):
             for post in self.populations_spec
         }
         self._amplitudes: dict[tuple[str, str], float] = {}
+        self._column_cache: dict[tuple[str, str, bytes], dict] = {}
 
     # -- the draw ------------------------------------------------------------
 
@@ -721,15 +750,29 @@ class Monolayer(Jsonable):
         return slice(start, start + count)
 
     def _distances(self, pre_xy, post_xy):
-        """Pairwise distance, on a torus when the culture is periodic."""
-        d = pre_xy[:, None, :] - post_xy[None, :, :]
+        """Pairwise distance, on a torus when the culture is periodic.
+
+        One float32 array per axis rather than a trailing axis of two: the
+        same operations on every pair, several times faster.
+        """
         period = self.period
-        if period is not None:
-            wrap = numpy.asarray(period, dtype=numpy.float32)
-            # nearest image: a separation past half the box is shorter the
-            # other way round
-            d = d - wrap * numpy.round(d / wrap)
-        return numpy.linalg.norm(d, axis=2).astype(numpy.float32)
+        wrap = None if period is None else numpy.asarray(period, dtype=numpy.float32)
+        squared = None
+        for axis in range(2):
+            d = numpy.subtract.outer(pre_xy[:, axis], post_xy[:, axis])
+            if wrap is not None:
+                # nearest image: a separation past half the box is shorter the
+                # other way round
+                image = d / wrap[axis]
+                numpy.round(image, out=image)
+                image *= wrap[axis]
+                d -= image
+            d *= d
+            if squared is None:
+                squared = d
+            else:
+                squared += d
+        return numpy.sqrt(squared, out=squared)
 
     def _kernel(self, distances):
         sigma = self.connectivity.sigma
@@ -787,45 +830,92 @@ class Monolayer(Jsonable):
 
         `post_indices` are population-local indices. Each column is drawn at its
         own counter, so this returns exactly what a whole-system draw would put
-        in those columns.
+        in those columns. The answer is kept for the last few requests, because
+        `placement` and `edges` ask for the same columns one after the other.
         """
-        *_placement, degree = self._sites[(pre, post)]
+        post_indices = numpy.asarray(post_indices, dtype=numpy.int64)
+        key = (pre, post, post_indices.tobytes())
+        cache = self._column_cache
+        found = cache.pop(key, None)
+        if found is None:
+            found = self._draw_columns(pre, post, post_indices)
+            floor = int(self.connectivity.floor.get(f"{pre}->{post}", 0))
+            if floor:
+                self._apply_floor(found, pre, post, floor)
+            while len(cache) >= COLUMN_CACHE_SIZE:
+                cache.pop(next(iter(cache)))
+        cache[key] = found
+        return dict(found)
+
+    def _draw_columns(self, pre: str, post: str, post_indices):
+        n_pre = self.population_counts[pre]
+        amplitude = (
+            self._amplitude(pre, post) if self.normalization == "global" else None
+        )
+        width = max(2, DRAW_SLICE_ELEMENTS // max(n_pre, 1))
+        slices = []
+        for lo in range(0, len(post_indices), CONNECTIVITY_CHUNK):
+            block = post_indices[lo : lo + CONNECTIVITY_CHUNK]
+            cuts = list(range(0, len(block), width))
+            if len(cuts) > 1 and len(block) - cuts[-1] == 1:
+                cuts.pop()
+            slices.extend(
+                block[a:b] for a, b in zip(cuts, [*cuts[1:], len(block)], strict=True)
+            )
+
+        def draw(block):
+            return self._draw_block(pre, post, block, amplitude)
+
+        out: dict[int, tuple[numpy.ndarray, numpy.ndarray]] = {}
+        workers = min(len(slices), self._draw_threads())
+        if workers > 1:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(workers) as pool:
+                for part in pool.map(draw, slices):
+                    out.update(part)
+        else:
+            for block in slices:
+                out.update(draw(block))
+        return out
+
+    def _draw_threads(self) -> int:
+        # one rank of several already draws only its own share of the columns
+        if self.comm is not None and self.comm.Get_size() > 1:
+            return 1
+        from livn.utils import available_threads
+
+        return available_threads()
+
+    def _draw_block(self, pre: str, post: str, block, amplitude):
+        degree = self._sites[(pre, post)][3]
         pre_xy = self._xy[self._population_slice(pre)]
         post_xy = self._xy[self._population_slice(post)]
         n_pre = len(pre_xy)
         draws = StableRandom(self.seed, "connectivity", pre, post)
         cutoff = self.connectivity.cutoff
-        amplitude = (
-            self._amplitude(pre, post) if self.normalization == "global" else None
-        )
 
-        out: dict[int, tuple[numpy.ndarray, numpy.ndarray]] = {}
-        for lo in range(0, len(post_indices), CONNECTIVITY_CHUNK):
-            block = post_indices[lo : lo + CONNECTIVITY_CHUNK]
-            distances = self._distances(pre_xy, post_xy[block])
-            w = self._kernel(distances)
-            if pre == post and not self.connectivity.allow_self_connections:
-                for column, index in enumerate(block):
-                    if 0 <= index < n_pre:
-                        w[index, column] = 0.0
-
-            if amplitude is None:  # per-post
-                mass = w.sum(axis=0)
-                with numpy.errstate(divide="ignore", invalid="ignore"):
-                    probability = numpy.where(mass > 0, degree * w / mass, 0.0)
-            else:
-                probability = amplitude * w
-            if cutoff is not None:
-                probability = numpy.where(probability >= cutoff, probability, 0.0)
-
+        distances = self._distances(pre_xy, post_xy[block])
+        w = self._kernel(distances)
+        if pre == post and not self.connectivity.allow_self_connections:
             for column, index in enumerate(block):
-                u = draws.random(n_pre, at=int(index) * n_pre)
-                selected = numpy.flatnonzero(u < probability[:, column])
-                out[int(index)] = (selected, distances[selected, column])
+                if 0 <= index < n_pre:
+                    w[index, column] = 0.0
 
-        floor = int(self.connectivity.floor.get(f"{pre}->{post}", 0))
-        if floor:
-            self._apply_floor(out, pre, post, floor)
+        if amplitude is None:  # per-post
+            mass = w.sum(axis=0)
+            with numpy.errstate(divide="ignore", invalid="ignore"):
+                probability = numpy.where(mass > 0, degree * w / mass, 0.0)
+        else:
+            probability = amplitude * w
+        if cutoff is not None:
+            probability = numpy.where(probability >= cutoff, probability, 0.0)
+
+        out = {}
+        for column, index in enumerate(block.tolist()):
+            u = draws.random(n_pre, at=index * n_pre)
+            selected = numpy.flatnonzero(u < probability[:, column])
+            out[index] = (selected, distances[selected, column])
         return out
 
     def _apply_floor(self, columns, pre: str, post: str, floor: int) -> None:
@@ -845,7 +935,8 @@ class Monolayer(Jsonable):
             ):
                 w[index] = 0.0
             order = numpy.argsort(-w, kind="stable")
-            keep = [i for i in order.tolist() if i not in set(selected.tolist())]
+            taken = set(selected.tolist())
+            keep = [i for i in order.tolist() if i not in taken]
             need = floor - len(selected)
             if not keep:
                 continue  # nothing to give back
@@ -863,20 +954,23 @@ class Monolayer(Jsonable):
             return {}
 
         indices = numpy.asarray([g - start for g in wanted], dtype=numpy.int64)
-        per_gid: dict[int, list[tuple[int, int]]] = {g: [] for g in wanted}
+        swc_types, counts = [], []
         for pre in self._projection_order[population]:
-            target_sec, target_swc, _syn_type, _degree = self._sites[(pre, population)]
+            _target_sec, target_swc, _syn_type, _degree = self._sites[(pre, population)]
             columns = self._edge_columns(pre, population, indices)
-            for gid, index in zip(wanted, indices.tolist(), strict=True):
-                selected, _ = columns[index]
-                per_gid[gid].extend([(target_swc, target_sec)] * len(selected))
+            swc_types.append(target_swc)
+            counts.append([len(columns[index][0]) for index in indices.tolist()])
+        swc_types = numpy.asarray(swc_types, dtype=numpy.int64)
+        counts = numpy.asarray(counts, dtype=numpy.int64).reshape(
+            len(swc_types), len(wanted)
+        )
 
         out = {}
-        for gid, sites in per_gid.items():
-            n = len(sites)
+        for column, gid in enumerate(wanted):
+            n = int(counts[:, column].sum())
             out[gid] = (
                 numpy.arange(n, dtype=numpy.int64),
-                numpy.asarray([s[0] for s in sites], dtype=numpy.int64),
+                numpy.repeat(swc_types, counts[:, column]),
                 # mid-section, never 0 or 1: those ends are zero-area nodes in
                 # NEURON and a point process there has no membrane to act on
                 numpy.full(n, 0.5, dtype=numpy.float64),

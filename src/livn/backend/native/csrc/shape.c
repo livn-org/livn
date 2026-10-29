@@ -97,18 +97,51 @@ static double section_length(Section* sec) {
     return x;
 }
 
+/* every section's children by ascending index: those of section p are
+ * child[start[p]] .. child[start[p + 1] - 1]; NULL when out of memory */
+static int* children_index(RCSDSim* sim, int** child_out) {
+    size_t n = sim->sections.n, s;
+    int* start = (int*) calloc(n + 1, sizeof(int));
+    int* fill = (int*) malloc((n + 1) * sizeof(int));
+    int* child = (int*) malloc((n ? n : 1) * sizeof(int));
+    if (start == NULL || fill == NULL || child == NULL) {
+        free(start);
+        free(fill);
+        free(child);
+        return NULL;
+    }
+    for (s = 0; s < n; ++s) {
+        int p = sim->sections.data[s].parent_section;
+        if (p >= 0) {
+            ++start[p + 1];
+        }
+    }
+    for (s = 0; s < n; ++s) {
+        start[s + 1] += start[s];
+    }
+    memcpy(fill, start, (n + 1) * sizeof(int));
+    for (s = 0; s < n; ++s) {
+        int p = sim->sections.data[s].parent_section;
+        if (p >= 0) {
+            child[fill[p]++] = (int) s;
+        }
+    }
+    free(fill);
+    *child_out = child;
+    return start;
+}
+
 /* the sibling list of `parent`: children in NEURON's order, into `order`;
  * returns the count */
-static int sibling_order(RCSDSim* sim, int parent, int* order) {
+static int sibling_order(RCSDSim* sim, const int* start, const int* child, int parent,
+                         int* order) {
     int n = 0;
-    size_t s;
-    for (s = 0; s < sim->sections.n; ++s) {
+    int c;
+    for (c = start[parent]; c < start[parent + 1]; ++c) {
+        int s = child[c];
         Section* sec = &sim->sections.data[s];
         double x;
         int k, at;
-        if (sec->parent_section != parent) {
-            continue;
-        }
         /* nrn_add_sibling_list: before the first sibling at or beyond x */
         x = sec->parent_x;
         at = n;
@@ -121,7 +154,7 @@ static int sibling_order(RCSDSim* sim, int parent, int* order) {
         for (k = n; k > at; --k) {
             order[k] = order[k - 1];
         }
-        order[at] = (int) s;
+        order[at] = s;
         ++n;
     }
     return n;
@@ -132,6 +165,8 @@ int rcsd_shape_define(RCSDSim* sim) {
     size_t i;
     int* order = NULL;
     size_t order_cap = 0;
+    int* start = NULL;
+    int* child = NULL;
     for (i = 0; i < sim->sections.n; ++i) {
         Section* sec = &sim->sections.data[i];
         Section* psec = sec->parent_section >= 0 ? &sim->sections.data[sec->parent_section]
@@ -181,13 +216,23 @@ int rcsd_shape_define(RCSDSim* sim) {
                 int* grown = (int*) realloc(order, sim->sections.n * sizeof(int));
                 if (grown == NULL) {
                     free(order);
+                    free(start);
+                    free(child);
                     rcsd_set_error("out of memory");
                     return RCSD_ERROR;
                 }
                 order = grown;
                 order_cap = sim->sections.n;
             }
-            n = sibling_order(sim, sec->parent_section, order);
+            if (start == NULL) {
+                start = children_index(sim, &child);
+                if (start == NULL) {
+                    free(order);
+                    rcsd_set_error("out of memory");
+                    return RCSD_ERROR;
+                }
+            }
+            n = sibling_order(sim, start, child, sec->parent_section, order);
             for (k = 0; k < n; ++k) {
                 if ((size_t) order[k] == i) {
                     ich = nch;
@@ -205,6 +250,8 @@ int rcsd_shape_define(RCSDSim* sim) {
         y1 = (float) (y + len * sin((double) angle));
         if (stor_pt3d(sec, x, y, z, sec->diam) != RCSD_OK) {
             free(order);
+            free(start);
+            free(child);
             return RCSD_ERROR;
         }
         for (j = 0; j < sec->nseg; ++j) {
@@ -212,11 +259,15 @@ int rcsd_shape_define(RCSDSim* sim) {
             if (stor_pt3d(sec, x * (1 - frac) + x1 * frac, y * (1 - frac) + y1 * frac, z,
                           sec->diam) != RCSD_OK) {
                 free(order);
+                free(start);
+                free(child);
                 return RCSD_ERROR;
             }
         }
         if (stor_pt3d(sec, x1, y1, z, sec->diam) != RCSD_OK) {
             free(order);
+            free(start);
+            free(child);
             return RCSD_ERROR;
         }
         /* don't let above change length due to round-off errors */
@@ -224,6 +275,8 @@ int rcsd_shape_define(RCSDSim* sim) {
         sec->L = len;
     }
     free(order);
+    free(start);
+    free(child);
     return RCSD_OK;
 }
 

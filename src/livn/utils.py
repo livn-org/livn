@@ -26,6 +26,45 @@ sentinel = object()
 ObjSpec = tuple | list | str | Mapping | None
 
 
+def _local_ranks() -> int:
+    """Best effort estimate of how many processes share this node."""
+    for name in (
+        "OMPI_COMM_WORLD_LOCAL_SIZE",  # Open MPI
+        "MV2_COMM_WORLD_LOCAL_SIZE",  # MVAPICH2
+        "MPI_LOCALNRANKS",  # MPICH / Hydra
+        "SLURM_NTASKS_PER_NODE",
+    ):
+        raw = os.environ.get(name)
+        if not raw:
+            continue
+        # SLURM_NTASKS_PER_NODE may be "4(x2)"
+        head = raw.split("(")[0].strip()
+        try:
+            found = int(head)
+        except ValueError:
+            continue
+        if found > 0:
+            return found
+
+    # use MPI only if it's already active to not cause any side-effects
+    mpi = sys.modules.get("mpi4py.MPI")
+    if mpi is not None:
+        try:
+            return max(1, int(mpi.COMM_WORLD.Get_size()))
+        except Exception:
+            pass
+    return 1
+
+
+def available_threads() -> int:
+    """This process's share of the cores (used for threads auto setting)."""
+    if hasattr(os, "sched_getaffinity"):
+        cores = len(os.sched_getaffinity(0))
+    else:  # macOS, Windows
+        cores = os.cpu_count() or 1
+    return max(1, cores // _local_ranks())
+
+
 def import_object_by_path(path):
     module_path, _, obj_name = path.rpartition(".")
     if module_path == "__main__" or module_path == "":

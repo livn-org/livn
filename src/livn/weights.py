@@ -105,9 +105,14 @@ def connection_scales(model, conn, syn, pop_code: dict) -> np.ndarray:
     post_gid = np.asarray(syn.post_gid, dtype=np.int64)[rows]
     syn_id = np.asarray(syn.syn_id, dtype=np.int64)[rows]
     pre_gid = np.asarray(conn.pre_gid, dtype=np.int64)
-    pairs = np.stack([conn.pre_pop, conn.post_pop], axis=1)
-    for pre_code, post_code in np.unique(pairs, axis=0):
-        mask = (conn.pre_pop == pre_code) & (conn.post_pop == post_code)
+    pre_pop = np.asarray(conn.pre_pop, dtype=np.int64)
+    post_pop = np.asarray(conn.post_pop, dtype=np.int64)
+    width = int(post_pop.max()) - int(post_pop.min()) + 1
+    pairs = (pre_pop - int(pre_pop.min())) * width + (post_pop - int(post_pop.min()))
+    for pair in np.unique(pairs):
+        mask = pairs == pair
+        first = int(np.argmax(mask))
+        pre_code, post_code = pre_pop[first], post_pop[first]
         projection = f"{names[int(pre_code)]}->{names[int(post_code)]}"
         scales[mask] = hook(projection, pre_gid[mask], post_gid[mask], syn_id[mask])
     return scales

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import inspect
 
 import numpy as np
@@ -58,14 +59,24 @@ def scaled_noise(env, gid, params: dict) -> dict:
     scale = float(scales.get(int(gid), 1.0))
     if scale == 1.0 or not keys:
         return params
-    signature = inspect.signature(env.model.neuron_noise_configure).parameters
+    configure = env.model.neuron_noise_configure
+    defaults = _defaults(getattr(configure, "__func__", configure))
     out = dict(params)
     for key in keys:
-        if key not in out and key in signature:
-            out[key] = signature[key].default
+        if key not in out and key in defaults:
+            out[key] = defaults[key]
         if key in out:
             out[key] = float(out[key]) * scale
     return out
+
+
+@functools.cache
+def _defaults(function) -> dict:
+    """`{parameter: default}` of `function`, cached."""
+    return {
+        name: parameter.default
+        for name, parameter in inspect.signature(function).parameters.items()
+    }
 
 
 def checked(values, size: int, what: str) -> np.ndarray:

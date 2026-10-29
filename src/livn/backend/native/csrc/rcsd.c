@@ -152,6 +152,7 @@ void rcsd_destroy(RCSDSim* sim) {
         free(sim->buckets);
     }
     DYN_FREE(sim->noise);
+    free(sim->noise_at);
     DYN_FREE(sim->opsins);
     DYN_FREE(sim->chr2);
     for (m = 0; m < RCSD_STIM_N; ++m) {
@@ -487,6 +488,17 @@ int rcsd_section_set(RCSDSim* sim, int section, int param, double value) {
     }
     for (j = 0; j < sec->nseg; ++j) {
         sim->param[(size_t) (sec->node0 + j) * RCSD_NPARAM + param] = value;
+    }
+    return RCSD_OK;
+}
+
+int rcsd_sections_set(RCSDSim* sim, int n, const int* section, const int* param,
+                      const double* value) {
+    int i;
+    for (i = 0; i < n; ++i) {
+        if (rcsd_section_set(sim, section[i], param[i], value[i]) != RCSD_OK) {
+            return RCSD_ERROR;
+        }
     }
     return RCSD_OK;
 }
