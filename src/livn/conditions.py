@@ -53,6 +53,11 @@ class Conditions:
     membrane_currents_uA: Float[Array, "n_neurons timestep"] | None = None
     dt: float | None = static()  # of membrane_currents_uA and the signal
     sections: tuple[str, ...] | None = static()
+    # a projected recording: the channel sums `gain @ I` a backend formed
+    # during the run, the gain's digest, and their sampling interval
+    extracellular_uV: Float[Array, "n_channels timestep"] | None = None
+    extracellular_dt: float | None = static()
+    extracellular_gain: str | None = static()
     # inputs
     inputs: Float[Array, "timestep n_input_channels"] | None = None
     inputs_dt: float | None = static()

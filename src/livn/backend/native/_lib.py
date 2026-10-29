@@ -307,6 +307,13 @@ _SIGNATURES = {
     "rcsd_record_voltage": (c_int, [c_void_p, c_int, c_int, c_double]),
     "rcsd_record_current": (c_int, [c_void_p, c_int, c_int, c_double]),
     "rcsd_clear_recordings": (c_int, [c_void_p]),
+    "rcsd_record_projection": (
+        c_int,
+        [c_void_p, c_int, _c_int_p, _c_int_p, _c_int_p, _c_double_p, c_double],
+    ),
+    "rcsd_projection_channels": (c_int, [c_void_p]),
+    "rcsd_projection_length": (c_long, [c_void_p]),
+    "rcsd_projection_values": (_c_double_p, [c_void_p]),
     "rcsd_spike_count": (c_int, [c_void_p]),
     "rcsd_spike_cells": (_c_int_p, [c_void_p]),
     "rcsd_spike_times": (_c_double_p, [c_void_p]),

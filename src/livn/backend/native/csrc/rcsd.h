@@ -350,6 +350,17 @@ RCSD_API int rcsd_record_spikes(RCSDSim* sim, int cell);
 RCSD_API int rcsd_record_voltage(RCSDSim* sim, int cell, int section, double dt);
 RCSD_API int rcsd_record_current(RCSDSim* sim, int cell, int section, double dt);
 RCSD_API int rcsd_clear_recordings(RCSDSim* sim);
+/* record n_channels weighted sums of membrane currents every dt instead of
+ * the currents themselves: channel c sums weight[k] * i_membrane of
+ * (cell[k], section[k]) over k in [start[c], start[c + 1]). Replaces any
+ * projection before it; n_channels 0 removes it */
+RCSD_API int rcsd_record_projection(RCSDSim* sim, int n_channels, const int* start,
+                                    const int* cell, const int* section,
+                                    const double* weight, double dt);
+RCSD_API int rcsd_projection_channels(RCSDSim* sim);
+/* the samples so far, n_channels values each, a sample after another */
+RCSD_API long rcsd_projection_length(RCSDSim* sim);
+RCSD_API const double* rcsd_projection_values(RCSDSim* sim);
 RCSD_API int rcsd_spike_count(RCSDSim* sim);
 RCSD_API const int* rcsd_spike_cells(RCSDSim* sim);
 RCSD_API const double* rcsd_spike_times(RCSDSim* sim);

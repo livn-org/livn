@@ -297,6 +297,9 @@ class Series:
         dt: Sampling interval in ms
         t0: Absolute simulation time of sample ``0``
         sections: Compartment name per row, where the backend records per compartment.
+        projection: For a projected recording (channel sums of membrane
+            currents formed during the run), the digest of the gain they were
+            summed through; ``None`` for samples recorded as they are.
     """
 
     ids: Array | None = None
@@ -304,6 +307,7 @@ class Series:
     dt: float = 0.1
     t0: float = 0.0
     sections: Array | None = None
+    projection: str | None = None
 
     kind = "series"
 
@@ -325,6 +329,14 @@ class Series:
         if abs(self.dt - other.dt) > _TOL:
             raise ValueError(
                 f"Cannot concat series with dt={self.dt} and dt={other.dt}"
+            )
+        if (
+            self.values is not None
+            and other.values is not None
+            and self.projection != other.projection
+        ):
+            raise ValueError(
+                "Cannot concat projected series summed through different gains"
             )
         if self.values is None:
             return replace(other, t0=other.t0 + shift)
@@ -456,6 +468,7 @@ class Run:
         duration: float | None = None,
         padded: bool = False,
         sections=None,
+        projection: str | None = None,
     ) -> Run:
         if kind is None:
             if padded:
@@ -476,6 +489,7 @@ class Run:
                 dt=0.1 if dt is None else float(dt),
                 t0=t0,
                 sections=sections,
+                projection=projection,
             )
         elif kind == "events":
             if padded:
@@ -521,6 +535,19 @@ class Run:
         if ids is None and values is None:
             return self
         return self.add("current", ids, values, dt=dt, kind="series", sections=sections)
+
+    def add_extracellular(self, ids, values, dt: float = 0.1, projection=None) -> Run:
+        """Add the ``extracellular`` channel, a projected recording in µV with
+        a row per recording channel, or nothing when it was not recorded"""
+        if ids is None and values is None:
+            return self
+        return self.add(
+            "extracellular", ids, values, dt=dt, kind="series", projection=projection
+        )
+
+    @property
+    def extracellular(self):
+        return self.values("extracellular")
 
     def drop(self, name: str) -> Run:
         """Return a copy of this run without ``name``"""
@@ -606,11 +633,22 @@ class Run:
         if cls is None:
             from livn.conditions import Conditions as cls
 
+        projected = self.channels.get("extracellular")
+        if projected is not None:
+            fields = {
+                "extracellular_uV": projected.values,
+                "extracellular_dt": projected.dt,
+                "extracellular_gain": projected.projection,
+                **fields,
+            }
+        dt = self.current_dt
+        if dt is None and projected is not None:
+            dt = projected.dt
         return cls(
             membrane_currents_uA=self.current,
             gids=self.current_ids,
             sections=self.current_sections,
-            dt=self.current_dt,
+            dt=dt,
             **fields,
         )
 
@@ -842,18 +880,24 @@ def _series_flatten(series: Series):
         if series.sections is None
         else tuple(str(s) for s in numpy.asarray(series.sections).tolist())
     )
-    return (series.ids, series.values), (series.dt, series.t0, sections)
+    return (series.ids, series.values), (
+        series.dt,
+        series.t0,
+        sections,
+        series.projection,
+    )
 
 
 def _series_unflatten(aux, children) -> Series:
     ids, values = children
-    dt, t0, sections = aux
+    dt, t0, sections, projection = aux
     return Series(
         ids=ids,
         values=values,
         dt=dt,
         t0=t0,
         sections=None if sections is None else numpy.asarray(sections),
+        projection=projection,
     )
 
 

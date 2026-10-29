@@ -99,10 +99,18 @@ class PointSource(Component):
             distances, electrode_radius, self.height
         )
 
+    projectable = True
+
     def project(
         self, gain, distances, membrane_currents_uA, dt=None, output_radius=None
     ):
-        return np.matmul(gain, membrane_currents_uA)
+        return self.finish(
+            np.matmul(gain, membrane_currents_uA), distances, dt, output_radius
+        )
+
+    def finish(self, potential, distances, dt=None, output_radius=None):
+        """The channel potentials from their sum `gain @ I` `[C, T]`."""
+        return potential
 
 
 class DispersivePointSource(PointSource):
@@ -129,8 +137,25 @@ class DispersivePointSource(PointSource):
         d = np.asarray(distances)
         if self.per_pair:
             return self._project_per_pair(gain, d, currents, dt)
+        return self.finish(np.matmul(gain, currents), d, dt, output_radius)
 
-        v = np.matmul(gain, currents)
+    @property
+    def projectable(self) -> bool:
+        # a per-pair blur filters each source apart, so it needs every current
+        return not self.per_pair
+
+    def finish(self, potential, distances, dt=None, output_radius=None):
+        if dt is None:
+            raise ValueError(
+                "DispersivePointSource filters in time, pass a dt to potential_recording"
+            )
+        if self.per_pair:
+            raise ValueError(
+                "a per-pair DispersivePointSource blurs each source apart and "
+                "cannot finish a projected sum; record membrane currents"
+            )
+        v = np.asarray(potential)
+        d = np.asarray(distances)
         if self.mean_distance is not None:
             mean = np.asarray(self.mean_distance)
         elif output_radius is None:

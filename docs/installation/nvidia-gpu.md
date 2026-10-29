@@ -53,6 +53,7 @@ A GPU build that fails to compile raises its compiler error rather than falling 
 - **Results are close, not bit-identical.** The events that reach one synapse in a step are summed in whatever order the GPU threads arrive, so the last bits of a conductance can differ from the CPU build's. Spike trains agree exactly at first, and once one spike moves by a step the trajectories separate while rates agree. The CPU build is the one that reproduces NEURON to the bit, so keep it for reference comparisons and tests.
 - **One process, one GPU.** livn does not assign devices to MPI ranks so every process uses the first GPU unless the OpenACC runtime is told otherwise, for example with `ACC_DEVICE_NUM` set per process.
 - **Threads do not apply.** `LIVN_NATIVE_THREADS` and `set_num_threads` have no effect on the GPU build since the GPU splits the work itself.
+- **Record the electrodes, not the currents.** At scale the membrane currents are the largest output by far (about 56 GB per simulated second for 100,000 cells at 0.1 ms), so `record("extracellular")` sums them into the array's channels on the device instead, see [projecting while recording](/guide/concepts/io#projecting-while-recording).
 
 ## Profiling
 

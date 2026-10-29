@@ -870,11 +870,13 @@ class Env(EnvProtocol):
             if has_compartments
             else None
         )
-        return run.add_current(
-            np.repeat(all_gids, sections_per_neuron),
-            currents,
-            dt=self.membrane_current_recording_dt,
-            sections=sections,
+        return self._finish_extracellular(
+            run.add_current(
+                np.repeat(all_gids, sections_per_neuron),
+                currents,
+                dt=self.membrane_current_recording_dt,
+                sections=sections,
+            )
         )
 
     def _iter_stdp_synapses(self):

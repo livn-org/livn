@@ -126,6 +126,18 @@ lfp = mea.potential_recording(distances, membrane_currents_uA)
 
 On an env, `env.potential_recording(conditions=run.conditions())` projects a run where `run.conditions()` gives its membrane currents, their gids and `dt`, while the env supplies the recording geometry itself; see [Recording compositions](#recording-compositions).
 
+#### Projecting while recording
+
+The membrane currents are one trace per section and grow with the network, while the array has a fixed number of channels. When only the electrodes are of interest, record the projection instead of the currents:
+
+```python
+env = env.record_spikes().record("extracellular", dt=0.1)
+run = env.run(1000)
+
+run.extracellular                                       # [n_channels, timestep]
+env.potential_recording(conditions=run.conditions())    # the channel signal in µV
+```
+
 This is used by decodings like [`LFP`](/guide/concepts/decoding) for spectral analysis of the extracellular signal.
 
 ### Fitting an array to a system

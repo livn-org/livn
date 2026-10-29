@@ -514,7 +514,7 @@ class Env(EnvProtocol):
         for name, (ids, values) in states.items():
             run = run.add(name, as_gid(ids), values, dt=dt, kind="series")
 
-        return run
+        return self._finish_extracellular(run)
 
     def _module_input(self, stimulus: Stimulus, duration, dt):
         compartments = None

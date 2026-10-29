@@ -74,10 +74,12 @@ env = env.record("membrane_current", ["EXC", "INH"], dt=0.5)
 Which signals an environment supports depends on its backend and on its model, and is reported by `recordable()`:
 
 ```python
-env.recordable()   # ['membrane_current', 'spikes', 'voltage']
+env.recordable()   # ['extracellular', 'membrane_current', 'spikes', 'voltage']
 ```
 
 Recording an unknown signal raises an `AttributeError` naming the available ones, and options a signal does not accept raise a `TypeError` rather than being ignored.
+
+With an MEA attached, `env.record("extracellular", dt=0.1)` records what the membrane currents would project to on its channels, without keeping the currents; see [projecting while recording](/guide/concepts/io#projecting-while-recording).
 
 ### Model-defined states
 

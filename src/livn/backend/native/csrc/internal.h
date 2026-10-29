@@ -398,6 +398,16 @@ struct RCSDSim {
     int* record_spikes; /* per cell */
     DYN(Trace) v_traces;
     DYN(Trace) i_traces;
+    /* the projected recording: channel c is the weighted sum of the membrane
+     * currents at proj_node[proj_start[c] .. proj_start[c + 1]), sampled
+     * every proj_dt into proj_values, one row of n_proj values a sample */
+    int n_proj;
+    int* proj_start;
+    int* proj_node;
+    double* proj_weight;
+    double proj_dt;
+    long proj_next;
+    DYN(double) proj_values;
     /* arrival buckets: a spike's connections, filed when the spike is new
      * under the step each event arrives at, so a step reads only its own.
      * arr_len buckets of arr_cap; one counted past arr_cap overflowed and

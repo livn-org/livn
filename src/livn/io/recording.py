@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import hashlib
 import inspect
 import re
 from dataclasses import dataclass
@@ -30,6 +31,7 @@ __all__ = [
     "as_composition",
     "electrode_light",
     "fill",
+    "gain_digest",
     "is_stack",
     "is_transfer",
     "stack",
@@ -543,16 +545,50 @@ def as_composition(recording) -> _Composition:
     return Chain(recording)
 
 
+def gain_digest(gain) -> str:
+    values = _np.ascontiguousarray(_np.asarray(gain, dtype=_np.float64))
+    digest = hashlib.sha256(repr(values.shape).encode())
+    digest.update(values.tobytes())
+    return digest.hexdigest()[:32]
+
+
 class ExtracellularPotential(Component):
     """The extracellular potential induced by transmembrane currents."""
 
     default_name = "extracellular"
 
-    def __call__(self, *, io, membrane_currents_uA, neuron_coordinates, dt=None):
+    def __call__(
+        self,
+        *,
+        io,
+        neuron_coordinates,
+        membrane_currents_uA=None,
+        dt=None,
+        extracellular_uV=None,
+        extracellular_dt=None,
+        extracellular_gain=None,
+    ):
         device = io.recording_device()
-        return device.potential_recording(
-            io.distances(neuron_coordinates), membrane_currents_uA, dt=dt
-        )
+        distances = io.distances(neuron_coordinates)
+        if extracellular_uV is not None:
+            why = _projection_mismatch(
+                device, distances, dt, extracellular_dt, extracellular_gain
+            )
+            if why is None:
+                return device.finish_projection(distances, extracellular_uV, dt=dt)
+            if membrane_currents_uA is None:
+                raise ValueError(
+                    f"the projected extracellular recording does not apply: {why}. "
+                    "Record membrane_current to project the currents under these "
+                    "conditions"
+                )
+        if membrane_currents_uA is None:
+            raise ValueError(
+                f"{type(self).__name__} needs `membrane_currents_uA` "
+                "(env.record('membrane_current')) or `extracellular_uV` "
+                "(env.record('extracellular')), which the conditions do not set"
+            )
+        return device.potential_recording(distances, membrane_currents_uA, dt=dt)
 
     def serialize(self) -> dict:
         return {"cls": class_path(self)}
@@ -563,6 +599,31 @@ class ExtracellularPotential(Component):
                 f"{sorted(params)}: ExtracellularPotential has no parameters of its own"
             )
         return self
+
+
+def _projection_mismatch(device, distances, dt, extracellular_dt, extracellular_gain):
+    if not getattr(device, "projects", False):
+        return f"{type(device).__name__}'s medium cannot be formed as a channel sum"
+    if (
+        dt is not None
+        and extracellular_dt is not None
+        and abs(dt - extracellular_dt) > 1e-9
+    ):
+        return (
+            f"it was sampled every {extracellular_dt} ms and the signal is asked "
+            f"for every {dt} ms"
+        )
+    if extracellular_gain is None:
+        return "it carries no record of the gain it was summed through"
+    gain = device.source_gain(distances)
+    if is_traced(gain):
+        return "the gain is traced, and the projection was summed through fixed numbers"
+    if gain_digest(gain) != extracellular_gain:
+        return (
+            "it was summed through a different gain (the MEA, the medium or the "
+            "sources changed since it was recorded)"
+        )
+    return None
 
 
 class LightArtifact(Component):

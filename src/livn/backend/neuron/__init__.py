@@ -752,7 +752,7 @@ class Env(EnvProtocol):
         ii, tt, iv, v, sv, im, mp, sm = self._collect(current_time)
         self.duration = None
 
-        return (
+        return self._finish_extracellular(
             Run(t0=current_time, duration=duration)
             .add_spikes(ii, tt)
             .add_voltage(iv, v, dt=self.voltage_recording_dt, sections=sv)

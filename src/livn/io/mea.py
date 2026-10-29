@@ -432,6 +432,27 @@ class MEA(IO):
             output_radius=float(self.output_radius),
         )
 
+    @property
+    def projects(self) -> bool:
+        """Whether the potential is a channel sum `gain @ I`."""
+        medium = self.electrical
+        return callable(getattr(medium, "finish", None)) and bool(
+            getattr(medium, "projectable", True)
+        )
+
+    def finish_projection(
+        self,
+        distances: Float[Array, "n_distances cip=3"],
+        potential: Float[Array, "n_channels timestep"],
+        dt: float | None = None,
+    ) -> Float[Array, "n_channels timestep"]:
+        return self.electrical.finish(
+            potential,
+            self._pair_distances(distances),
+            dt,
+            output_radius=float(self.output_radius),
+        )
+
     def distances(
         self, neuron_coordinates: Float[Array, "n_coords ixyz=4"]
     ) -> Float[Array, "n_sources*n_coords cip=3"]:

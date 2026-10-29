@@ -308,6 +308,10 @@ class Env(EnvProtocol):
         self.i_recs: dict[tuple[int, int], int] = {}
         self.i_dt: dict[str, float] = {}
 
+        self._proj_populations: set[str] = set()
+        self._proj_dt: float | None = None
+        self._proj: tuple[str, np.ndarray] | None = None
+
         self.t = 0.0
         self._v_init = -75.0
         self._dt: float | None = None
@@ -699,6 +703,79 @@ class Env(EnvProtocol):
                 self.i_recs[(int(gid), sec_id)] = trace
         return self
 
+    def _record_extracellular(self, population: str, dt: float = 0.1) -> Self:
+        """The channel sums of the membrane currents, formed during the run,
+        instead of every current (`record("membrane_current")` keeps those)."""
+        if self._proj_dt is not None and abs(self._proj_dt - dt) > 1e-12:
+            raise ValueError(
+                f"the extracellular channels are already recorded at dt="
+                f"{self._proj_dt} ms; call clear() before asking for {dt} ms"
+            )
+        self._proj_dt = float(dt)
+        self._proj_populations.add(population)
+        self._proj = None
+        return self
+
+    def _install_projection(self) -> None:
+        active = set(self.active_populations())
+        if self._proj_populations != active:
+            raise ValueError(
+                "record('extracellular') sums every population's currents, and "
+                f"was asked for {sorted(self._proj_populations)} of "
+                f"{sorted(active)}; record membrane_current to project a subset"
+            )
+        gain, digest, ids = self.extracellular_gain()
+        rows = np.asarray(self.recording_coordinates())
+        cell_index = np.full(len(rows), -1, dtype=np.int64)
+        section = np.zeros(len(rows), dtype=np.int64)
+        seen: dict[int, int] = {}
+        for j, gid in enumerate(rows[:, 0].astype(np.int64).tolist()):
+            k = seen.get(gid, 0)
+            seen[gid] = k + 1
+            cell = self._find_cell(gid)
+            if cell is not None and k < len(cell.sections):
+                cell_index[j] = cell.index
+                section[j] = k
+        # a row's current is in nA, the gain in µV per µA
+        start, cells, sections, weights = [0], [], [], []
+        simulated = cell_index >= 0
+        for channel in gain:
+            terms = np.flatnonzero((channel != 0.0) & simulated)
+            cells.append(cell_index[terms])
+            sections.append(section[terms])
+            weights.append(channel[terms] * 1e-3)
+            start.append(start[-1] + len(terms))
+        start = L.as_int_array(start)
+        cells = L.as_int_array(np.concatenate(cells) if cells else [])
+        sections = L.as_int_array(np.concatenate(sections) if sections else [])
+        weights = np.ascontiguousarray(
+            np.concatenate(weights) if weights else [], dtype=np.float64
+        )
+        L.check(
+            self._lib.rcsd_record_projection(
+                self._sim,
+                len(gain),
+                L.int_ptr(start),
+                L.int_ptr(cells),
+                L.int_ptr(sections),
+                L.double_ptr(weights),
+                self._proj_dt,
+            ),
+            self._lib,
+        )
+        self._proj = (digest, ids)
+
+    def _collect_projection(self, run: Run) -> Run:
+        if self._proj is None:
+            return run
+        digest, ids = self._proj
+        lib, sim = self._lib, self._sim
+        n_channels = int(lib.rcsd_projection_channels(sim))
+        n = int(lib.rcsd_projection_length(sim))
+        values = L.copy_doubles(lib.rcsd_projection_values(sim), n * n_channels)
+        values = values.reshape(n, n_channels).T.astype(np.float32)
+        return run.add_extracellular(ids, values, dt=self._proj_dt, projection=digest)
+
     def clear_recordings(self) -> Self:
         if self._sim:
             L.check(self._lib.rcsd_clear_recordings(self._sim), self._lib)
@@ -773,6 +850,8 @@ class Env(EnvProtocol):
                 )
             self._install_stimulus(stimulus, current_time)
 
+        if self._proj_populations and self._proj is None:
+            self._install_projection()
         self.clear_recordings()
         if first_run:
             L.check(self._lib.rcsd_init(self._sim), self._lib)
@@ -798,7 +877,7 @@ class Env(EnvProtocol):
         self.t = current_time + duration
         ii, tt, iv, v, sv, im, mp, sm = self._collect(current_time)
         self.duration = None
-        return (
+        return self._collect_projection(
             Run(t0=current_time, duration=duration)
             .add_spikes(ii, tt)
             .add_voltage(iv, v, dt=self.voltage_recording_dt, sections=sv)
@@ -1787,6 +1866,9 @@ class Env(EnvProtocol):
         self.v_recs.clear()
         self.v_sections.clear()
         self.i_recs.clear()
+        self._proj_populations.clear()
+        self._proj_dt = None
+        self._proj = None
         self._spike_gids.clear()
         self.w_recs.clear()
         self._weight_rows.clear()

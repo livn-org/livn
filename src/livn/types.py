@@ -1157,6 +1157,9 @@ class Env(Protocol):
             recorded = getattr(env, name)(p, **kwargs)
             if recorded is not None:
                 env = recorded
+        if what == "membrane_current":
+            asked = env.__dict__.get("_currents_asked", set())
+            env.__dict__["_currents_asked"] = set(asked) | set(populations)
 
         return env
 
@@ -1405,6 +1408,85 @@ class Env(Protocol):
         self,
     ) -> Float[Array, "n_channels n_neurons"]:
         return self.model.reduce_source_gain(self.source_gain())
+
+    def _record_extracellular(self, population: str, dt: float = 0.1) -> Self:
+        state = self.__dict__.get("_extracellular") or {
+            "populations": set(),
+            "dt": None,
+        }
+        if state["dt"] is not None and abs(state["dt"] - dt) > 1e-12:
+            raise ValueError(
+                f"the extracellular channels are already recorded at dt="
+                f"{state['dt']} ms; call clear() before asking for {dt} ms"
+            )
+        asked = self.__dict__.get("_currents_asked", set())
+        if asked and abs(self.membrane_current_recording_dt - dt) > 1e-12:
+            raise ValueError(
+                f"membrane currents are recorded at dt="
+                f"{self.membrane_current_recording_dt} ms, and this backend "
+                "projects them for the extracellular channels, so it cannot "
+                f"also give those at {dt} ms"
+            )
+        recorded = self._record_membrane_current(population, dt)
+        env = self if recorded is None else recorded
+        env.__dict__["_extracellular"] = {
+            "populations": set(state["populations"]) | {population},
+            "dt": float(dt),
+        }
+        return env
+
+    def _finish_extracellular(self, run):
+        from livn.utils import lnp
+
+        state = self.__dict__.get("_extracellular")
+        if not state or not state["populations"] or run.current is None:
+            return run
+        active = set(self.active_populations())
+        if state["populations"] != active:
+            raise ValueError(
+                "record('extracellular') sums every population's currents, and "
+                f"was asked for {sorted(state['populations'])} of {sorted(active)}; "
+                "record membrane_current to project a subset"
+            )
+        _, digest, ids = self.extracellular_gain()
+        rows, kept, _ = self.placed_rows(run.current_ids, run.current_sections)
+        device = self.io.recording_device()
+        gain = device.source_gain(self.io.distances(rows))
+        currents = _take(run.current, kept)
+        xp = lnp()
+        values = xp.matmul(xp.asarray(gain, dtype=currents.dtype), currents)
+        run = run.add_extracellular(ids, values, dt=run.current_dt, projection=digest)
+        if not self.__dict__.get("_currents_asked"):
+            run = run.drop("current")
+        return run
+
+    def extracellular_gain(self):
+        """What `record("extracellular")` sums the membrane currents through.
+
+        Returns the gain `[n_channels, n_rows]` over `recording_coordinates()`,
+        in µV per µA, its digest (which the recording carries, so a consumer
+        can tell whether it still applies) and the channel ids.
+        """
+        import numpy as _np
+
+        from livn.io.recording import gain_digest
+
+        if self.io is None:
+            raise ValueError("record('extracellular') needs an io on the env")
+        device = self.io.recording_device()
+        if not getattr(device, "projects", False):
+            raise ValueError(
+                f"the {type(device).__name__}'s medium cannot be formed as a "
+                "channel sum during the run (a per-pair dispersion filters each "
+                "source apart); record membrane_current instead"
+            )
+        rows = self.recording_coordinates()
+        gain = _np.asarray(
+            device.source_gain(self.io.distances(rows)), dtype=_np.float64
+        )
+        ids = getattr(device, "channel_ids", None)
+        ids = _np.arange(gain.shape[0]) if ids is None else _np.asarray(ids)
+        return gain, gain_digest(gain), ids
 
     def potential_recording(
         self, recording=None, conditions=None, key=None

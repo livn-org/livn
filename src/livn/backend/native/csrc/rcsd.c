@@ -193,6 +193,10 @@ void rcsd_destroy(RCSDSim* sim) {
     DYN_FREE(sim->v_traces);
     free_traces(sim->i_traces.data, sim->i_traces.n);
     DYN_FREE(sim->i_traces);
+    free(sim->proj_start);
+    free(sim->proj_node);
+    free(sim->proj_weight);
+    DYN_FREE(sim->proj_values);
     free(sim);
 }
 
@@ -1183,6 +1187,8 @@ int rcsd_init(RCSDSim* sim) {
     sim->spike_times.n = 0;
     reset_traces(sim->v_traces.data, sim->v_traces.n);
     reset_traces(sim->i_traces.data, sim->i_traces.n);
+    sim->proj_next = 0;
+    sim->proj_values.n = 0;
     sim->initialized = 1;
     return RCSD_OK;
 }
@@ -1287,6 +1293,119 @@ int rcsd_clear_recordings(RCSDSim* sim) {
     for (i = 0; i < sim->i_traces.n; ++i) {
         sim->i_traces.data[i].values.n = 0;
     }
+    sim->proj_values.n = 0;
+    return RCSD_OK;
+}
+
+int rcsd_record_projection(RCSDSim* sim, int n_channels, const int* start, const int* cell,
+                           const int* section, const double* weight, double dt) {
+    int* own_start = NULL;
+    int* node = NULL;
+    double* own_weight = NULL;
+    int c, k, n_terms;
+    if (n_channels < 0) {
+        rcsd_set_error("a projection has no negative number of channels");
+        return RCSD_ERROR;
+    }
+    if (n_channels > 0) {
+        if (!(dt > 0.0)) {
+            rcsd_set_error("recording dt must be positive");
+            return RCSD_ERROR;
+        }
+        if (start[0] != 0) {
+            rcsd_set_error("a projection's terms start at 0, not %d", start[0]);
+            return RCSD_ERROR;
+        }
+        for (c = 0; c < n_channels; ++c) {
+            if (start[c + 1] < start[c]) {
+                rcsd_set_error("channel %d of the projection ends before it starts", c);
+                return RCSD_ERROR;
+            }
+        }
+        n_terms = start[n_channels];
+        own_start = (int*) malloc((size_t) (n_channels + 1) * sizeof(int));
+        node = (int*) malloc((size_t) (n_terms + 1) * sizeof(int));
+        own_weight = (double*) malloc((size_t) (n_terms + 1) * sizeof(double));
+        if (!own_start || !node || !own_weight) {
+            free(own_start);
+            free(node);
+            free(own_weight);
+            rcsd_set_error("out of memory");
+            return RCSD_ERROR;
+        }
+        memcpy(own_start, start, (size_t) (n_channels + 1) * sizeof(int));
+        for (k = 0; k < n_terms; ++k) {
+            int sec = rcsd_cell_section(sim, cell[k], section[k]);
+            if (sec < 0) {
+                free(own_start);
+                free(node);
+                free(own_weight);
+                rcsd_set_error("cell %d has no section %d", cell[k], section[k]);
+                return RCSD_ERROR;
+            }
+            node[k] = rcsd_section_node(sim, sec, 0.5);
+            own_weight[k] = weight[k];
+        }
+    }
+    free(sim->proj_start);
+    free(sim->proj_node);
+    free(sim->proj_weight);
+    sim->proj_start = own_start;
+    sim->proj_node = node;
+    sim->proj_weight = own_weight;
+    sim->n_proj = n_channels;
+    sim->proj_values.n = 0;
+    sim->proj_dt = n_channels > 0 ? dt : 0.0;
+    /* the schedule is absolute, as a trace's */
+    sim->proj_next = 0;
+    if (n_channels > 0) {
+        sim->proj_next = (long) floor(((double) sim->step * sim->dt) / dt + 1e-9);
+        if (sim->proj_next * dt < (double) sim->step * sim->dt - 1e-9) {
+            sim->proj_next += 1;
+        }
+    }
+    return RCSD_OK;
+}
+
+int rcsd_projection_channels(RCSDSim* sim) {
+    return sim->n_proj;
+}
+
+long rcsd_projection_length(RCSDSim* sim) {
+    return sim->n_proj > 0 ? (long) (sim->proj_values.n / (size_t) sim->n_proj) : 0;
+}
+
+const double* rcsd_projection_values(RCSDSim* sim) {
+    return sim->proj_values.data;
+}
+
+/* the projection's samples that are due: a row of n_proj sums each, read in
+ * the queue like the traces, into proj_values, which the device writes in
+ * place (prepare_recording reserves the run's samples up front) */
+static int record_projection(RCSDSim* sim, double t) {
+    while (sim->n_proj > 0 && (double) sim->proj_next * sim->proj_dt <= t + 1e-9) {
+        size_t at = sim->proj_values.n;
+        int n = sim->n_proj, c;
+        if (at + (size_t) n > sim->proj_values.cap) {
+            RCSD_ACC_WAIT
+            if (!dyn_reserve((void**) &sim->proj_values.data, &sim->proj_values.cap,
+                             at + (size_t) n, sizeof(double))) {
+                return RCSD_ERROR;
+            }
+        }
+        RCSD_ACC_GANG(sim)
+        for (c = 0; c < n; ++c) {
+            double sum = 0.0;
+            int k;
+            RCSD_ACC_VECTOR_SUM(sum)
+            for (k = sim->proj_start[c]; k < sim->proj_start[c + 1]; ++k) {
+                sum += sim->proj_weight[k] * ST(sim->proj_node[k], RCSD_S_IMEM);
+            }
+            sim->proj_values.data[at + (size_t) c] = sum;
+        }
+        sim->proj_values.n = at + (size_t) n;
+        sim->proj_next += 1;
+    }
     return RCSD_OK;
 }
 
@@ -1355,6 +1474,14 @@ static int prepare_recording(RCSDSim* sim, long n_steps) {
         size_t more = (size_t) ceil((double) n_steps * sim->dt / tr->dt) + 2;
         if (!dyn_reserve((void**) &tr->values.data, &tr->values.cap, tr->values.n + more,
                          sizeof(double))) {
+            return RCSD_ERROR;
+        }
+    }
+    if (sim->n_proj > 0) {
+        size_t more = ((size_t) ceil((double) n_steps * sim->dt / sim->proj_dt) + 2) *
+                      (size_t) sim->n_proj;
+        if (!dyn_reserve((void**) &sim->proj_values.data, &sim->proj_values.cap,
+                         sim->proj_values.n + more, sizeof(double))) {
             return RCSD_ERROR;
         }
     }
@@ -1437,6 +1564,9 @@ static int collect(RCSDSim* sim) {
     if (rcsd_events_harvest(sim) != RCSD_OK) {
         return RCSD_ERROR;
     }
+    if (sim->n_proj > 0) {
+        RCSD_ACC_WAIT /* the projection's samples are written in place */
+    }
     return flush_traces(sim);
 }
 
@@ -1445,6 +1575,9 @@ static int collect(RCSDSim* sim) {
 static int record_pending(RCSDSim* sim) {
     double t = (double) sim->step * sim->dt;
     int g;
+    if (record_projection(sim, t) != RCSD_OK) {
+        return RCSD_ERROR;
+    }
     for (g = 0; g < sim->n_rec_groups; ++g) {
         int first = sim->rec_start[g], size = sim->rec_start[g + 1] - first;
         while ((double) sim->rec_next[g] * sim->rec_dt[g] <= t + 1e-9) {
@@ -1492,6 +1625,9 @@ static int record_pending(RCSDSim* sim) {
 static int record_pending(RCSDSim* sim) {
     double t = (double) sim->step * sim->dt;
     size_t i;
+    if (record_projection(sim, t) != RCSD_OK) {
+        return RCSD_ERROR;
+    }
 #if defined(RCSD_OPENACC)
     int due = 0;
     for (i = 0; i < sim->v_traces.n && !due; ++i) {
