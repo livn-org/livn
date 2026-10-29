@@ -336,6 +336,9 @@ RCSD_API int rcsd_set_stimulus_rows(RCSDSim* sim, int mode, int n_rows, const in
 RCSD_API int rcsd_set_stimulus_window(RCSDSim* sim, int mode, long first, int n_samples,
                                       const double* values, long extent);
 RCSD_API int rcsd_clear_stimulus(RCSDSim* sim, int mode);
+/* drop the queued synaptic events; the next rcsd_init would anyway, so the
+ * delays can be set (and the event ring rebuilt) in between */
+RCSD_API int rcsd_clear_events(RCSDSim* sim);
 /* how many of the junctions the extracellular field drives were dropped
  * because one of their sections has no row */
 RCSD_API int rcsd_extracellular_junctions(RCSDSim* sim, int* driven, int* dropped);

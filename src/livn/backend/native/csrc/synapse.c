@@ -551,6 +551,11 @@ void rcsd_events_clear(RCSDSim* sim) {
     }
 }
 
+int rcsd_clear_events(RCSDSim* sim) {
+    rcsd_events_clear(sim);
+    return RCSD_OK;
+}
+
 /* delivered at the first step whose midpoint reaches the event */
 int rcsd_events_enqueue(RCSDSim* sim, int conn, double te) {
     long target = (long) ceil(te / sim->dt - 0.5);

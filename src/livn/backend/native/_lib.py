@@ -300,6 +300,7 @@ _SIGNATURES = {
         [c_void_p, c_int, c_long, c_int, _c_double_p, c_long],
     ),
     "rcsd_clear_stimulus": (c_int, [c_void_p, c_int]),
+    "rcsd_clear_events": (c_int, [c_void_p]),
     "rcsd_extracellular_junctions": (c_int, [c_void_p, _c_int_p, _c_int_p]),
     "rcsd_stimulus_needed": (c_long, [c_void_p, c_int]),
     "rcsd_record_spikes": (c_int, [c_void_p, c_int]),

@@ -1760,6 +1760,7 @@ class Env(EnvProtocol):
         if self._sim:
             for state in self._stim.values():
                 L.check(self._lib.rcsd_clear_stimulus(self._sim, state.mode), self._lib)
+            L.check(self._lib.rcsd_clear_events(self._sim), self._lib)
         return self
 
     def close(self) -> Self:
