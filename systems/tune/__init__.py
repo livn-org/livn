@@ -144,8 +144,27 @@ class Tune(Interface):
                 | None
             ) = None
             method_kwargs: dict = {}
-            custom_training: str | None = "interface.sopt.surrogate_training"
-            custom_training_kwargs: dict | None = {}
+            custom_training: str | None = "dmosopt.model_transformer.joint"
+            custom_training_kwargs: dict | None = ConfigField(
+                default_factory=lambda: {
+                    "objectives": False,
+                    "constraints": True,
+                    "sensitivity": False,
+                    "epochs": 500,
+                    "validation_split": 0.2,
+                    "callbacks": [
+                        [
+                            "keras.callbacks.EarlyStopping",
+                            {
+                                "monitor": "val_objectives_loss",
+                                "patience": 150,
+                                "mode": "min",
+                                "restore_best_weights": True,
+                            },
+                        ]
+                    ],
+                }
+            )
 
         surrogate: SurrogateConfig = SurrogateConfig()
 
@@ -192,7 +211,6 @@ class Tune(Interface):
         return {
             "target": [target, {"observation": observation, **options}],
             "surrogate": {
-                "custom_training": "interface.sopt.surrogate_training",
                 "custom_training_kwargs": {
                     "objectives": True,
                     "constraints": False,
@@ -328,9 +346,14 @@ class Tune(Interface):
         ]
 
     def _sopt_config(self, target, model, layout: dict | None = None) -> dict:
-        surrogate_config = {}
-        for k, v in self.config.surrogate.items():
-            surrogate_config["surrogate_" + k] = v
+        surrogate_config = {
+            "surrogate_" + k: v for k, v in to_dict(self.config.surrogate).items()
+        }
+        training = surrogate_config.get("surrogate_custom_training_kwargs") or {}
+        if training.get("feasibility_solving"):
+            training.setdefault(
+                "feasibility_constraint_weights", target.constraint_weights() or None
+            )
 
         sizing = target.sizing
         return {

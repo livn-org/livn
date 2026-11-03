@@ -817,12 +817,16 @@ wheels = [
 
 [[package]]
 name = "distwq"
-version = "1.3.3"
-source = { git = "https://github.com/iraikov/distwq.git#f0a32153a8781e468eee7e469ae78a812e31f78a" }
+version = "1.3.4"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "mpi4py" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/5c/c8/35a31e5ba7b769a37343b89f0e6dc3a0f9369b2a0357d4e4a0898d92132e/distwq-1.3.4.tar.gz", hash = "sha256:a42a50d6208c134ab8c675b1d82776955f1bf39044d1daa68bc9f4e3aa24f4b3", size = 50014, upload-time = "2026-10-31T02:42:52.521Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a2/7f/90acf01aed5bc4ee49c11628be14bbd509dd6cc2592baa03039ff908f6e6/distwq-1.3.4-py3-none-any.whl", hash = "sha256:2c93b08dbdf1568ea3d862c8d98283c6382401302ebe9a3fc01cef92948342cb", size = 33421, upload-time = "2026-10-31T02:42:51.237Z" },
 ]
 
 [[package]]
@@ -865,7 +869,7 @@ wheels = [
 [[package]]
 name = "dmosopt"
 version = "0.9.3"
-source = { git = "https://github.com/iraikov/dmosopt.git?rev=7f0d3dd#7f0d3dda378b438953066d441e25a17b52e0846c" }
+source = { git = "https://github.com/iraikov/dmosopt.git?rev=05442a0#05442a0b78534ba23e5f0655a79eb8e37b6da936" }
 dependencies = [
     { name = "distwq" },
     { name = "h5py" },
@@ -4671,7 +4675,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "dmosopt", git = "https://github.com/iraikov/dmosopt.git?rev=7f0d3dd" },
+    { name = "dmosopt", git = "https://github.com/iraikov/dmosopt.git?rev=05442a0" },
     { name = "huggingface-hub", specifier = ">=0.3.1" },
     { name = "keras", specifier = "==3.13.0" },
     { name = "livn", editable = "." },

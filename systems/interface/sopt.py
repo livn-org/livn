@@ -1,6 +1,5 @@
 import contextlib
 import hashlib
-import logging
 import os
 from collections.abc import Mapping
 from functools import partial
@@ -16,8 +15,6 @@ from pydantic import Field
 import livn
 from livn.parallel import finalize, partition
 from livn.utils import sentinel
-
-logger = logging.getLogger(__name__)
 
 # NEURON compatible rank order
 os.environ.setdefault("DISTWQ_CONTROLLER_RANK", "-1")
@@ -114,16 +111,9 @@ class Evaluation:
 def declared_names(target) -> dict:
     objectives = list(target.objective_names())
     constraints = list(target.constraint_names())
-    weights = getattr(target, "constraint_weights", dict)()
-    if unknown := sorted(set(weights) - set(constraints)):
-        raise ValueError(
-            f"{type(target).__name__} weights {unknown} in the surrogate's "
-            f"projection, but its constraints are {constraints}"
-        )
     return {
         "objectives": objectives,
         "constraints": constraints,
-        "constraint_weights": {n: float(w) for n, w in weights.items()},
         "features": objectives
         + [n for n in target.observed_feature_names() if n not in objectives],
     }
@@ -153,67 +143,6 @@ def constraint_names(c):
 
 def feature_dtypes(c):
     return [(f, np.float32) for f in _declared(c)["features"]]
-
-
-def surrogate_training(
-    optimizer_cls,
-    Xinit,
-    Yinit,
-    C,
-    xlb,
-    xub,
-    file_path,
-    options,
-    #
-    target=None,
-    system=None,
-    #
-    objectives: bool = False,
-    constraints: bool = True,
-    sensitivity: bool = False,
-    feasibility_constraint_weights: dict | None = None,
-    #
-    max_epochs: int = 500,
-    patience: int = 150,
-    **kwargs,
-):
-    from dmosopt.model_transformer import joint
-
-    from systems.tune.surrogate import constraint_columns, early_stopping_transformer
-
-    names = []
-    if target is not None and target != "???":
-        try:
-            declared = declared_names(_target_for(target, system))
-        except Exception as error:
-            logger.warning("could not read constraint names from the target: %s", error)
-        else:
-            names = declared["constraints"]
-            if feasibility_constraint_weights is None:
-                feasibility_constraint_weights = declared["constraint_weights"]
-
-    if feasibility_constraint_weights:
-        feasibility_constraint_weights = constraint_columns(
-            feasibility_constraint_weights, names
-        )
-
-    return joint(
-        optimizer_cls,
-        Xinit,
-        Yinit,
-        C,
-        xlb,
-        xub,
-        file_path,
-        options,
-        objectives=objectives,
-        constraints=constraints,
-        sensitivity=sensitivity,
-        feasibility_constraint_weights=feasibility_constraint_weights or None,
-        model_cls=early_stopping_transformer(patience=patience),
-        epochs=max_epochs,
-        **kwargs,
-    )
 
 
 def _build_env(target, system, model, comm, selection=None):
@@ -356,7 +285,10 @@ def obj_reduce(payload):
     result = payload[-1][0]
     objectives_dict, constraints_dict = result[0], result[1]
     observed_dict = result[2] if len(result) > 2 else {}
-    evaluation = Evaluation(**(result[3] if len(result) > 3 else {}))
+    declared = result[3] if len(result) > 3 else {}
+    evaluation = Evaluation(
+        **{k: declared.get(k) for k in ("objectives", "constraints", "features")}
+    )
 
     for name, trials in objectives_dict.items():
         for objective, feature in trials:
@@ -410,7 +342,7 @@ class Sopt(Dmosopt):
                 "resample_fraction": 1.0,
                 "surrogate_method_name": None,
                 "surrogate_method_kwargs": {},
-                "surrogate_custom_training": "interface.sopt.surrogate_training",
+                "surrogate_custom_training": "dmosopt.model_transformer.joint",
                 "surrogate_custom_training_kwargs": {},
                 "feasibility_method_name": None,
                 "feasibility_method_kwargs": {},
@@ -472,11 +404,6 @@ class Sopt(Dmosopt):
     def __call__(self) -> None:
         args = self.config.dopt_params.setdefault("obj_fun_init_args", {})
         args["local_directory"] = self.local_directory()
-        surrogate_kwargs = self.config.dopt_params.setdefault(
-            "surrogate_custom_training_kwargs", {}
-        )
-        surrogate_kwargs.setdefault("target", args.get("target"))
-        surrogate_kwargs.setdefault("system", self.config.system)
         return super().__call__()
 
     def evaluate_objective_at(self, x, verbose=False, **reduce_kwargs):
