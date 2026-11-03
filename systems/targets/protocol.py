@@ -137,6 +137,7 @@ class Target(Interface):
         model_config = ConfigDict(extra="forbid")
 
         sizing: Sizing = Sizing()
+        constraint_weights: dict[str, float] = {}
 
     def __init__(self, version=None, **kwargs):
         super().__init__(version=version, **kwargs)
@@ -366,6 +367,12 @@ class Target(Interface):
     def observed_features(self) -> dict[str, float]:
         """Values for `observed_feature_names`, after an evaluation."""
         return {}
+
+    def constraint_weights(self) -> dict[str, float]:
+        """Constraint weight in the surrogate projection."""
+        declared = set(self.constraint_names())
+        weights = self.config.constraint_weights or {}
+        return {n: float(w) for n, w in weights.items() if n in declared}
 
     def set_params(self, params: dict[str, Any]) -> dict[str, Any]:
         """Set protocol parameters from a dictionary.

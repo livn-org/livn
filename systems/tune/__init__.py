@@ -198,11 +198,6 @@ class Tune(Interface):
                     "constraints": False,
                     "feasibility_solving": True,
                     "feasibility_targets": "objective constraint",
-                    "feasibility_liveness": (
-                        "not_runaway",
-                        "not_quiescent",
-                        "is_stable",
-                    ),
                 },
             },
             "num_generations": 10,
@@ -230,11 +225,6 @@ class Tune(Interface):
                     "constraints": False,
                     "feasibility_solving": True,
                     "feasibility_targets": "objective constraint",
-                    "feasibility_liveness": (
-                        "NGFC synchrony bound",
-                        "AAC synchrony bound",
-                        "IVY synchrony bound",
-                    ),
                     "sensitivity": sensitivity,
                     "sensitivity_samples": sensitivity_samples,
                 },

@@ -548,6 +548,13 @@ class Culture(Target):
         )
 
         observation: str = ConfigField(identifying=False)
+        constraint_weights: dict[str, float] = ConfigField(
+            default_factory=lambda: {
+                "not_runaway": 4.0,
+                "not_quiescent": 4.0,
+                "is_stable": 4.0,
+            }
+        )
         _normalise = field_validator("observation")(
             lambda path: os.path.normpath(path) if path else path
         )

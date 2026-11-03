@@ -7,6 +7,7 @@ import os
 from typing import Literal
 
 import numpy as np
+from machinable.config import Field as ConfigField
 from pydantic import ConfigDict, field_validator
 
 from livn.decoding import (
@@ -316,6 +317,13 @@ class CA1(Target):
         selection: str | None = None
 
         save_spikes: bool | Literal["all", "feasible"] = False
+        constraint_weights: dict[str, float] = ConfigField(
+            default_factory=lambda: {
+                "NGFC synchrony bound": 4.0,
+                "AAC synchrony bound": 4.0,
+                "IVY synchrony bound": 4.0,
+            }
+        )
         block_cells: int = 20
         block_dt: float = 0.1
         block_threshold: float = -45.0

@@ -113,9 +113,17 @@ class Evaluation:
 
 def declared_names(target) -> dict:
     objectives = list(target.objective_names())
+    constraints = list(target.constraint_names())
+    weights = getattr(target, "constraint_weights", dict)()
+    if unknown := sorted(set(weights) - set(constraints)):
+        raise ValueError(
+            f"{type(target).__name__} weights {unknown} in the surrogate's "
+            f"projection, but its constraints are {constraints}"
+        )
     return {
         "objectives": objectives,
-        "constraints": list(target.constraint_names()),
+        "constraints": constraints,
+        "constraint_weights": {n: float(w) for n, w in weights.items()},
         "features": objectives
         + [n for n in target.observed_feature_names() if n not in objectives],
     }
@@ -163,71 +171,33 @@ def surrogate_training(
     objectives: bool = False,
     constraints: bool = True,
     sensitivity: bool = False,
-    #
-    feasibility_solving: bool = False,
-    feasibility_targets: str = "objective constraint",
-    feasibility_iterations: int = 1000,
-    feasibility_after: int = 10,
-    feasibility_liveness: tuple = (),
-    feasibility_max_move: float | None = 0.1,
+    feasibility_constraint_weights: dict | None = None,
     #
     max_epochs: int = 500,
     patience: int = 150,
     **kwargs,
 ):
-    from dmosopt.model_transformer import joint as dmosopt_joint
+    from dmosopt.model_transformer import joint
 
-    from systems.tune.surrogate import (
-        Projecting,
-        feasibility_transformer,
-        resolve_liveness,
-    )
+    from systems.tune.surrogate import constraint_columns, early_stopping_transformer
 
-    declared = []
+    names = []
     if target is not None and target != "???":
         try:
-            declared = declared_names(_target_for(target, system))["constraints"]
+            declared = declared_names(_target_for(target, system))
         except Exception as error:
             logger.warning("could not read constraint names from the target: %s", error)
+        else:
+            names = declared["constraints"]
+            if feasibility_constraint_weights is None:
+                feasibility_constraint_weights = declared["constraint_weights"]
 
-    if feasibility_solving and not objectives:
-        logger.warning(
-            "feasibility_solving=True has no effect with objectives=False: the "
-            "projection only reaches dmosopt through the objective slot"
+    if feasibility_constraint_weights:
+        feasibility_constraint_weights = constraint_columns(
+            feasibility_constraint_weights, names
         )
 
-    wrapper = None
-    if feasibility_solving and objectives:
-        seen = np.asarray(Xinit)
-
-        def wrapper(base_cls, fitted):
-            liveness = resolve_liveness(
-                feasibility_liveness, declared, int(fitted.num_constraints)
-            )
-            logger.info(
-                "feasibility projection on: targets %r, after %d generations, "
-                "liveness columns %s, max move %s box units",
-                feasibility_targets,
-                feasibility_after,
-                list(liveness),
-                feasibility_max_move,
-            )
-
-            def build(*args, **kw):
-                return Projecting(
-                    base_cls(*args, **kw),
-                    fitted,
-                    seen,
-                    feasibility_targets,
-                    feasibility_iterations,
-                    feasibility_after,
-                    liveness,
-                    max_move=feasibility_max_move,
-                )
-
-            return build
-
-    return dmosopt_joint(
+    return joint(
         optimizer_cls,
         Xinit,
         Yinit,
@@ -239,8 +209,8 @@ def surrogate_training(
         objectives=objectives,
         constraints=constraints,
         sensitivity=sensitivity,
-        model_cls=feasibility_transformer(patience=patience),
-        optimizer_wrapper=wrapper,
+        feasibility_constraint_weights=feasibility_constraint_weights or None,
+        model_cls=early_stopping_transformer(patience=patience),
         epochs=max_epochs,
         **kwargs,
     )
