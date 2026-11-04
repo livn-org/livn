@@ -24,8 +24,10 @@ requires-python = ">= 3.11"
 #  (deliberately no `neuron` since MPI, parallel HDF5 and neuroh5 wheels are tricky)
 #  use `uv sync --group neuron` instead.
 diffrax = [
-    "jax>=0.10.0; platform_system == 'Darwin'",
-    "jax[cuda]>=0.10.0; platform_system != 'Darwin'",
+    "jax>=0.12.0.1; platform_system == 'Darwin' and python_version >= '3.12'",
+    "jax[cuda]>=0.12.0.1; platform_system != 'Darwin' and python_version >= '3.12'",
+    "jax>=0.10.0; platform_system == 'Darwin' and python_version < '3.12'",
+    "jax[cuda]>=0.10.0; platform_system != 'Darwin' and python_version < '3.12'",
     "equinox>=0.13.7",
     "optimistix>=0.1.0",
     "jaxtyping>=0.3.9",

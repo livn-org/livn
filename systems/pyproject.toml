@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "dmosopt @ git+https://github.com/iraikov/dmosopt.git@05442a0",
-    "machinable @ git+https://github.com/machinable-org/machinable.git@b399212",
+    "machinable @ git+https://github.com/machinable-org/machinable.git@f672c4f",
     "sqlean-py>=3.47.0",
     "livn",
     "mpi4py>=4.0.0",
