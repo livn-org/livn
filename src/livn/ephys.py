@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 import numpy as np
 from scipy import signal
@@ -375,12 +375,21 @@ def spike_shape(v, t, onset: float, crossing: float = -20.0) -> dict:
 def threshold_search(
     probe: Callable[[float], object],
     criterion: Callable[[object], bool],
-    lo: float,
-    hi: float,
+    lo: float | None = None,
+    hi: float | None = None,
     tol: float = 0.02,
+    *,
+    grid: Iterable[float] | None = None,
 ) -> float | None:
     """Smallest amplitude at which ``criterion(probe(amplitude))`` holds."""
-    if not 0 < lo <= hi:
+    if grid is not None:
+        if lo is not None or hi is not None:
+            raise ValueError("pass either lo and hi or a grid, not both")
+        for amp in sorted(float(a) for a in grid):
+            if criterion(probe(amp)):
+                return amp
+        return None
+    if lo is None or hi is None or not 0 < lo <= hi:
         raise ValueError(f"need 0 < lo <= hi, got lo={lo}, hi={hi}")
 
     below, above = None, None
@@ -449,9 +458,9 @@ def _current_stimulus(env, gid: int, u: np.ndarray, dt: float):
     )
 
 
-def _run(env, duration: float, stimulus, dt: float):
+def _run(env, duration: float, stimulus, dt: float, **kwargs):
     try:
-        run = env.run(duration, stimulus, dt=dt)
+        run = env.run(duration, stimulus, dt=dt, **kwargs)
     except ValueError as error:
         if "compiled for" not in str(error):
             raise
@@ -528,6 +537,7 @@ def spike_template(
     dt: float,
     record_dt: float | None = None,
     isolate: bool = True,
+    **run_kwargs,
 ):
     """One spike, evoked by an alpha-shaped current pulse into the soma of ``gid``.
 
@@ -538,7 +548,7 @@ def spike_template(
     duration = pre + post
     t = np.arange(round(duration / dt)) * dt
     u = alpha_pulse(t, pre, pulse_tau, amplitude)
-    run = _run(env, duration, _current_stimulus(env, gid, u, dt), dt)
+    run = _run(env, duration, _current_stimulus(env, gid, u, dt), dt, **run_kwargs)
     if run is None:
         return None
     return _narrowed(run, gid)
