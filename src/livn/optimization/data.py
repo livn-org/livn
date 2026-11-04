@@ -305,6 +305,9 @@ class _Windower:
         if lo < 0 or hi > have:
             x = np.pad(x, ((max(-lo, 0), max(hi - have, 0)), (0, 0)), mode="edge")
         good = self._good[item["recording"]]
+        if not self.mask_bad:
+            # unmasked, a bad channel is a channel like any other
+            good = np.ones_like(good)
         if self.preprocess_at == "native":
             for transform in self.preprocess:
                 x = transform(x, rec.fs, good)
