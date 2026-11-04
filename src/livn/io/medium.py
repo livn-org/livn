@@ -144,6 +144,22 @@ class DispersivePointSource(PointSource):
         # a per-pair blur filters each source apart, so it needs every current
         return not self.per_pair
 
+    @staticmethod
+    def channel_distance(distances, output_radius=None):
+        xp = np if is_traced(distances) else _np
+        d = xp.asarray(distances)
+        if output_radius is None:
+            return d.mean(axis=1)
+        inside = d <= output_radius
+        counts = inside.sum(axis=1)
+        sums = xp.where(inside, d, 0.0).sum(axis=1)
+        return xp.where(counts > 0, sums / xp.maximum(counts, 1), float(output_radius))
+
+    def frozen(self, distances, output_radius=None) -> DispersivePointSource:
+        return with_fields(
+            self, mean_distance=self.channel_distance(distances, output_radius)
+        )
+
     def finish(self, potential, distances, dt=None, output_radius=None):
         if dt is None:
             raise ValueError(
@@ -155,18 +171,10 @@ class DispersivePointSource(PointSource):
                 "cannot finish a projected sum; record membrane currents"
             )
         v = np.asarray(potential)
-        d = np.asarray(distances)
         if self.mean_distance is not None:
             mean = np.asarray(self.mean_distance)
-        elif output_radius is None:
-            mean = d.mean(axis=1)
         else:
-            inside = d <= output_radius
-            counts = inside.sum(axis=1)
-            sums = np.where(inside, d, 0.0).sum(axis=1)
-            mean = np.where(
-                counts > 0, sums / np.maximum(counts, 1), float(output_radius)
-            )
+            mean = self.channel_distance(distances, output_radius)
         sigma = np.maximum(self.tissue_alpha * mean, self.min_sigma)
         half = int(self.kernel_sigma_ratio * (self.max_sigma / dt)) + 1
         x = np.arange(-half, half + 1, dtype=np.float32)

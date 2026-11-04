@@ -117,6 +117,7 @@ def test_an_anchored_blur_width_stops_the_distances_from_moving_it():
     # the blur the cells' geometry asks for, per channel
     near = np.asarray(d)[:, -1].reshape(len(electrodes), -1)
     mean = np.where(near <= 500.0, near, 0.0).sum(axis=1) / (near <= 500.0).sum(axis=1)
+    np.testing.assert_allclose(live.frozen(near, 500.0).mean_distance, mean)
     pinned = MEA(
         electrodes,
         output_radius=500.0,
