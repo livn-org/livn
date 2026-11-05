@@ -17,7 +17,6 @@ import os
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
-import gymnasium
 import numpy as _np
 
 from livn.backend import backend
@@ -31,6 +30,8 @@ from livn.utils import (
 )
 
 if TYPE_CHECKING:
+    import gymnasium
+
     from livn.stimulus import Stimulus
     from livn.types import Array, Float, Int
 
@@ -259,6 +260,8 @@ class IO(Jsonable):
         raise NotImplementedError("Please specify an IO")
 
     def _get_input_space(self) -> gymnasium.Space:
+        import gymnasium
+
         return gymnasium.spaces.Box(low=0.0, high=1.0, shape=(self.num_channels,))
 
     @property
