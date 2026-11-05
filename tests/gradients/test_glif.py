@@ -935,6 +935,7 @@ def test_the_model_contributes_its_states_to_recordable():
         "theta_s",
         "theta_v",
         "AScurrents",
+        "extracellular",
     }
 
     with pytest.raises(TypeError, match="unexpected keyword argument 'dt'"):
