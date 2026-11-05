@@ -3132,3 +3132,43 @@ def test_a_copy_without_samples_knows_its_length_from_a_ground_truth_series(tmp_
     assert recording.spikes().duration == pytest.approx(N_FRAMES * DT)
     with pytest.raises(rsf.Omitted):
         recording.read(0, 0, 1)
+
+
+def test_a_detection_searches_the_electrodes_and_the_reference_only(tmp_path):
+    session = _noisy_session(tmp_path)
+    names = load(session).recording.row_property("channel")
+    with open(os.path.join(session, "traces.zarr", "rsf", "channels.json"), "w") as f:
+        json.dump(
+            {
+                "kind": "channels",
+                "backend": "test",
+                "channels": {
+                    str(names[0]): {"kind": "reference", "label": "reference"},
+                    str(names[1]): {
+                        "kind": "analog_in",
+                        "label": "aux 1",
+                        "units": "uV",
+                    },
+                },
+            },
+            f,
+        )
+    relative = rsf.detect(session, _method())
+    group = rsf._zarr().open_group(os.path.join(session, relative), mode="r")
+    # an auxiliary input is no unit; the reference electrode is searched like any other
+    np.testing.assert_array_equal(group["unit_ids"][:], ["0", "2"])
+    np.testing.assert_array_equal(
+        group["properties/channel"][:], [str(names[0]), str(names[2])]
+    )
+
+
+def test_a_detection_can_take_the_sigma_a_live_detector_froze(tmp_path):
+    session = _noisy_session(tmp_path)
+    sigma = {"0": 1e-6, "1": 2e-6, "2": 3e-6}
+    relative = rsf.detect(session, _method(), sigma_uV=sigma)
+    group = rsf._zarr().open_group(os.path.join(session, relative), mode="r")
+    np.testing.assert_allclose(group["properties/sigma_uV"][:], [1e-6, 2e-6, 3e-6])
+    attributes = _attrs(os.path.join(session, relative, "rsf"))
+    assert attributes["extraction"]["state_from_frame"] == 0
+    with pytest.raises(RSFError, match="no sigma"):
+        rsf.detect(session, _method(), sigma_uV={"0": 1.0})

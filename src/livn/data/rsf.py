@@ -2476,7 +2476,7 @@ def _plan_sortings(sortings, traces, gain_uV, fs, row_ids) -> list[dict]:
 
 
 def _run_detector(
-    name: str, method, blocks: Iterable[np.ndarray], fs: float, row_ids
+    name: str, method, blocks: Iterable[np.ndarray], fs: float, row_ids, sigma_uV=None
 ) -> dict:
     """Run a threshold method on consecutive ``blocks`` of ``(frames, rows)`` uV into the
     members of a channel sorting store."""
@@ -2485,7 +2485,7 @@ def _run_detector(
 
     try:
         method = check_method(method)
-        detector = Detector(method, fs, len(row_ids))
+        detector = Detector(method, fs, len(row_ids), sigma_uV)
         n_frames = 0
         for block in blocks:
             detector.feed(block)
@@ -2590,15 +2590,20 @@ def _write_sorting(zarr, store: str, detection: Mapping, fs: float, mode: str) -
 
 
 def detect(
-    path: str | os.PathLike, method: Mapping, *, label: str | None = None
+    path: str | os.PathLike,
+    method: Mapping,
+    *,
+    sigma_uV: Mapping[str, float] | None = None,
+    label: str | None = None,
 ) -> str:
     """Run a threshold ``method`` on a finished session's stored rows and add the result as
     a channel-space sorting store, ``sortings/<label>-<store_id>.zarr``.
 
     The store is an added store (the session's ``stores`` does not list it, so a copy may
     lack it), its stages have the role ``analysis``, and it covers every frame of the
-    session's valid spans. ``label`` defaults to ``threshold-`` and the first 12 hex digits
-    of the method's hash.
+    session's valid spans. ``sigma_uV`` gives each searched row's sigma by row id (the one a
+    live detector froze) instead of estimating it, and every frame is then searched.
+    ``label`` defaults to ``threshold-`` and the first 12 hex digits of the method's hash.
 
     Returns:
         The store's path relative to the session
@@ -2621,25 +2626,44 @@ def detect(
 
     # the rows as one stream, the way a detector on the instrument sees them; what it finds
     # outside the valid spans (lost frames, dropped samples) is not kept, and coverage says so
+    # a row is searched unless rsf/channels.json describes its channel as something other
+    # than an electrode or the reference electrode (an auxiliary input, a digital word),
+    # which is the set the closed-loop detector searches
+    others = {
+        name
+        for name, channel in recording.channels().items()
+        if channel.get("kind") != "reference"
+    }
+    names = recording.row_property("channel")
+    keys = list(recording._keys)
+    searched = [
+        k for i, k in enumerate(keys) if names is None or str(names[i]) not in others
+    ]
     n = recording.num_samples()
     step = max(1, round(recording.fs) * 10)
     blocks = (
-        recording.read(0, start, min(step, n - start)) for start in range(0, n, step)
+        recording.read(0, start, min(step, n - start), channels=searched)
+        for start in range(0, n, step)
     )
-    detection = _run_detector(
-        label, method, blocks, recording.fs, list(recording._keys)
-    )
+    given = None
+    if sigma_uV is not None:
+        missing = [k for k in searched if str(k) not in sigma_uV]
+        if missing:
+            raise RSFError(f"sigma_uV has no sigma for the searched rows {missing}")
+        given = np.asarray([float(sigma_uV[str(k)]) for k in searched])
+    detection = _run_detector(label, method, blocks, recording.fs, searched, given)
     spans = recording.valid_spans()
     frames = detection["sample_index"]
     inside = np.zeros(len(frames), dtype=bool)
     for start, stop in spans.tolist():
         inside |= (frames >= start) & (frames < stop)
     band = recording.row_property("band")
+    rows = [keys.index(k) for k in searched]
     detection.update(
         sample_index=frames[inside],
         unit_index=detection["unit_index"][inside],
         coverage=[(int(a), int(b - a)) for a, b in spans.tolist()],
-        band=None if band is None else [str(b) for b in band],
+        band=None if band is None else [str(band[i]) for i in rows],
     )
     detection["record"] = _sorting_record(
         {**recording.record, "space": "channel"}, detection, "analysis"
