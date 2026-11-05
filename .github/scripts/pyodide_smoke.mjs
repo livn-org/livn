@@ -10,10 +10,11 @@ if (!wheel) {
 }
 
 function brief(e) {
+    // keep the tail: the exception message is at the end of the traceback
     return String(e.message || e)
         .split("\n")
         .filter((l) => !l.includes("pyodide.asm"))
-        .slice(0, 20)
+        .slice(-20)
         .join("\n");
 }
 
