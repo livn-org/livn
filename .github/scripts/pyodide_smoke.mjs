@@ -43,8 +43,9 @@ current[80:, 0] = 1.0
 run = env.run(60.0, stimulus=Stimulus.from_current(current, dt=0.025, gids=np.array([0])))
 
 # the spike times the NEURON backend produces for this protocol, which the
-# native backend reproduces on every platform it is built for
-expected = [3.6, 9.1, 14.225, 19.275, 24.325, 29.375, 34.425, 39.525, 44.6, 49.675, 54.775, 59.875]
+# native backend reproduces on every platform it is built for; keep in sync
+# with tests/contract/data/native_exc_current_step.npz
+expected = [2.725, 6.975, 10.725, 14.525, 18.35, 22.2, 26.05, 29.925, 33.85, 37.75, 41.65, 45.55, 49.475, 53.4, 57.325]
 got = [round(float(t), 6) for t in run.spike_times]
 assert got == expected, f"{got} != {expected}"
 print("pyodide smoke ok:", len(got), "spikes, identical to the native build")
