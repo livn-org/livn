@@ -1,6 +1,6 @@
 [project]
 name = "livn"
-version = "2.0.0"
+version = "3.0.0"
 description = "A testbed for learning to interact with in vitro neural networks"
 authors = [
     { name = "Frithjof Gressmann", email = "fg14@illinois.edu" },
@@ -47,13 +47,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [dependency-groups]
-neuron = [
-    "mpi4py>=4.0.0",
-    "neuron>=9.0.0",
-]
-neuroh5 = [
-    "neuroh5",
-]
+neuron = ["mpi4py>=4.0.0", "neuron>=9.0.0"]
+neuroh5 = ["neuroh5"]
 dev = [
     "pytest>=8.3.3",
     "pytest-reportlog",

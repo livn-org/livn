@@ -869,7 +869,7 @@ wheels = [
 [[package]]
 name = "dmosopt"
 version = "0.9.3"
-source = { git = "https://github.com/iraikov/dmosopt.git?rev=05442a0#05442a0b78534ba23e5f0655a79eb8e37b6da936" }
+source = { git = "https://github.com/iraikov/dmosopt.git?rev=67047c0#67047c00889c1a0d32fcc707366d8fb92964d2bc" }
 dependencies = [
     { name = "distwq" },
     { name = "h5py" },
@@ -1988,7 +1988,7 @@ wheels = [
 
 [[package]]
 name = "livn"
-version = "2.0.0"
+version = "3.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "fsspec" },
@@ -4677,7 +4677,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "dmosopt", git = "https://github.com/iraikov/dmosopt.git?rev=05442a0" },
+    { name = "dmosopt", git = "https://github.com/iraikov/dmosopt.git?rev=67047c0" },
     { name = "huggingface-hub", specifier = ">=0.3.1" },
     { name = "keras", specifier = "==3.13.0" },
     { name = "livn", editable = "." },
