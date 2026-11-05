@@ -691,7 +691,9 @@ def test_a_sorting_beside_the_session_reads_like_its_ground_truth(tmp_path):
     )
     recording = load(session).recording
 
-    assert recording.sortings() == ["sortings/sorter-1.zarr"]
+    (sorting,) = recording.sortings()
+    assert sorting.path == "sortings/sorter-1.zarr" and sorting.name == "sorter-1"
+    assert sorting.space == "source" and not sorting.original
     truth = recording.spikes()
     for name in ("sortings/sorter-1.zarr", "sorter-1"):
         sorted_ = recording.spikes(sorting=name)
@@ -2875,3 +2877,258 @@ def test_a_calibration_version_states_where_a_spot_is(physical, rsf_note, recwar
     )
     assert ignored.stimulus_calibrations()["light/s1"]["position"] is None
     assert ignored.stimulus_io().placement["by"] == "calibration"
+
+
+# sorting stores, original and added stores, omitted samples
+
+
+def _method(**kw):
+    from livn.io.detection import threshold_method
+
+    return threshold_method(**({"k": 1.0, "sigma_window": 1.0} | kw))
+
+
+def _noisy_session(tmp_path, name="session", **kw):
+    session = str(tmp_path / name)
+    store(_run(), session, _Env(), gain_uV=1e-6, dtype="int32", **kw)
+    return session
+
+
+def test_the_session_lists_its_original_stores_and_every_derived_store_its_id(tmp_path):
+    session = _noisy_session(tmp_path, voltage=True, sortings={"live": _method()})
+    group = _attrs(os.path.join(session, "traces.zarr", "rsf"))
+    # the stores beside traces.zarr, which carries the list
+    assert group["stores"] == [
+        "ground_truth/spikes.zarr",
+        "ground_truth/voltage.zarr",
+        "sortings/live.zarr",
+    ]
+    assert "finished_at" in group
+    ids = set()
+    for relative in group["stores"]:
+        attributes = _attrs(os.path.join(session, relative, "rsf"))
+        assert re.fullmatch(r"[0-9a-f]{32}", attributes["store_id"])
+        ids.add(attributes["store_id"])
+    assert len(ids) == 3
+    assert load(session).recording.original_stores == group["stores"]
+
+
+def test_a_threshold_sorting_is_written_with_the_session(tmp_path):
+    from livn.io.detection import Detector
+    from livn.utils import canonical_hash
+
+    method = _method()
+    session = _noisy_session(tmp_path, sortings={"live": method})
+    recording = load(session).recording
+
+    (sorting,) = recording.sortings()
+    assert sorting.path == "sortings/live.zarr" and sorting.original
+    assert sorting.space == "channel" and sorting.role == "acquisition"
+    assert sorting.method_hash == canonical_hash(method) and sorting.coverage
+
+    events = recording.spikes(sorting="live")
+    assert isinstance(events, rsf.SortingEvents) and events.space == "channel"
+    np.testing.assert_array_equal(events.units, [0, 1, 2])  # the rows it searched
+    np.testing.assert_allclose(events.coverage, [[0.0, N_FRAMES * DT]])
+    np.testing.assert_allclose(recording.coverage(sorting), events.coverage)
+
+    # the events are the detector's on the rows a reader of the session gets
+    found = Detector.detect(recording.read(0, 0, N_FRAMES), recording.fs, method)
+    want = sorted(
+        (int(f), row) for row, frames in enumerate(found.frames) for f in frames
+    )
+    assert len(want) > 3
+    got = sorted(
+        zip(
+            np.round(events.times / DT).astype(int).tolist(),
+            events.ids.tolist(),
+            strict=True,
+        )
+    )
+    assert got == want
+
+    extraction = recording.extraction("live")
+    assert extraction["method"] == method
+    assert extraction["state_from_frame"] == 10  # the 1 ms sigma window
+    assert extraction["software"]["producer"] == "livn" and extraction["dropped"] == 0
+
+    store_dir = os.path.join(session, "sortings", "live.zarr")
+    record = _attrs(store_dir)["annotations"]["rsf_provenance"]
+    assert record["space"] == "channel" and sorted(record["rows"]) == ["0", "1", "2"]
+    assert [next(iter(s["transform"])) for s in record["rows"]["0"]] == [
+        "observe",
+        "bandpass",
+        "extract",
+    ]
+    assert record["rows"]["0"][-1]["transform"]["extract"] == {"method": "threshold"}
+    group = rsf._zarr().open_group(store_dir, mode="r")
+    np.testing.assert_allclose(group["properties/sigma_uV"][:], found.sigma_uV)
+    np.testing.assert_allclose(group["properties/threshold_uV"][:], found.threshold_uV)
+    np.testing.assert_array_equal(group["unit_ids"][:], ["0", "1", "2"])
+
+    index = _doc(os.path.join(session, "traces.zarr", "rsf", "stores.json"))
+    assert {
+        "path": "sortings/live.zarr",
+        "space": "channel",
+        "written_by": "livn",
+    } in index
+
+
+def test_a_detection_added_later_ends_in_its_store_id(tmp_path):
+    session = _noisy_session(tmp_path, sortings={"live": _method()})
+    stores_before = _attrs(os.path.join(session, "traces.zarr", "rsf"))["stores"]
+
+    relative = rsf.detect(session, _method())
+    match = re.fullmatch(
+        r"sortings/threshold-([0-9a-f]{12})-([0-9a-f]{32})\.zarr", relative
+    )
+    assert match is not None
+    group = _attrs(os.path.join(session, relative, "rsf"))
+    assert group["store_id"] == match.group(2)
+    assert group["extraction"]["method_hash"].startswith(match.group(1))
+
+    recording = load(session).recording
+    live, added = recording.sortings()
+    assert live.original and not added.original and added.path == relative
+    assert added.role == "analysis" and added.method_hash == live.method_hash
+    # the same rule on the same rows: the same events
+    a, b = recording.spikes(sorting=live), recording.spikes(sorting=added)
+    np.testing.assert_array_equal(a.ids, b.ids)
+    np.testing.assert_array_equal(a.times, b.times)
+    # added stores never touch the session's list; the copy's index has it
+    assert (
+        _attrs(os.path.join(session, "traces.zarr", "rsf"))["stores"] == stores_before
+    )
+    index = _doc(os.path.join(session, "traces.zarr", "rsf", "stores.json"))
+    assert {"path": relative, "space": "channel", "written_by": "livn"} in index
+
+    # a written removal retires the store; it stays on disk until reclaimed
+    removal = {
+        "item": added.store_id,
+        "removed": True,
+        "at": "2026-11-05T10:00:00.000000Z",
+        "author": "Mara Okafor",
+    }
+    folder = os.path.join(session, "traces.zarr", "rsf", "notes", "store")
+    os.makedirs(folder)
+    with open(
+        os.path.join(folder, f"20261105T100000.000000Z-{'1' * 32}.json"), "w"
+    ) as f:
+        json.dump(removal, f)
+    assert [s.path for s in load(session).recording.sortings()] == [live.path]
+
+
+def test_a_store_that_does_not_conform_says_so(tmp_path):
+    session = _noisy_session(tmp_path, sortings={"live": _method()})
+    node = os.path.join(session, "sortings", "live.zarr", "rsf", "zarr.json")
+    with open(node) as f:
+        document = json.load(f)
+    document["attributes"]["extraction"]["method"]["threshold"]["k"] = 3.0
+    with open(node, "w") as f:
+        json.dump(document, f)
+    recording = load(session).recording
+    with pytest.raises(RSFError, match="method_hash"):
+        recording.extraction("live")
+    recording.spikes(sorting="live")  # the events still read
+
+    coverage = rsf._zarr().open_group(
+        os.path.join(session, "sortings", "live.zarr", "rsf", "coverage"), mode="r+"
+    )
+    coverage["frame_start"].resize((2,))
+    coverage["n_frames"].resize((2,))
+    coverage["frame_start"][:] = [0, 10]
+    coverage["n_frames"][:] = [20, 5]
+    with pytest.raises(RSFError, match="ascending and disjoint"):
+        recording.coverage("live")
+
+
+def test_a_bad_sorting_is_refused_before_anything_is_written(tmp_path):
+    with pytest.raises(RSFError, match=r"'live'.*causal"):
+        _noisy_session(
+            tmp_path,
+            sortings={
+                "live": {
+                    **_method(),
+                    "filter": {**_method()["filter"], "causal": False},
+                }
+            },
+        )
+    with pytest.raises(RSFError, match="store name"):
+        _noisy_session(tmp_path, name="other", sortings={"../x": _method()})
+    assert not os.path.exists(tmp_path / "session") and not os.path.exists(
+        tmp_path / "other"
+    )
+
+
+def _omit_samples(session, listed=True):
+    import shutil
+
+    traces = os.path.join(session, "traces.zarr", "traces_seg0")
+    os.remove(os.path.join(traces, "zarr.json"))  # the node first, then its chunks
+    shutil.rmtree(traces)
+    if listed:
+        local = os.path.join(session, "traces.zarr", "rsf", "local")
+        os.makedirs(local)
+        with open(os.path.join(local, "omitted.json"), "w") as f:
+            json.dump(
+                [
+                    {
+                        "path": "traces.zarr/traces_seg0",
+                        "at": "2026-11-05T10:00:00Z",
+                        "author": "Mara Okafor",
+                    }
+                ],
+                f,
+            )
+
+
+def test_a_copy_without_its_samples_reads_everything_else(tmp_path):
+    session = _noisy_session(
+        tmp_path,
+        sortings={"live": _method()},
+        description="a quiet day",
+        epochs=[{"key": "all", "frame": 0, "end_frame": 40, "kind": "baseline"}],
+    )
+    before = load(session).recording
+    live = before.spikes(sorting="live")
+    _omit_samples(session)
+
+    recording = load(session).recording
+    assert recording.samples_omitted
+    assert recording.description == "a quiet day"
+    assert recording.epochs()[0]["end_frame"] == 40
+    assert [s.path for s in recording.sortings()] == ["sortings/live.zarr"]
+    events = recording.spikes(sorting="live")
+    np.testing.assert_array_equal(events.ids, live.ids)
+    np.testing.assert_array_equal(events.times, live.times)
+    assert events.duration is None  # without the samples, the length is not known
+    np.testing.assert_array_equal(recording.spikes().ids, before.spikes().ids)
+    assert recording.extraction("live") == before.extraction("live")
+    assert recording.io is not None and recording.channel_ids.tolist() == [0, 1, 2]
+
+    for read in (
+        lambda: recording.read(0, 0, 10),
+        lambda: recording.num_samples(),
+        lambda: recording.valid_spans(),
+        lambda: recording.to_run(),
+    ):
+        with pytest.raises(rsf.Omitted, match=r"omitted here .* by Mara Okafor"):
+            read()
+    assert issubclass(rsf.Omitted, Missing)
+
+
+def test_samples_missing_without_an_omission_make_an_incomplete_copy(tmp_path):
+    session = _noisy_session(tmp_path)
+    _omit_samples(session, listed=False)
+    with pytest.raises(rsf.Omitted, match="this copy is incomplete"):
+        load(session).recording.read(0, 0, 10)
+
+
+def test_a_copy_without_samples_knows_its_length_from_a_ground_truth_series(tmp_path):
+    session = _noisy_session(tmp_path, voltage=True)
+    _omit_samples(session)
+    recording = load(session).recording
+    assert recording.num_samples() == N_FRAMES
+    assert recording.spikes().duration == pytest.approx(N_FRAMES * DT)
+    with pytest.raises(rsf.Omitted):
+        recording.read(0, 0, 1)

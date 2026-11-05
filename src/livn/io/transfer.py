@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Protocol, runtime_checkable
 
 import numpy as _np
@@ -167,37 +168,111 @@ def _set_first(taps):
 
 
 class Bandpass(Component):
-    """A causal Butterworth band-pass."""
+    """A Butterworth band-pass, or a high-pass when high is None."""
 
     low: float = static_field(300.0)
-    high: float = static_field(3000.0)
+    high: float | None = static_field(3000.0)
     order: int = static_field(4)
+    form: str = static_field("band")
+    phase: str = static_field("causal")
 
     needs_dt = True
 
-    def sos(self, dt: float):
-        from scipy.signal import butter
-
-        fs = 1000.0 / dt
-        if not 0.0 < self.low < self.high < fs / 2.0:
+    @classmethod
+    def from_filter(cls, spec) -> Bandpass:
+        if spec.get("kind") != "butterworth_bandpass":
             raise ValueError(
-                f"a band of [{self.low}, {self.high}] Hz needs "
-                f"0 < low < high < Nyquist ({fs / 2.0} Hz at dt={dt} ms)"
+                f"filter kind is 'butterworth_bandpass', not {spec.get('kind')!r}"
             )
-        return butter(
-            self.order, [self.low, self.high], btype="band", fs=fs, output="sos"
+        if spec.get("design") != "rbj_biquads":
+            raise ValueError(
+                f"filter design is 'rbj_biquads', not {spec.get('design')!r}"
+            )
+        if spec.get("causal") is not True:
+            raise ValueError(
+                "only a causal filter object describes an instrument's filter"
+            )
+        return cls(
+            low=float(spec["low_cut_hz"]),
+            high=float(spec["high_cut_hz"]),
+            order=int(spec["order"]),
+            form="cascade",
+            phase="causal",
         )
 
+    def sos(self, fs: float) -> _np.ndarray:
+        """The second-order sections ``[b0, b1, b2, 1, a1, a2]`` at ``fs`` Hz."""
+        fs = float(fs)
+        nyquist = fs / 2.0
+        high = None if self.high is None or self.high >= nyquist else float(self.high)
+        if self.high is not None and high is None and self.form == "cascade":
+            raise ValueError(
+                f"a cascade's high cut of {self.high} Hz is not below Nyquist ({nyquist} Hz)"
+            )
+        if not 0.0 < self.low < (nyquist if high is None else high):
+            raise ValueError(
+                f"a band of [{self.low}, {self.high}] Hz needs "
+                f"0 < low < high < Nyquist ({nyquist} Hz at {fs} Hz)"
+            )
+        if self.form == "band":
+            from scipy.signal import butter
+
+            if high is None:
+                return butter(self.order, self.low, "highpass", fs=fs, output="sos")
+            return butter(self.order, [self.low, high], "band", fs=fs, output="sos")
+        if self.form == "cascade":
+            sections = _butterworth(True, self.low, fs, int(self.order))
+            if high is not None:
+                sections += _butterworth(False, high, fs, int(self.order))
+            return _np.asarray(sections, dtype=float)
+        raise ValueError(f"form is 'band' or 'cascade', not {self.form!r}")
+
+    def filter(self, x, fs: float, *, axis: int = -1, zi=None):
+        from scipy.signal import sosfilt, sosfiltfilt
+
+        x = _np.asarray(x, dtype=float)
+        sos = self.sos(fs)
+        if self.phase == "zero":
+            if zi is not None:
+                raise ValueError(
+                    "a zero-phase filter has no state to carry across blocks"
+                )
+            return sosfiltfilt(sos, x, axis=axis)
+        if self.phase != "causal":
+            raise ValueError(f"phase is 'causal' or 'zero', not {self.phase!r}")
+        if zi is None:
+            return sosfilt(sos, x, axis=axis)
+        return sosfilt(sos, x, axis=axis, zi=zi)
+
+    def zeros_state(
+        self, fs: float, shape: tuple[int, ...], axis: int = -1
+    ) -> _np.ndarray:
+        n = len(self.sos(fs))
+        rest = list(shape)
+        rest[axis] = 2
+        return _np.zeros((n, *rest))
+
+    def margin(self, fs: float) -> int:
+        return int(_np.ceil(8 * fs / self.low))
+
+    def fingerprint(self) -> str:
+        high = "" if self.high is None else format(self.high, "g")
+        core = f"({self.low:g},{high},{self.order})"
+        if self.phase == "zero" and self.form == "band":
+            return f"bp{core}"
+        return f"bp-{self.form}-{self.phase}{core}"
+
     def __call__(self, signal, *, dt=None, key=None):
-        sos = self.sos(_require_dt(dt, "Bandpass"))
-        x = np.asarray(signal)
+        fs = 1000.0 / _require_dt(dt, "Bandpass")
         if not _USES_JAX:
-            from scipy.signal import sosfilt
-
-            return sosfilt(sos, _np.asarray(x), axis=-1)
-
-        y = x
-        for b0, b1, b2, _a0, a1, a2 in sos:
+            return self.filter(signal, fs, axis=-1)
+        if self.phase != "causal":
+            raise ValueError(
+                "a zero-phase Bandpass is not a recording stage under jax; "
+                "use filter() on NumPy arrays"
+            )
+        y = np.asarray(signal)
+        for b0, b1, b2, _a0, a1, a2 in self.sos(fs):
             b0, b1, b2, a1, a2 = (float(v) for v in (b0, b1, b2, a1, a2))
 
             def step(state, u, b0=b0, b1=b1, b2=b2, a1=a1, a2=a2):
@@ -209,6 +284,33 @@ class Bandpass(Component):
             _, y = jax.lax.scan(step, (zero, zero), y.T)
             y = y.T
         return y
+
+
+def _section(b0, b1, b2, a0, a1, a2) -> list[float]:
+    return [b0 / a0, b1 / a0, b2 / a0, 1.0, a1 / a0, a2 / a0]
+
+
+def _butterworth(
+    high_pass: bool, f0: float, fs: float, order: int
+) -> list[list[float]]:
+    if order < 1:
+        raise ValueError(f"order is 1 or more, not {order}")
+    w0 = 2.0 * math.pi * f0 / fs
+    sin, cos = math.sin(w0), math.cos(w0)
+    sections = []
+    for k in range(1, order // 2 + 1):
+        q = 1.0 / (2.0 * math.sin((2 * k - 1) * math.pi / (2.0 * order)))
+        alpha = sin / (2.0 * q)
+        if high_pass:
+            b = ((1.0 + cos) / 2.0, -(1.0 + cos), (1.0 + cos) / 2.0)
+        else:
+            b = ((1.0 - cos) / 2.0, 1.0 - cos, (1.0 - cos) / 2.0)
+        sections.append(_section(*b, 1.0 + alpha, -2.0 * cos, 1.0 - alpha))
+    if order % 2:
+        t = math.tan(math.pi * f0 / fs)
+        b = (1.0, -1.0, 0.0) if high_pass else (t, t, 0.0)
+        sections.append(_section(*b, 1.0 + t, t - 1.0, 0.0))
+    return sections
 
 
 class Noise(Component):

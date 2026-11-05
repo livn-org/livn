@@ -129,6 +129,35 @@ recording.prep                    # the preparation of one session
 
 Read them back with `recording.ground_truth(name)`, `recording.sources()`, `recording.connections()` and `recording.stimulus_coupling()`.
 
+## Sorting stores
+
+A session's sorting stores hold spikes or crossings found via spike sorting or a threshold detector, etc. Each is has the same layout as `ground_truth/spikes.zarr`, stored under `sortings/`.
+
+```python
+recording = load("sessions/spontaneous-1").recording
+for sorting in recording.sortings():
+    sorting.path, sorting.original, sorting.space, sorting.role, sorting.method_hash
+
+events = recording.spikes(sorting="live")   # by path, by name, or a Sorting
+events.units                                # every unit, silent ones too; rows for a channel store
+events.coverage                             # [start, stop) ms spans it covers, or None
+recording.coverage("live")                  # the same
+recording.extraction("live")                # its method, method_hash, state_from_frame, ...
+```
+
+To observe a simulated session through a threshold detector, as the instrument would, pass the method to `store`:
+
+```python
+from livn.io.detection import threshold_method
+
+method = threshold_method(k=5.0, sigma_window=1000.0)  # 300-3000 Hz, 1 ms dead time
+store(run, "sessions/spontaneous-1", env, sortings={"live": method})
+```
+
+## Copies without their samples
+
+A copy of a session may omit its full trace (`traces.zarr/traces_seg0`) to save space, indicating the omission in `traces.zarr/rsf/local/omitted.json` and `recording.samples_omitted`.
+
 ## SpikeInterface
 
 A session's traces open in SpikeInterface with `spikeinterface.read_zarr("sessions/spontaneous-1/traces.zarr")`, and its ground-truth spikes are a SpikeInterface sorting.

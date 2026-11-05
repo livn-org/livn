@@ -13,6 +13,7 @@ from livn.io.base import (
     section_labels,
     with_amplitude,
 )
+from livn.io.detection import Detector, threshold_method
 from livn.io.mea import (
     MEA,
     electrode_array_coordinates,
@@ -40,6 +41,7 @@ __all__ = [
     "Bandpass",
     "Chain",
     "ComposedIO",
+    "Detector",
     "DispersivePointSource",
     "ElectricalMedium",
     "ElectrodeRC",
@@ -65,5 +67,6 @@ __all__ = [
     "induction_matrix",
     "relative_distance",
     "section_labels",
+    "threshold_method",
     "with_amplitude",
 ]

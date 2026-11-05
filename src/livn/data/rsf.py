@@ -7,7 +7,7 @@ import os
 import re
 import uuid
 import warnings
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import cached_property
@@ -16,12 +16,13 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from livn.data import Missing
+from livn.run import Events
 from livn.utils import P
 
 if TYPE_CHECKING:
     from livn.io import IO
     from livn.policy import Policy
-    from livn.run import Events, Run, Series
+    from livn.run import Run, Series
     from livn.types import Env
 
 RSF = "rsf"
@@ -141,10 +142,22 @@ OPSIN_CONDUCTANCES = {
 PRODUCER_NAME = re.compile(r"[a-z0-9_-]+")
 DOCUMENT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\.json")
 HEX_ITEM = re.compile(r"[0-9a-f]{32}")
+STORE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+SORTINGS = "sortings"
+SAMPLES = "traces.zarr/traces_seg0"
+OMISSIONS = (
+    "local/omitted.json"  # in traces.zarr/rsf/: what this copy chose not to hold
+)
 
 
 class RSFError(ValueError):
     """A run that cannot be saved as a session."""
+
+
+class Omitted(Missing):
+    """This copy of a session does not hold what was asked for: it omits it to save space
+    (``traces.zarr/rsf/local/omitted.json``), and another copy holds it."""
 
 
 def _zarr():
@@ -195,6 +208,7 @@ def store(
     stimulus_coupling: Mapping | bool = False,
     ext: Mapping[str, Mapping[str, Any]] | None = None,
     zone: str | bool | None = None,
+    sortings: Mapping[str, Mapping] | None = None,
 ) -> str | None:
     """Write ``run`` as an RSF session directory at ``path``.
 
@@ -281,6 +295,12 @@ def store(
             written to ``rsf/ext/<producer>/``
         zone: The IANA zone the session was made in, or ``True`` for the host's when it
             can be told; ``None`` writes none
+        sortings: ``{"<name>": method}``, threshold detectors that are part of the simulated
+            instrument: each ``method`` (an ``extraction.method`` object, e.g. from
+            :func:`livn.io.detection.threshold_method`) runs on the stored rows of
+            ``traces.zarr`` and is written as the channel-space sorting store
+            ``sortings/<name>.zarr``, an original store of the session. To run one on a
+            finished session, see :func:`detect`
 
     Returns:
         The session directory on the root rank, ``None`` elsewhere
@@ -316,6 +336,7 @@ def store(
         stimulus_coupling=stimulus_coupling,
         ext=ext,
         zone=zone,
+        sortings=sortings,
     )
     _write(plan)
     return plan["path"]
@@ -349,6 +370,7 @@ def _prepare(
     stimulus_coupling=False,
     ext=None,
     zone=None,
+    sortings=None,
 ):
     from livn.io.recording import as_composition
 
@@ -449,6 +471,7 @@ def _prepare(
             "withhold dropped every channel; a session needs at least one row"
         )
     traces = _quantize(uv, gain_uV, dtype)
+    detections = _plan_sortings(sortings, traces, gain_uV, fs, row_ids)
 
     if delivered is not None and planned_programs is None:
         delivered = _delivered(io, delivered, dt, n_frames)
@@ -594,6 +617,10 @@ def _prepare(
     if spikes is not None:
         stores.append("spikes")
     stores.extend(truth)
+    sorting_record = {**record, "space": "channel"}
+    for detection in detections:
+        detection["record"] = _sorting_record(sorting_record, detection, "acquisition")
+        _json(detection["record"], f"the record of sortings/{detection['name']}.zarr")
 
     ext = {"simulation.json": run_extras}
     if observe["kind"] == POINT_SOURCE:
@@ -652,6 +679,7 @@ def _prepare(
         "group_attrs": group_attrs,
         "probe": probe,
         "conditions": conditions_table,
+        "sortings": detections,
         "stores": [
             {
                 "path": f"ground_truth/{name}.zarr",
@@ -663,6 +691,14 @@ def _prepare(
         + [
             {"path": f"ground_truth/{name}.zarr", "space": None, "written_by": PRODUCER}
             for name in tables
+        ]
+        + [
+            {
+                "path": f"{SORTINGS}/{d['name']}.zarr",
+                "space": "channel",
+                "written_by": PRODUCER,
+            }
+            for d in detections
         ],
     }
 
@@ -733,6 +769,15 @@ def _write(plan: dict) -> None:
         store = os.path.join(path, "ground_truth", f"{name}.zarr")
         _write_table_store(zarr, store, name, table)
         _minimal_group(store, plan["record"]["recording_id"])
+
+    for detection in plan["sortings"]:
+        store = os.path.join(path, SORTINGS, f"{detection['name']}.zarr")
+        _write_sorting(zarr, store, detection, plan["fs"], mode="w")
+        _minimal_group(
+            store,
+            plan["record"]["recording_id"],
+            extraction=detection["extraction"],
+        )
 
     # traces.zarr, and last its rsf/zarr.json
     store = os.path.join(path, "traces.zarr")
@@ -824,7 +869,10 @@ def _write(plan: dict) -> None:
         _add_note(rsf, "label", plan["label_version"])
     for kind, version in plan["notes"]:
         _add_note(rsf, kind, version)
-    _group_node(rsf, {**plan["group_attrs"], "finished_at": _now()})
+    # the original stores, immutable like finished_at and written with it
+    # the stores made with the session, beside traces.zarr (which carries the list)
+    original = [entry["path"] for entry in plan["stores"]]
+    _group_node(rsf, {**plan["group_attrs"], "stores": original, "finished_at": _now()})
 
 
 def _check_location(path: str) -> None:
@@ -2406,6 +2454,229 @@ def _quantize(uv: np.ndarray, gain_uV: float, dtype: str = "int16") -> np.ndarra
     return np.ascontiguousarray(scaled.astype(dtype).T)
 
 
+def _plan_sortings(sortings, traces, gain_uV, fs, row_ids) -> list[dict]:
+    """The threshold sorting stores ``store(sortings=...)`` asks for, run on the stored rows."""
+    if sortings is None:
+        return []
+    if not isinstance(sortings, Mapping):
+        raise RSFError(f"sortings is {{name: method}}, not {sortings!r}")
+    # the rows as a reader of the session gets them (RsfRecording.read), so a detector run
+    # on the finished session finds the same events
+    uv = (np.asarray(traces, dtype=np.float64) * gain_uV).astype(np.float32)
+    out = []
+    for name, method in sortings.items():
+        name = str(name).removesuffix(".zarr")
+        if not STORE_NAME.fullmatch(name):
+            raise RSFError(
+                f"sorting name {name!r} is not a store name (letters, digits, '.', '_' "
+                "and '-', starting with a letter or digit)"
+            )
+        out.append(_run_detector(name, method, [uv], fs, row_ids))
+    return out
+
+
+def _run_detector(
+    name: str, method, blocks: Iterable[np.ndarray], fs: float, row_ids
+) -> dict:
+    """Run a threshold method on consecutive ``blocks`` of ``(frames, rows)`` uV into the
+    members of a channel sorting store."""
+    from livn.io.detection import Detector, MethodError, check_method
+    from livn.utils import canonical_hash
+
+    try:
+        method = check_method(method)
+        detector = Detector(method, fs, len(row_ids))
+        n_frames = 0
+        for block in blocks:
+            detector.feed(block)
+            n_frames += len(block)
+        found = detector.finish()
+    except (MethodError, TypeError, ValueError) as e:
+        raise RSFError(f"sorting {name!r}: {e}") from e
+    units = np.concatenate(
+        [np.full(len(f), i, dtype=np.int64) for i, f in enumerate(found.frames)]
+        or [np.zeros(0, dtype=np.int64)]
+    )
+    frames = np.concatenate(found.frames or [np.zeros(0, dtype=np.int64)])
+    order = np.lexsort((units, frames))
+    return {
+        "name": name,
+        "method": method,
+        "unit_ids": [str(k) for k in row_ids],
+        "sample_index": frames[order].astype(np.int64),
+        "unit_index": units[order],
+        "sigma_uV": np.asarray(found.sigma_uV, dtype=np.float64),
+        "threshold_uV": np.asarray(found.threshold_uV, dtype=np.float64),
+        "coverage": [(0, n_frames)],
+        "extraction": {
+            "method": method,
+            "method_hash": canonical_hash(method),
+            "state_from_frame": found.state_from_frame,
+            "software": {
+                "producer": PRODUCER,
+                "component": f"{COMPONENT}.detection",
+                "version": _version(),
+                "commit": None,
+            },
+            "from": None,
+            "dropped": 0,
+        },
+    }
+
+
+def _sorting_record(record: Mapping, detection: Mapping, role: str) -> dict:
+    """The record of a channel sorting store: each row's stages followed by the method's."""
+    flt = detection["method"]["filter"]
+    attribution = "livn threshold detector"
+    stages = [
+        {
+            "role": role,
+            "status": "known",
+            "transform": {
+                "bandpass": {
+                    "passband": {
+                        "low_cut_hz": flt["low_cut_hz"],
+                        "high_cut_hz": flt["high_cut_hz"],
+                    },
+                    "design": "butterworth, order 2, causal",
+                }
+            },
+            "attribution": attribution,
+        },
+        {
+            "role": role,
+            "status": "known",
+            "transform": {"extract": {"method": "threshold"}},
+            "attribution": attribution,
+        },
+    ]
+    rows = record.get("rows") or {}
+    return {
+        **record,
+        "space": "channel",
+        "rows": {key: [*rows.get(key, []), *stages] for key in detection["unit_ids"]},
+    }
+
+
+def _write_sorting(zarr, store: str, detection: Mapping, fs: float, mode: str) -> None:
+    """A channel sorting store's arrays and coverage, all but its ``rsf/`` group."""
+    root = zarr.open_group(
+        store,
+        mode=mode,
+        attributes={
+            "sampling_frequency": fs,
+            "num_segments": 1,
+            "annotations": {RECORD_KEY: detection["record"]},
+        },
+    )
+    units = detection["unit_ids"]
+    _strings(root, "unit_ids", units)
+    _array(root, "spikes/sample_index", detection["sample_index"])
+    _array(root, "spikes/unit_index", detection["unit_index"])
+    _array(
+        root,
+        "spikes/segment_slices",
+        np.asarray([[0, len(detection["sample_index"])]], dtype=np.int64),
+    )
+    _strings(root, "properties/channel", units)
+    _strings(root, "properties/band", detection.get("band") or ["wide"] * len(units))
+    _array(root, "properties/sigma_uV", detection["sigma_uV"])
+    _array(root, "properties/threshold_uV", detection["threshold_uV"])
+    # its own hierarchy, so rsf/zarr.json is not created before the store is complete
+    coverage = zarr.open_group(os.path.join(store, RSF, "coverage"), mode="w")
+    spans = np.asarray(detection["coverage"], dtype=np.int64).reshape(-1, 2)
+    _array(coverage, "frame_start", spans[:, 0])
+    _array(coverage, "n_frames", spans[:, 1])
+
+
+def detect(
+    path: str | os.PathLike, method: Mapping, *, label: str | None = None
+) -> str:
+    """Run a threshold ``method`` on a finished session's stored rows and add the result as
+    a channel-space sorting store, ``sortings/<label>-<store_id>.zarr``.
+
+    The store is an added store (the session's ``stores`` does not list it, so a copy may
+    lack it), its stages have the role ``analysis``, and it covers every frame of the
+    session's valid spans. ``label`` defaults to ``threshold-`` and the first 12 hex digits
+    of the method's hash.
+
+    Returns:
+        The store's path relative to the session
+    """
+    from livn.io.detection import MethodError, check_method
+    from livn.utils import canonical_hash
+
+    zarr = _zarr()
+    recording = RsfRecording(path)
+    try:
+        method = check_method(method)
+    except MethodError as e:
+        raise RSFError(str(e)) from e
+    label = f"threshold-{canonical_hash(method)[:12]}" if label is None else label
+    if not STORE_NAME.fullmatch(label):
+        raise RSFError(f"label {label!r} is not a store name")
+    store_id = uuid.uuid4().hex
+    relative = f"{SORTINGS}/{label}-{store_id}.zarr"
+    created_at = _now()
+
+    # the rows as one stream, the way a detector on the instrument sees them; what it finds
+    # outside the valid spans (lost frames, dropped samples) is not kept, and coverage says so
+    n = recording.num_samples()
+    step = max(1, round(recording.fs) * 10)
+    blocks = (
+        recording.read(0, start, min(step, n - start)) for start in range(0, n, step)
+    )
+    detection = _run_detector(
+        label, method, blocks, recording.fs, list(recording._keys)
+    )
+    spans = recording.valid_spans()
+    frames = detection["sample_index"]
+    inside = np.zeros(len(frames), dtype=bool)
+    for start, stop in spans.tolist():
+        inside |= (frames >= start) & (frames < stop)
+    band = recording.row_property("band")
+    detection.update(
+        sample_index=frames[inside],
+        unit_index=detection["unit_index"][inside],
+        coverage=[(int(a), int(b - a)) for a, b in spans.tolist()],
+        band=None if band is None else [str(b) for b in band],
+    )
+    detection["record"] = _sorting_record(
+        {**recording.record, "space": "channel"}, detection, "analysis"
+    )
+
+    store = os.path.join(recording.path, relative)
+    os.makedirs(os.path.dirname(store), exist_ok=True)
+    _write_sorting(zarr, store, detection, recording.fs, mode="w-")
+    _minimal_group(
+        store,
+        str(recording.record.get("recording_id") or ""),
+        store_id=store_id,
+        extraction=detection["extraction"],
+        created_at=created_at,
+    )
+    _index_store(
+        recording._documents,
+        {"path": relative, "space": "channel", "written_by": PRODUCER},
+    )
+    return relative
+
+
+def _index_store(documents: str, entry: dict) -> None:
+    """Add ``entry`` to the advisory index ``rsf/stores.json`` of what this copy holds."""
+    index_path = os.path.join(documents, "stores.json")
+    index = _json_file(index_path)
+    index = (
+        [e for e in index if e.get("path") != entry["path"]]
+        if isinstance(index, list)
+        else []
+    )
+    index.append(entry)
+    temporary = f"{index_path}.{uuid.uuid4().hex}.tmp"
+    _write_json(temporary, index)
+    os.replace(temporary, index_path)
+
+
 def _spike_frames(
     events, *, t0, dt, n_frames, sources
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -2699,18 +2970,30 @@ def _group_node(directory: str, attributes: dict) -> None:
         f.write(json.dumps(node, allow_nan=False, indent=2) + "\n")
 
 
-def _minimal_group(store: str, recording_id: str) -> None:
+def _minimal_group(
+    store: str,
+    recording_id: str,
+    *,
+    store_id: str | None = None,
+    extraction: Mapping | None = None,
+    created_at: str | None = None,
+) -> str:
+    """Write a derived store's ``rsf/`` group, the store's last write: it is complete from
+    here on. Returns its ``store_id``, minted unless given."""
+    store_id = uuid.uuid4().hex if store_id is None else store_id
     now = _now()
-    _group_node(
-        os.path.join(store, RSF),
-        {
-            "format": FORMAT,
-            "recording_id": recording_id,
-            "created_at": now,
-            "producer": _producer(),
-            "finished_at": now,
-        },
-    )
+    attributes: dict[str, Any] = {
+        "format": FORMAT,
+        "recording_id": recording_id,
+        "store_id": store_id,
+        "created_at": now if created_at is None else created_at,
+        "producer": _producer(),
+    }
+    if extraction is not None:
+        attributes["extraction"] = extraction
+    attributes["finished_at"] = now
+    _group_node(os.path.join(store, RSF), attributes)
+    return store_id
 
 
 def _note_version(
@@ -2840,6 +3123,68 @@ class Condition:
     author: str | None = None
 
 
+@dataclass(frozen=True)
+class Sorting:
+    """A sorting store of a session (:meth:`RsfRecording.sortings`).
+
+    Attributes:
+        path: Its path relative to the session, e.g. ``sortings/live.zarr``
+        original: Whether the session was made with it: listed in ``traces.zarr``'s
+            ``stores``, so every complete copy holds it. ``False`` for an added store, one
+            written into a copy later, and for every store of a session without ``stores``
+        space: Its record's ``space``: ``"channel"`` when each unit is the events found in
+            one row, ``"source"`` for inferred sources; ``None`` when it has no record
+        role: The ``role`` of its record's last stage, the ``extract``: ``"acquisition"``
+            for a method that ran while the session was recorded, ``"analysis"`` for one
+            run on the stored rows afterwards
+        store_id: Its ``store_id``, the end of an added store's path
+        method_hash: The ``method_hash`` of its ``extraction``, which runs of one method
+            share
+        coverage: Whether it states its coverage (:meth:`RsfRecording.coverage`)
+    """
+
+    path: str
+    original: bool
+    space: str | None = None
+    role: str | None = None
+    store_id: str | None = None
+    method_hash: str | None = None
+    coverage: bool = False
+
+    @property
+    def name(self) -> str:
+        return os.path.basename(self.path).removesuffix(".zarr")
+
+
+class SortingEvents(Events):
+    """The events of a sorting-layout store, with what the store says beside them.
+
+    Attributes:
+        units: Every unit id the store holds, silent units included; for a ``channel``
+            store, the row ids it searched
+        coverage: ``(k, 2)`` ``[start, stop)`` ms on the axis of ``times``: the spans the
+            store's method processed, or ``None`` when it does not say. Outside them no
+            event is not silence
+        space: The store's ``space`` (``"channel"``, ``"source"``), or ``None``
+    """
+
+    __slots__ = ("coverage", "space", "units")
+
+    def __init__(self, *args, units=None, coverage=None, space=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        object.__setattr__(self, "units", units)
+        object.__setattr__(self, "coverage", coverage)
+        object.__setattr__(self, "space", space)
+
+    def __getstate__(self) -> dict:
+        return {
+            **super().__getstate__(),
+            "units": self.units,
+            "coverage": self.coverage,
+            "space": self.space,
+        }
+
+
 class RsfRecording:
     """A session opened lazily: the zarr arrays stay on disk and :meth:`read` touches only
     the chunks of the window it is asked for, so it is cheap to call from many threads
@@ -2908,11 +3253,19 @@ class RsfRecording:
         self._keys = [str(k) for k in _read(root, "channel_ids")]
         self.channel_ids = _ids_array(self._keys)
         self._column = {key: i for i, key in enumerate(self._keys)}
-        self._traces = _array_of(root, "traces_seg0")  # stays on disk
-        if str(self._traces.dtype) not in TRACE_DTYPES:
+        # the samples stay on disk; a copy may omit them, and then everything else reads
+        self.omissions = _omissions(os.path.join(documents, OMISSIONS))
+        self._traces = (
+            _array_of(root, "traces_seg0") if _has(root, "traces_seg0") else None
+        )
+        if self._traces is not None and str(self._traces.dtype) not in TRACE_DTYPES:
             raise RSFError(
                 f"{path}: traces_seg0 is {self._traces.dtype}; RSF traces are int16 or int32"
             )
+        stores = group_attrs.get("stores")
+        self.original_stores = (
+            [str(p) for p in stores] if isinstance(stores, list) else None
+        )
         self._gain = np.asarray(_read(root, "properties/gain_to_uV"), dtype=np.float64)
         self._offset = np.asarray(
             _read(root, "properties/offset_to_uV"), dtype=np.float64
@@ -3038,14 +3391,57 @@ class RsfRecording:
     def segments(self) -> int:
         return 1
 
+    @property
+    def samples_omitted(self) -> bool:
+        """Whether this copy does not hold the samples (``traces.zarr/traces_seg0``)."""
+        return self._traces is None
+
     def num_samples(self, segment: int = 0) -> int:
+        """The frames of the segment. A copy that omits the samples knows them only from a
+        ground-truth series of the same frame axis, and otherwise raises :class:`Omitted`."""
         self._segment(segment)
-        return int(self._traces.shape[0])
+        n = self._frames
+        if n is None:
+            raise self._omitted()
+        return n
+
+    @cached_property
+    def _frames(self) -> int | None:
+        if self._traces is not None:
+            return int(self._traces.shape[0])
+        for name in ("voltage", "currents"):
+            store = os.path.join(self.path, "ground_truth", f"{name}.zarr")
+            if _complete(store):
+                truth = _zarr().open_group(store, mode="r")
+                return int(_array_of(truth, "traces_seg0").shape[0])
+        return None
+
+    def _omitted(self) -> Omitted:
+        entry = next((e for e in self.omissions if e.get("path") == SAMPLES), None)
+        if entry is None:
+            return Omitted(
+                f"{self.path} has no {SAMPLES} and does not list it as omitted in "
+                f"traces.zarr/rsf/{OMISSIONS}: this copy is incomplete. Its metadata, "
+                "sortings and notes read; its samples do not"
+            )
+        by = "".join(
+            f" {word} {entry[key]}"
+            for word, key in (("by", "author"), ("at", "at"))
+            if entry.get(key)
+        )
+        return Omitted(
+            f"the samples of {self.path} ({SAMPLES}) are omitted here (listed in "
+            f"traces.zarr/rsf/{OMISSIONS}{by}): read them from a copy that holds them. "
+            "Its metadata, sortings and notes read without them"
+        )
 
     def read(self, segment, start, length, channels=None) -> np.ndarray:
         """Samples ``[start, start + length)`` of the given channel ids (all by default), as
-        float32 ``(length, channels)`` in uV, each row through its own gain and offset."""
+        float32 ``(length, channels)`` in uV, each row through its own gain and offset.
+        Raises :class:`Omitted` on a copy that does not hold the samples."""
         self._segment(segment)
+        if self._traces is None:
+            raise self._omitted()
         start, length = _window(start, length, int(self._traces.shape[0]))
         raw = np.asarray(self._traces[start : start + length, :])
         gain, offset = self._gain, self._offset
@@ -3110,7 +3506,8 @@ class RsfRecording:
         frame = np.where(
             ok, self._anchor_frames[np.maximum(k, 0)] + delta / self._r, np.nan
         )
-        ends = np.append(self._anchor_frames[1:], self.num_samples())
+        last = np.inf if self._frames is None else self._frames
+        ends = np.append(self._anchor_frames[1:].astype(np.float64), last)
         inside = ok & (frame < ends[np.maximum(k, 0)])
         out[inside] = frame[inside]
         return out
@@ -3141,7 +3538,7 @@ class RsfRecording:
         """The inverse of :meth:`elapsed`: the fractional frame at each time after frame 0,
         NaN for a time in a gap or outside the stored frames."""
         seconds = np.asarray(seconds, dtype=np.float64)
-        n = self.num_samples()
+        n = np.inf if self._frames is None else self._frames
         if len(self._anchor_frames):
             first = float(self._anchor_frames[0])
             offsets = (seconds - first / self.fs) * self.tick_rate
@@ -3241,8 +3638,39 @@ class RsfRecording:
         with open(path, encoding="utf-8") as f:
             return json.load(f)
 
-    def sortings(self) -> list[str]:
-        """The session's sorting stores besides its ground truth, as paths relative to it."""
+    def sortings(self) -> list[Sorting]:
+        """The session's sorting stores besides its ground truth (a sorter's output, a
+        detector's crossings), as :class:`Sorting`, ordered by path. A store that is not
+        complete, or whose ``store_id`` has a written removal, is not listed; neither is
+        one this copy omits, which it does not hold."""
+        removed = _removed_stores(os.path.join(self._documents, "notes"))
+        original = set(self.original_stores or ())
+        found = []
+        for relative in self._sorting_paths():
+            store = os.path.join(self.path, relative)
+            group = _read_node(os.path.join(store, RSF))
+            if not group.get("finished_at"):
+                continue
+            store_id = _string(group.get("store_id"))
+            if store_id is not None and store_id in removed:
+                continue
+            record = (_read_node(store).get("annotations") or {}).get(RECORD_KEY) or {}
+            extraction = group.get("extraction")
+            extraction = extraction if isinstance(extraction, Mapping) else {}
+            found.append(
+                Sorting(
+                    path=relative,
+                    original=relative in original,
+                    space=_string(record.get("space")),
+                    role=_extract_role(record),
+                    store_id=store_id,
+                    method_hash=_string(extraction.get("method_hash")),
+                    coverage=os.path.isdir(os.path.join(store, RSF, "coverage")),
+                )
+            )
+        return found
+
+    def _sorting_paths(self) -> list[str]:
         found = []
         for entry in sorted(os.listdir(self.path)):
             here = os.path.join(self.path, entry)
@@ -3263,18 +3691,86 @@ class RsfRecording:
             ]
         return found
 
-    def spikes(self, segment: int = 0, sorting: str | None = None) -> Events:
-        """The ground-truth spikes, or with ``sorting`` those of one of :meth:`sortings`, named
-        by its path or, when that is unambiguous, by its name."""
-        self._segment(segment)
-        from livn.run import Events
+    def extraction(self, sorting: str | Sorting) -> dict | None:
+        """The ``extraction`` attribute of a sorting store (its method, ``method_hash``,
+        ``state_from_frame``, ``software``, ``from``, ``dropped``), or ``None`` when it
+        states none. Raises :class:`RSFError` when ``method_hash`` is not the hash of
+        ``method``: such a store does not conform."""
+        from livn.utils import canonical_hash
 
-        ids, samples = self._sorting(sorting)
-        return Events(
+        relative = self._sorting_path(sorting)
+        group = _read_node(os.path.join(self.path, relative, RSF))
+        extraction = group.get("extraction")
+        if not isinstance(extraction, Mapping):
+            return None
+        extraction = dict(extraction)
+        method, stated = extraction.get("method"), extraction.get("method_hash")
+        if isinstance(method, Mapping) and stated is not None:
+            try:
+                actual = canonical_hash(method)
+            except (TypeError, ValueError) as e:
+                raise RSFError(
+                    f"{self.path}/{relative}: the extraction method is not JSON ({e})"
+                ) from e
+            if actual != stated:
+                raise RSFError(
+                    f"{self.path}/{relative}: method_hash {stated!r} is not the hash of "
+                    f"its method ({actual!r}); such a store does not conform"
+                )
+        return extraction
+
+    def coverage(self, sorting: str | Sorting) -> np.ndarray | None:
+        """The spans a sorting store's method processed, ``(k, 2)`` float64 ``[start, stop)``
+        in ms on the axis of :meth:`spikes`' times (from frame 0), ascending and disjoint;
+        ``None`` when the store does not say. Outside them the store says nothing: no event
+        there is not silence."""
+        frames = self._coverage_frames(self._sorting_path(sorting))
+        return None if frames is None else frames.astype(np.float64) * self._dt
+
+    def _coverage_frames(self, relative: str) -> np.ndarray | None:
+        """``(k, 2)`` int64 ``[start, stop)`` frames of a store's ``rsf/coverage/``."""
+        store = os.path.join(self.path, relative)
+        if not os.path.isfile(os.path.join(store, RSF, "coverage", "zarr.json")):
+            return None
+        table = _zarr().open_group(os.path.join(store, RSF, "coverage"), mode="r")
+        start = np.asarray(_read(table, "frame_start"), dtype=np.int64)
+        count = np.asarray(_read(table, "n_frames"), dtype=np.int64)
+        if start.shape != count.shape or np.any(count < 0):
+            raise RSFError(
+                f"{self.path}/{relative}: rsf/coverage/ is not a table of spans"
+            )
+        spans = np.stack([start, start + count], axis=1).reshape(-1, 2)
+        if np.any(spans[1:, 0] < spans[:-1, 1]):
+            raise RSFError(
+                f"{self.path}/{relative}: rsf/coverage/ is not ascending and disjoint"
+            )
+        return spans
+
+    def spikes(self, segment: int = 0, sorting: str | Sorting | None = None) -> Events:
+        """The ground-truth spikes, or with ``sorting`` those of one of :meth:`sortings`, named
+        by its path or, when that is unambiguous, by its name.
+
+        The events are :class:`SortingEvents`: ``units`` lists every unit the store holds,
+        silent ones too (for a ``channel`` store, the rows it searched), and ``coverage`` is
+        :meth:`coverage` (``None`` for the ground truth and for a store that does not say).
+        """
+        self._segment(segment)
+        relative = (
+            "ground_truth/spikes.zarr"
+            if sorting is None
+            else self._sorting_path(sorting)
+        )
+        units, ids, samples, space = self._sorting(relative)
+        coverage = None if sorting is None else self._coverage_frames(relative)
+        n = self._frames
+        return SortingEvents(
             ids=ids,
             times=samples * self._dt,
             t0=self._t0,
-            duration=self.num_samples() * self._dt,
+            duration=None if n is None else n * self._dt,
+            units=units,
+            coverage=None if coverage is None else coverage * self._dt,
+            space=space,
         )
 
     def stimulation_records(self) -> list[dict]:
@@ -3581,7 +4077,7 @@ class RsfRecording:
             )
             if version is not None and not version["removed"]
         }
-        n = self.num_samples()
+        n = self._frames
         out = []
         for item, version in current.items():
             parent = version["parent"]
@@ -3858,18 +4354,24 @@ class RsfRecording:
         ``(quantity, item)``, at ``frame``, over the window ``[start, start + length)``, or by
         default over the whole session."""
         self._segment(segment)
-        n = self.num_samples()
+        n = self._frames  # None on a copy without its samples: the window is unbounded
         if frame is not None:
             if start is not None or length is not None:
                 raise ValueError("environment() takes a frame or a window, not both")
             a = int(frame)
-            if a < 0 or a > n:
+            if a < 0 or (n is not None and a > n):
                 raise IndexError(f"frame {a} is outside 0..{n}")
             b = a + 1
         else:
             a = 0 if start is None else int(start)
-            a, length = _window(a, n - a if length is None else length, n)
-            b = a + max(length, 1)
+            if length is None and n is None:
+                a, b = _window(a, 0, None)[0], np.iinfo(np.int64).max
+            else:
+                if length is None:
+                    assert n is not None
+                    length = n - a
+                a, length = _window(a, length, n)
+                b = a + max(length, 1)
 
         out: dict[tuple[str, str], Condition] = {}
         table = _table(self._root, CONDITIONS, CONDITION_COLUMNS)
@@ -3945,7 +4447,7 @@ class RsfRecording:
         A growing store's rows are final up to :attr:`stimulus_final_to`.
         """
         self._segment(segment)
-        start, length = _window(start, length, self.num_samples())
+        start, length = _window(start, length, self._frames)
         channels, held = self._held_stimulus()
         shifts = np.zeros(len(channels), dtype=np.int64)
         if latency:
@@ -4211,7 +4713,7 @@ class RsfRecording:
         run = Run(t0=t0, duration=length * dt, potential=potential)
 
         if _complete(os.path.join(self.path, "ground_truth", "spikes.zarr")):
-            ids, samples = self._sorting()
+            _, ids, samples, _ = self._sorting()
             keep = (samples >= start) & (samples < start + length)
             run = run.add_spikes(ids[keep], (samples[keep] - start) * dt)
 
@@ -4279,33 +4781,45 @@ class RsfRecording:
         except KeyError as e:
             raise KeyError(f"{e.args[0]!r} is not a channel of {self.path}") from None
 
-    def _sorting(self, sorting: str | None = None) -> tuple[np.ndarray, np.ndarray]:
-        """``(unit ids, frames)`` of the ground-truth spikes or of a sorting, ordered by frame."""
-        if sorting is None:
-            relative = "ground_truth/spikes.zarr"
-        else:
-            stores = self.sortings()
-            named = [
-                s
-                for s in stores
-                if sorting in (s, s.removesuffix(".zarr"))
-                or os.path.basename(s) in (sorting, f"{sorting}.zarr")
-            ]
-            if len(named) != 1:
-                which = "matches several" if named else "is none"
-                raise Missing(
-                    f"{sorting!r} {which} of the sortings of {self.path}: {stores}"
-                )
-            relative = named[0]
+    def _sorting_path(self, sorting: str | Sorting) -> str:
+        """The path of one of :meth:`sortings`, given as a :class:`Sorting`, its path, or a
+        name that is unambiguous."""
+        if isinstance(sorting, Sorting):
+            sorting = sorting.path
+        paths = [s.path for s in self.sortings()]
+        named = [
+            p
+            for p in paths
+            if sorting in (p, p.removesuffix(".zarr"))
+            or os.path.basename(p) in (sorting, f"{sorting}.zarr")
+        ]
+        if len(named) != 1:
+            which = "matches several" if named else "is none"
+            raise Missing(
+                f"{sorting!r} {which} of the sortings of {self.path}: {paths}"
+            )
+        return named[0]
+
+    def _sorting(
+        self, relative: str = "ground_truth/spikes.zarr"
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, str | None]:
+        """``(units, unit id per event, frames, space)`` of a sorting-layout store, the events
+        ordered by frame."""
         store = os.path.join(self.path, relative)
         if not _complete(store):
             raise Missing(f"{self.path} stores no finished {relative}")
-        sorting = _zarr().open_group(store, mode="r")
-        units = np.asarray(_read(sorting, "unit_ids"))
-        sample_index = np.asarray(_read(sorting, "spikes/sample_index"), dtype=np.int64)
-        unit_index = np.asarray(_read(sorting, "spikes/unit_index"), dtype=np.int64)
+        group = _zarr().open_group(store, mode="r")
+        units = _ids_array(_read(group, "unit_ids"))
+        sample_index = np.asarray(_read(group, "spikes/sample_index"), dtype=np.int64)
+        unit_index = np.asarray(_read(group, "spikes/unit_index"), dtype=np.int64)
         order = np.argsort(sample_index, kind="stable")
-        return _ids_array(units[unit_index[order]]), sample_index[order]
+        record = (_read_node(store).get("annotations") or {}).get(RECORD_KEY) or {}
+        return (
+            units,
+            units[unit_index[order]],
+            sample_index[order],
+            _string(record.get("space")),
+        )
 
     def _truth_series(self, name: str, start: int, length: int) -> Series | None:
         from livn.run import Series
@@ -4331,9 +4845,10 @@ class RsfRecording:
         )
 
 
-def _window(start, length, n: int) -> tuple[int, int]:
+def _window(start, length, n: int | None) -> tuple[int, int]:
+    """``(start, length)`` checked against ``n`` frames (``None``: unknown, unbounded)."""
     start, length = int(start), int(length)
-    if start < 0 or length < 0 or start + length > n:
+    if start < 0 or length < 0 or (n is not None and start + length > n):
         raise IndexError(f"the window [{start}, {start + length}) is outside 0..{n}")
     return start, length
 
@@ -4477,6 +4992,48 @@ def _read_node(directory: str) -> dict:
 
 def _complete(store: str) -> bool:
     return bool(_read_node(os.path.join(store, RSF)).get("finished_at"))
+
+
+def _omissions(path: str) -> list[dict]:
+    """The entries of a copy's ``omitted.json``, ``[{"path", "at", "author"}]``."""
+    entries = _json_file(path)
+    if not isinstance(entries, list):
+        return []
+    return [
+        dict(e)
+        for e in entries
+        if isinstance(e, Mapping) and isinstance(e.get("path"), str)
+    ]
+
+
+def _removed_stores(notes: str) -> set[str]:
+    """The ``store_id`` of every store a written removal (``notes/store/``) retires."""
+    folder = os.path.join(notes, "store")
+    if not os.path.isdir(folder):
+        return set()
+    removed = set()
+    for name in os.listdir(folder):
+        if not _NOTE_KEY.fullmatch(name):
+            continue
+        version = _json_file(os.path.join(folder, name))
+        if (
+            isinstance(version, Mapping)
+            and version.get("removed") is True
+            and isinstance(version.get("item"), str)
+            and HEX_ITEM.fullmatch(version["item"])
+        ):
+            removed.add(version["item"])
+    return removed
+
+
+def _extract_role(record: Mapping) -> str | None:
+    """The role of the last stage of a sorting store's rows, when they agree on one."""
+    roles = {
+        stages[-1].get("role")
+        for stages in (record.get("rows") or {}).values()
+        if isinstance(stages, list) and stages and isinstance(stages[-1], Mapping)
+    }
+    return roles.pop() if len(roles) == 1 else None
 
 
 def _ids_array(ids) -> np.ndarray:

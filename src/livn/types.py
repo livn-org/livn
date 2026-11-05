@@ -486,12 +486,10 @@ def _is_the_systems_own_io(system, io) -> bool:
     if io is None:
         return True
 
-    import json
-
-    from livn.utils import serialize as _default
+    from livn.utils import canonical_json
 
     def rendered(value):
-        return json.dumps(_describe(value), default=_default, sort_keys=True)
+        return canonical_json(_describe(value))
 
     with contextlib.suppress(Exception):
         return rendered(system.default_io()) == rendered(io)

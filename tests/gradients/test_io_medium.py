@@ -182,7 +182,7 @@ def test_the_scan_stages_match_the_numpy_reference():
     band = Bandpass(300.0, 3000.0, 3)
     np.testing.assert_allclose(
         np.asarray(band(x, dt=0.02)),
-        sosfilt(band.sos(0.02), x, axis=-1),
+        sosfilt(band.sos(1000.0 / 0.02), x, axis=-1),
         rtol=1e-3,
         atol=1e-4,
     )

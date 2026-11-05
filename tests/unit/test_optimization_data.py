@@ -7,7 +7,8 @@ pytest.importorskip("grain")
 pytest.importorskip("scipy")
 
 from livn.data import Missing
-from livn.optimization.data import CMR, Bandpass, Standardize, Window, windows
+from livn.io import Bandpass
+from livn.optimization.data import CMR, Standardize, Window, windows
 from livn.run import Events, Run, Series
 
 FS = 10_000.0  # Hz; dt = 0.1 ms
@@ -282,7 +283,11 @@ def test_bandpass_removes_the_offset_and_cmr_the_common_signal(
     values = rng.normal(size=(C, T)).astype(np.float32) * 0.1 + common + 40.0
     rec = make_recording(signal=values)
     raw = make_pipe(rec).batch(0).context
-    out = make_pipe(rec, preprocess=(Bandpass(300.0, 3000.0), CMR())).batch(0).context
+    out = (
+        make_pipe(rec, preprocess=(Bandpass(300.0, 3000.0, 3, phase="zero"), CMR()))
+        .batch(0)
+        .context
+    )
     assert abs(raw.mean()) > 30 and abs(out.mean()) < 1
     assert out.std() < 0.5 * raw.std()
 
@@ -295,7 +300,7 @@ def test_preprocessing_at_the_target_rate_filters_the_decimated_window(
     rng = np.random.default_rng(5)
     values = rng.normal(size=(C, T)).astype(np.float32)
     rec = make_recording(signal=values)
-    pre = (Bandpass(300.0, 3000.0), CMR())
+    pre = (Bandpass(300.0, 3000.0, 3, phase="zero"), CMR())
     kw = {
         "fs": 5000.0,
         "context": 10.0,
@@ -312,7 +317,7 @@ def test_preprocessing_at_the_target_rate_filters_the_decimated_window(
         raw = values[:, max(lo, 0) : min(hi, T)].T.astype(np.float64)
         raw = np.pad(raw, ((max(-lo, 0), max(hi - T, 0)), (0, 0)), mode="edge")
         x = sp.resample_poly(raw, 1, 2, axis=0)[11 : 11 + 50]
-        x = Bandpass(300.0, 3000.0)(x, 5000.0, np.ones(C, bool))
+        x = Bandpass(300.0, 3000.0, 3, phase="zero").filter(x, 5000.0, axis=0)
         x = CMR()(x, 5000.0, np.ones(C, bool))
         np.testing.assert_allclose(batch.context[i], x, atol=1e-3)
     assert (
@@ -342,7 +347,9 @@ def test_fitted_stats_are_robust_deterministic_and_applied(make_pipe, make_recor
 
 
 def test_the_fingerprint_names_decimation_and_preprocessing(make_pipe):
-    pipe = make_pipe(fs=2500.0, preprocess=(Bandpass(300, 3000, 2), CMR()))
+    pipe = make_pipe(
+        fs=2500.0, preprocess=(Bandpass(300, 3000, 2, phase="zero"), CMR())
+    )
     assert pipe.stats.fingerprint == "decim=4;fs=2500;pre=bp(300,3000,2)+cmr"
     assert pipe.stats.median is None
 
@@ -516,3 +523,193 @@ def test_window_inputs_arrive_after_the_latency_a_calibration_states(
     want = np.where(7_990 + np.arange(50) >= 8_030, 1.0, 0.0)  # 3 ms at 10 kHz
     for got in batch.inputs[:, :, 0]:
         np.testing.assert_allclose(got, want)
+
+
+def _channel_store(
+    session,
+    name,
+    events,
+    *,
+    coverage=None,
+    original=False,
+    role="acquisition",
+    state_from_frame=None,
+    units=("a-000", "a-001"),
+):
+    import os
+
+    from livn.data import rsf
+    from livn.io.detection import threshold_method
+    from livn.utils import canonical_hash
+
+    method = threshold_method(k=5.0, sigma_window=60_000.0)
+    frames = np.asarray([f for f, _ in events], np.int64)
+    unit_index = np.asarray([list(units).index(u) for _, u in events], np.int64)
+    stage = {
+        "role": role,
+        "status": "known",
+        "transform": {"extract": {"method": "threshold"}},
+        "attribution": "test",
+    }
+    detection = {
+        "record": {"space": "channel", "rows": {u: [stage] for u in units}},
+        "unit_ids": list(units),
+        "sample_index": frames,
+        "unit_index": unit_index,
+        "sigma_uV": np.ones(len(units)),
+        "threshold_uV": -5 * np.ones(len(units)),
+        "coverage": [] if coverage is None else coverage,
+    }
+    store = os.path.join(session, "sortings", f"{name}.zarr")
+    rsf._write_sorting(rsf._zarr(), store, detection, FS, mode="w")
+    if coverage is None:
+        import shutil
+
+        shutil.rmtree(os.path.join(store, "rsf", "coverage"))
+    rsf._minimal_group(
+        store,
+        "0f6c1d2e3b4a59687766554433221100",
+        extraction={
+            "method": method,
+            "method_hash": canonical_hash(method),
+            "state_from_frame": state_from_frame,
+        },
+    )
+    if original:
+        node = os.path.join(session, "traces.zarr", "rsf", "zarr.json")
+        with open(node) as f:
+            document = json.load(f)
+        document["attributes"]["stores"].append(f"sortings/{name}.zarr")
+        with open(node, "w") as f:
+            json.dump(document, f)
+    return f"sortings/{name}.zarr"
+
+
+@pytest.fixture
+def detected_session(tmp_path, physical_session):
+    pytest.importorskip("zarr", minversion="3")
+    rng = np.random.default_rng(0)
+    path = physical_session(
+        str(tmp_path / "detected"),
+        n_frames=T,
+        traces=rng.normal(scale=100, size=(T, 2)),
+    )
+    # crossings on the second row only, and a store that covers [5000, 15000)
+    events = [(f, "a-001") for f in range(5_020, 15_000, 400)]
+    _channel_store(path, "live", events, coverage=[(5_000, 10_000)], original=True)
+    return path
+
+
+def _pipe(path, **kw):
+    from livn.data.rsf import RsfRecording
+
+    kw = {
+        "context": 5.0,
+        "batch_size": 12,
+        "per_segment": 6,
+        "threads": 2,
+        "spikes": True,
+        "mask_bad_channels": False,
+    } | kw
+    return windows(RsfRecording(path), **kw)
+
+
+@pytest.mark.parametrize("sorting", ["live", "sortings/live.zarr", "LIVE"])
+def test_channel_store_windows_have_a_row_per_channel_inside_its_coverage(
+    detected_session, sorting
+):
+    from livn.optimization.data import LIVE
+
+    pipe = _pipe(detected_session, sorting=LIVE if sorting == "LIVE" else sorting)
+    np.testing.assert_array_equal(pipe.unit_ids, ["a-000", "a-001"])  # the rows
+    for step in range(3):
+        batch = pipe.batch(step)
+        assert batch.spikes.shape == (12, 2, 64)
+        assert batch.unit_mask.shape == (12, 2) and batch.unit_mask.all()
+        # every window lies inside the store's coverage, never in what it says nothing of
+        assert (batch.start >= 5_000).all() and (batch.start + 50 <= 15_000).all()
+        for start, row in zip(batch.start, batch.spikes, strict=True):
+            assert np.isinf(row[0]).all()  # the first channel crossed nothing
+            frames = np.arange(5_020, 15_000, 400)
+            want = (frames[(frames >= start) & (frames < start + 50)] - start) / 10.0
+            got = row[1][np.isfinite(row[1])]
+            np.testing.assert_allclose(got, want, atol=1e-4)
+
+
+def test_a_store_holding_some_rows_marks_the_others_unknown(tmp_path, physical_session):
+    pytest.importorskip("zarr", minversion="3")
+    path = physical_session(str(tmp_path / "partial"), n_frames=T)
+    _channel_store(path, "one-row", [(9_000, "a-001")], units=("a-001",))
+    batch = _pipe(path, sorting="one-row").batch(0)
+    np.testing.assert_array_equal(batch.unit_mask, [[False, True]] * 12)
+    assert np.isinf(batch.spikes[:, 0]).all()
+
+
+def test_frames_before_the_learned_state_are_not_windowed(tmp_path, physical_session):
+    pytest.importorskip("zarr", minversion="3")
+    path = physical_session(str(tmp_path / "frozen"), n_frames=T)
+    _channel_store(path, "live", [], coverage=[(0, T)], state_from_frame=12_000)
+    for step in range(3):
+        assert (_pipe(path, sorting="live").batch(step).start >= 12_000).all()
+
+
+def test_a_store_without_coverage_is_taken_for_the_whole_segment(
+    tmp_path, physical_session
+):
+    pytest.importorskip("zarr", minversion="3")
+    path = physical_session(str(tmp_path / "uncovered"), n_frames=T)
+    _channel_store(path, "sorted", [(100, "a-000")])
+    grid = _pipe(path, sorting="sorted", starts="grid", per_segment=5, batch_size=5)
+    starts = grid.batch(0).start
+    assert starts[0] == 0 and starts[-1] == T - 50
+
+
+def test_a_selector_names_one_store_of_each_recording(detected_session):
+    from livn.data.rsf import RsfRecording
+    from livn.io.detection import threshold_method
+    from livn.utils import canonical_hash
+
+    added = _channel_store(detected_session, "rerun", [], coverage=[(0, T)])
+    h = canonical_hash(threshold_method(k=5.0, sigma_window=60_000.0))
+    with pytest.raises(ValueError, match="matches several"):
+        _pipe(detected_session, sorting={"method_hash": h})
+    pipe = _pipe(detected_session, sorting={"method_hash": h, "original": False})
+    assert pipe._windower.sortings == [added]
+    with pytest.raises(ValueError, match="matches none"):
+        _pipe(detected_session, sorting={"role": "analysis"})
+    # a callable chooses for itself
+    chosen = _pipe(detected_session, sorting=lambda rec: rec.sortings()[0])
+    assert chosen._windower.sortings == ["sortings/live.zarr"]
+    with pytest.raises(ValueError, match="spikes=True"):
+        windows(
+            RsfRecording(detected_session), context=5.0, batch_size=2, sorting="live"
+        )
+
+
+def test_a_sorting_needs_a_recording_with_stores(make_pipe):
+    with pytest.raises(ValueError, match="no sorting stores"):
+        make_pipe(spikes=True, sorting="live")
+
+
+def test_coverage_with_no_room_for_a_window_is_refused(tmp_path, physical_session):
+    pytest.importorskip("zarr", minversion="3")
+    path = physical_session(str(tmp_path / "short"), n_frames=T)
+    _channel_store(path, "live", [], coverage=[(0, 30)])
+    with pytest.raises(ValueError, match="inside the coverage"):
+        _pipe(path, sorting="live")
+
+
+def test_a_window_policy_cannot_leave_the_coverage(detected_session):
+    pipe = _pipe(
+        detected_session,
+        sorting="live",
+        window_policy=lambda item, rng, recording: {**item, "start": 0},
+    )
+    with pytest.raises(ValueError, match="coverage of its spikes' store"):
+        pipe.batch(0)
+
+
+def test_worker_processes_read_the_store_the_parent_chose(detected_session):
+    pipe = _pipe(detected_session, sorting="live")
+    workers = _pipe(detected_session, sorting="live", processes=2)
+    _same(next(workers.iterate(1, 0, 1)), pipe.batch(1))

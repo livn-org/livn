@@ -639,6 +639,20 @@ def serialize(obj):
     raise TypeError(f"Unserializable object {obj} of type {type(obj)}")
 
 
+def canonical_json(value, default=serialize) -> str:
+    """``value`` as canonical JSON."""
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), default=default, allow_nan=False
+    )
+
+
+def canonical_hash(value, default=serialize) -> str:
+    """SHA-256 of :func:`canonical_json` of ``value``, lowercase hex."""
+    import hashlib
+
+    return hashlib.sha256(canonical_json(value, default).encode("ascii")).hexdigest()
+
+
 class Jsonable:
     def as_json(self, stringify=True, default=serialize, **dumps_kwargs):
         serialized = self.serialize()

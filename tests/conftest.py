@@ -164,6 +164,7 @@ def _physical_session(
     system: Mapping | None = None,
     extra_attributes: Mapping | None = None,
     documents: Mapping[str, object] | None = None,
+    stores: Sequence[str] | None = (),
 ) -> str:
     import zarr
 
@@ -305,6 +306,8 @@ def _physical_session(
     }
     if finished:
         attributes["finished_at"] = "2026-10-04T09:20:00.000000+00:00"
+        if stores is not None:  # the original stores, written with finished_at
+            attributes["stores"] = list(stores)
     if tick_rate is not None:
         attributes["hardware_tick_rate_hz"] = float(tick_rate)
     _node(rsf, {**attributes, **(extra_attributes or {})})

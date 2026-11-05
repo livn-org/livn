@@ -228,3 +228,44 @@ def test_accepts_keyword_reads_the_signature():
     assert accepts_keyword(function, "pipe")
     assert accepts_keyword(Stage().__call__, "pipe")
     assert not accepts_keyword(len, "pipe")
+
+
+def test_canonical_json_is_rsfs():
+    import numpy as np
+
+    from livn.utils import canonical_hash, canonical_json
+
+    assert canonical_json(
+        {"b": 300.0, "a": [1e-7, "x", None, True], "c": {"z": 1, "y": 2.5}}
+    ) == ('{"a":[1e-07,"x",null,true],"b":300.0,"c":{"y":2.5,"z":1}}')
+    assert canonical_json({"s": "µ"}) == '{"s":"\\u00b5"}'
+    # numpy values go through tolist(), so an array and its list are one value
+    assert canonical_json({"x": np.arange(3), "y": np.float32(0.5)}) == (
+        '{"x":[0,1,2],"y":0.5}'
+    )
+    # a real and an integer are different values to the hash
+    assert canonical_hash({"a": 1, "b": 2.0}) == canonical_hash({"b": 2.0, "a": 1})
+    assert canonical_hash({"a": 1}) != canonical_hash({"a": 1.0})
+    # the spec's own example: the closed-loop detector's method
+    method = {
+        "kind": "threshold",
+        "filter": {
+            "kind": "butterworth_bandpass",
+            "low_cut_hz": 300.0,
+            "high_cut_hz": 3000.0,
+            "order": 2,
+            "causal": True,
+            "design": "rbj_biquads",
+        },
+        "threshold": {
+            "rule": "frozen_sigma",
+            "k": 5.0,
+            "polarity": "negative",
+            "sigma": "mad",
+            "sigma_window_ms": [0.0, 60000.0],
+            "dead_time_ms": 1.0,
+        },
+    }
+    assert canonical_hash(method) == (
+        "0b522a151faaed495789b00692c99e31480a633e04a3f9a09ef9605a9d963d1d"
+    )
