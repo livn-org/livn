@@ -1149,8 +1149,11 @@ def _solve_network(
         columns_out.append(y[:, layout.i_syn] + arriving)
 
         if layout.escape:
+            # one key per cell and spike, so a reordering elsewhere leaves the draw
+            uniform = jax.vmap(lambda k: jr.uniform(k, (), minval=1e-10))
+            u = jnp.ones(n_cells).at[spike_index].set(uniform(key[:n_spiking]))
             columns_out.append(
-                jnp.where(fired, _draw_survival(p, key, (n_cells,)), y[:, layout.s])
+                jnp.where(fired, jnp.log(u) - p["alpha"], y[:, layout.s])
             )
 
         t_ref_end = jnp.where(
@@ -1190,7 +1193,8 @@ def _solve_network(
         t1=t1,
         dt=dt,
         extra_terms=extra_terms,
-        key=key,
+        key=key if layout.escape else None,
+        keys_per_source=True,
         config=config,
         trace=trace,
     )

@@ -474,6 +474,85 @@ def test_samples_are_independent_realisations_of_the_same_run():
     assert single.v.shape == (2, round(duration / dt) + 1)
 
 
+def _twins(connectivity, read_out=()):
+    module = GlifNeurons(
+        len(connectivity),
+        {"sigma": 2.0},
+        mechanism="escape",
+        network=jnp.asarray(connectivity, dtype=jnp.float32),
+        read_out_neurons=read_out,
+        config=SolverConfig(max_rate_per_ms=1.0),
+    )
+    y0 = module.initial_state(jr.PRNGKey(5))
+    return module, y0.at[1, module.layout.s].set(y0[0, module.layout.s])
+
+
+def _ahead(module, y0, delta, duration, dt, num_samples=1):
+    nudged = eqx.tree_at(lambda m: m.E_L, module, module.E_L.at[0].add(delta))
+    stimulus = 0.9 * _driven(module, amplitude=1.0, duration=duration, dt=dt)
+    return nudged.solve(
+        stimulus,
+        0.0,
+        duration,
+        dt,
+        y0=y0,
+        key=jr.PRNGKey(0),
+        num_samples=num_samples,
+        record={"spikes"},
+    ).spike_times
+
+
+def _swapped(early, late):
+    first_early, first_late = early.min(axis=-1), late.min(axis=-1)
+    return first_early[0] < first_early[1] and first_late[0] > first_late[1]
+
+
+def _assert_continuous(a, b, atol):
+    for row_a, row_b in zip(a, b, strict=True):
+        row_a, row_b = row_a[np.isfinite(row_a)], row_b[np.isfinite(row_b)]
+        assert len(row_a) > 0 and len(row_a) == len(row_b)
+        np.testing.assert_allclose(row_a, row_b, atol=atol)
+
+
+def test_a_cells_draws_do_not_depend_on_the_order_of_other_cells_events():
+    connectivity = np.zeros((3, 3), dtype=np.float32)
+    connectivity[:2, 2] = 400.0
+    module, y0 = _twins(connectivity, read_out=(2,))
+    duration, dt = 300.0, 0.1
+
+    early = np.asarray(_ahead(module, y0, 1e-4, duration, dt))
+    late = np.asarray(_ahead(module, y0, -1e-4, duration, dt))
+
+    assert _swapped(early, late)
+    # the same draws: cell 1 moves only by the restarted solver grid
+    _assert_continuous(early[1:2], late[1:2], atol=1e-3)
+    _assert_continuous(early[:1], late[:1], atol=0.05)
+
+
+@pytest.mark.parametrize("num_samples", [1, 2])
+def test_spike_times_stay_continuous_through_an_event_order_swap(num_samples):
+    module, y0 = _twins(np.array([[0.0, 20.0], [20.0, 0.0]]))
+    duration, dt = 300.0, 0.1
+    deltas = jnp.asarray([1e-4, -1e-4])
+
+    looped = [
+        np.asarray(_ahead(module, y0, d, duration, dt, num_samples)) for d in deltas
+    ]
+    mapped = np.asarray(
+        jax.vmap(lambda d: _ahead(module, y0, d, duration, dt, num_samples))(deltas)
+    )
+
+    for early, late in (looped, mapped):
+        samples = (
+            early.reshape(-1, 2, early.shape[-1]),
+            late.reshape(-1, 2, late.shape[-1]),
+        )
+        for a, b in zip(*samples, strict=True):
+            assert _swapped(a, b)
+            # a reshuffled draw moves later spikes by milliseconds
+            _assert_continuous(a, b, atol=0.05)
+
+
 def test_a_batched_run_keeps_its_sample_axis():
     duration, dt = 40.0, 0.1
     module = GlifNeurons(2, {"sigma": 2.0}, mechanism="escape")

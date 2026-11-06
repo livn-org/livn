@@ -221,6 +221,7 @@ class _LoopState(eqx.Module):
     t: Any
     y: Any
     key: Any
+    draws: Any = None
 
 
 def _buffers(state: _LoopState):
@@ -248,6 +249,7 @@ def event_solve(
     hold_fn: Callable | None = None,
     extra_terms: Sequence[Any] | None = None,
     key: Any = None,
+    keys_per_source: bool = False,
     config: SolverConfig = DEFAULT_SOLVER_CONFIG,
     trace: bool = True,
 ) -> EventSolution:
@@ -268,7 +270,8 @@ def event_solve(
         transition: ``(t_event, y_event, args, event_mask, key) -> (t_resume, y_resume)``.
             ``t_resume`` may be later than ``t_event`` (a refractory window);
             the state in between is described by ``hold_fn``.  ``key`` is a fresh
-            split per event, or ``None`` when the solve was given no key.
+            split per event, one key per event source under ``keys_per_source``,
+            or ``None`` when the solve was given no key.
         y0: Initial state, an array of any shape.
         t0: Start time in ms.  Must be a Python float.
         t1: End time in ms.  Must be a Python float.
@@ -282,6 +285,11 @@ def event_solve(
         key: PRNG key for a stochastic ``transition``.  It is split once per
             iteration, so the draw a transition sees depends on how many
             segments preceded it, not on wall-clock time.
+        keys_per_source: Hand ``transition`` one key per event source instead,
+            ``fold_in(fold_in(key, source), n)`` for the source's ``n``-th event.
+            A source's draws then do not depend on the other sources or on how
+            their events interleave, so a perturbation that reorders events
+            leaves every source's sequence of draws intact.
         config: See :class:`SolverConfig`.
         trace: Sample the trajectory.  Without it only the state at the end of
             each segment is kept (the segments and so the steps are the same, the
@@ -400,8 +408,13 @@ def event_solve(
         else:
             seg_ys = jnp.zeros((0, *y_shape), dtype)
 
+        draws = state.draws
         if state.key is None:
             next_key, event_key = None, None
+        elif keys_per_source:
+            next_key = state.key
+            event_key = jax.vmap(jr.fold_in)(state.key, draws)
+            draws = draws + (mask & fired).astype(draws.dtype)
         else:
             next_key, event_key = jr.split(state.key, 2)
 
@@ -445,10 +458,16 @@ def event_solve(
             t=t_next,
             y=y_next,
             key=next_key,
+            draws=draws,
         )
 
     def cond(state: _LoopState):
         return (state.t < t1) & (state.events < n_events) & (state.block < n_blocks)
+
+    draws = None
+    if key is not None and keys_per_source:
+        key = jax.vmap(jr.fold_in, in_axes=(None, 0))(key, jnp.arange(n_cond))
+        draws = jnp.zeros((n_cond,), jnp.int32)
 
     init = _LoopState(
         seg_ts=jnp.full((n_blocks, n_points), jnp.inf, dtype),
@@ -463,6 +482,7 @@ def event_solve(
         t=jnp.asarray(t0, dtype),
         y=y0.astype(dtype),
         key=key,
+        draws=draws,
     )
 
     final = eqxi.while_loop(
