@@ -71,7 +71,9 @@ def test_every_epoch_redraws_the_starts(make_pipe):
 
 
 def test_batches_are_fixed_shape_float32(make_pipe):
-    pipe = make_pipe(context=5.0, gap=1.0, prediction=2.0, fs=5000.0, spikes=True)
+    pipe = make_pipe(
+        context=5.0, gap=1.0, prediction=2.0, fs=5000.0, include=("trace", "spikes")
+    )
     batch = pipe.batch(0)
     assert batch.context.shape == (12, 25, C) and batch.context.dtype == np.float32
     assert batch.prediction.shape == (12, 10, C)
@@ -83,7 +85,7 @@ def test_batches_are_fixed_shape_float32(make_pipe):
 
 @pytest.mark.parametrize("processes", [1, 2, 3, 4])
 def test_process_slices_concatenate_to_the_global_batch(processes, make_pipe):
-    pipe = make_pipe(batch_size=12, spikes=True)
+    pipe = make_pipe(batch_size=12, include=("trace", "spikes"))
     its = [pipe.iterate(0, p, processes) for p in range(processes)]
     for step in range(4):
         parts = [next(it) for it in its]
@@ -143,7 +145,7 @@ def test_spikes_are_window_relative_ms_and_inf_padded_per_unit(
     make_pipe, make_recording
 ):
     rec = make_recording()
-    pipe = make_pipe(rec, spikes=True, max_spikes=8)
+    pipe = make_pipe(rec, include=("trace", "spikes"), max_spikes=8)
     np.testing.assert_array_equal(pipe.unit_ids, [5, 6, 7, 8])
     batch = pipe.batch(0)
     events = rec.run.spikes
@@ -161,21 +163,36 @@ def test_spikes_are_window_relative_ms_and_inf_padded_per_unit(
 
 
 def test_spikes_beyond_capacity_keep_the_earliest(make_pipe):
-    pipe = make_pipe(context=100.0, spikes=True, max_spikes=2, batch_size=2)
+    pipe = make_pipe(
+        context=100.0, include=("trace", "spikes"), max_spikes=2, batch_size=2
+    )
     row = pipe.batch(0).spikes[0]
     assert (np.diff(row[np.isfinite(row).all(axis=1)], axis=1) >= 0).all()
 
 
+def test_a_window_without_its_trace_still_has_its_spikes(make_pipe, make_recording):
+    rec = make_recording()
+    full = make_pipe(rec, include=("trace", "spikes"), max_spikes=8).batch(0)
+    lean = make_pipe(rec, include=("spikes",), max_spikes=8).batch(0)
+    assert lean.context is None and lean.prediction is None
+    np.testing.assert_array_equal(lean.spikes, full.spikes)
+    np.testing.assert_array_equal(lean.start, full.start)
+    with pytest.raises(ValueError, match="include names"):
+        make_pipe(rec, include=())
+    with pytest.raises(ValueError, match="without its trace"):
+        make_pipe(rec, include=("spikes",), normalize=Standardize("fit"))
+
+
 def test_inputs_raise_when_the_recording_has_none(make_pipe):
     with pytest.raises(Missing):
-        make_pipe(inputs=True)
+        make_pipe(include=("trace", "inputs"))
 
 
 def test_inputs_are_strided_to_the_target_rate(make_pipe, make_recording):
     rec = make_recording()
     frames = np.arange(T, dtype=np.float32)[:, None] * np.ones((1, 2), np.float32)
     rec.inputs = lambda segment, start, length: frames[start : start + length]
-    batch = make_pipe(rec, inputs=True, fs=5000.0).batch(0)
+    batch = make_pipe(rec, include=("trace", "inputs"), fs=5000.0).batch(0)
     assert batch.inputs.shape == (12, 25, 2)
     np.testing.assert_array_equal(
         batch.inputs[0, :, 0], batch.start[0] + 2 * np.arange(25)
@@ -453,7 +470,7 @@ def test_inputs_of_rsf_sessions_come_from_their_stimulus_events(
         batch_size=12,
         per_segment=6,
         threads=2,
-        inputs=True,
+        include=("trace", "inputs"),
         fs=5000.0,
         mask_bad_channels=False,
     )
@@ -514,7 +531,7 @@ def test_window_inputs_arrive_after_the_latency_a_calibration_states(
         batch_size=12,
         per_segment=6,
         threads=2,
-        inputs=True,
+        include=("trace", "inputs"),
         mask_bad_channels=False,
         window_policy=lambda item, rng, recording: {**item, "start": 7_990},
     )
@@ -608,7 +625,7 @@ def _pipe(path, **kw):
         "batch_size": 12,
         "per_segment": 6,
         "threads": 2,
-        "spikes": True,
+        "include": ("trace", "spikes"),
         "mask_bad_channels": False,
     } | kw
     return windows(RsfRecording(path), **kw)
@@ -680,7 +697,7 @@ def test_a_selector_names_one_store_of_each_recording(detected_session):
     # a callable chooses for itself
     chosen = _pipe(detected_session, sorting=lambda rec: rec.sortings()[0])
     assert chosen._windower.sortings == ["sortings/live.zarr"]
-    with pytest.raises(ValueError, match="spikes=True"):
+    with pytest.raises(ValueError, match="include 'spikes'"):
         windows(
             RsfRecording(detected_session), context=5.0, batch_size=2, sorting="live"
         )
@@ -688,7 +705,7 @@ def test_a_selector_names_one_store_of_each_recording(detected_session):
 
 def test_a_sorting_needs_a_recording_with_stores(make_pipe):
     with pytest.raises(ValueError, match="no sorting stores"):
-        make_pipe(spikes=True, sorting="live")
+        make_pipe(include=("trace", "spikes"), sorting="live")
 
 
 def test_coverage_with_no_room_for_a_window_is_refused(tmp_path, physical_session):

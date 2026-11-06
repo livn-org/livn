@@ -4,7 +4,7 @@ import dataclasses
 import inspect
 import json
 import os
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -174,8 +174,10 @@ class _Windower:
         policy,
         preprocess_at="native",
         sortings=None,
+        signal=True,
     ):
         self.recordings = recordings
+        self.read_signal = signal
         self.q = q
         self.context, self.gap, self.prediction = context, gap, prediction
         self.starts, self.per_segment = starts, per_segment
@@ -394,16 +396,18 @@ class _Windower:
 
     def draw(self, element: dict, rng: np.random.Generator) -> Window:
         item = self.item(element, rng)
-        x = self.signal(item)
         rec = self.recordings[item["recording"]]
         good = self._good[item["recording"]]
-        if self.stats is not None and self.stats.median is not None:
-            x = (x - self.stats.median) / self.stats.scale
-        if self.mask_bad:
-            x = np.where(good, x, 0.0).astype(np.float32)
-        out: dict[str, Any] = {"context": x[: self.context]}
-        if self.prediction:
-            out["prediction"] = x[self.context + self.gap :]
+        out: dict[str, Any] = {}
+        if self.read_signal:
+            x = self.signal(item)
+            if self.stats is not None and self.stats.median is not None:
+                x = (x - self.stats.median) / self.stats.scale
+            if self.mask_bad:
+                x = np.where(good, x, 0.0).astype(np.float32)
+            out["context"] = x[: self.context]
+            if self.prediction:
+                out["prediction"] = x[self.context + self.gap :]
         if self.spikes:
             out["spikes"] = self.events(item)
             out["unit_mask"] = self.rows(item["recording"], item["segment"])[1]
@@ -706,9 +710,8 @@ def windows(
     starts: str = "random",
     per_segment: int = 10,
     split: str | None = "train",
-    spikes: bool = False,
+    include: Collection[str] = ("trace",),
     sorting: str | Mapping | Callable | None = None,
-    inputs: bool = False,
     max_spikes: int = 64,
     mask_bad_channels: bool = True,
     batch_size: int,
@@ -720,14 +723,15 @@ def windows(
 ) -> Windows:
     """Windows of one or several recordings as step-addressed batches, :class:`Windows`.
 
-    A window is ``context``, then ``gap`` and ``prediction`` of signal, read at the
-    recording's rate, preprocessed there, decimated to ``fs`` (zero-phase FIR, with the read
-    padded at both ends so the kernel never sees an edge) and normalised.
+    A window is ``context``, then ``gap`` and ``prediction``, carrying the ``include``s.
+    Its trace is read at the recording's rate, preprocessed there, decimated to ``fs``
+    (zero-phase FIR, with the read padded at both ends so the kernel never sees an edge) and
+    normalised.
 
     Args:
         recording: A :class:`livn.data.Recording` or a list of them (same channels and rate)
         context, gap, prediction: Window layout; ``Window.prediction`` is set only when
-            ``prediction > 0``
+            ``prediction > 0`` and the trace is included
         fs: Target rate in Hz; the recording's rate must be an integer multiple
         preprocess: Callables ``f(x[T, C] float64, fs, good[C]) -> x`` applied in order at the
             native rate, e.g. ``(Bandpass(300, 3000, 3, phase="zero"), CMR())`` with
@@ -748,17 +752,22 @@ def windows(
         split: Which segments to use: recordings whose ``metadata["split"]`` differs are
             skipped, and ``metadata["segment_split"]`` (one name per segment) selects segments.
             ``None`` takes everything.
-        spikes: Set ``Window.spikes``, ``(U, max_spikes)`` per unit of the recordings' spikes
-            (their ground truth unless ``sorting`` is used).
-        sorting: Where ``Window.spikes`` come from when spikes=True:
+        include: What a window carries, any of:
+            - ``"trace"``: ``Window.context`` and ``Window.prediction``, the signal
+            - ``"spikes"``: ``Window.spikes``, ``(U, max_spikes)`` per unit of the recordings'
+              spikes (their ground truth unless ``sorting`` is used), and ``Window.unit_mask``
+            - ``"inputs"``: ``Window.inputs``, the delivered stimulus (``Recording.inputs``,
+              strided to the target rate, not filtered) on the window's grid, as it reaches the
+              sample. A channel whose calibration states a ``latency_ms`` has its edges delayed
+              by it. Raises :class:`livn.data.Missing` here if a recording has none.
+
+            Without ``"trace"`` the signal is not read, and ``normalize`` and ``preprocess``
+            are refused.
+        sorting: Where ``Window.spikes`` come from when they are included:
             - None for the ground truth
             - a store path or name (``"sortings/live.zarr"``, ``"live"``)
             - a mapping of :class:`livn.data.rsf.Sorting` fields to match
             - a callable ``f(recording) -> path | Sorting | None``.
-        inputs: Set ``Window.inputs``, the delivered stimulus (``Recording.inputs``, strided
-            to the target rate, not filtered) on the window's grid, as it reaches the sample:
-            a channel whose calibration states a ``latency_ms`` has its edges later by it.
-            Raises :class:`livn.data.Missing` here if a recording has none.
         max_spikes: Capacity of a unit's row in a window
         mask_bad_channels: Zero the recording's bad channels and exclude them from ``CMR``;
             ``channel_mask`` says which are good
@@ -780,6 +789,22 @@ def windows(
     """
     import grain
     import jax  # noqa: F401  (grain batches windows as jax pytrees)
+
+    include = (include,) if isinstance(include, str) else tuple(include)
+    unknown = sorted(set(include) - {"trace", "spikes", "inputs"})
+    if unknown or not include:
+        raise ValueError(
+            f"include names 'trace', 'spikes' and 'inputs', not {unknown or 'nothing'}"
+        )
+    trace, spikes, inputs = (
+        "trace" in include,
+        "spikes" in include,
+        "inputs" in include,
+    )
+    if not trace and (normalize is not None or preprocess):
+        raise ValueError(
+            "a window without its trace has none to normalize or preprocess"
+        )
 
     from livn.data import Recording
 
@@ -822,7 +847,7 @@ def windows(
 
     if sorting is not None and not spikes:
         raise ValueError(
-            "sorting= determines where Window.spikes come from, pass spikes=True"
+            "sorting= determines where Window.spikes come from, include 'spikes'"
         )
     chosen = {r for r, _ in selected}
     sortings = [
@@ -853,6 +878,7 @@ def windows(
         policy=window_policy,
         preprocess_at=preprocess_at,
         sortings=sortings,
+        signal=trace,
     )
     if spikes:
         stores = [windower.store(r, s) for r, s in selected]
