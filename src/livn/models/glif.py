@@ -22,6 +22,7 @@ from livn.models.eventloop import (
     resample,
 )
 from livn.types import Model
+from livn.utils import is_traced
 
 PARAM_NAMES = (
     "tau_m",  # membrane time constant [ms]
@@ -538,6 +539,16 @@ class GlifSolution(eqx.Module):
     segment_ts: Any = None  # (*samples, cells, nodes) in ms
     segment_ys: Any = None  # (*samples, cells, nodes, len(columns))
     columns: tuple = eqx.field(static=True, default=ALL_COLUMNS)
+    state_columns: tuple = eqx.field(static=True, default=())
+
+    def state(self, name: str):
+        """The sampled trace of one mechanism state, by name"""
+        named = dict(self.state_columns)
+        if name not in named:
+            raise KeyError(
+                f"unknown mechanism state {name!r}; expected one of {tuple(named)}"
+            )
+        return self.column(named[name])
 
     def column(self, index: int):
         """The sampled trace of one ODE state column"""
@@ -1279,17 +1290,16 @@ class GlifNeurons(eqx.Module):
             )
 
         if network is not None:
-            network = np.asarray(network)
-            if network.shape != (n_cells, n_cells):
+            if jnp.shape(network) != (n_cells, n_cells):
                 raise ValueError(
                     f"expected a ({n_cells}, {n_cells}) connectivity matrix, "
-                    f"got {tuple(network.shape)}"
+                    f"got {tuple(jnp.shape(network))}"
                 )
-            network = (
-                jnp.asarray(network, dtype=jnp.result_type(float))
-                if network.any()
-                else None
-            )
+            # a traced matrix cannot be inspected, so it always counts as coupled
+            if not is_traced(network) and not np.asarray(network).any():
+                network = None
+            else:
+                network = jnp.asarray(network, dtype=jnp.result_type(float))
         self.network = network
 
         read_out_neurons = tuple(int(n) for n in (read_out_neurons or ()))
@@ -1341,11 +1351,14 @@ class GlifNeurons(eqx.Module):
 
     @property
     def state_columns(self) -> dict[str, int]:
-        """The column of each mechanism state, by name"""
+        """The column of each mechanism state, by name, without forced spikes"""
+        return self._state_columns(self.layout)
+
+    def _state_columns(self, layout: StateLayout) -> dict[str, int]:
         return dict(
             zip(
                 (name for m in self.mechanisms for name in m.states),
-                range(self.layout.mechanism_start, self.layout.size),
+                range(layout.mechanism_start, layout.size),
                 strict=True,
             )
         )
@@ -1491,7 +1504,7 @@ class GlifNeurons(eqx.Module):
         if num_samples < 1:
             raise ValueError(f"num_samples must be positive, got {num_samples}")
 
-        named = self.state_columns
+        named = self._state_columns(layout)
         if record is None:
             columns, want_threshold = ALL_COLUMNS + tuple(named.values()), True
         else:
@@ -1649,6 +1662,7 @@ class GlifNeurons(eqx.Module):
             segment_ts=segment_ts,
             segment_ys=segment_ys,
             columns=columns,
+            state_columns=tuple(named.items()),
         )
 
     def _as_series(self, value, what: str):
@@ -1741,9 +1755,9 @@ class GlifNeurons(eqx.Module):
             for name, attribute in _STATE_ATTRIBUTES.items()
             if name in record
         }
-        for name, column in module.state_columns.items():
+        for name, _ in solution.state_columns:
             if name in record:
-                states[name] = (ids, solution.column(column))
+                states[name] = (ids, solution.state(name))
 
         if "spikes" not in record:
             return None, None, ids, voltage, None, None, solution.yT, states

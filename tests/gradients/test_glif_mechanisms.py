@@ -261,8 +261,75 @@ def test_on_spike_jumps_a_state_at_every_spike(case):
     np.testing.assert_array_equal(np.asarray(solution.yT)[..., -1], counts)
     if case == "forced":
         np.testing.assert_array_equal(counts, [3, 1])
-    trace = np.asarray(solution.column(neurons.state_columns["count"]))
+    trace = np.asarray(solution.state("count"))
     assert np.all(np.diff(trace, axis=-1) >= 0)
+    np.testing.assert_array_equal(trace[..., -1], counts)
+
+
+class Depleting(GlifMechanism):
+    """x recovers to 1 with tau and drops to x (1 - U) at each spike"""
+
+    states: tuple[str, ...] = eqx.field(static=True, default=("x",), kw_only=True)
+    U: float = 0.4
+    tau: float = 20.0
+
+    def initial(self, n_cells):
+        return jnp.ones((n_cells, 1))
+
+    def drift(self, t, v, states, inputs):
+        return jnp.zeros_like(v), (1.0 - states) / self.tau
+
+    def on_spike(self, fired, states):
+        return states * (1.0 - self.U)
+
+
+def _depleted(ts, spikes, U=0.4, tau=20.0):
+    x, last, out = 1.0, 0.0, []
+    spikes = [s for s in spikes if np.isfinite(s)]
+    for t in ts:
+        while spikes and spikes[0] <= t:
+            x = 1.0 - (1.0 - x) * np.exp(-(spikes[0] - last) / tau)
+            x, last = x * (1.0 - U), spikes.pop(0)
+        out.append(1.0 - (1.0 - x) * np.exp(-(t - last) / tau))
+    return np.asarray(out)
+
+
+@pytest.mark.parametrize("record", [None, frozenset({"x"})])
+@pytest.mark.parametrize("mechanism", ["hard", "escape"])
+def test_forcing_keeps_the_mechanism_columns_by_name(mechanism, record):
+    told = np.array([[12.55, 30.05, 47.25], [20.05, np.inf, np.inf]])
+    neurons = GlifNeurons(2, mechanism=mechanism, mechanisms=(Depleting(),))
+    solution = neurons.solve(None, 0.0, DURATION, DT, record=record, forced_spikes=told)
+
+    np.testing.assert_array_equal(np.asarray(solution.num_spikes), [3, 1])
+    x = np.asarray(solution.state("x"))
+    expected = [_depleted(np.asarray(solution.ts), list(row)) for row in told]
+    np.testing.assert_allclose(x, expected, atol=1e-4)
+
+    if mechanism == "hard":  # unforced and undriven: silent, so x stays recovered
+        _, _, _, _, _, _, _, states = neurons.run(None, t1=20.0, record={"x"})
+        np.testing.assert_allclose(np.asarray(states["x"][1]), 1.0, atol=1e-6)
+
+
+def test_a_traced_network_builds_a_coupled_module():
+    current = _drive_first()
+    W = jnp.asarray(_chain(3, 800.0))
+
+    @jax.jit
+    def voltage(W):
+        return (
+            GlifNeurons(3, network=W, config=SolverConfig(max_rate_per_ms=1.0))
+            .solve(current, 0.0, DURATION, DT)
+            .v
+        )
+
+    np.testing.assert_allclose(
+        np.asarray(voltage(W)),
+        np.asarray(_network().solve(current, 0.0, DURATION, DT).v),
+    )
+    assert np.isfinite(np.asarray(jax.grad(lambda W: voltage(W).sum())(W))).all()
+    # a zero matrix is uncoupled, but only when it can be read
+    assert GlifNeurons(3, network=np.zeros((3, 3))).network is None
 
 
 def test_presynaptic_scaling_is_scaling_the_weights():
