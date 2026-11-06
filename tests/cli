@@ -72,6 +72,10 @@ if [[ -z "${VIRTUAL_ENV:-}" ]] && [[ -x "$PROJECT_DIR/.venv/bin/python" ]]; then
   export PATH="$VIRTUAL_ENV/bin:$PATH"
 fi
 
+# glibc reserves 64 MB of address space per thread arena; XLA, zarr and native
+# pools leave ~100 threads, which exhausts an address-space cap (prlimit --as)
+export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
+
 # the order a failure is most likely to be informative
 VERIFY_TIERS=(unit contract concurrency gradients)
 

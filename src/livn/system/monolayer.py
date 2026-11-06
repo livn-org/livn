@@ -871,12 +871,18 @@ class Monolayer(Jsonable):
         if workers > 1:
             from concurrent.futures import ThreadPoolExecutor
 
-            with ThreadPoolExecutor(workers) as pool:
-                for part in pool.map(draw, slices):
+            try:
+                with ThreadPoolExecutor(workers) as pool:
+                    parts = list(pool.map(draw, slices))
+            except RuntimeError as error:
+                if "can't start new thread" not in str(error):
+                    raise
+            else:
+                for part in parts:
                     out.update(part)
-        else:
-            for block in slices:
-                out.update(draw(block))
+                return out
+        for block in slices:
+            out.update(draw(block))
         return out
 
     def _draw_threads(self) -> int:
