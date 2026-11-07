@@ -645,7 +645,8 @@ class GlifMechanism(eqx.Module):
     def drift(self, t, v, states, inputs):
         """``(current [cells] in pA into V, d states / dt [cells, len(states)])``
 
-        ``inputs`` is ``{name: [cells]}`` at ``t`` for every name in ``inputs``.
+        ``inputs`` is ``{name: [cells]}`` at ``t`` for every name in ``inputs``;
+        ``"dt"`` there is the step the states are integrated with.
         """
         raise NotImplementedError(f"{type(self).__name__} has no drift")
 
@@ -670,9 +671,11 @@ CELL_READS = ("theta_s", "theta_v", "threshold")
 
 MECHANISM_INPUTS = MECHANISM_STIMULI + CELL_READS
 
+SOLVER_READS = ("dt",)
+
 
 def _mechanism_modes(mechanisms) -> tuple[str, ...]:
-    skip = {"current", *CELL_READS}
+    skip = {"current", *CELL_READS, *SOLVER_READS}
     modes = (mode for m in mechanisms for mode in m.inputs if mode not in skip)
     return tuple(dict.fromkeys(modes))
 
@@ -695,11 +698,11 @@ def _check_mechanisms(mechanisms) -> None:
             raise TypeError(
                 f"a GLIF mechanism is a GlifMechanism, not {type(mechanism).__name__}"
             )
-        unknown = set(mechanism.inputs) - set(MECHANISM_INPUTS)
+        unknown = set(mechanism.inputs) - set(MECHANISM_INPUTS + SOLVER_READS)
         if unknown:
             raise ValueError(
                 f"{type(mechanism).__name__} reads {sorted(unknown)}; a GLIF "
-                f"mechanism reads {MECHANISM_INPUTS}"
+                f"mechanism reads {MECHANISM_INPUTS + SOLVER_READS}"
             )
         names.extend(mechanism.states)
     own = {*RECORDABLE_STATES, *DEFAULT_RECORD, "segments"}
@@ -768,12 +771,14 @@ def _across_cut(
     and the last step lands on the resume.
     """
 
+    h = (t_resume - t_event) / n
+
     def given(t):
-        return {mode: jnp.reshape(x, (1,)) for mode, x in inputs_at(t).items()}
+        at = {**inputs_at(t), "dt": h}
+        return {mode: jnp.reshape(x, (1,)) for mode, x in at.items()}
 
     fired = jnp.ones((1,), bool)
     m0 = _mechanism_spiked(mechanisms, layout, fired, states[None], given(t_event))
-    h = (t_resume - t_event) / n
 
     def f(t, m):
         return _mechanism_terms(mechanisms, layout, t, v[None], m, given(t))[1]
@@ -800,7 +805,13 @@ def _cell_axes(tree, n_cells: int):
     )
 
 
-def _drift(p, layout: StateLayout, t, y, current, mechanisms=(), inputs=None):
+def _solver_dt(config) -> float:
+    if isinstance(config.stepsize_controller, diffrax.ConstantStepSize):
+        return float(config.dt_solver)
+    return 0.0
+
+
+def _drift(p, layout: StateLayout, t, y, current, mechanisms=(), inputs=None, dt=0.0):
     v = y[..., V]
     asc_1 = y[..., ASC_1]
     asc_2 = y[..., ASC_2]
@@ -811,7 +822,7 @@ def _drift(p, layout: StateLayout, t, y, current, mechanisms=(), inputs=None):
     if mechanisms:
         # on the cell axis even for the one cell of the uncoupled solve
         cells = jnp.reshape(v, (-1,))
-        given = {"current": current, **(inputs or {}), **_cell_reads(p, y)}
+        given = {"current": current, **(inputs or {}), **_cell_reads(p, y), "dt": dt}
         given = _broadcast_inputs(given, v.shape)
         width = sum(layout.mechanisms)
         states = jnp.reshape(y[..., layout.mechanism_start :], (cells.shape[0], width))
@@ -906,7 +917,16 @@ def _solve_cell(
     def drift(t, y, args):
         if not mechanisms:
             return _drift(p, layout, t, y, current.evaluate(t))
-        return _drift(p, layout, t, y, current.evaluate(t), mechanisms, inputs_at(t))
+        return _drift(
+            p,
+            layout,
+            t,
+            y,
+            current.evaluate(t),
+            mechanisms,
+            inputs_at(t),
+            _solver_dt(config),
+        )
 
     def across_cut(t_event, y, t_resume, n):
         def given(t):
@@ -1067,7 +1087,9 @@ def _solve_network(
         if not mechanisms:
             return _drift(p, layout, t, y, current.evaluate(t))
         given = {mode: x.evaluate(t) for mode, x in series.items()}
-        return _drift(p, layout, t, y, current.evaluate(t), mechanisms, given)
+        return _drift(
+            p, layout, t, y, current.evaluate(t), mechanisms, given, _solver_dt(config)
+        )
 
     if layout.escape:
 
@@ -1169,6 +1191,7 @@ def _solve_network(
             "current": current.evaluate(t_event),
             **{mode: x.evaluate(t_event) for mode, x in series.items()},
             **_cell_reads(p, y),
+            "dt": _solver_dt(config),
         }
         before = _broadcast_inputs(before, (n_cells,))
         carried = _mechanism_spiked(mechanisms, layout, fired, states, before)

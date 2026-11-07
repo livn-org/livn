@@ -163,7 +163,7 @@ run = env.run(100.0, Stimulus.from_current(current) + Stimulus.from_irradiance(l
 | member | | |
 |---|---|---|
 | `states` | static field (`eqx.field(static=True, kw_only=True)`) | names of its state columns; also what [`env.record()`](/guide/concepts/env#recording) takes once the model lists them in `recordable_states()` |
-| `inputs` | static field | what it reads: the stimulus modes `irradiance`, `conductance`, `current_density`, or `current` (the injected current in pA), and the cell's own threshold state `theta_s`, `theta_v` or `threshold` |
+| `inputs` | static field | what it reads: the stimulus modes `irradiance`, `conductance`, `current_density`, or `current` (the injected current in pA), the cell's own threshold state `theta_s`, `theta_v` or `threshold`, and `dt`, the step its states are integrated with (0 under an adaptive controller), for a stiff mechanism to take its fast transitions exactly |
 | `initial(n_cells)` | optional | `[cells, len(states)]` at t0; zeros by default |
 | `drift(t, v, states, inputs)` | required | `(current [cells] in pA, d states / dt [cells, len(states)])` between events; `inputs` is `{mode: [cells]}` at `t` |
 | `on_spike(fired, states[, inputs])` | optional | the states after the cells in `fired [cells]` spiked; only fired rows are kept. If it takes `inputs`, they are read just before the spike |
@@ -194,3 +194,5 @@ class OptoGLIF(GLIF):
         return (ChR2H134R(g_nS=jnp.asarray(np.where(exc, 40.0, 0.0)), celsius=34.0),)
 ```
 
+
+Its two light-driven transitions (C1 → O1, C2 → O2) move over each fixed solver step what an exact decay would (Rush–Larsen), so bright light cannot destabilise the explicit step: their rates grow with irradiance, and with the plain rates the occupancies diverged above about 2 / (0.19 `dt_solver`) mW/mm² between spikes and about 140 mW/mm² in a 7 ms refractory cut.

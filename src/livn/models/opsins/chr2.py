@@ -28,8 +28,23 @@ CHR2_DEFAULTS: dict[str, float] = {
 CHR2_INITIAL = (0.0, 0.0, 1.0, 0.0)  # O1, O2, C1, p
 
 
-def chr2_derivatives(states, V, irradiance, P: Mapping[str, float], celsius: float):
-    """d(O1, O2, C1, p)/dt of ChR2H134R at membrane potential V (mV)."""
+def _relaxed(z):
+    """``(1 - exp(-z)) / z``, the fraction of ``z = rate * dt`` an exact decay moves per unit"""
+    small = jnp.abs(z) < 1e-3
+    safe = jnp.where(small, 1.0, z)
+    return jnp.where(small, 1.0 - z / 2.0 + z * z / 6.0, -jnp.expm1(-safe) / safe)
+
+
+def chr2_derivatives(
+    states, V, irradiance, P: Mapping[str, float], celsius: float, dt=None
+):
+    """d(O1, O2, C1, p)/dt of ChR2H134R at membrane potential V (mV).
+
+    With ``dt`` the two light-driven transitions (C1 -> O1, C2 -> O2)
+    move what an exact decay over ``dt`` would (Rush-Larsen) so their
+    rates grow with irradiance and would otherwise make the explicit
+    step unstable in bright light. ``dt = 0`` is the plain rates.
+    """
     O1, O2, C1, p = states
     q = (celsius - P["temp"]) / 10.0
     e12dark = 0.011 * P["Q10_e12dark"] ** q
@@ -46,10 +61,15 @@ def chr2_derivatives(states, V, irradiance, P: Mapping[str, float], celsius: flo
     S0 = 0.5 * (1.0 + jnp.tanh(120.0 * (100.0 * irradiance - 0.1)))
     Ephoton = 1e9 * P["hc_J_m"] / P["wavelength"]
     F = 1000.0 * irradiance / Ephoton * P["sigma_retinal_m2"] / (P["wloss"] * 1000.0)
+    k1 = epsilon1 * F * p  # C1 -> O1
+    k2 = epsilon2 * F * p  # C2 -> O2
+    if dt is not None:
+        k1 = k1 * _relaxed(k1 * dt)
+        k2 = k2 * _relaxed(k2 * dt)
     C2 = 1.0 - C1 - O1 - O2
-    dO1 = -(Gd1 + e12) * O1 + e21 * O2 + epsilon1 * F * p * C1
-    dO2 = -(Gd2 + e21) * O2 + e12 * O1 + epsilon2 * F * p * C2
-    dC1 = -epsilon1 * F * p * C1 + Gd1 * O1 + Gr * C2
+    dO1 = -(Gd1 + e12) * O1 + e21 * O2 + k1 * C1
+    dO2 = -(Gd2 + e21) * O2 + e12 * O1 + k2 * C2
+    dC1 = -k1 * C1 + Gd1 * O1 + Gr * C2
     dp = (S0 - p) / P["tauChR2"]
     return jnp.stack([dO1, dO2, dC1, dp])
 

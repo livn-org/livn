@@ -50,7 +50,21 @@ def test_the_mechanism_is_the_shared_kinetics():
             rtol=1e-5,
         )
     assert opsin.states == ("O1", "O2", "C1", "p")
-    assert opsin.inputs == ("irradiance",)
+    assert opsin.inputs == ("irradiance", "dt")
+
+    # with the solver's step, the light-driven transitions are the shared exact ones
+    stepped = opsin.drift(
+        0.0,
+        v,
+        states,
+        {"irradiance": jnp.array([1.0, 3.0]), "dt": jnp.array([0.1] * 2)},
+    )[1]
+    for c in range(2):
+        np.testing.assert_allclose(
+            stepped[c],
+            chr2_derivatives(states[c], v[c], [1.0, 3.0][c], P, 30.0, 0.1),
+            rtol=1e-5,
+        )
     np.testing.assert_array_equal(
         opsin.initial(3), np.tile([0.0, 0.0, 1.0, 0.0], (3, 1))
     )
@@ -99,6 +113,60 @@ def test_the_photocurrent_desensitizes_under_steady_light():
     steady = depolarization[4500:5000].mean()
     assert peak > 1.0
     assert 0.2 * peak < steady < 0.9 * peak
+
+
+def _bright(irradiance, dt_solver, n=1, network=None, **params):
+    light = np.zeros((101, n), dtype=np.float32)
+    light[20:70] = irradiance
+    cell = GlifNeurons(
+        n,
+        params,
+        level=3,
+        network=network,
+        mechanisms=(ChR2H134R(40.0),),
+        config=SolverConfig(dt_solver=dt_solver, max_rate_per_ms=1.0, throw=False),
+    )
+    solution = cell.solve(
+        None,
+        0.0,
+        100.0,
+        1.0,
+        stimulus_dt=1.0,
+        inputs={"irradiance": jnp.asarray(light)},
+        record={"voltage", "O1", "O2", "C1", "p"},
+    )
+    x = np.stack([np.asarray(solution.state(k)) for k in ("O1", "O2", "C1")], -1)
+    return solution, np.concatenate([x, 1.0 - x.sum(-1, keepdims=True)], -1)
+
+
+@pytest.mark.parametrize("dt_solver", [0.1, 0.025])
+@pytest.mark.parametrize("irradiance", [235.0, 3000.0])
+def test_bright_light_keeps_the_occupancies_on_the_simplex(irradiance, dt_solver):
+    for params, network in (
+        ({"V_threshold_base": 1e3}, None),  # never fires: the segments alone
+        ({}, None),  # fires through the pulse: the cut too
+        ({}, np.full((3, 3), 5.0) - 5.0 * np.eye(3)),  # the network solve
+    ):
+        n = 1 if network is None else 3
+        solution, x = _bright(irradiance, dt_solver, n, network, **params)
+        assert np.isfinite(x).all() and np.isfinite(np.asarray(solution.v)).all()
+        assert x.min() >= -1e-6 and x.max() <= 1.0 + 1e-6
+        if not params:
+            assert int(np.asarray(solution.num_spikes).min()) > 0
+
+
+def test_the_photocurrent_saturates_in_bright_light():
+    def open_fraction(irradiance, dt_solver):
+        _, x = _bright(irradiance, dt_solver, V_threshold_base=1e3)
+        return x[0, :, 0] + CHR2_DEFAULTS["gamma"] * x[0, :, 1]
+
+    coarse, fine = open_fraction(3000.0, 0.1), open_fraction(3000.0, 0.002)
+    np.testing.assert_allclose(coarse[60:70], fine[60:70], rtol=0.02)
+    np.testing.assert_allclose(coarse.max(), fine.max(), rtol=0.02)
+    assert coarse.max() < 1.0
+    assert coarse[60:70].mean() == pytest.approx(
+        open_fraction(235.0, 0.1)[60:70].mean(), rel=0.05
+    )
 
 
 def test_temperature_speeds_the_kinetics():

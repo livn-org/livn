@@ -31,7 +31,7 @@ class ChR2H134R(GlifMechanism):
         static=True, default=("O1", "O2", "C1", "p"), kw_only=True
     )
     inputs: tuple[str, ...] = eqx.field(
-        static=True, default=("irradiance",), kw_only=True
+        static=True, default=("irradiance", "dt"), kw_only=True
     )
 
     def __init__(
@@ -50,5 +50,8 @@ class ChR2H134R(GlifMechanism):
         P = dict(self.params)
         kinetics = states.T  # (O1, O2, C1, p) rows, as the shared kinetics take them
         current = -chr2_current(kinetics, v, self.g_nS, P)  # inward positive, pA
-        dstates = chr2_derivatives(kinetics, v, inputs["irradiance"], P, self.celsius)
+        dt = inputs.get("dt", 0.0)
+        dstates = chr2_derivatives(
+            kinetics, v, inputs["irradiance"], P, self.celsius, dt
+        )
         return current, dstates.T
