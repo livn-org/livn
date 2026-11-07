@@ -52,6 +52,28 @@ Weights must be set before `init()` on the diffrax backend since the connectivit
 env = Env(predefined("S1")), model=GLIF()).set_weights({"EXC_EXC": 400.0}).init()
 ```
 
+Each cell carries a synaptic current `i_syn` that decays with `tau_syn` and jumps by `w[pre, post]` at every presynaptic spike, scaled by any mechanism's `presynaptic()` output (e.g. a depression resource).
+
+### Synaptic channels
+
+Synapses at several timescales, e.g. fast AMPA, NMDA and GABA_B, are a stack of weight matrices, one channel each, with a `tau_syn` per channel:
+
+```python
+from livn.models.glif import GlifNeurons
+
+network = np.stack([w_fast, w_nmda, w_gaba_b])     # (channels, cells, cells)
+neurons = GlifNeurons(n, {"tau_syn": [10.0, 200.0, 600.0]}, network=network)
+
+solution = neurons.solve(current, 0.0, 1000.0, 0.1, record={"spikes", "i_syn"})
+solution.i_syn                                      # (cells, T, channels)
+```
+
+- Each channel is its own state column per cell, jumping by `w_c[pre, post]` and decaying with its `tau_c` with the cell driven by their sum. A shared `W` with a per-channel split by presynaptic sign is the stack `w_c = W⁺ q_c⁺ + W⁻ q_c⁻`.
+- `tau_syn` broadcasts from the trailing axis to `(cells, channels)` so `(channels,)` is one decay per channel, `(cells, channels)` one per cell and channel.
+- A `(cells, cells)` matrix, or a stack of one, is the single-channel network, with the same state layout and bit-identical results.
+- The channels sit at `layout.i_syn_columns` of the state, so `y0` and `yT` carry all of them. Synaptic currents keep decaying through a cell's refractory period.
+- Channels add state columns, not event conditions, so they do not slow root finding.
+
 A network is one event-driven solve that integrates between events and restarts at every spike and every end of a refractory period, anywhere in the network:
 
 ```python

@@ -144,6 +144,8 @@ _STATE_ATTRIBUTES = {
 
 RECORDABLE_STATES = tuple(_STATE_ATTRIBUTES)
 
+SYNAPTIC_RECORD = "i_syn"
+
 # What ``run`` records when its caller does not say
 DEFAULT_RECORD = frozenset({"spikes", "voltage"})
 
@@ -174,6 +176,7 @@ class StateLayout:
     size: int
     next_forced: int = -1
     mechanisms: tuple[int, ...] = ()
+    channels: int = 1
 
     @classmethod
     def of(
@@ -182,12 +185,16 @@ class StateLayout:
         escape: bool,
         forced: bool = False,
         mechanisms: tuple[int, ...] = (),
+        channels: int = 1,
     ) -> StateLayout:
+        channels = int(channels)
+        if channels < 1:
+            raise ValueError(f"a network needs at least one channel, got {channels}")
         size = 5
         i_syn = s = t_ref_end = next_forced = -1
         if coupled:
             i_syn = size
-            size += 1
+            size += channels
         if escape:
             s = size
             size += 1
@@ -205,11 +212,19 @@ class StateLayout:
             size=size + sum(mechanisms),
             next_forced=next_forced,
             mechanisms=mechanisms,
+            channels=channels if coupled else 1,
         )
 
     @property
     def coupled(self) -> bool:
         return self.i_syn >= 0
+
+    @property
+    def i_syn_columns(self) -> tuple[int, ...]:
+        """The synaptic current column of each channel, empty when uncoupled."""
+        if not self.coupled:
+            return ()
+        return tuple(range(self.i_syn, self.i_syn + self.channels))
 
     @property
     def escape(self) -> bool:
@@ -540,6 +555,7 @@ class GlifSolution(eqx.Module):
     segment_ys: Any = None  # (*samples, cells, nodes, len(columns))
     columns: tuple = eqx.field(static=True, default=ALL_COLUMNS)
     state_columns: tuple = eqx.field(static=True, default=())
+    synaptic_columns: tuple = eqx.field(static=True, default=())
 
     def state(self, name: str):
         """The sampled trace of one mechanism state, by name"""
@@ -578,6 +594,13 @@ class GlifSolution(eqx.Module):
         return jnp.stack([self.column(ASC_1), self.column(ASC_2)], axis=-1)
 
     @property
+    def i_syn(self):
+        """``(*samples, cells, times, channels)`` synaptic currents"""
+        if not self.synaptic_columns:
+            raise AttributeError("an unconnected GLIF has no synaptic current")
+        return jnp.stack([self.column(c) for c in self.synaptic_columns], axis=-1)
+
+    @property
     def num_spikes(self):
         return jnp.sum(jnp.isfinite(self.spike_times), axis=-1)
 
@@ -606,6 +629,17 @@ def _for_population(value, n: int, offset: int, rows=None):
             f"{offset + n} values, got {array.shape[0]}"
         )
     return array[offset : offset + n]
+
+
+def _per_channel(value, n_cells: int, channels: int):
+    """``(cells, channels)``, broadcast from the trailing axis"""
+    try:
+        return jnp.broadcast_to(value, (n_cells, channels))
+    except ValueError:
+        raise ValueError(
+            f"tau_syn of a {channels}-channel network must broadcast to "
+            f"(cells, channels) = ({n_cells}, {channels}), got {tuple(value.shape)}"
+        ) from None
 
 
 def _fallback_key(key):
@@ -705,7 +739,7 @@ def _check_mechanisms(mechanisms) -> None:
                 f"mechanism reads {MECHANISM_INPUTS + SOLVER_READS}"
             )
         names.extend(mechanism.states)
-    own = {*RECORDABLE_STATES, *DEFAULT_RECORD, "segments"}
+    own = {*RECORDABLE_STATES, *DEFAULT_RECORD, "segments", SYNAPTIC_RECORD}
     clashes = sorted({n for n in names if names.count(n) > 1 or n in own})
     if clashes:
         raise ValueError(
@@ -811,6 +845,12 @@ def _solver_dt(config) -> float:
     return 0.0
 
 
+def _synaptic_total(layout: StateLayout, y):
+    if layout.channels == 1:
+        return y[..., layout.i_syn]
+    return jnp.sum(y[..., layout.i_syn : layout.i_syn + layout.channels], axis=-1)
+
+
 def _drift(p, layout: StateLayout, t, y, current, mechanisms=(), inputs=None, dt=0.0):
     v = y[..., V]
     asc_1 = y[..., ASC_1]
@@ -818,7 +858,7 @@ def _drift(p, layout: StateLayout, t, y, current, mechanisms=(), inputs=None, dt
 
     total_current = current + asc_1 + asc_2
     if layout.coupled:
-        total_current = total_current + y[..., layout.i_syn]
+        total_current = total_current + _synaptic_total(layout, y)
     if mechanisms:
         # on the cell axis even for the one cell of the uncoupled solve
         cells = jnp.reshape(v, (-1,))
@@ -840,8 +880,12 @@ def _drift(p, layout: StateLayout, t, y, current, mechanisms=(), inputs=None, dt
         -p["asc_decay_rate_1"] * asc_1,  # Eq. (3)
         -p["asc_decay_rate_2"] * asc_2,
     ]
-    if layout.coupled:
+    if layout.coupled and layout.channels == 1:
         columns.append(-y[..., layout.i_syn] / p["tau_syn"])
+    elif layout.coupled:
+        lo, hi = layout.i_syn, layout.i_syn + layout.channels
+        decay = -y[..., lo:hi] / p["tau_syn"]
+        columns.extend(decay[..., c] for c in range(layout.channels))
     if layout.escape:
         columns.append(active * _intensity(p, y))
     if layout.coupled:
@@ -1074,7 +1118,7 @@ def _solve_network(
     mechanisms=(),
     inputs=None,
 ):
-    n_cells = int(network.shape[0])
+    n_cells = int(network.shape[-1])
     n_spiking = len(spike_cells)
     spike_index = jnp.asarray(spike_cells, dtype=jnp.int32)
     current = diffrax.LinearInterpolation(ts=stim_ts, ys=stim_ys)
@@ -1158,8 +1202,8 @@ def _solve_network(
             asc_2,
         ]
 
-        # w[pre, post], so a post-synaptic cell collects the column of every
-        # cell that just fired.  Weights are synaptic current jumps, in pA.
+        # w[pre, post] (per channel), so a post-synaptic cell collects the column
+        # of every cell that just fired.  Weights are synaptic current jumps, in pA.
         drive = fired.astype(y.dtype)
         for mechanism, (lo, hi) in zip(
             mechanisms, layout.mechanism_columns(), strict=True
@@ -1168,7 +1212,12 @@ def _solve_network(
             if scale is not None:
                 drive = drive * scale
         arriving = drive @ network
-        columns_out.append(y[:, layout.i_syn] + arriving)
+        if network.ndim == 2:
+            columns_out.append(y[:, layout.i_syn] + arriving)
+        else:
+            columns_out.extend(
+                y[:, layout.i_syn + c] + arriving[c] for c in range(layout.channels)
+            )
 
         if layout.escape:
             # one key per cell and spike, so a reordering elsewhere leaves the draw
@@ -1268,7 +1317,8 @@ class GlifNeurons(eqx.Module):
     sigma_v: Any
     tau_syn: Any
 
-    network: Any  # (cells, cells) signed weights in pA, or None when unconnected
+    # (cells, cells) or (channels, cells, cells) signed weights in pA, None unconnected
+    network: Any
     mechanisms: tuple
 
     n_cells: int = eqx.field(static=True)
@@ -1307,21 +1357,28 @@ class GlifNeurons(eqx.Module):
         values = apply_level(values, level)
 
         n_cells = int(n_cells)
+        channels = 1
+        if network is not None:
+            shape = tuple(jnp.shape(network))
+            if shape[-2:] != (n_cells, n_cells) or len(shape) not in (2, 3):
+                raise ValueError(
+                    f"expected a ({n_cells}, {n_cells}) connectivity matrix or a "
+                    f"(channels, {n_cells}, {n_cells}) stack, got {shape}"
+                )
+            if len(shape) == 3 and shape[0] == 1:
+                network = network[0]  # one channel is the plain network
+            elif len(shape) == 3:
+                channels = shape[0]
+
         for name in ALL_PARAM_NAMES:
-            setattr(
-                self,
-                name,
-                jnp.broadcast_to(
-                    jnp.asarray(values[name], dtype=jnp.result_type(float)), (n_cells,)
-                ),
-            )
+            value = jnp.asarray(values[name], dtype=jnp.result_type(float))
+            if name == "tau_syn" and channels > 1:
+                value = _per_channel(value, n_cells, channels)  # (cells, channels)
+            else:
+                value = jnp.broadcast_to(value, (n_cells,))
+            setattr(self, name, value)
 
         if network is not None:
-            if jnp.shape(network) != (n_cells, n_cells):
-                raise ValueError(
-                    f"expected a ({n_cells}, {n_cells}) connectivity matrix, "
-                    f"got {tuple(jnp.shape(network))}"
-                )
             # a traced matrix cannot be inspected, so it always counts as coupled
             if not is_traced(network) and not np.asarray(network).any():
                 network = None
@@ -1353,6 +1410,7 @@ class GlifNeurons(eqx.Module):
             network is not None,
             mechanism == "escape",
             mechanisms=tuple(len(m.states) for m in mechanisms),
+            channels=channels,
         )
         self.diffusion = bool(diffusion)
         self.config = config if config is not None else SolverConfig()
@@ -1419,7 +1477,7 @@ class GlifNeurons(eqx.Module):
         zeros = jnp.zeros_like(self.E_L)
         columns = [self.E_L, zeros, zeros, zeros, zeros]
         if layout.coupled:
-            columns.append(zeros)
+            columns.extend([zeros] * layout.channels)
         if layout.escape:
             shape = (num_samples, self.n_cells)
             draw = _draw_survival(self.params(), _fallback_key(key), shape)
@@ -1540,6 +1598,13 @@ class GlifNeurons(eqx.Module):
             if named:
                 chosen = {named[name] for name in record if name in named}
                 columns = tuple(sorted({*columns, *chosen}))
+            if SYNAPTIC_RECORD in record:
+                if not layout.coupled:
+                    raise ValueError(
+                        f"{SYNAPTIC_RECORD!r} is a network's synaptic current; "
+                        "an unconnected GLIF has none"
+                    )
+                columns = tuple(sorted({*columns, *layout.i_syn_columns}))
 
         want_segments = bool(record) and "segments" in record
 
@@ -1690,6 +1755,7 @@ class GlifNeurons(eqx.Module):
             segment_ys=segment_ys,
             columns=columns,
             state_columns=tuple(named.items()),
+            synaptic_columns=layout.i_syn_columns,
         )
 
     def _as_series(self, value, what: str):
@@ -1785,6 +1851,8 @@ class GlifNeurons(eqx.Module):
         for name, _ in solution.state_columns:
             if name in record:
                 states[name] = (ids, solution.state(name))
+        if SYNAPTIC_RECORD in record:
+            states[SYNAPTIC_RECORD] = (ids, solution.i_syn)
 
         if "spikes" not in record:
             return None, None, ids, voltage, None, None, solution.yT, states
