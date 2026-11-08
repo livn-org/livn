@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import pytest
 
@@ -115,7 +117,7 @@ def test_the_photocurrent_desensitizes_under_steady_light():
     assert 0.2 * peak < steady < 0.9 * peak
 
 
-def _bright(irradiance, dt_solver, n=1, network=None, **params):
+def _bright(irradiance, dt_solver, n=1, network=None, t0=0.0, span=None, **params):
     light = np.zeros((101, n), dtype=np.float32)
     light[20:70] = irradiance
     cell = GlifNeurons(
@@ -124,12 +126,17 @@ def _bright(irradiance, dt_solver, n=1, network=None, **params):
         level=3,
         network=network,
         mechanisms=(ChR2H134R(40.0),),
-        config=SolverConfig(dt_solver=dt_solver, max_rate_per_ms=1.0, throw=False),
+        config=SolverConfig(
+            dt_solver=dt_solver,
+            max_rate_per_ms=1.0,
+            max_segment_span=span,
+            throw=False,
+        ),
     )
     solution = cell.solve(
         None,
-        0.0,
-        100.0,
+        t0,
+        t0 + 100.0,
         1.0,
         stimulus_dt=1.0,
         inputs={"irradiance": jnp.asarray(light)},
@@ -153,6 +160,18 @@ def test_bright_light_keeps_the_occupancies_on_the_simplex(irradiance, dt_solver
         assert x.min() >= -1e-6 and x.max() <= 1.0 + 1e-6
         if not params:
             assert int(np.asarray(solution.num_spikes).min()) > 0
+
+
+def test_a_lit_network_runs_past_2_19_ms():
+    network = np.full((2, 2), 5.0) - 5.0 * np.eye(2)
+    early, x_early = _bright(235.0, 0.025, 2, network, span=math.inf)
+    late, x_late = _bright(235.0, 0.025, 2, network, 2.0**19 - 50.0, math.inf)
+    assert np.asarray(late.solver_ok).all() and not np.asarray(late.saturated).any()
+    assert np.isfinite(x_late).all() and np.isfinite(np.asarray(late.v)).all()
+    np.testing.assert_array_equal(
+        np.asarray(late.num_spikes), np.asarray(early.num_spikes)
+    )
+    np.testing.assert_allclose(x_late, x_early, atol=0.02)
 
 
 def test_the_photocurrent_saturates_in_bright_light():

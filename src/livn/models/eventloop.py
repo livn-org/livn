@@ -29,6 +29,7 @@ from diffrax._misc import linear_rescale
 from jaxtyping import Array, PyTree
 
 __all__ = [
+    "ANCHOR_SPACING",
     "BrownianPath",
     "EventSolution",
     "LoopBudget",
@@ -155,6 +156,10 @@ class LoopBudget:
         return self.samples() * (state_size + 1) * itemsize
 
 
+# the inner solve runs on time
+ANCHOR_SPACING = 512.0
+
+
 def loop_budget(
     t0: float,
     t1: float,
@@ -180,6 +185,8 @@ def loop_budget(
         points, holds = 0, False
     if span <= 0:
         raise ValueError(f"max_segment_span must be positive, got {span}")
+    if span > ANCHOR_SPACING and duration > ANCHOR_SPACING:
+        span = ANCHOR_SPACING
     unbounded = math.isinf(span)
 
     events = math.ceil(duration * float(config.max_rate_per_ms)) + 1
@@ -234,6 +241,35 @@ def _buffers(state: _LoopState):
         state.event_masks,
         state.solver_ok,
     )
+
+
+class _Shifted(diffrax.AbstractTerm):
+    """``term`` on a segment's local time ``tau``, which is ``base + tau`` to it."""
+
+    term: diffrax.AbstractTerm
+    base: Any
+
+    def vf(self, t, y, args):
+        return self.term.vf(self.base + t, y, args)
+
+    def contr(self, t0, t1, **kwargs):
+        return self.term.contr(self.base + t0, self.base + t1, **kwargs)
+
+    def prod(self, vf, control):
+        return self.term.prod(vf, control)
+
+    def vf_prod(self, t, y, args, control):
+        return self.term.vf_prod(self.base + t, y, args, control)
+
+    def is_vf_expensive(self, t0, t1, y, args):
+        return self.term.is_vf_expensive(self.base + t0, self.base + t1, y, args)
+
+
+def _shift_cond(fn, base):
+    def shifted(t, y, args, **kwargs):
+        return fn(base + t, y, args, **kwargs)
+
+    return shifted
 
 
 def event_solve(
@@ -315,18 +351,11 @@ def event_solve(
     y_shape = y0.shape
     dtype = jnp.result_type(y0.dtype, jnp.float32)
 
-    term = diffrax.ODETerm(drift)
-    if extra_terms:
-        term = diffrax.MultiTerm(term, *extra_terms)
     shape = ()
     if callable(cond_fn):
         shape = jax.eval_shape(lambda y: cond_fn(t0, y, args), y0).shape
     vector = len(shape) == 1
-    if vector:
-        n_cond = shape[0]
-    else:
-        shared_event = diffrax.Event(cond_fn, config.root_finder)
-        n_cond = len(jax.tree_util.tree_leaves(cond_fn))
+    n_cond = shape[0] if vector else len(jax.tree_util.tree_leaves(cond_fn))
 
     adjoint = config.adjoint
     if adjoint is None and config.checkpoints is not None:
@@ -337,37 +366,58 @@ def event_solve(
     def body(state: _LoopState) -> _LoopState:
         block = state.block
         t_start = jnp.minimum(state.t, t1)
-        event = None if vector else shared_event
-        if vector:
-            armed = cond_fn(t_start, state.y, args) < 0
-
-            def first(t, y, args, **kwargs):
-                return jnp.max(jnp.where(armed, cond_fn(t, y, args), -jnp.inf))
-
-            event = diffrax.Event(first, config.root_finder)
         t_stop = (
             jnp.asarray(t1, dtype) if unbounded else jnp.minimum(t_start + span, t1)
         )
+        # float32 absolute time stalls the root-find from ~20 s and the step from 2^19 ms
+        anchor = (
+            jnp.floor(jax.lax.stop_gradient(t_start) / ANCHOR_SPACING) * ANCHOR_SPACING
+        )
+        tau_start = t_start - anchor
+        tau_stop = t_stop - anchor
         # Under vmap the loop runs until every batch element's cond is false, so a cell
         # that already reached t1 keeps executing this body with its state update masked
         # out. Left alone that is a zero-length solve, and while its value is discarded,
         # its adjoint is not and its degenerate interval can poisons the gradient of the
         # whole batch. So we give those spent iterations a well-conditioned interval
         # which can only fire when t_stop <= t_start i.e. the cell is done.
-        t_stop = jnp.where(t_stop > t_start, t_stop, t_start + config.dt_solver)
-        ts_seg = _grid(t_start, t_stop, n_points)
+        tau_stop = jnp.where(
+            tau_stop > tau_start, tau_stop, tau_start + config.dt_solver
+        )
+        t_stop = anchor + tau_stop
+
+        term = diffrax.ODETerm(lambda t, y, args: drift(anchor + t, y, args))
+        if extra_terms:
+            term = diffrax.MultiTerm(
+                term, *(_Shifted(extra, anchor) for extra in extra_terms)
+            )
+        if vector:
+            armed = cond_fn(t_start, state.y, args) < 0
+
+            def first(t, y, args, **kwargs):
+                values = cond_fn(anchor + t, y, args)
+                return jnp.max(jnp.where(armed, values, -jnp.inf))
+
+            event = diffrax.Event(first, config.root_finder)
+        else:
+            event = diffrax.Event(
+                jax.tree_util.tree_map(lambda f: _shift_cond(f, anchor), cond_fn),
+                config.root_finder,
+            )
+        local_seg = _grid(tau_start, tau_stop, n_points)
+        ts_seg = anchor + local_seg
 
         if trace:
             saveat = diffrax.SaveAt(
-                subs=(diffrax.SubSaveAt(ts=ts_seg), diffrax.SubSaveAt(t1=True))
+                subs=(diffrax.SubSaveAt(ts=local_seg), diffrax.SubSaveAt(t1=True))
             )
         else:
             saveat = diffrax.SaveAt(subs=(diffrax.SubSaveAt(t1=True),))
         sol = diffrax.diffeqsolve(
             term,
             config.solver,
-            t_start,
-            t_stop,
+            tau_start,
+            tau_stop,
             config.dt_solver,
             state.y,
             args,
@@ -379,7 +429,7 @@ def event_solve(
             **({} if adjoint is None else {"adjoint": adjoint}),
         )
 
-        t_event = sol.ts[-1][0]
+        tau_event = sol.ts[-1][0]
         y_event = sol.ys[-1][0]
         if not vector:
             mask = jnp.reshape(
@@ -387,11 +437,12 @@ def event_solve(
             )
         slack = config.dt_solver  # a root landing just off the end is rounding
         found = (
-            jnp.isfinite(t_event)
-            & (t_event >= t_start - slack)
-            & (t_event <= t_stop + slack)
+            jnp.isfinite(tau_event)
+            & (tau_event >= tau_start - slack)
+            & (tau_event <= tau_stop + slack)
         )
-        t_event = jnp.clip(jnp.where(found, t_event, t_stop), t_start, t_stop)
+        tau_event = jnp.clip(jnp.where(found, tau_event, tau_stop), tau_start, tau_stop)
+        t_event = anchor + tau_event
         if vector:
             values = jax.lax.stop_gradient(cond_fn(t_event, y_event, args))
             values = jnp.where(armed, values, -jnp.inf)
@@ -399,7 +450,7 @@ def event_solve(
             mask = jnp.asarray(sol.event_mask) & armed & (values >= level)
         fired = jnp.any(mask) & found
 
-        keep = ts_seg <= t_event
+        keep = local_seg <= tau_event
         seg_ts = jnp.where(keep, ts_seg, t_event)
         if trace:
             seg_ys = jnp.where(

@@ -169,6 +169,25 @@ def test_an_unbounded_segment_runs_to_the_next_event():
     assert int(solution.blocks) == 5
 
 
+@pytest.mark.parametrize("span", [None, math.inf])
+def test_a_solve_past_2_19_ms_still_steps(span):
+    # float32 t + 0.025 == t from 2^19 ms on; the drift switches on by absolute time
+    t0 = 2.0**19 - 1.0
+    ramp = _ramp()
+    ramp["drift"] = lambda t, y, args: jnp.where(t >= t0 + 2.0, 1.0, 0.0)[None]
+    config = SolverConfig(dt_solver=0.025, max_rate_per_ms=2.0, max_segment_span=span)
+
+    solution = event_solve(
+        y0=jnp.array([0.0]), t0=t0, t1=t0 + 5.5, dt=0.1, config=config, **ramp
+    )
+
+    assert bool(solution.solver_ok) and not bool(solution.saturated)
+    assert np.isfinite(np.asarray(solution.y1)).all()
+    np.testing.assert_allclose(
+        _events(solution), t0 + np.array([3.0, 4.0, 5.0]), atol=0.07
+    )
+
+
 def test_the_brownian_path_survives_reverse_mode():
     import diffrax
 
