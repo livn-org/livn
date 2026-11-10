@@ -49,11 +49,15 @@ MECHANISM_PARAM_NAMES = (
     "alpha",  # offset of the survival variable drawn at every reset [1]
 )
 
+FLOOR_PARAM_NAMES = ("lambda0",)  # [1/ms]
+
 NOISE_PARAM_NAMES = ("sigma_v",)  # [mV/sqrt(ms)]
 
 COUPLING_PARAM_NAMES = ("tau_syn",)  # synaptic current decay [ms]
 
-EXTRA_PARAM_NAMES = MECHANISM_PARAM_NAMES + NOISE_PARAM_NAMES + COUPLING_PARAM_NAMES
+EXTRA_PARAM_NAMES = (
+    MECHANISM_PARAM_NAMES + FLOOR_PARAM_NAMES + NOISE_PARAM_NAMES + COUPLING_PARAM_NAMES
+)
 
 ALL_PARAM_NAMES = PARAM_NAMES + EXTRA_PARAM_NAMES
 
@@ -99,6 +103,7 @@ DEFAULT_EXTRA_PARAMS = {
     "sigma": 1.0,
     "tau_s": 1.0,
     "alpha": 3e-2,
+    "lambda0": 0.0,
     "sigma_v": 0.0,
     "tau_syn": 5.0,
 }
@@ -269,12 +274,15 @@ def trainable_param_names(
     mechanism: str = "hard",
     diffusion: bool = False,
     coupled: bool = False,
+    floor: bool = False,
 ) -> tuple[str, ...]:
     level = _check_level(level)
     mechanism = _check_mechanism(mechanism)
     excluded = set(LEVEL_ZEROED[level])
     if mechanism != "escape":
         excluded.update(MECHANISM_PARAM_NAMES)
+    if mechanism != "escape" or not floor:
+        excluded.update(FLOOR_PARAM_NAMES)
     if not diffusion:
         excluded.update(NOISE_PARAM_NAMES)
     if not coupled:
@@ -653,7 +661,7 @@ def _threshold_of(p, y):
 def _intensity(p, y):
     sigma = jnp.where(p["sigma"] > 0, p["sigma"], 1e-12)
     excess = (y[..., V] - _threshold_of(p, y)) / sigma
-    return jnp.exp(jnp.minimum(excess, EXP_CAP)) / p["tau_s"]
+    return jnp.exp(jnp.minimum(excess, EXP_CAP)) / p["tau_s"] + p["lambda0"]
 
 
 def _draw_survival(p, key, shape):
@@ -1314,6 +1322,7 @@ class GlifNeurons(eqx.Module):
     sigma: Any
     tau_s: Any
     alpha: Any
+    lambda0: Any
     sigma_v: Any
     tau_syn: Any
 
