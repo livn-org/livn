@@ -70,9 +70,9 @@ def open(
 
     ``backend`` is ``"rsf"`` or ``"arrow"``; by default it is read off the location where an
     ``hf://<owner>/<repo>/<config>`` uri is downloaded (only that config's files) and opened
-    as Arrow, a directory with ``traces.zarr`` is an rsf session, and a saved ``datasets``
-    directory is Arrow. Keyword arguments go to the backend (``split=`` for Arrow;
-    ``revision=``, ``cache_dir=``, ``token=`` for a hub uri).
+    as Arrow, a directory with ``traces.zarr`` (or any location given with ``storage=``) is
+    an rsf session, and a saved ``datasets`` directory is Arrow. Keyword arguments go to the
+    backend (``split=`` for Arrow; ``revision=``, ``cache_dir=``, ``token=`` for a hub uri).
     """
     location = os.fspath(path_or_uri)
 
@@ -85,7 +85,7 @@ def open(
         return arrow.ArrowRecording(arrow.snapshot(location, **hub), **kw)
 
     if backend is None:
-        if os.path.isdir(os.path.join(location, "traces.zarr")):
+        if "storage" in kw or os.path.isdir(os.path.join(location, "traces.zarr")):
             backend = "rsf"
         else:
             from livn.data import arrow

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import itertools
 import json
 import math
@@ -11,7 +12,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import cached_property
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -158,6 +159,48 @@ class RSFError(ValueError):
 class Omitted(Missing):
     """This copy of a session does not hold what was asked for: it omits it to save space
     (``traces.zarr/rsf/local/omitted.json``), and another copy holds it."""
+
+
+class SamplesMissing(Missing):
+    """Trace chunks of a requested window are not in the store (removed, or not yet written).
+
+    ``ranges`` lists the missing ``(start, stop)`` frames, ``keys`` the chunk keys, and
+    ``elsewhere`` the copy an offload marker names, or ``None``.
+    """
+
+    def __init__(self, message: str, *, ranges=(), keys=(), elsewhere=None):
+        super().__init__(message)
+        self.ranges = list(ranges)
+        self.keys = list(keys)
+        self.elsewhere = elsewhere
+
+
+@runtime_checkable
+class Storage(Protocol):
+    """Storage protocol."""
+
+    def read(self, path: str) -> bytes: ...
+
+    def exists(self, path: str) -> bool: ...
+
+    def list(self, path: str) -> list[str]: ...
+
+
+class LocalStorage:
+    """The default :class:`Storage` using the local filesystem."""
+
+    def read(self, path: str) -> bytes:
+        with open(path, "rb") as f:
+            return f.read()
+
+    def exists(self, path: str) -> bool:
+        return os.path.isfile(path)
+
+    def list(self, path: str) -> list[str]:
+        try:
+            return sorted(os.listdir(path))
+        except (FileNotFoundError, NotADirectoryError):
+            return []
 
 
 def _zarr():
@@ -3082,6 +3125,8 @@ def _array(group, name: str, values: np.ndarray, chunks=None) -> None:
         chunks=chunks,
         compressors=None,
         fill_value=0,
+        # an absent chunk means missing data to a reader
+        config={"write_empty_chunks": True},
     )
     if values.size:
         array[...] = values
@@ -3217,22 +3262,37 @@ class RsfRecording:
     ``growing=True`` opens a store that is still being written (no ``finished_at``): its
     tables are read to their shortest column, and :attr:`stimulus_final_to` says how far its
     delivered stimulus is final.
+
+    Pass a ``storage`` to read from elsewhere than the local filesystem (:class:`Storage`).
     """
 
-    def __init__(self, path: str | os.PathLike, *, growing: bool = False):
+    def __init__(
+        self,
+        path: str | os.PathLike,
+        *,
+        growing: bool = False,
+        fill_missing: bool = False,
+        storage: Storage | None = None,
+    ):
         self.path = os.fspath(path)
         self.growing = bool(growing)
+        self.fill_missing = bool(fill_missing)
+        self._storage = storage or LocalStorage()
+        if not _local(storage):
+            self.path = _key(self.path).strip("/")
         self._open()
 
-    def _open(self) -> None:
-        zarr = _zarr()
+    @property
+    def storage(self) -> Storage:
+        return self._storage
 
+    def _open(self) -> None:
         path = self.path
         traces_path = os.path.join(path, "traces.zarr")
-        if not os.path.isfile(os.path.join(traces_path, "zarr.json")):
+        if not _isfile(os.path.join(traces_path, "zarr.json"), storage=self._storage):
             raise RSFError(f"{path} is not a session: it has no traces.zarr/zarr.json")
         documents = os.path.join(traces_path, RSF)
-        group_attrs = _read_node(documents)
+        group_attrs = _read_node(documents, storage=self._storage)
         if not group_attrs:
             raise RSFError(
                 f"{path} has no traces.zarr/rsf/ group: it is not an RSF session (a "
@@ -3249,8 +3309,8 @@ class RsfRecording:
                 "written: open it with growing=True to follow it"
             )
 
-        root = zarr.open_group(traces_path, mode="r")
-        attrs = _read_node(traces_path)
+        root = _open_group(traces_path, storage=self._storage)
+        attrs = _read_node(traces_path, storage=self._storage)
         self.fs = float(attrs["sampling_frequency"])
         self._dt = 1000.0 / self.fs
         self.record = (attrs.get("annotations") or {}).get(RECORD_KEY) or {}
@@ -3278,7 +3338,9 @@ class RsfRecording:
         self.channel_ids = _ids_array(self._keys)
         self._column = {key: i for i, key in enumerate(self._keys)}
         # the samples stay on disk; a copy may omit them, and then everything else reads
-        self.omissions = _omissions(os.path.join(documents, OMISSIONS))
+        self.omissions = _omissions(
+            os.path.join(documents, OMISSIONS), storage=self._storage
+        )
         self._traces = (
             _array_of(root, "traces_seg0") if _has(root, "traces_seg0") else None
         )
@@ -3332,9 +3394,9 @@ class RsfRecording:
         self._dropped = dropped
 
         self.simulation = None
-        if os.path.isfile(os.path.join(documents, "simulation.json")):
-            with open(
-                os.path.join(documents, "simulation.json"), encoding="utf-8"
+        if _isfile(os.path.join(documents, "simulation.json"), storage=self._storage):
+            with _open_text(
+                os.path.join(documents, "simulation.json"), storage=self._storage
             ) as f:
                 self.simulation = json.load(f)
         self._documents = documents
@@ -3344,10 +3406,12 @@ class RsfRecording:
             os.path.join(documents, "observe.json"),
             os.path.join(documents, "ext", PRODUCER, "observe.json"),
             max_current_uA=max_current_uA,
+            storage=self._storage,
         )
         self.electrode_map = dict(group_attrs.get("electrode_map") or {})
         self._contacts = _probe_contacts(
-            attrs.get("probe") or _json_file(os.path.join(documents, "probe.json")),
+            attrs.get("probe")
+            or _json_file(os.path.join(documents, "probe.json"), storage=self._storage),
             self._keys,
             self.row_property("channel"),
             set(self.channels()),
@@ -3362,7 +3426,7 @@ class RsfRecording:
         self.derived_from = _derived_from(group_attrs.get("derived_from"))
         self.substrate = _string((self.record.get("env") or {}).get("substrate"))
         self.prep = _prep((self.record.get("env") or {}).get("system"))
-        notes = _read_notes(os.path.join(documents, "notes"))
+        notes = _read_notes(os.path.join(documents, "notes"), storage=self._storage)
         self.label = _current_label(notes, group_attrs.get("label", ""))
         self.description = _current_text(notes.get("description", {}).get("session"))
         self.notes = sorted(
@@ -3404,11 +3468,20 @@ class RsfRecording:
         return _string(self.record.get("started_at")) or _string(self.created_at)
 
     def __getstate__(self) -> dict:
-        return {"path": self.path, "growing": self.growing}
+        state = {
+            "path": self.path,
+            "growing": self.growing,
+            "fill_missing": self.fill_missing,
+        }
+        if not _local(self._storage):
+            state["storage"] = self._storage
+        return state
 
     def __setstate__(self, state: dict) -> None:
         self.path = state["path"]
         self.growing = state.get("growing", False)
+        self.fill_missing = state.get("fill_missing", False)
+        self._storage = state.get("storage") or LocalStorage()
         self._open()
 
     @property
@@ -3435,8 +3508,8 @@ class RsfRecording:
             return int(self._traces.shape[0])
         for name in ("voltage", "currents"):
             store = os.path.join(self.path, "ground_truth", f"{name}.zarr")
-            if _complete(store):
-                truth = _zarr().open_group(store, mode="r")
+            if _complete(store, storage=self._storage):
+                truth = _open_group(store, storage=self._storage)
                 return int(_array_of(truth, "traces_seg0").shape[0])
         return None
 
@@ -3462,17 +3535,66 @@ class RsfRecording:
     def read(self, segment, start, length, channels=None) -> np.ndarray:
         """Samples ``[start, start + length)`` of the given channel ids (all by default), as
         float32 ``(length, channels)`` in uV, each row through its own gain and offset.
-        Raises :class:`Omitted` on a copy that does not hold the samples."""
+        Raises :class:`Omitted` on a copy that does not hold the samples, and
+        :class:`SamplesMissing` when chunks of the window are not in the store."""
         self._segment(segment)
         if self._traces is None:
             raise self._omitted()
         start, length = _window(start, length, int(self._traces.shape[0]))
         raw = np.asarray(self._traces[start : start + length, :])
+        # checked after the read, so a chunk removed meanwhile is not read as silence
+        self._check_chunks(start, start + length)
         gain, offset = self._gain, self._offset
         if channels is not None:
             columns = self._columns(channels)
             raw, gain, offset = raw[:, columns], gain[columns], offset[columns]
         return (raw.astype(np.float64) * gain + offset).astype(np.float32)
+
+    def _check_chunks(self, start: int, stop: int) -> None:
+        if self.fill_missing or stop <= start:
+            return
+        array = self._traces
+        grid = getattr(array, "shards", None) or array.chunks
+        rows = int(grid[0])
+        columns = math.ceil(array.shape[1] / grid[1]) if array.shape[1] else 0
+        missing: dict[int, list[str]] = {}
+        for i in range(start // rows, (stop - 1) // rows + 1):
+            for j in range(columns):
+                key = array.metadata.encode_chunk_key((i, j))
+                if not self._chunk_exists(key):
+                    missing.setdefault(i, []).append(f"{SAMPLES}/{key}")
+        if missing:
+            raise self._samples_missing(missing, rows)
+
+    def _chunk_exists(self, key: str) -> bool:
+        return _isfile(os.path.join(self.path, SAMPLES, key), self._storage)
+
+    def _samples_missing(self, missing: dict[int, list[str]], rows: int):
+        n = int(self._traces.shape[0])
+        ranges: list[tuple[int, int]] = []
+        for i in sorted(missing):
+            lo, hi = i * rows, min((i + 1) * rows, n)
+            if ranges and ranges[-1][1] == lo:
+                ranges[-1] = (ranges[-1][0], hi)
+            else:
+                ranges.append((lo, hi))
+        keys = [k for i in sorted(missing) for k in missing[i]]
+        marker = _offload_marker(self.path, storage=self._storage)
+        elsewhere, why = None, "removed, or not yet written"
+        if marker is not None and set(marker["removed"]) & set(keys):
+            elsewhere = _string(marker.get("store_url"))
+            why = "removed here after upload" + (
+                f"; {elsewhere} holds them" if elsewhere else ""
+            )
+        spans = ", ".join(f"[{a}, {b})" for a, b in ranges)
+        return SamplesMissing(
+            f"{self.path}: frames {spans} are not in the store: {len(keys)} trace "
+            f"chunk(s) from {keys[0]} are absent ({why}). Read them from a copy that "
+            "holds them, or pass fill_missing=True to read them as zeros",
+            ranges=ranges,
+            keys=keys,
+            elsewhere=elsewhere,
+        )
 
     def row_property(self, name: str) -> np.ndarray | None:
         """The per-row array ``properties/<name>`` (``"channel"``, ``"band"``,
@@ -3654,31 +3776,68 @@ class RsfRecording:
         return StimMarkers(tick=ticks, frame=self.frame_at(ticks), channel=channels)
 
     def ext(self, producer: str, name: str):
-        """The JSON document ``rsf/ext/<producer>/<name>``, or ``None``: what a producer keeps
-        that the format does not define (opaque to everyone else)."""
-        path = os.path.join(self._documents, "ext", producer, name)
-        if not os.path.isfile(path):
+        """The document ``rsf/ext/<producer>/<name>``, or ``None``: what a producer keeps
+        that the format does not define (opaque to everyone else). JSON, or a list of records
+        for a ``.jsonl``/``.ndjson`` log."""
+        path = self.ext_path(producer, name)
+        if not _isfile(path, storage=self._storage):
             return None
-        with open(path, encoding="utf-8") as f:
+        with _open_text(path, storage=self._storage) as f:
+            if name.endswith((".jsonl", ".ndjson")):
+                return [json.loads(line) for line in f if line.strip()]
             return json.load(f)
+
+    def ext_path(self, producer: str, name: str = "") -> str:
+        """The path of ``rsf/ext/<producer>/<name>``, local or a key in :attr:`storage`."""
+        parts = [producer, *name.split("/")] if name else [producer]
+        if any(p in ("", ".", "..") for p in parts):
+            raise ValueError(f"{producer!r}/{name!r} is not a name under rsf/ext/")
+        return os.path.join(self._documents, "ext", *parts)
+
+    def ext_files(self, producer: str) -> list[str]:
+        """The files under ``rsf/ext/<producer>/`` by name relative to it, sorted."""
+        root, found, pending = self.ext_path(producer), [], [""]
+        while pending:
+            folder = pending.pop()
+            for name in self._storage.list(_key(os.path.join(root, folder))):
+                relative = f"{folder}/{name}" if folder else name
+                if self._storage.exists(_key(os.path.join(root, relative))):
+                    found.append(relative)
+                else:
+                    pending.append(relative)
+        return sorted(found)
+
+    def open_ext(self, producer: str, name: str, mode: str = "rb"):
+        """``rsf/ext/<producer>/<name>`` opened for reading (``"rb"`` or ``"r"``)."""
+        if mode not in ("r", "rb"):
+            raise ValueError(f"extensions are read-only, not opened with {mode!r}")
+        path = self.ext_path(producer, name)
+        if _local(self._storage):
+            return open(path, mode, **({"encoding": "utf-8"} if mode == "r" else {}))
+        data = self._storage.read(_key(path))
+        return io.StringIO(data.decode("utf-8")) if mode == "r" else io.BytesIO(data)
 
     def sortings(self) -> list[Sorting]:
         """The session's sorting stores besides its ground truth (a sorter's output, a
         detector's crossings), as :class:`Sorting`, ordered by path. A store that is not
         complete, or whose ``store_id`` has a written removal, is not listed; neither is
         one this copy omits, which it does not hold."""
-        removed = _removed_stores(os.path.join(self._documents, "notes"))
+        removed = _removed_stores(
+            os.path.join(self._documents, "notes"), storage=self._storage
+        )
         original = set(self.original_stores or ())
         found = []
         for relative in self._sorting_paths():
             store = os.path.join(self.path, relative)
-            group = _read_node(os.path.join(store, RSF))
+            group = _read_node(os.path.join(store, RSF), storage=self._storage)
             if not group.get("finished_at"):
                 continue
             store_id = _string(group.get("store_id"))
             if store_id is not None and store_id in removed:
                 continue
-            record = (_read_node(store).get("annotations") or {}).get(RECORD_KEY) or {}
+            record = (
+                _read_node(store, storage=self._storage).get("annotations") or {}
+            ).get(RECORD_KEY) or {}
             extraction = group.get("extraction")
             extraction = extraction if isinstance(extraction, Mapping) else {}
             found.append(
@@ -3689,21 +3848,26 @@ class RsfRecording:
                     role=_extract_role(record),
                     store_id=store_id,
                     method_hash=_string(extraction.get("method_hash")),
-                    coverage=os.path.isdir(os.path.join(store, RSF, "coverage")),
+                    coverage=_isdir(
+                        os.path.join(store, RSF, "coverage"), storage=self._storage
+                    ),
                 )
             )
         return found
 
     def _sorting_paths(self) -> list[str]:
         found = []
-        for entry in sorted(os.listdir(self.path)):
+        for entry in sorted(_listdir(self.path, storage=self._storage)):
             here = os.path.join(self.path, entry)
             if entry.endswith(".zarr"):
                 candidates = [entry] if entry != "traces.zarr" else []
-            elif os.path.isdir(here) and entry not in ("ground_truth", "uncertainty"):
+            elif _isdir(here, storage=self._storage) and entry not in (
+                "ground_truth",
+                "uncertainty",
+            ):
                 candidates = [
                     f"{entry}/{name}"
-                    for name in sorted(os.listdir(here))
+                    for name in sorted(_listdir(here, storage=self._storage))
                     if name.endswith(".zarr")
                 ]
             else:
@@ -3711,7 +3875,10 @@ class RsfRecording:
             found += [
                 c
                 for c in candidates
-                if os.path.isfile(os.path.join(self.path, c, "unit_ids", "zarr.json"))
+                if _isfile(
+                    os.path.join(self.path, c, "unit_ids", "zarr.json"),
+                    storage=self._storage,
+                )
             ]
         return found
 
@@ -3723,7 +3890,9 @@ class RsfRecording:
         from livn.utils import canonical_hash
 
         relative = self._sorting_path(sorting)
-        group = _read_node(os.path.join(self.path, relative, RSF))
+        group = _read_node(
+            os.path.join(self.path, relative, RSF), storage=self._storage
+        )
         extraction = group.get("extraction")
         if not isinstance(extraction, Mapping):
             return None
@@ -3754,9 +3923,11 @@ class RsfRecording:
     def _coverage_frames(self, relative: str) -> np.ndarray | None:
         """``(k, 2)`` int64 ``[start, stop)`` frames of a store's ``rsf/coverage/``."""
         store = os.path.join(self.path, relative)
-        if not os.path.isfile(os.path.join(store, RSF, "coverage", "zarr.json")):
+        if not _isfile(
+            os.path.join(store, RSF, "coverage", "zarr.json"), storage=self._storage
+        ):
             return None
-        table = _zarr().open_group(os.path.join(store, RSF, "coverage"), mode="r")
+        table = _open_group(os.path.join(store, RSF, "coverage"), storage=self._storage)
         start = np.asarray(_read(table, "frame_start"), dtype=np.int64)
         count = np.asarray(_read(table, "n_frames"), dtype=np.int64)
         if start.shape != count.shape or np.any(count < 0):
@@ -3803,13 +3974,15 @@ class RsfRecording:
         record with ``kind`` has the neutral members; the producer's own member (``livn``,
         ...) is opaque to every other reader."""
         root = os.path.join(self._documents, "stimulation")
-        if not os.path.isdir(root):
+        if not _isdir(root, storage=self._storage):
             return []
         records = []
-        for name in sorted(os.listdir(root)):
+        for name in sorted(_listdir(root, storage=self._storage)):
             if not re.fullmatch(r"[0-9]{4}", name):
                 continue
-            record = _read_node(os.path.join(root, name)).get("stimulation")
+            record = _read_node(os.path.join(root, name), storage=self._storage).get(
+                "stimulation"
+            )
             if isinstance(record, Mapping):
                 records.append({**record, "index": int(name)})
         return records
@@ -3998,7 +4171,9 @@ class RsfRecording:
                 "text": None,
             }
         versions = _read_notes(
-            os.path.join(self._documents, "notes"), (CALIBRATION,)
+            os.path.join(self._documents, "notes"),
+            (CALIBRATION,),
+            storage=self._storage,
         ).get(CALIBRATION, {})
         for item, history in versions.items():
             current = _current(history)
@@ -4036,7 +4211,9 @@ class RsfRecording:
                 "source": None if nm is None else "record",
             }
         versions = _read_notes(
-            os.path.join(self._documents, "notes"), (CALIBRATION,)
+            os.path.join(self._documents, "notes"),
+            (CALIBRATION,),
+            storage=self._storage,
         ).get(CALIBRATION, {})
         for item, history in versions.items():
             current = _current(history)
@@ -4061,7 +4238,9 @@ class RsfRecording:
         ``position`` is where the version places the channel in the probe frame, ``{"x",
         "y", "radius", "uncertainty", "basis"}``."""
         versions = _read_notes(
-            os.path.join(self._documents, "notes"), (CALIBRATION,)
+            os.path.join(self._documents, "notes"),
+            (CALIBRATION,),
+            storage=self._storage,
         ).get(CALIBRATION, {})
         out = {}
         for item, history in sorted(versions.items()):
@@ -4091,9 +4270,9 @@ class RsfRecording:
         An epoch still open in a complete store ends at the store's length, with ``open``
         ``True``; in a growing one ``end_frame`` is ``None``. A ``parent`` that names no
         current epoch is read as ``None``, with ``parent_missing`` ``True``."""
-        versions = _read_notes(os.path.join(self._documents, "notes"), (EPOCH,)).get(
-            EPOCH, {}
-        )
+        versions = _read_notes(
+            os.path.join(self._documents, "notes"), (EPOCH,), storage=self._storage
+        ).get(EPOCH, {})
         current = {
             item: version
             for item, version in (
@@ -4239,9 +4418,9 @@ class RsfRecording:
 
     def _table_store(self, name: str):
         store = os.path.join(self.path, "ground_truth", f"{name}.zarr")
-        if not _complete(store):
+        if not _complete(store, storage=self._storage):
             return None
-        return _zarr().open_group(store, mode="r")
+        return _open_group(store, storage=self._storage)
 
     def channels(self) -> dict[str, dict]:
         """The session's described channels that are not electrodes, by channel name, from
@@ -4259,10 +4438,10 @@ class RsfRecording:
         not here: what a row of the wiring is stays the wiring's. No document: ``{}``, the store
         says nothing about its other channels."""
         path = os.path.join(self._documents, CHANNELS_DOCUMENT)
-        if not os.path.isfile(path):
+        if not _isfile(path, storage=self._storage):
             return {}
         try:
-            with open(path, encoding="utf-8") as f:
+            with _open_text(path, storage=self._storage) as f:
                 document = json.load(f)
         except (OSError, ValueError):
             return {}
@@ -4277,9 +4456,9 @@ class RsfRecording:
             if isinstance(description, Mapping)
         }
 
-        versions = _read_notes(os.path.join(self._documents, "notes"), (CHANNEL,)).get(
-            CHANNEL, {}
-        )
+        versions = _read_notes(
+            os.path.join(self._documents, "notes"), (CHANNEL,), storage=self._storage
+        ).get(CHANNEL, {})
         for item, history in versions.items():
             current = _current(history)
             if current is None or current["removed"]:
@@ -4400,12 +4579,14 @@ class RsfRecording:
         out: dict[tuple[str, str], Condition] = {}
         table = _table(self._root, CONDITIONS, CONDITION_COLUMNS)
         if table is not None and len(table["frame"]):
-            items = _read_node(os.path.join(self._documents, CONDITIONS)).get("items")
+            items = _read_node(
+                os.path.join(self._documents, CONDITIONS), storage=self._storage
+            ).get("items")
             items = items if isinstance(items, Mapping) else {}
             out.update(_conditions_from_table(table, items, a, b, basis))
 
         versions = _read_notes(
-            os.path.join(self._documents, "notes"), (CONDITION,)
+            os.path.join(self._documents, "notes"), (CONDITION,), storage=self._storage
         ).get(CONDITION, {})
         for key, history in versions.items():
             current = _current(history)
@@ -4736,7 +4917,10 @@ class RsfRecording:
         )
         run = Run(t0=t0, duration=length * dt, potential=potential)
 
-        if _complete(os.path.join(self.path, "ground_truth", "spikes.zarr")):
+        if _complete(
+            os.path.join(self.path, "ground_truth", "spikes.zarr"),
+            storage=self._storage,
+        ):
             _, ids, samples, _ = self._sorting()
             keep = (samples >= start) & (samples < start + length)
             run = run.add_spikes(ids[keep], (samples[keep] - start) * dt)
@@ -4830,14 +5014,16 @@ class RsfRecording:
         """``(units, unit id per event, frames, space)`` of a sorting-layout store, the events
         ordered by frame."""
         store = os.path.join(self.path, relative)
-        if not _complete(store):
+        if not _complete(store, storage=self._storage):
             raise Missing(f"{self.path} stores no finished {relative}")
-        group = _zarr().open_group(store, mode="r")
+        group = _open_group(store, storage=self._storage)
         units = _ids_array(_read(group, "unit_ids"))
         sample_index = np.asarray(_read(group, "spikes/sample_index"), dtype=np.int64)
         unit_index = np.asarray(_read(group, "spikes/unit_index"), dtype=np.int64)
         order = np.argsort(sample_index, kind="stable")
-        record = (_read_node(store).get("annotations") or {}).get(RECORD_KEY) or {}
+        record = (
+            _read_node(store, storage=self._storage).get("annotations") or {}
+        ).get(RECORD_KEY) or {}
         return (
             units,
             units[unit_index[order]],
@@ -4849,9 +5035,9 @@ class RsfRecording:
         from livn.run import Series
 
         store = os.path.join(self.path, "ground_truth", f"{name}.zarr")
-        if not _complete(store):
+        if not _complete(store, storage=self._storage):
             return None
-        truth = _zarr().open_group(store, mode="r")
+        truth = _open_group(store, storage=self._storage)
         ids = [str(k) for k in _read(truth, "channel_ids")]
         sections = None
         if _has(truth, "properties/section"):
@@ -5006,21 +5192,165 @@ def _has(group, name: str) -> bool:
     return group.get(name) is not None
 
 
-def _read_node(directory: str) -> dict:
+def _read_node(directory: str, storage: Storage | None = None) -> dict:
     node_path = os.path.join(directory, "zarr.json")
-    if not os.path.isfile(node_path):
+    if not _isfile(node_path, storage):
         return {}
-    with open(node_path, encoding="utf-8") as f:
+    with _open_text(node_path, storage) as f:
         return json.load(f).get("attributes") or {}
 
 
-def _complete(store: str) -> bool:
-    return bool(_read_node(os.path.join(store, RSF)).get("finished_at"))
+# A hidden marker in a session folder listing the chunks removed after upload
+_OFFLOAD_MARKER = re.compile(r"\.[A-Za-z0-9][A-Za-z0-9_-]*-offloaded\.json")
 
 
-def _omissions(path: str) -> list[dict]:
+def _local(storage) -> bool:
+    return storage is None or isinstance(storage, LocalStorage)
+
+
+def _key(path: str) -> str:
+    return path.replace(os.sep, "/")
+
+
+def _isfile(path: str, storage: Storage | None = None) -> bool:
+    if _local(storage):
+        return os.path.isfile(path)
+    return storage.exists(_key(path))
+
+
+def _isdir(path: str, storage: Storage | None = None) -> bool:
+    if _local(storage):
+        return os.path.isdir(path)
+    return bool(storage.list(_key(path)))
+
+
+def _listdir(path: str, storage: Storage | None = None) -> list[str]:
+    if _local(storage):
+        return os.listdir(path)
+    return list(storage.list(_key(path)))
+
+
+def _open_text(path: str, storage: Storage | None = None):
+    if _local(storage):
+        return open(path, encoding="utf-8")
+    return io.StringIO(storage.read(_key(path)).decode("utf-8"))
+
+
+def _open_group(path: str, storage: Storage | None = None):
+    """A zarr group opened read-only, from a folder or through a storage."""
+    zarr = _zarr()
+    if _local(storage):
+        return zarr.open_group(path, mode="r")
+    return zarr.open_group(_zarr_store(storage, _key(path)), mode="r")
+
+
+def _zarr_store(storage: Storage, root: str):
+    """A read-only zarr store over a :class:`Storage`, rooted at ``root``."""
+    global _StorageStore
+    if _StorageStore is None:
+        from zarr.abc.store import Store
+        from zarr.core.buffer import default_buffer_prototype
+
+        class StorageStore(Store):
+            supports_writes = supports_deletes = supports_partial_writes = False
+            supports_listing = True
+
+            def __init__(self, storage, root):
+                super().__init__(read_only=True)
+                self.storage, self.root = storage, root.rstrip("/")
+
+            def _at(self, key: str) -> str:
+                return f"{self.root}/{key}" if self.root else key
+
+            def __eq__(self, other):
+                return (
+                    isinstance(other, StorageStore)
+                    and other.storage is self.storage
+                    and other.root == self.root
+                )
+
+            async def get(self, key, prototype=None, byte_range=None):
+                try:
+                    data = self.storage.read(self._at(key))
+                except FileNotFoundError:
+                    return None
+                start, stop = 0, len(data)
+                if isinstance(byte_range, tuple):
+                    start, stop = byte_range[0] or 0, byte_range[1] or len(data)
+                elif hasattr(byte_range, "suffix"):
+                    start = max(0, len(data) - byte_range.suffix)
+                elif hasattr(byte_range, "offset"):
+                    start = byte_range.offset
+                elif byte_range is not None:
+                    start, stop = byte_range.start, byte_range.end
+                prototype = prototype or default_buffer_prototype()
+                return prototype.buffer.from_bytes(data[start:stop])
+
+            async def get_partial_values(self, prototype, key_ranges):
+                return [await self.get(k, prototype, r) for k, r in key_ranges]
+
+            async def exists(self, key):
+                return self.storage.exists(self._at(key))
+
+            async def set(self, key, value):
+                raise NotImplementedError("a storage is read-only")
+
+            async def delete(self, key):
+                raise NotImplementedError("a storage is read-only")
+
+            async def set_partial_values(self, key_start_values):
+                raise NotImplementedError("a storage is read-only")
+
+            async def list(self):
+                async for key in self.list_prefix(""):
+                    yield key
+
+            async def list_prefix(self, prefix):
+                pending = [prefix.rstrip("/")]
+                while pending:
+                    folder = pending.pop()
+                    for name in self.storage.list(self._at(folder)):
+                        key = f"{folder}/{name}" if folder else name
+                        if self.storage.exists(self._at(key)):
+                            yield key
+                        else:
+                            pending.append(key)
+
+            async def list_dir(self, prefix):
+                for name in self.storage.list(self._at(prefix.rstrip("/"))):
+                    yield name
+
+        _StorageStore = StorageStore
+    return _StorageStore(storage, root)
+
+
+_StorageStore = None
+
+
+def _offload_marker(session: str, storage: Storage | None = None) -> dict | None:
+    """A hidden ``.<name>-offloaded.json`` beside ``traces.zarr``: the chunks removed locally
+    after upload (``removed``, key to size) and the copy holding them (``store_url``)."""
+    try:
+        names = _listdir(session, storage)
+    except OSError:
+        return None
+    for name in sorted(names):
+        if _OFFLOAD_MARKER.fullmatch(name):
+            marker = _json_file(os.path.join(session, name), storage)
+            if isinstance(marker, Mapping) and isinstance(
+                marker.get("removed"), Mapping
+            ):
+                return dict(marker)
+    return None
+
+
+def _complete(store: str, storage: Storage | None = None) -> bool:
+    return bool(_read_node(os.path.join(store, RSF), storage).get("finished_at"))
+
+
+def _omissions(path: str, storage: Storage | None = None) -> list[dict]:
     """The entries of a copy's ``omitted.json``, ``[{"path", "at", "author"}]``."""
-    entries = _json_file(path)
+    entries = _json_file(path, storage)
     if not isinstance(entries, list):
         return []
     return [
@@ -5030,16 +5360,16 @@ def _omissions(path: str) -> list[dict]:
     ]
 
 
-def _removed_stores(notes: str) -> set[str]:
+def _removed_stores(notes: str, storage: Storage | None = None) -> set[str]:
     """The ``store_id`` of every store a written removal (``notes/store/``) retires."""
     folder = os.path.join(notes, "store")
-    if not os.path.isdir(folder):
+    if not _isdir(folder, storage):
         return set()
     removed = set()
-    for name in os.listdir(folder):
+    for name in _listdir(folder, storage):
         if not _NOTE_KEY.fullmatch(name):
             continue
-        version = _json_file(os.path.join(folder, name))
+        version = _json_file(os.path.join(folder, name), storage)
         if (
             isinstance(version, Mapping)
             and version.get("removed") is True
@@ -5071,13 +5401,16 @@ def _ids_array(ids) -> np.ndarray:
 
 
 def _read_operator(
-    path: str, ext_path: str | None = None, max_current_uA: float | None = None
+    path: str,
+    ext_path: str | None = None,
+    max_current_uA: float | None = None,
+    storage: Storage | None = None,
 ):
     from livn.io import MEA, ComposedIO, Medium, PointSource
 
-    if not os.path.isfile(path):
+    if not _isfile(path, storage):
         return None
-    with open(path, encoding="utf-8") as f:
+    with _open_text(path, storage) as f:
         document = json.load(f)
     if (
         document.get("kind") not in (POINT_SOURCE, LIVN_IO)
@@ -5088,8 +5421,8 @@ def _read_operator(
     if not all(isinstance(row[0], int) for row in coordinates):
         return None  # livn's MEA numbers its electrodes
     livn = document.get("livn")
-    if livn is None and ext_path is not None and os.path.isfile(ext_path):
-        with open(ext_path, encoding="utf-8") as f:
+    if livn is None and ext_path is not None and _isfile(ext_path, storage):
+        with _open_text(ext_path, storage) as f:
             livn = json.load(f)
     transfers = []
     recording = stimulating = None
@@ -5136,11 +5469,11 @@ def _read_operator(
     return ComposedIO(None, [mea, *transfers], medium=medium)
 
 
-def _json_file(path: str):
-    if not os.path.isfile(path):
+def _json_file(path: str, storage: Storage | None = None):
+    if not _isfile(path, storage):
         return None
     try:
-        with open(path, encoding="utf-8") as f:
+        with _open_text(path, storage) as f:
             return json.load(f)
     except (OSError, ValueError):
         return None
@@ -5413,18 +5746,20 @@ _NOTE_MEMBERS = {
 
 
 def _read_notes(
-    directory: str, kinds: Sequence[str] = NOTE_KINDS
+    directory: str,
+    kinds: Sequence[str] = NOTE_KINDS,
+    storage: Storage | None = None,
 ) -> dict[str, dict[str, list[tuple]]]:
     out: dict[str, dict[str, list[tuple]]] = {}
     for kind in kinds:
         folder = os.path.join(directory, kind)
-        if not os.path.isdir(folder):
+        if not _isdir(folder, storage):
             continue
-        for name in os.listdir(folder):
+        for name in _listdir(folder, storage):
             if not _NOTE_KEY.fullmatch(name):
                 continue
             try:
-                with open(os.path.join(folder, name), encoding="utf-8") as f:
+                with _open_text(os.path.join(folder, name), storage) as f:
                     version = json.load(f)
                 if not isinstance(version, dict) or any(
                     not isinstance(version.get(m), t) for m, t in _NOTE_MEMBERS.items()

@@ -115,13 +115,13 @@ def _node(directory: str, attributes: dict) -> None:
         json.dump({"zarr_format": 3, "node_type": "group", "attributes": attributes}, f)
 
 
-def _array(group, name: str, values) -> None:
+def _array(group, name: str, values, chunks=None) -> None:
     values = np.asarray(values)
     array = group.create_array(
         name,
         shape=values.shape,
         dtype=values.dtype,
-        chunks=tuple(max(1, s) for s in values.shape),
+        chunks=chunks or tuple(max(1, s) for s in values.shape),
         compressors=None,
         fill_value=0,
     )
@@ -165,6 +165,7 @@ def _physical_session(
     extra_attributes: Mapping | None = None,
     documents: Mapping[str, object] | None = None,
     stores: Sequence[str] | None = (),
+    trace_chunks: tuple[int, int] | None = None,
 ) -> str:
     import zarr
 
@@ -208,7 +209,7 @@ def _physical_session(
         },
     )
     _strings(root, "channel_ids", channels)
-    _array(root, "traces_seg0", traces)
+    _array(root, "traces_seg0", traces, trace_chunks)
     _array(root, "properties/gain_to_uV", np.asarray(gains, dtype=np.float64))
     _array(root, "properties/offset_to_uV", np.zeros(len(channels)))
     _strings(root, "properties/channel", channels)

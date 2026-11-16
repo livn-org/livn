@@ -158,6 +158,14 @@ store(run, "sessions/spontaneous-1", env, sortings={"live": method})
 
 A copy of a session may omit its full trace (`traces.zarr/traces_seg0`) to save space, indicating the omission in `traces.zarr/rsf/local/omitted.json` and `recording.samples_omitted`.
 
+## Missing chunks
+
+A read whose window touches trace chunks that are not in the store, because they were removed after upload or are not written yet, raises `livn.data.rsf.SamplesMissing` (a `livn.data.Missing`) naming the missing frames, rather than returning the zarr fill value as silence. Its `ranges`, `keys` and `elsewhere` say which frames, which chunks, and the copy a hidden `.<name>-offloaded.json` marker in the session folder names, if there is one. `RsfRecording(path, fill_missing=True)` reads them as zeros instead.
+
+## Sessions held elsewhere
+
+`RsfRecording(key, storage=...)` reads a session through any object with three methods: `read(path) -> bytes` (raising `FileNotFoundError`), `exists(path) -> bool` for a file, and `list(path) -> list[str]` for the names directly under a folder. Paths are `/`-separated keys under `key`. livn ships only the local filesystem (`LocalStorage`, the default).
+
 ## SpikeInterface
 
 A session's traces open in SpikeInterface with `spikeinterface.read_zarr("sessions/spontaneous-1/traces.zarr")`, and its ground-truth spikes are a SpikeInterface sorting.
