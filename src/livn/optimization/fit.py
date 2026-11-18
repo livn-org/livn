@@ -15,7 +15,13 @@ import jax.tree_util as jtu
 import numpy as np
 import optimistix as optx
 
-from livn.optimization.train import Best, EqxCheckpointer, FitState, History
+from livn.optimization.train import (
+    Best,
+    EqxCheckpointer,
+    FitState,
+    History,
+    _check_validate_order,
+)
 from livn.optimization.transforms import BIJECTORS, Bijector, bounded
 
 __all__ = [
@@ -97,7 +103,7 @@ def _compile(fn, n_lead, vmap_axes, jit):
 
 
 class _Optax:
-    def __init__(self, tx, objective, jit, vmap_axes):
+    def __init__(self, tx, objective, jit, vmap_axes, accept=None):
         import optax
 
         self.tx = optax.with_extra_args_support(tx)
@@ -106,7 +112,7 @@ class _Optax:
             (value, aux), grads = jax.value_and_grad(objective, has_aux=True)(
                 raw, static, batch, key
             )
-            updates, state = self.tx.update(
+            updates, new_state = self.tx.update(
                 grads,
                 state,
                 raw,
@@ -116,7 +122,21 @@ class _Optax:
             )
             new = optax.apply_updates(raw, updates)
             norm, nans = _grad_stats(grads)
-            return Step(new, state, raw, value, aux, norm, nans, jnp.array(False))
+            finished = jnp.array(False)
+            if accept is None:
+                return Step(new, new_state, raw, value, aux, norm, nans, finished)
+            ok = jnp.asarray(accept(value, aux, grads), dtype=bool)
+            return Step(
+                _tree_where(ok, new, raw),
+                _tree_where(ok, new_state, state),
+                raw,
+                value,
+                aux,
+                norm,
+                nans,
+                finished,
+                ok,
+            )
 
         self._step = _compile(one, 2, vmap_axes, jit)
         self._init = eqx.filter_vmap(self.tx.init) if vmap_axes else self.tx.init
@@ -637,6 +657,7 @@ def fit(
     mesh=None,
     key=None,
     jit: bool = True,
+    accept=None,
 ) -> Fit:
     """Fit a callable pytree by gradient descent through its output.
 
@@ -706,6 +727,10 @@ def fit(
         key: PRNG key; ``model`` gets ``key=fold_in(key, step)`` (one split per problem when
             ``batched``) and must accept a ``key`` keyword
         jit: compile the step (``False`` to debug the objective)
+        accept: ``accept(value, aux, grads) -> bool`` scalar, traced inside the jitted step (and
+            vmapped per problem when ``batched``). When it is false the update is dropped: the
+            parameters and optimizer state stay as they were and ``stepped`` is ``False`` for that
+            step. Not supported with an optimistix minimiser.
 
     Returns:
         :class:`Fit`
@@ -792,9 +817,11 @@ def fit(
                 "an optimistix minimiser is full-batch: data must be a fixed pytree, "
                 "not a stream of changing batches"
             )
+        if accept is not None:
+            raise ValueError("accept= is not supported with an optimistix minimiser")
         stepper = _Optimistix(optimizer, objective, jit, vmap_axes)
     else:
-        stepper = _Optax(optimizer, objective, jit, vmap_axes)
+        stepper = _Optax(optimizer, objective, jit, vmap_axes, accept)
 
     evaluate = _compile(objective, 1, vmap_axes, jit)
 
@@ -825,6 +852,7 @@ def fit(
         )
 
         start = 0
+        restored_states: dict = {}
         latest = checkpoint.latest() if checkpoint is not None and resume else None
         if checkpoint is not None and latest is not None:
             template = (raw, opt_state, np.asarray(0), key)
@@ -833,12 +861,18 @@ def fit(
             if mesh is not None:
                 raw, opt_state = _replicate(mesh, (raw, opt_state))
             source = _Source(data, start, mesh)
+            reader = getattr(checkpoint, "callback_states", None)
+            restored_states = reader(latest) if reader is not None else {}
 
         history = History()
         history.batched = batched
         callbacks = [history, *callbacks]
+        _check_validate_order(callbacks)
         state = FitState(raw, opt_state, start, key, theta_of, checkpoint)
-        for callback in callbacks:
+        for i, callback in enumerate(callbacks):
+            saved_state = restored_states.get(f"{type(callback).__name__}:{i}")
+            if saved_state is not None:
+                callback.load_state_dict(saved_state)
             callback.on_fit_start(state)
 
         saved = start if start else None
@@ -876,7 +910,7 @@ def fit(
                 and (step + 1) % checkpoint.every == 0
                 and np.all(np.isfinite(loss_value))
             ):
-                _save(checkpoint, step + 1, state)
+                _save(checkpoint, step + 1, state, callbacks)
                 saved = step + 1
             stopped = stop
             if stop or stepper.done(result):
@@ -889,7 +923,7 @@ def fit(
         raw = state.raw
 
         if checkpoint is not None and saved != state.step and _finite(raw):
-            _save(checkpoint, state.step, state)
+            _save(checkpoint, state.step, state, callbacks)
 
         value, aux = evaluate(raw, args=(static, batch, step_key(state.step)))
         history.record(raw, np.asarray(value, dtype=float), jax.device_get(aux))
@@ -938,8 +972,24 @@ def _finite(tree) -> bool:
     return all(bool(np.all(np.isfinite(np.asarray(x)))) for x in jtu.tree_leaves(tree))
 
 
-def _save(checkpoint, step, state):
-    checkpoint.save(step, state)
+def _takes_callbacks(save) -> bool:
+    try:
+        parameters = inspect.signature(save).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(p.name == "callbacks" or p.kind is p.VAR_KEYWORD for p in parameters)
+
+
+def _save(checkpoint, step, state, callbacks=()):
+    states = {}
+    for i, callback in enumerate(callbacks):
+        got = callback.state_dict()
+        if got is not None:
+            states[f"{type(callback).__name__}:{i}"] = got
+    if states and _takes_callbacks(checkpoint.save):
+        checkpoint.save(step, state, callbacks=states)
+    else:
+        checkpoint.save(step, state)
     if jax.process_count() > 1:
         from jax.experimental import multihost_utils
 

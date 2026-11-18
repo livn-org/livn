@@ -48,6 +48,7 @@ See the [worked example](/examples/fitting) for a runnable version.
 | `mesh` | see [Meshes](#meshes-and-multiple-nodes) |
 | `key` | PRNG key; the model gets `key=fold_in(key, step)` and must take a `key` keyword |
 | `jit` | compile the step; `False` to debug the objective |
+| `accept` | `accept(value, aux, grads) -> bool`, traced in the step (per problem when batched); false drops the update (`stepped` is `False`). Not for optimistix |
 
 `Fit` carries `.model`, `.theta` (constrained; `{group: value}` for groups), `.history`, `.state` and `.best` (the `Best` callback you passed, else `None`), and for batched fits `.problem(i)`. See [History](#history) for what `.history` holds.
 
@@ -170,12 +171,13 @@ for i in range(len(cells)):
 - `Every(n, fn)`: host evaluations on `Run`s
 - `EarlyStopping(monitor, patience, min_delta, min_rel_delta, stop_below, restore_best)`: stops when `monitor` (a key of the step metrics or of the aux, or a dotted path such as `"aux.mse"`) has not improved by `min_delta` and by the fraction `min_rel_delta` of the best for `patience` steps, or at once when it is at or below `stop_below`
 - `NaNGuard(on=("loss", "grad"))`: stops on a non-finite loss (`"loss"`) or gradient norm (`"grad"`; NaN gradient entries are left out of the norm, so this is an infinite one) and leaves the last good state as the checkpoint. `"nan_grad"` also stops on any NaN gradient entry; without it the steps that had one are counted in `nan_grad_steps`, as an optimizer with `optax.zero_nans` goes on through them
-- `Best`: best-so-far on the host, over every evaluated point; pass one and it is `Fit.best`
+- `Best(monitor, on_improve, validate)`: best-so-far on the host, over every evaluated point; pass one and it is `Fit.best`. `on_improve(step, value, state)` runs at each new best
+- `Validate(fn, every, start=True)`: calls `fn(state) -> dict` on the host (at start and every `every` steps) and puts it in `metrics["validation"]`; list it before `Best`/`EarlyStopping`, which can then monitor `"validation.<key>"` (keeping the validated `state.raw`) and take `validate=` to start from its baseline
 - `JsonlLogger(path)` and `History`
 
 A callback is any object with `on_fit_start(state)`, `on_step_end(step, state, metrics) -> stop?` and `on_fit_end(state)`; `metrics` has `step`, `loss`, `raw` (the evaluated point), `aux`, `grad_norm`, `nan_grads`, `stepped` and `batched`.
 
-`EqxCheckpointer(dir, every, keep)` writes `(theta, opt_state, step, key)` atomically plus a JSON manifest. `fit(..., checkpoint=dir)` resumes from the latest checkpoint and runs to `steps` in total; pipelines are addressed by step, so they resume with no iterator state.
+`EqxCheckpointer(dir, every, keep)` writes `(theta, opt_state, step, key)` atomically plus a JSON manifest. `fit(..., checkpoint=dir)` resumes from the latest checkpoint and runs to `steps` in total; pipelines are addressed by step, so they resume with no iterator state. A callback's `state_dict()` / `load_state_dict(d)` travel in the manifest under `callbacks` (`Best`, `EarlyStopping`, `NaNGuard`, `Validate`); a resumed fit reloads them instead of resetting. `Best.raw` is not stored and is `None` after a resume until it improves.
 
 ## Meshes and multiple nodes
 

@@ -22,6 +22,7 @@ from livn.optimization.train import (
     Every,
     JsonlLogger,
     NaNGuard,
+    Validate,
     group_chain,
 )
 
@@ -638,3 +639,232 @@ def test_default_params_train_python_float_leaves_of_a_medium():
         assert sigma == pytest.approx(0.5, rel=0.05), f"params={type(params)}"
         assert result.history["loss"][-1] < result.history["loss"][0] / 50
     assert where(model) == sigma0, "the model passed in is untouched"
+
+
+def _opt_leaves(state):
+    return [np.asarray(x) for x in jax.tree_util.tree_leaves(state)]
+
+
+def test_accept_none_is_identical_to_omitting_it():
+    kwargs = {"data": jnp.array([1.0]), "optimizer": optax.adam(0.3), "steps": 6}
+    plain = fit(_model(3.0), _quadratic, **kwargs)
+    accepted = fit(_model(3.0), _quadratic, accept=None, **kwargs)
+    np.testing.assert_array_equal(_x(plain), _x(accepted))
+    assert plain.history["steps"] == accepted.history["steps"] == 6
+
+
+def test_accept_false_drops_every_update():
+    result = fit(
+        _model(3.0),
+        _quadratic,
+        data=jnp.array([1.0]),
+        optimizer=optax.adam(0.3),
+        steps=5,
+        accept=lambda v, a, g: False,
+    )
+    np.testing.assert_array_equal(_x(result), [3.0])
+    assert result.history["steps"] == 0
+
+
+def test_accept_rejects_only_the_steps_it_flags_and_keeps_the_optimizer_state():
+    class Watch(Callback):
+        def __init__(self):
+            self.rows = []
+
+        def on_fit_start(self, state):
+            self.rows.append((_x_raw(state), _opt_leaves(state.opt_state), None))
+
+        def on_step_end(self, step, state, metrics):
+            self.rows.append(
+                (_x_raw(state), _opt_leaves(state.opt_state), bool(metrics["stepped"]))
+            )
+
+    def _x_raw(state):
+        return np.asarray(state.raw["x"])
+
+    def data(step):
+        return jnp.array([1.0, 1.0 if step in (1, 2) else 0.0])
+
+    def loss(out, batch):
+        return jnp.sum((out["x"] - batch[0]) ** 2), {"bad": batch[1]}
+
+    watch = Watch()
+    result = fit(
+        _model(3.0),
+        loss,
+        data=data,
+        optimizer=optax.adam(0.3),
+        steps=5,
+        callbacks=[watch],
+        accept=lambda v, a, g: a["bad"] <= 0,
+    )
+    assert [row[2] for row in watch.rows[1:]] == [True, False, False, True, True]
+    for before, after in zip(watch.rows, watch.rows[1:], strict=False):
+        same = np.array_equal(before[0], after[0]) and all(
+            np.array_equal(a, b) for a, b in zip(before[1], after[1], strict=True)
+        )
+        assert same == (not after[2])
+    assert result.history["steps"] == 3
+
+
+def test_accept_is_refused_with_an_optimistix_minimiser():
+    import optimistix as optx
+
+    with pytest.raises(ValueError, match="accept"):
+        fit(
+            _model(3.0),
+            _quadratic,
+            data=jnp.array([1.0]),
+            optimizer=optx.BFGS(rtol=1e-6, atol=1e-6),
+            steps=3,
+            accept=lambda v, a, g: True,
+        )
+
+
+def test_accept_is_evaluated_per_problem_of_a_batched_fit():
+    result = fit(
+        _Tree(x=jnp.array([[3.0], [8.0]])),
+        _quadratic,
+        data=jnp.array([[1.0], [1.0]]),
+        optimizer=optax.sgd(0.1),
+        steps=4,
+        batched=True,
+        accept=lambda v, a, g: v < 5.0,
+    )
+    np.testing.assert_array_equal(result.history["steps"], [4, 0])
+    np.testing.assert_array_equal(np.asarray(result.theta["x"])[1], [8.0])
+    assert float(np.asarray(result.theta["x"])[0, 0]) < 3.0
+
+
+def _validation_fit(callbacks, steps=40, **kwargs):
+    # trains towards 1 from 3; the validation target is 2, so it is best on the way past it
+    return fit(
+        _model(3.0),
+        _quadratic,
+        data=jnp.array([1.0]),
+        optimizer=optax.sgd(0.1),
+        steps=steps,
+        callbacks=callbacks,
+        **kwargs,
+    )
+
+
+def _val(state):
+    return {"loss": float((np.asarray(state.raw["x"])[0] - 2.0) ** 2)}
+
+
+def test_validate_runs_at_the_start_and_every_n_steps():
+    calls = []
+    validate = Validate(lambda s: calls.append(s.step) or _val(s), every=3)
+    seen = []
+
+    class Look(Callback):
+        def on_step_end(self, step, state, metrics):
+            seen.append((step, "validation" in metrics))
+
+    _validation_fit([validate, Look()], steps=7)
+    assert calls == [0, 3, 6]
+    assert [step for step, has in seen if has] == [2, 5]
+    assert [step for step, _ in validate.history] == [-1, 2, 5]
+    assert validate.last == validate.history[-1][1]
+    assert validate.baseline == validate.history[0][1]
+
+
+def test_best_on_validation_keeps_the_validated_point_and_reports_improvements():
+    validate = Validate(_val, every=1)
+    improved = []
+    best = Best(
+        "validation.loss",
+        on_improve=lambda step, value, state: improved.append((step, float(value))),
+        validate=validate,
+    )
+    _validation_fit([validate, best], steps=12)
+    values = [v for _, v in improved]
+    assert values == sorted(values, reverse=True)
+    assert len(set(values)) == len(values) > 1
+    assert best.loss == pytest.approx(min(v["loss"] for _, v in validate.history))
+    # the validated point is the state after the update at best.step, not the pre-update one
+    x = float(np.asarray(best.raw["x"])[0])
+    assert (x - 2.0) ** 2 == pytest.approx(float(best.loss))
+
+
+def test_early_stopping_on_validation_skips_unevaluated_steps_and_restores_the_best():
+    validate = Validate(_val, every=2)
+    stopper = EarlyStopping("validation.loss", patience=5, validate=validate)
+    result = _validation_fit([validate, stopper], steps=60)
+    assert stopper.stopped_step is not None
+    assert result.state.step < 60
+    best_loss = min(v["loss"] for _, v in validate.history)
+    assert (float(_x(result)[0]) - 2.0) ** 2 == pytest.approx(best_loss)
+    assert stopper.stopped_step - stopper.best_step >= 5
+
+
+def test_a_validate_listed_after_its_consumer_is_refused():
+    validate = Validate(_val, every=1)
+    with pytest.raises(ValueError, match="Validate"):
+        _validation_fit([Best("validation.loss", validate=validate), validate], steps=3)
+    with pytest.raises(ValueError, match="Validate"):
+        _validation_fit([EarlyStopping("validation.loss", validate=validate)], steps=3)
+
+
+def _stateful_callbacks():
+    validate = Validate(_val, every=2)
+    best = Best("validation.loss", validate=validate)
+    stopper = EarlyStopping(
+        "validation.loss", patience=100, restore_best=False, validate=validate
+    )
+    return validate, best, stopper
+
+
+def test_callback_state_travels_with_the_checkpoint_and_survives_a_resume(tmp_path):
+    validate, best, stopper = _stateful_callbacks()
+    _validation_fit(
+        [validate, best, stopper],
+        steps=7,
+        checkpoint=EqxCheckpointer(tmp_path, every=3),
+    )
+    manifest = EqxCheckpointer(tmp_path).manifest()
+    assert set(manifest["callbacks"]["7"]) == {
+        "Validate:1",
+        "Best:2",
+        "EarlyStopping:3",
+    }
+    json.dumps(manifest)
+
+    validate2, best2, stopper2 = _stateful_callbacks()
+    _validation_fit([validate2, best2, stopper2], steps=7, checkpoint=str(tmp_path))
+    assert best2.loss == pytest.approx(float(best.loss))
+    assert best2.step == best.step
+    assert stopper2.best == pytest.approx(stopper.best)
+    assert stopper2.best_step == stopper.best_step
+    assert [s for s, _ in validate2.history][: len(validate.history)] == [
+        s for s, _ in validate.history
+    ]
+
+    validate3, best3, stopper3 = _stateful_callbacks()
+    _validation_fit([validate3, best3, stopper3], steps=12, checkpoint=str(tmp_path))
+    assert best3.loss <= best.loss
+    assert best3.raw is None  # the best was reached before the checkpoint
+
+
+def test_a_checkpointer_without_callback_support_still_works(tmp_path):
+    inner = EqxCheckpointer(tmp_path, every=2)
+
+    class Old:
+        every = 2
+
+        def save(self, step, state):
+            inner.save(step, state)
+
+        def latest(self):
+            return inner.latest()
+
+        def restore(self, step, template):
+            return inner.restore(step, template)
+
+    best = Best()
+    _validation_fit([best], steps=5, checkpoint=Old())
+    assert inner.latest() == 5
+    assert "callbacks" not in inner.manifest()
+    resumed = _validation_fit([Best()], steps=8, checkpoint=Old())
+    assert resumed.state.step == 8

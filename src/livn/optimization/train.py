@@ -20,6 +20,7 @@ __all__ = [
     "History",
     "JsonlLogger",
     "NaNGuard",
+    "Validate",
     "data_mesh",
     "group_chain",
     "initialize",
@@ -129,9 +130,31 @@ class Callback:
     def on_fit_end(self, state: FitState) -> FitState | None:
         """Return a state to replace the one the fit ends on (``EarlyStopping`` restores here)."""
 
+    def state_dict(self) -> dict | None:
+        """JSON-serialisable state a checkpoint keeps for this callback (``None``: nothing)."""
+        return None
+
+    def load_state_dict(self, d: dict) -> None:
+        """Restore what :meth:`state_dict` returned; called before ``on_fit_start`` on a resume."""
+
+
+def _is_validation(monitor: str) -> bool:
+    return monitor.startswith("validation.")
+
 
 def _monitored(metrics: dict, monitor: str):
-    """``metrics[monitor]``, else ``metrics["aux"][monitor]``, else the dotted path ``"aux.mse"``."""
+    """``metrics[monitor]``, else ``metrics["aux"][monitor]``, else the dotted path ``"aux.mse"``.
+
+    A ``"validation.<key>"`` monitor reads :class:`Validate`'s result and is ``None`` on a step
+    without an evaluation.
+    """
+    if _is_validation(monitor):
+        value = metrics
+        for part in monitor.split("."):
+            if not isinstance(value, dict) or part not in value:
+                return None
+            value = value[part]
+        return np.asarray(value, dtype=float)
     if monitor in metrics:
         value = metrics[monitor]
     elif monitor in metrics["aux"]:
@@ -158,17 +181,109 @@ class Every(Callback):
         return None
 
 
+def _plain(value):
+    if isinstance(value, dict):
+        return {str(k): _plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(v) for v in value]
+    if isinstance(value, (np.ndarray, np.generic)):
+        return value.tolist()
+    return value
+
+
+class Validate(Callback):
+    """Call ``fn(state) -> dict`` on the host after the update ``every`` steps."""
+
+    def __init__(self, fn: Callable, every: int, start: bool = True):
+        self.fn, self.every, self.start = fn, int(every), start
+        self.baseline: dict | None = None
+        self.last: dict | None = None
+        self.history: list = []
+        self._restored = False
+
+    def on_fit_start(self, state):
+        restored, self._restored = self._restored, False
+        self.baseline = None
+        if not restored:
+            self.last, self.history = None, []
+        if self.start:
+            self.baseline = self.fn(state)
+            self.last = self.baseline
+            self.history.append((state.step - 1, self.baseline))
+
+    def on_step_end(self, step, state, metrics):
+        if (step + 1) % self.every == 0:
+            self.last = self.fn(state)
+            self.history.append((step, self.last))
+            metrics["validation"] = self.last
+        return
+
+    def state_dict(self):
+        return _plain({"last": self.last, "history": self.history})
+
+    def load_state_dict(self, d):
+        self.last = d.get("last")
+        self.history = [(int(s), v) for s, v in d.get("history", [])]
+        self._restored = True
+
+
+def _check_validate_order(callbacks):
+    for i, callback in enumerate(callbacks):
+        validate = getattr(callback, "validate", None)
+        if validate is None:
+            continue
+        if not any(validate is c for c in callbacks[:i]):
+            raise ValueError(
+                f"{type(callback).__name__}(validate=...) must come after its Validate callback "
+                "in `callbacks`, and that callback must be in the list"
+            )
+
+
+def _baseline_value(validate, monitor):
+    if validate is None or validate.baseline is None:
+        return None
+    return _monitored({"validation": validate.baseline}, monitor)
+
+
 class Best(Callback):
-    def __init__(self, monitor: str = "loss"):
+    """Track the best ``monitor`` value and the point it was reached at."""
+
+    def __init__(self, monitor: str = "loss", on_improve=None, validate=None):
         self.monitor = monitor
+        self.on_improve, self.validate = on_improve, validate
         self.loss: Any = None
         self.step: Any = None
         self.raw = None
         self._constrain = lambda raw: raw
+        self._restored = False
 
     def on_fit_start(self, state):
-        self.loss = self.step = self.raw = None
         self._constrain = state.constrain
+        restored, self._restored = self._restored, False
+        if restored:
+            return
+        self.loss = self.step = self.raw = None
+        value = _baseline_value(self.validate, self.monitor)
+        if value is not None:
+            value = np.where(np.isnan(value), np.inf, value)
+            self.loss, self.raw = value, state.raw
+            self.step = (
+                np.full(value.shape, state.step - 1) if value.ndim else state.step - 1
+            )
+            if self.on_improve is not None:
+                self.on_improve(state.step - 1, value, state)
+
+    def state_dict(self):
+        if self.loss is None:
+            return None
+        return _plain({"loss": self.loss, "step": self.step})
+
+    def load_state_dict(self, d):
+        def back(x):
+            return np.asarray(x) if isinstance(x, list) else x
+
+        self.loss, self.step, self.raw = back(d["loss"]), back(d["step"]), None
+        self._restored = True
 
     @property
     def theta(self):
@@ -189,11 +304,14 @@ class Best(Callback):
         import jax.tree_util as jtu
 
         value = _monitored(metrics, self.monitor)
+        if value is None:
+            return
         value = np.where(np.isnan(value), np.inf, value)
-        new = metrics["raw"]
+        new = state.raw if _is_validation(self.monitor) else metrics["raw"]
         if self.loss is None:
             self.loss, self.raw = value, new
             self.step = np.full(value.shape, step) if value.ndim else step
+            self._improved(step, value, state)
             return
 
         better = value < self.loss
@@ -201,6 +319,7 @@ class Best(Callback):
         if not value.ndim:
             if better:
                 self.raw, self.step = new, step
+                self._improved(step, value, state)
             return
 
         self.step = np.where(better, step, self.step)
@@ -209,8 +328,14 @@ class Best(Callback):
             mask = jnp.asarray(better).reshape(better.shape + (1,) * (jnp.ndim(n) - 1))
             return jnp.where(mask, n, o)
 
-        self.raw = jtu.tree_map(pick, new, self.raw)
+        self.raw = jtu.tree_map(pick, new, new if self.raw is None else self.raw)
+        if np.any(better):
+            self._improved(step, value, state)
         return
+
+    def _improved(self, step, value, state):
+        if self.on_improve is not None:
+            self.on_improve(step, value, state)
 
 
 class EarlyStopping(Callback):
@@ -222,7 +347,10 @@ class EarlyStopping(Callback):
         restore_best: bool = True,
         min_rel_delta: float = 0.0,
         stop_below: float | None = None,
+        validate=None,
     ):
+        self.validate = validate
+        self._restored = False
         self.monitor, self.patience = monitor, int(patience)
         self.min_delta, self.restore_best = float(min_delta), restore_best
         self.min_rel_delta = float(min_rel_delta)
@@ -233,15 +361,29 @@ class EarlyStopping(Callback):
         self._raw = None
 
     def on_fit_start(self, state):
-        self.best, self.best_step, self.stopped_step, self._raw = (
-            np.inf,
-            None,
-            None,
-            None,
-        )
+        restored, self._restored = self._restored, False
+        self.stopped_step = None
+        if restored:
+            return
+        self.best, self.best_step, self._raw = np.inf, None, None
+        value = _baseline_value(self.validate, self.monitor)
+        if value is not None:
+            self.best = float(np.mean(value))
+            self.best_step, self._raw = state.step - 1, state.raw
+
+    def state_dict(self):
+        return _plain({"best": float(self.best), "best_step": self.best_step})
+
+    def load_state_dict(self, d):
+        self.best, self.best_step = float(d["best"]), d["best_step"]
+        self._raw = None
+        self._restored = True
 
     def on_step_end(self, step, state, metrics):
-        value = float(np.mean(_monitored(metrics, self.monitor)))
+        value = _monitored(metrics, self.monitor)
+        if value is None:
+            return None
+        value = float(np.mean(value))
         if np.isfinite(self.best):
             needed = max(self.min_delta, self.min_rel_delta * abs(self.best))
             improved = value < self.best - needed
@@ -250,7 +392,7 @@ class EarlyStopping(Callback):
         reached = self.stop_below is not None and value <= self.stop_below
         if improved or (reached and value < self.best):
             self.best, self.best_step = value, step
-            self._raw = metrics["raw"]
+            self._raw = state.raw if _is_validation(self.monitor) else metrics["raw"]
         stale = step - (-1 if self.best_step is None else self.best_step)
         if reached or stale >= self.patience:
             self.stopped_step = step
@@ -286,11 +428,21 @@ class NaNGuard(Callback):
         self.reason = None
         self.nan_grad_steps = 0
         self._recent: deque = deque(maxlen=2)
+        self._restored = False
 
     def on_fit_start(self, state):
+        restored, self._restored = self._restored, False
         self.tripped_at = self.reason = None
-        self.nan_grad_steps = 0
+        if not restored:
+            self.nan_grad_steps = 0
         self._recent.clear()
+
+    def state_dict(self):
+        return {"nan_grad_steps": int(self.nan_grad_steps)}
+
+    def load_state_dict(self, d):
+        self.nan_grad_steps = int(d["nan_grad_steps"])
+        self._restored = True
 
     def on_step_end(self, step, state, metrics):
         loss = np.asarray(metrics["loss"], float)
@@ -466,6 +618,10 @@ class Checkpointer(Protocol):
     :meth:`~FitState.payload`); ``restore`` takes the payload layout
     ``(raw, opt_state, step, key)`` as ``template` and
     returns the same layout filled from disk.
+
+    A checkpointer may also take ``save(step, state, callbacks=None)`` and offer
+    ``callback_states(step) -> dict``. ``fit`` then stores and restores the callbacks' ``state_dict``
+    through them.
     """
 
     every: int
@@ -514,7 +670,7 @@ class EqxCheckpointer:
         steps = self.steps()
         return steps[-1] if steps else None
 
-    def save(self, step: int, state) -> None:
+    def save(self, step: int, state, callbacks: dict | None = None) -> None:
         import equinox as eqx
         import jax
 
@@ -530,11 +686,18 @@ class EqxCheckpointer:
         steps = self.steps()
         for old in steps[: -self.keep] if self.keep > 0 else []:
             self._path(old).unlink(missing_ok=True)
+        kept = self.steps()
         manifest = {
             "latest": int(step),
-            "steps": self.steps(),
+            "steps": kept,
             "document": self.document,
         }
+        states = ((self.manifest() or {}).get("callbacks")) or {}
+        if callbacks:
+            states[str(int(step))] = callbacks
+        states = {k: v for k, v in states.items() if int(k) in kept}
+        if states:
+            manifest["callbacks"] = states
         tmp = self.directory / "manifest.json.tmp"
         tmp.write_text(json.dumps(manifest, indent=2))
         os.replace(tmp, self.directory / "manifest.json")
@@ -543,6 +706,9 @@ class EqxCheckpointer:
         import equinox as eqx
 
         return eqx.tree_deserialise_leaves(self._path(step), template)
+
+    def callback_states(self, step: int) -> dict:
+        return ((self.manifest() or {}).get("callbacks") or {}).get(str(int(step)), {})
 
     def manifest(self) -> dict | None:
         path = self.directory / "manifest.json"
