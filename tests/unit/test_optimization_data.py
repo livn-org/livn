@@ -730,3 +730,39 @@ def test_worker_processes_read_the_store_the_parent_chose(detected_session):
     pipe = _pipe(detected_session, sorting="live")
     workers = _pipe(detected_session, sorting="live", processes=2)
     _same(next(workers.iterate(1, 0, 1)), pipe.batch(1))
+
+
+@pytest.mark.parametrize("mode", ["random", "grid", "head", "tail"])
+def test_frame_interval_holdout_includes_gap_prediction_and_filter_margins(
+    make_recording, make_pipe, mode
+):
+    signal = np.zeros((C, T), np.float32)
+    signal[:, 1000:] = 1
+    rec = make_recording(signal=signal)
+
+    def batch(ranges):
+        return make_pipe(
+            rec,
+            starts=mode,
+            fs=5000,
+            context=5,
+            gap=1,
+            prediction=2,
+            frame_intervals={(0, 0): ranges},
+        ).batch(0)
+
+    train = batch([(0, 320), (500, 1000)])
+    assert np.all(
+        (train.start + 80 <= 320) | ((train.start >= 500) & (train.start + 80 <= 1000))
+    )
+    assert not train.prediction.any()
+    assert np.all(batch([(1000, T)]).start >= 1000)
+
+
+def test_policy_cannot_draw_outside_frame_intervals(make_pipe):
+    pipe = make_pipe(
+        frame_intervals={(0, 0): [(500, 1000)]},
+        window_policy=lambda item, rng, rec: dict(item, start=100),
+    )
+    with pytest.raises(ValueError, match="outside the valid spans"):
+        pipe.batch(0)

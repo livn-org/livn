@@ -73,6 +73,8 @@ def loss(model, window, key):
     return mse(pred, window.context)
 ```
 
+For a chronological holdout within a segment, pass native frame intervals keyed by (recording index, segment index). For example, use `frame_intervals={(0, 0): [(0, cut)]}` for training and `frame_intervals={(0, 0): [(cut, end)]}` for validation. The context, gap and prediction must fit inside one interval and one valid span. Preprocessing pads at the boundary. The restriction also applies to custom starts and fitted normalisation statistics.
+
 ## Parameters
 
 `params` denotes the trainable variables and how they are written back into `model`:

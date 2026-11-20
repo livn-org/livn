@@ -175,6 +175,7 @@ class _Windower:
         preprocess_at="native",
         sortings=None,
         signal=True,
+        frame_intervals=None,
     ):
         self.recordings = recordings
         self.read_signal = signal
@@ -187,6 +188,7 @@ class _Windower:
         self.max_spikes = max_spikes
         self.unit_ids = unit_ids
         self.channel_units = False
+        self.frame_intervals = frame_intervals
         self.policy = policy
         self.preprocess_at = preprocess_at
         self.sortings = [None] * len(recordings) if sortings is None else list(sortings)
@@ -224,6 +226,8 @@ class _Windower:
     def spans(self, r, segment) -> np.ndarray:
         spans = np.asarray(self.recordings[r].valid_spans(segment), np.int64)
         spans = spans.reshape(-1, 2)
+        if self.frame_intervals is not None:
+            spans = _intersect(spans, self.frame_intervals.get((r, segment), []))
         if self.spikes:
             cover = self.store(r, segment).cover
             if cover is not None:
@@ -287,6 +291,8 @@ class _Windower:
         return item
 
     def _check(self, item) -> None:
+        if item["length"] != self.total * self.q:
+            raise ValueError("window_policy changed the window length")
         start = item["start"]
         spans = self.spans(item["recording"], item["segment"])
         inside = (spans[:, 0] <= start) & (start + item["length"] <= spans[:, 1])
@@ -306,9 +312,17 @@ class _Windower:
         seg, start, length = item["segment"], item["start"], item["length"]
         have = rec.num_samples(seg)
         lo, hi = start - self.pad, start + length + self.pad
-        x = rec.read(seg, max(lo, 0), min(hi, have) - max(lo, 0)).astype(np.float64)
-        if lo < 0 or hi > have:
-            x = np.pad(x, ((max(-lo, 0), max(hi - have, 0)), (0, 0)), mode="edge")
+        lower, upper = 0, have
+        if self.frame_intervals is not None:
+            lower, upper = next(
+                (a, b)
+                for a, b in self.spans(item["recording"], seg)
+                if a <= start and start + length <= b
+            )
+        left, right = max(lo, lower), min(hi, upper)
+        x = rec.read(seg, left, right - left).astype(np.float64)
+        if lo < left or hi > right:
+            x = np.pad(x, ((left - lo, hi - right), (0, 0)), mode="edge")
         good = self._good[item["recording"]]
         if not self.mask_bad:
             # unmasked, a bad channel is a channel like any other
@@ -652,6 +666,11 @@ def _resolve_stats(
                 windower.per_segment,
                 _identity(recordings, selected),
             ]
+            + (
+                [[windower.frame_intervals[k].tolist() for k in selected]]
+                if windower.frame_intervals is not None
+                else []
+            )
             + ([windower.sortings] if any(windower.sortings) else [])
         )
         path = cache / f"stats-{key[:16]}.json"
@@ -719,6 +738,7 @@ def windows(
     threads: int = 8,
     processes: int = 0,
     window_policy: Callable | None = None,
+    frame_intervals: Mapping[tuple[int, int], Sequence[tuple[int, int]]] | None = None,
     preprocess_at: str = "native",
 ) -> Windows:
     """Windows of one or several recordings as step-addressed batches, :class:`Windows`.
@@ -776,6 +796,10 @@ def windows(
         threads: Reader threads (grain ``ReadOptions``); numpy and scipy release the GIL
         processes: Worker processes (grain ``mp_prefetch``); 0 keeps the work in threads. The
             recordings must pickle.
+        frame_intervals: Optional allowed half-open native-frame intervals keyed by
+            (recording index, segment index). Omitted segments are excluded. Supply
+            sorted, disjoint intervals; even adjacent intervals are separate windows'
+            boundaries. Applies after split selection and before sampling.
         window_policy: ``f(item, rng, recording) -> item``, called after the default start is
             drawn and before reading. ``item`` is a dict with ``recording``, ``segment``,
             ``slot``, ``start`` and ``length`` (native samples); the policy may return other
@@ -842,7 +866,38 @@ def windows(
     slots = 1 if starts in ("head", "tail") else per_segment
 
     selected = _select(recordings, split)
-    entries = [(r, s, k) for r, s in selected for k in range(slots)]
+    allowed = None
+    if frame_intervals is not None:
+        allowed = {}
+        for (r, s), ranges in frame_intervals.items():
+            if not (0 <= r < len(recordings) and 0 <= s < recordings[r].segments):
+                raise ValueError(
+                    f"unknown recording/segment {(r, s)} in frame_intervals"
+                )
+            bounds = np.asarray(ranges)
+            if bounds.shape == (0,):
+                continue
+            if (
+                bounds.ndim != 2
+                or bounds.shape[1] != 2
+                or bounds.dtype.kind not in "iu"
+            ):
+                raise ValueError("frame_intervals must contain integer frame pairs")
+            lo, hi = bounds.T
+            if (
+                np.any(lo < 0)
+                or np.any(hi > recordings[r].num_samples(s))
+                or np.any(lo >= hi)
+                or np.any(lo[1:] < hi[:-1])
+            ):
+                raise ValueError(
+                    "frame_intervals must be sorted disjoint ranges inside the segment"
+                )
+            if (r, s) in selected and len(bounds):
+                allowed[r, s] = bounds.copy()
+        selected = [key for key in selected if key in allowed]
+        if not selected:
+            raise ValueError("no segments selected by frame_intervals and split")
     total = context_samples + gap_samples + prediction_samples
 
     if sorting is not None and not spikes:
@@ -879,6 +934,7 @@ def windows(
         preprocess_at=preprocess_at,
         sortings=sortings,
         signal=trace,
+        frame_intervals=allowed,
     )
     if spikes:
         stores = [windower.store(r, s) for r, s in selected]
@@ -910,6 +966,7 @@ def windows(
                 f"segment {s} of recording {r} has {recordings[r].num_samples(s)} samples, "
                 f"and no valid span of them{covered} holds one window ({total * q})"
             )
+    entries = [(r, s, k) for r, s in selected for k in range(slots)]
     fingerprint = (
         f"decim={q};fs={target:g}"
         + (
