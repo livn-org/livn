@@ -1125,6 +1125,7 @@ def _solve_network(
     diffusion,
     mechanisms=(),
     inputs=None,
+    spike_clamp=None,
 ):
     n_cells = int(network.shape[-1])
     n_spiking = len(spike_cells)
@@ -1256,6 +1257,46 @@ def _solve_network(
             [jnp.stack(columns_out, axis=-1), carried], axis=-1
         )
 
+    if spike_clamp is not None:
+        if not (
+            layout.escape and config.vectorized_events and not diffusion and not columns
+        ):
+            raise ValueError(
+                "partial spike forcing needs a vectorised escape network with spike-only recording"
+            )
+        local, begin, end, schedule = spike_clamp
+
+        natural_drift, natural_condition, natural_transition = (
+            drift,
+            cond_fn,
+            transition,
+        )
+        y0 = jnp.pad(y0, ((0, 0), (0, 1)))
+
+        def active(t):
+            return local & (t >= begin) & (t < end)
+
+        def drift(t, y, args):
+            dy = natural_drift(t, y[:, :-1], args)
+            dy = dy.at[:, layout.s].set(jnp.where(active(t), 0, dy[:, layout.s]))
+            return jnp.pad(dy, ((0, 0), (0, 1)))
+
+        def cond_fn(t, y, args, **kwargs):
+            values = natural_condition(t, y[:, :-1], args)
+            next_t = schedule[jnp.arange(n_cells), y[:, -1].astype(jnp.int32)]
+            return values.at[:n_spiking].set(
+                jnp.where(
+                    active(t)[spike_index],
+                    (t - next_t)[spike_index],
+                    values[:n_spiking],
+                )
+            )
+
+        def transition(t, y, args, mask, key):
+            resume, post = natural_transition(t, y[:, :-1], args, mask, key)
+            cursor = y[:, -1] + (active(t) & widen(mask[:n_spiking]))
+            return resume, jnp.column_stack((post, cursor))
+
     extra_terms = None
     if diffusion:
         key, bm_key = jr.split(key)
@@ -1296,7 +1337,7 @@ def _solve_network(
     return (
         ys,
         spike_times,
-        solution.y1,
+        solution.y1[:, : layout.size],
         cells | solution.saturated,
         cells | solution.solver_ok,
     )
