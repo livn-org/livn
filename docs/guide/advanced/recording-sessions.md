@@ -118,7 +118,24 @@ rsf.preparations(recordings)      # sessions grouped by preparation, ordered by 
 recording.prep                    # the preparation of one session
 ```
 
-`epochs=[...]` names spans of the session. Each epoch is `{"key" or "item", "frame" or "start", "end_frame" or "end", "kind", "text", "parent", "programs", "origin"}`, with `kind` one of `protocol`, `block`, `baseline`, `spontaneous` or `spot_mapping`, `parent` the key or item of the epoch it lies within, and `programs` indices into `programs=`. To write one run into several sessions, pass the same `item` in each; `rsf.join_epochs(recordings)` reads it back as one. `recording.epochs()` and `recording.epoch_of(index)` read a single session.
+`epochs=[...]` names spans of the session. Each epoch is `{"key" or "item", "frame" or "start", "end_frame" or "end", "kind", "text", "parent", "programs", "origin"}`, with `kind` one of `protocol`, `block`, `baseline`, `spontaneous`, `spot_mapping` or `trial` (a trial with no stimulation record of its own, such as a sham), `parent` the key or item of the epoch it lies within, and `programs` indices into `programs=`. To write one run into several sessions, pass the same `item` in each; `rsf.join_epochs(recordings)` reads it back as one. `recording.epochs()` and `recording.epoch_of(index)` read a single session.
+
+## Labels
+
+A program, an epoch and a program's single events can carry `labels`: a flat `{name: value}` of strings, numbers, booleans or nulls saying what they were for, such as the block, the trial, the condition or the role of a pulse.
+
+```python
+store(..., programs=[{"inputs": x, "inputs_dt": 0.1,
+                      "labels": {"trial": 12, "level": 0.4, "width_ms": 20},
+                      "event_labels": {0: {"role": "conditioning"}, 2: {"role": "test"}}}],
+      epochs=[{"key": "ladder", "frame": 0, "kind": "block", "labels": {"block": "ladder", "held_out": False}}])
+
+recording.labels(0)              # the epochs' labels, then the record's
+recording.labels(0, event=2)     # ... then the event's
+recording.stim_event_labels()    # one dict per stim_events() row, in its order
+```
+
+Labels merge from the outside in: the widest epoch first, then narrower ones, the record, and the event, each overriding a name it repeats.
 
 ## Ground truth
 

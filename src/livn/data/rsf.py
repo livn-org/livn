@@ -95,6 +95,8 @@ PROGRAM_KEYS = (
     "origin",
     "members",
     "started_at",
+    "labels",
+    "event_labels",
 )
 RECORD_MEMBERS = (
     "started_at",
@@ -107,11 +109,13 @@ RECORD_MEMBERS = (
     "origin",
     "planned",
     "index",
+    "labels",
+    "event_labels",
 )
 CHANNEL_SOURCES = {"light": "livn PatternedLight", "electrode": "livn MEA"}
 
 EPOCH = "epoch"
-EPOCH_KINDS = ("protocol", "block", "baseline", "spontaneous", "spot_mapping")
+EPOCH_KINDS = ("protocol", "block", "baseline", "spontaneous", "spot_mapping", "trial")
 EPOCH_KEYS = (
     "key",
     "item",
@@ -125,6 +129,7 @@ EPOCH_KEYS = (
     "programs",
     "origin",
     "author",
+    "labels",
 )
 NOTE_KEYS = ("text", "frame", "author", "at", "item")
 PREP_KEYS = ("id", "label", "kind", "species", "age", "expression", "models")
@@ -303,7 +308,11 @@ def store(
               "seed"}``), by default the policy's;
             - ``members``, ``{"<producer>": {...}}``, other producers' members of the record;
             - ``started_at``, the record's timestamp, by default the session's start plus
-              the program's start.
+              the program's start;
+            - ``labels``, ``{name: value}`` (string, number, boolean or null): what the
+              program was for, e.g. its trial and condition;
+            - ``event_labels``, ``{event: {name: value}}`` for events of its plan, e.g. the
+              role of each pulse of a pair.
 
             Each record states its plan (``planned``), its channels by site ``name`` and
             ``source``, and its delivered rows; a channel is driven by one program at a
@@ -316,10 +325,11 @@ def store(
         notes: ``[{"text", "frame", "author", "at", "item"}]``, each a ``note`` version
         epochs: The session's named spans, ``[{"key" or "item", "frame" or "start" (ms),
             "end_frame" or "end" (ms), "kind", "text", "parent", "programs", "origin",
-            "author"}]``. ``key`` names an epoch within this call and is minted into an
+            "author", "labels"}]``. ``key`` names an epoch within this call and is minted into an
             ``item``; a given ``item`` (32 hex digits) is kept, so one run's epoch can be
             written into several sessions. ``parent`` is a key or an item, ``programs``
-            indices into ``programs`` (``None`` when not said, ``[]`` for none)
+            indices into ``programs`` (``None`` when not said, ``[]`` for none), ``labels``
+            as a program's, inherited by the records the epoch holds
         populations: Write each source's population into ``simulation.json``
         expression: Each source's opsin expression in ``simulation.json``: ``True`` takes
             it from the model's opsin configuration (its conductance, ``0`` in a population
@@ -1451,6 +1461,53 @@ def _check_members(members, what: str) -> dict:
     return out
 
 
+LABEL_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*")
+
+
+def _check_labels(labels, what: str) -> dict:
+    """``labels``: a flat mapping of names to a string, number, boolean or null."""
+    if labels is None:
+        return {}
+    if not isinstance(labels, Mapping):
+        raise RSFError(f"{what}'s labels are {{name: value}}, not {labels!r}")
+    out = {}
+    for name, value in labels.items():
+        if not isinstance(name, str) or not LABEL_KEY.fullmatch(name):
+            raise RSFError(f"{what}'s label name {name!r} is not an identifier")
+        if isinstance(value, np.generic):
+            value = value.item()
+        if isinstance(value, float) and not math.isfinite(value):
+            raise RSFError(f"{what}'s label {name!r} is not finite")
+        if value is not None and not isinstance(value, str | bool | int | float):
+            raise RSFError(
+                f"{what}'s label {name!r} is a string, number, boolean or null, "
+                f"not {value!r}"
+            )
+        out[name] = value
+    return out
+
+
+def _check_event_labels(event_labels, events, what: str) -> dict:
+    """``event_labels``: ``{event: labels}`` for events of the program's plan, keyed by
+    the event's index as a string."""
+    if event_labels is None:
+        return {}
+    if not isinstance(event_labels, Mapping):
+        raise RSFError(
+            f"{what}'s event_labels are {{event: {{name: value}}}}, not {event_labels!r}"
+        )
+    out = {}
+    for event, labels in event_labels.items():
+        if isinstance(event, str) and event.isdigit():
+            event = int(event)
+        if isinstance(event, bool) or not isinstance(event, int | np.integer):
+            raise RSFError(f"{what}'s event_labels are keyed by event, not {event!r}")
+        if events is not None and int(event) not in events:
+            raise RSFError(f"{what}'s event_labels name event {event}, not in its plan")
+        out[str(int(event))] = _check_labels(labels, f"{what}'s event {event}")
+    return out
+
+
 def _plan_programs(io, programs, dt: float, n_frames: int):
     """Each program's plan and delivered rows, and the delivered input on the frame grid
     over every stimulating channel, in the devices' input units (for the projection)."""
@@ -1592,6 +1649,7 @@ def _plan_programs(io, programs, dt: float, n_frames: int):
             "start_frame": start_frame,
             "origin": origin,
             "members": _check_members(entry.get("members"), what),
+            "labels": _check_labels(entry.get("labels"), what),
             "started_at": started_at,
             "livn": {
                 "channels": [_id_value(ids[c]) for c in columns],
@@ -1608,6 +1666,9 @@ def _plan_programs(io, programs, dt: float, n_frames: int):
             inside = rows < len(full)
             block = series[start_frame:, offsets[index] : offsets[index + 1]]
             block[inside] = full[rows[inside]]
+            plan["event_labels"] = _check_event_labels(
+                entry.get("event_labels"), set(), what
+            )
             plans.append(plan)
             continue
 
@@ -1637,6 +1698,11 @@ def _plan_programs(io, programs, dt: float, n_frames: int):
             ids=record_ids,
             planned=planned,
             delivered=delivered,
+            event_labels=_check_event_labels(
+                entry.get("event_labels"),
+                set(np.asarray(planned["event"]).tolist()),
+                what,
+            ),
         )
         plans.append(plan)
 
@@ -1718,8 +1784,18 @@ def _program_records(plans, masked, started_at: str, dt: float, channel_devices)
             session_start + timedelta(milliseconds=plan["start_frame"] * dt)
         ).astimezone(UTC).isoformat(timespec="microseconds")
         record: dict[str, Any] = {"started_at": stamp}
+        labelled = {
+            k: v
+            for k, v in (
+                ("labels", plan["labels"]),
+                ("event_labels", plan["event_labels"]),
+            )
+            if v
+        }
         if plan["kind"] is None:
-            records.append({**record, PRODUCER: plan["livn"], **plan["members"]})
+            records.append(
+                {**record, PRODUCER: plan["livn"], **plan["members"], **labelled}
+            )
             planned_tables.append(None)
             continue
         channels = [
@@ -1742,6 +1818,7 @@ def _program_records(plans, masked, started_at: str, dt: float, channel_devices)
             record["origin"] = plan["origin"]
         record[PRODUCER] = plan["livn"]
         record.update(plan["members"])
+        record.update(labelled)
         records.append(record)
         planned_tables.append(plan["planned"])
         rows = plan["delivered"]
@@ -2050,6 +2127,7 @@ def _epoch_versions(
             programs = sorted(indices)
         origin = epoch.get("origin")
         origin = None if origin is None else _check_origin(origin, what)
+        labels = _check_labels(epoch.get("labels"), what)
         version = _note_version(item, text, instant, zone)
         version.update(
             author=_note_author(epoch.get("author"), what),
@@ -2060,6 +2138,8 @@ def _epoch_versions(
             programs=programs,
             origin=origin,
         )
+        if labels:
+            version["labels"] = labels
         spans[item] = (what, frame, end)
         out.append(version)
     for version in out:
@@ -3972,7 +4052,8 @@ class RsfRecording:
         """The ``stimulation`` attribute of every ``rsf/stimulation/<NNNN>/``, in start order,
         each as written plus its ``index`` (the ``program`` of its ``stim_events`` rows). A
         record with ``kind`` has the neutral members; the producer's own member (``livn``,
-        ...) is opaque to every other reader."""
+        ...) is opaque to every other reader. ``labels`` and ``event_labels``, when present,
+        name what the record and its events were for (:meth:`labels`)."""
         root = os.path.join(self._documents, "stimulation")
         if not _isdir(root, storage=self._storage):
             return []
@@ -4265,7 +4346,7 @@ class RsfRecording:
         """The session's named spans, the current version of each ``rsf/notes/epoch/``
         item that is not removed, ordered by ``frame`` and then ``end_frame``: ``{"item",
         "frame", "end_frame", "kind", "text", "parent", "programs", "origin", "open",
-        "parent_missing", "author", "at", "carried_from"}``.
+        "parent_missing", "author", "at", "carried_from", "labels"}``.
 
         An epoch still open in a complete store ends at the store's length, with ``open``
         ``True``; in a growing one ``end_frame`` is ``None``. A ``parent`` that names no
@@ -4303,6 +4384,7 @@ class RsfRecording:
                     "author": version["author"],
                     "at": version["at"],
                     "carried_from": _string(version.get("carried_from")),
+                    "labels": dict(version.get("labels") or {}),
                 }
             )
         return sorted(
@@ -4321,8 +4403,11 @@ class RsfRecording:
         rows = self.stim_events()
         frames = rows.frame[rows.program == int(index)]
         first = int(frames.min()) if len(frames) else None
+        return self._epochs_holding(int(index), first, self.epochs())
+
+    def _epochs_holding(self, index: int, first: int | None, epochs) -> list[dict]:
         out = []
-        for epoch in self.epochs():
+        for epoch in epochs:
             if epoch["programs"] is not None:
                 if int(index) in epoch["programs"]:
                     out.append(epoch)
@@ -4335,6 +4420,48 @@ class RsfRecording:
             ):
                 out.append(epoch)
         return out
+
+    def labels(self, index: int, event: int | None = None) -> dict:
+        """The labels of the stimulation record ``index`` (of its ``event``, when given),
+        merged from the outside in: the epochs it belongs to (:meth:`epoch_of`, the widest
+        first), the record's ``labels``, then the event's in ``event_labels``. An inner
+        name overrides an outer one."""
+        record = next(
+            (r for r in self.stimulation_records() if r["index"] == int(index)), None
+        )
+        if record is None:
+            raise IndexError(f"{self.path} has no stimulation record {index}")
+        rows = self.stim_events()
+        frames = rows.frame[rows.program == int(index)]
+        first = int(frames.min()) if len(frames) else None
+        out = _merged_labels(self._epochs_holding(int(index), first, self.epochs()))
+        out.update(record.get("labels") or {})
+        if event is not None:
+            out.update((record.get("event_labels") or {}).get(str(int(event)), {}))
+        return out
+
+    def stim_event_labels(self, resolve: bool = True) -> list[dict]:
+        """:meth:`labels` of each row of :meth:`stim_events` (``resolve`` as there), in the
+        rows' order: one dict per row, empty when nothing labels it."""
+        rows = self.stim_events(resolve=resolve)
+        if not len(rows):
+            return []
+        records = {r["index"]: r for r in self.stimulation_records()}
+        epochs = self.epochs()
+        base: dict[int, dict] = {}
+        for program in np.unique(rows.program).tolist():
+            frames = rows.frame[rows.program == program]
+            first = int(frames.min()) if len(frames) else None
+            out = _merged_labels(self._epochs_holding(program, first, epochs))
+            out.update((records.get(program) or {}).get("labels") or {})
+            base[program] = out
+        return [
+            {
+                **base[p],
+                **((records.get(p) or {}).get("event_labels") or {}).get(str(e), {}),
+            }
+            for p, e in zip(rows.program.tolist(), rows.event.tolist(), strict=True)
+        ]
 
     def sources(self) -> dict | None:
         """The simulated sources of ``simulation.json``: ``{"ids", "coordinates_um",
@@ -5136,12 +5263,27 @@ def preparations(recordings) -> dict[tuple[str | None, str], list[RsfRecording]]
     return {key: sorted(group, key=order) for key, group in out.items()}
 
 
+def _merged_labels(epochs) -> dict:
+    """The epochs' labels merged from the widest span in (an inner epoch overrides)."""
+    out: dict = {}
+    for epoch in sorted(
+        epochs,
+        key=lambda e: (
+            -(math.inf if e["end_frame"] is None else e["end_frame"] - e["frame"]),
+            e["frame"],
+        ),
+    ):
+        out.update(epoch.get("labels") or {})
+    return out
+
+
 def join_epochs(recordings) -> list[dict]:
     """The epochs of several sessions joined by ``item``: one run that spans sessions
     (the days of a preparation, the members of a group) is one entry, ``{"item", "kind",
-    "text", "parent", "origin", "sessions": [{"recording_id", "frame", "end_frame",
-    "programs", "open"}]}``, sessions in the order given. ``kind``, ``text``, ``parent``
-    and ``origin`` are those of the first session that has the epoch."""
+    "text", "parent", "origin", "labels", "sessions": [{"recording_id", "frame",
+    "end_frame", "programs", "open"}]}``, sessions in the order given. ``kind``, ``text``,
+    ``parent``, ``origin`` and ``labels`` are those of the first session that has the
+    epoch."""
     joined: dict[str, dict] = {}
     for recording in recordings:
         recording_id = recording.record.get("recording_id")
@@ -5154,6 +5296,7 @@ def join_epochs(recordings) -> list[dict]:
                     "text": epoch["text"],
                     "parent": epoch["parent"],
                     "origin": epoch["origin"],
+                    "labels": epoch["labels"],
                     "sessions": [],
                 },
             )
@@ -5816,6 +5959,8 @@ def _epoch(version: dict) -> bool:
         not isinstance(programs, list)
         or not all(isinstance(p, int) and not isinstance(p, bool) for p in programs)
     ):
+        return False
+    if "labels" in version and not isinstance(version["labels"], dict):
         return False
     return version["origin"] is None or isinstance(version["origin"], dict)
 

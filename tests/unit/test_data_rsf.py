@@ -2302,6 +2302,101 @@ def test_a_run_epoch_over_two_blocks_joins_across_sessions(tmp_path):
     assert len(joined) == 4  # the run once, and the three blocks
 
 
+def test_labels_merge_from_the_widest_epoch_to_the_event(tmp_path):
+    programs = _two_light_programs()
+    programs[0]["labels"] = {"trial": 1, "role": "single"}
+    programs[1]["labels"] = {"trial": 2, "block": "inner"}
+    programs[1]["event_labels"] = {0: {"role": "first"}, "2": {"role": "second"}}
+    epochs = [
+        {
+            "key": "run",
+            "frame": 0,
+            "end_frame": N_FRAMES,
+            "kind": "protocol",
+            "labels": {"block": "outer", "held_out": False, "level": np.float32(0.5)},
+        },
+        {
+            "key": "late",
+            "frame": 10,
+            "end_frame": N_FRAMES,
+            "kind": "block",
+            "parent": "run",
+            "programs": [1],
+            "labels": {"held_out": True},
+        },
+    ]
+    rec = rsf.RsfRecording(
+        store(
+            _run(),
+            str(tmp_path / "s"),
+            _Env(io=_light_io(470.0)),
+            programs=programs,
+            epochs=epochs,
+        )
+    )
+    assert [e["labels"] for e in rec.epochs()] == [
+        {"block": "outer", "held_out": False, "level": 0.5},
+        {"held_out": True},
+    ]
+    assert rec.labels(0) == {
+        "block": "outer",
+        "held_out": False,
+        "level": 0.5,
+        "trial": 1,
+        "role": "single",
+    }
+    assert rec.labels(1) == {
+        "block": "inner",
+        "held_out": True,
+        "level": 0.5,
+        "trial": 2,
+    }
+    assert rec.labels(1, event=2)["role"] == "second"
+    assert "role" not in rec.labels(1, event=1)
+    rows = rec.stim_events()
+    labelled = rec.stim_event_labels()
+    assert len(labelled) == len(rows)
+    for program, event, labels in zip(
+        rows.program.tolist(), rows.event.tolist(), labelled, strict=True
+    ):
+        assert labels == rec.labels(program, event=event)
+    assert rsf.join_epochs([rec])[0]["labels"]["block"] == "outer"
+
+
+def test_labels_that_are_not_flat_or_name_no_event_are_refused(tmp_path):
+    def attempt(name, **program):
+        store(
+            _run(),
+            str(tmp_path / name),
+            _Env(io=_light_io(470.0)),
+            programs=[{**_two_light_programs()[0], **program}],
+        )
+
+    with pytest.raises(RSFError, match="string, number, boolean or null"):
+        attempt("nested", labels={"cell": [0.4, 20]})
+    with pytest.raises(RSFError, match="not an identifier"):
+        attempt("name", labels={"two words": 1})
+    with pytest.raises(RSFError, match="not finite"):
+        attempt("nan", labels={"level": float("nan")})
+    with pytest.raises(RSFError, match="not in its plan"):
+        attempt("event", event_labels={99: {"role": "test"}})
+    with pytest.raises(RSFError, match="keyed by event"):
+        attempt("key", event_labels={"first": {"role": "test"}})
+
+
+def test_a_record_without_labels_reads_empty(tmp_path):
+    rec = rsf.RsfRecording(
+        store(
+            _run(),
+            str(tmp_path / "s"),
+            _Env(io=_light_io(470.0)),
+            programs=_two_light_programs(),
+        )
+    )
+    assert "labels" not in rec.stimulation_records()[0]
+    assert rec.labels(0) == {} and all(d == {} for d in rec.stim_event_labels())
+
+
 def test_epochs_that_are_not_spans_of_the_session_are_refused(tmp_path):
     def attempt(name, epochs, **kwargs):
         store(_run(), str(tmp_path / name), _Env(), epochs=epochs, **kwargs)
