@@ -703,6 +703,52 @@ def test_a_selector_names_one_store_of_each_recording(detected_session):
         )
 
 
+def test_a_list_of_stores_is_windowed_as_one_inside_their_coverages(
+    tmp_path, physical_session
+):
+    pytest.importorskip("zarr", minversion="3")
+    path = physical_session(str(tmp_path / "rearmed"), n_frames=T)
+    # one live store per re-arm: [0, 8000) and [10000, 20000), nothing in between
+    first = [(f, "a-001") for f in range(100, 8_000, 500)]
+    second = [(f, "a-000") for f in range(10_200, T, 500)]
+    a = _channel_store(path, "live-1", first, coverage=[(0, 8_000)])
+    b = _channel_store(path, "live-2", second, coverage=[(10_000, T)])
+    pipe = _pipe(
+        path, sorting=["live-1", b], starts="grid", per_segment=40, batch_size=40
+    )
+    assert pipe._windower.sortings == [(a, b)]
+    batch = pipe.batch(0)
+    start = np.asarray(batch.start)
+    assert ((start + 50 <= 8_000) | (start >= 10_000)).all()
+    assert (start < 8_000).any() and (start >= 10_000).any()
+    frames = {
+        "a-000": np.asarray([f for f, _ in second]),
+        "a-001": np.asarray([f for f, _ in first]),
+    }
+    for s0, row in zip(start, batch.spikes, strict=True):
+        for i, unit in enumerate(("a-000", "a-001")):
+            f = frames[unit]
+            want = (f[(f >= s0) & (f < s0 + 50)] - s0) / 10.0
+            np.testing.assert_allclose(row[i][np.isfinite(row[i])], want, atol=1e-4)
+    # a callable may return the list, and one store of a list is that store
+    assert _pipe(path, sorting=lambda rec: [a, b])._windower.sortings == [(a, b)]
+    assert _pipe(path, sorting=[a])._windower.sortings == [a]
+
+
+def test_stores_whose_coverage_overlaps_are_not_merged(tmp_path, physical_session):
+    pytest.importorskip("zarr", minversion="3")
+    path = physical_session(str(tmp_path / "overlap"), n_frames=T)
+    _channel_store(path, "x", [(100, "a-000")], coverage=[(0, 9_000)])
+    _channel_store(path, "y", [(8_500, "a-000")], coverage=[(8_000, T)])
+    with pytest.raises(ValueError, match="overlapping"):
+        _pipe(path, sorting=["x", "y"])
+    _channel_store(path, "z", [(100, "a-000")])  # no coverage: claims everything
+    with pytest.raises(ValueError, match="coverage"):
+        _pipe(path, sorting=["x", "z"])
+    with pytest.raises(ValueError, match="twice"):
+        _pipe(path, sorting=["x", "sortings/x.zarr"])
+
+
 def test_a_sorting_needs_a_recording_with_stores(make_pipe):
     with pytest.raises(ValueError, match="no sorting stores"):
         make_pipe(include=("trace", "spikes"), sorting="live")

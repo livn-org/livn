@@ -341,32 +341,40 @@ class _Windower:
 
     def store(self, r, s) -> _Store:
         if (r, s) not in self._spikes:
-            rec = self.recordings[r]
             name = self.sortings[r]
-            ev = rec.spikes(s) if name is None else rec.spikes(s, sorting=name)
-            ids = np.asarray(ev.ids)
-            units = getattr(ev, "units", None)
-            units = np.unique(ids) if units is None else np.asarray(units)
-            coverage = getattr(ev, "coverage", None)
-            cover = None
-            if coverage is not None:
-                ms = np.asarray(coverage, np.float64).reshape(-1, 2)
-                cover = np.round(ms * rec.fs / 1e3).astype(np.int64)
-                extraction = getattr(rec, "extraction", None)
-                state = None if extraction is None or name is None else extraction(name)
-                after = (state or {}).get("state_from_frame")
-                if after is not None:
-                    cover = _intersect(
-                        cover, np.asarray([[int(after), np.iinfo(np.int64).max]])
-                    )
-            self._spikes[(r, s)] = _Store(
-                times=np.asarray(ev.times, np.float64),
-                ids=ids,
-                units=units,
-                cover=cover,
-                space=getattr(ev, "space", None),
-            )
+            if isinstance(name, tuple):
+                self._spikes[(r, s)] = _merged(
+                    [self._one_store(r, s, n) for n in name], name
+                )
+            else:
+                self._spikes[(r, s)] = self._one_store(r, s, name)
         return self._spikes[(r, s)]
+
+    def _one_store(self, r, s, name) -> _Store:
+        rec = self.recordings[r]
+        ev = rec.spikes(s) if name is None else rec.spikes(s, sorting=name)
+        ids = np.asarray(ev.ids)
+        units = getattr(ev, "units", None)
+        units = np.unique(ids) if units is None else np.asarray(units)
+        coverage = getattr(ev, "coverage", None)
+        cover = None
+        if coverage is not None:
+            ms = np.asarray(coverage, np.float64).reshape(-1, 2)
+            cover = np.round(ms * rec.fs / 1e3).astype(np.int64)
+            extraction = getattr(rec, "extraction", None)
+            state = None if extraction is None or name is None else extraction(name)
+            after = (state or {}).get("state_from_frame")
+            if after is not None:
+                cover = _intersect(
+                    cover, np.asarray([[int(after), np.iinfo(np.int64).max]])
+                )
+        return _Store(
+            times=np.asarray(ev.times, np.float64),
+            ids=ids,
+            units=units,
+            cover=cover,
+            space=getattr(ev, "space", None),
+        )
 
     def rows(self, r, s) -> tuple[np.ndarray, np.ndarray]:
         if (r, s) not in self._rows:
@@ -449,6 +457,32 @@ def _intersect(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return np.asarray(sorted(out), np.int64).reshape(-1, 2)
 
 
+def _merged(stores: list[_Store], names) -> _Store:
+    spaces = {st.space for st in stores}
+    if len(spaces) > 1:
+        raise ValueError(
+            f"the sortings {list(names)} mix spaces {sorted(map(str, spaces))}"
+        )
+    if any(st.cover is None for st in stores):
+        raise ValueError(
+            f"merging the sortings {list(names)} needs each one's coverage"
+        )
+    spans = np.concatenate([st.cover for st in stores])
+    order = np.argsort(spans[:, 0], kind="stable")
+    spans = spans[order]
+    if np.any(spans[1:, 0] < spans[:-1, 1]):
+        raise ValueError(f"the sortings {list(names)} cover overlapping frames")
+    strings = any(np.asarray(st.ids).dtype.kind not in "iu" for st in stores)
+    units = np.unique(np.concatenate([_unit_keys(st.units, strings) for st in stores]))
+    return _Store(
+        times=np.concatenate([st.times for st in stores]),
+        ids=np.concatenate([_unit_keys(st.ids, strings) for st in stores]),
+        units=units,
+        cover=spans,
+        space=spaces.pop(),
+    )
+
+
 def _unit_keys(ids, strings: bool = False) -> np.ndarray:
     ids = np.asarray(ids)
     if ids.dtype.kind in "iu" and not strings:
@@ -456,11 +490,29 @@ def _unit_keys(ids, strings: bool = False) -> np.ndarray:
     return np.asarray([str(i) for i in ids.tolist()], dtype=str)
 
 
-def _resolve_sorting(rec, r: int, sorting) -> str | None:
+def _resolve_sorting(rec, r: int, sorting) -> str | tuple[str, ...] | None:
     if sorting is None:
         return None
+    if isinstance(sorting, (list, tuple)):
+        if not sorting:
+            raise ValueError("sorting= names no store")
+        paths = tuple(_resolve_sorting(rec, r, one) for one in sorting)
+        if any(p is None or isinstance(p, tuple) for p in paths):
+            raise ValueError(
+                "each sorting of a list names one store (a path, name, selector or Sorting)"
+            )
+        canonical = getattr(rec, "_sorting_path", None)
+        if canonical is not None:
+            paths = tuple(canonical(p) for p in paths)
+        if len(set(paths)) != len(paths):
+            raise ValueError(f"sorting= names a store twice: {list(paths)}")
+        return paths[0] if len(paths) == 1 else paths
+    if not isinstance(sorting, (str, Mapping)) and hasattr(sorting, "path"):
+        return sorting.path
     if callable(sorting) and not isinstance(sorting, (str, Mapping)):
         chosen = sorting(rec)
+        if isinstance(chosen, (list, tuple)):
+            return _resolve_sorting(rec, r, list(chosen))
         if chosen is not None and not isinstance(chosen, str):
             chosen = getattr(chosen, "path", None)
             if chosen is None:
@@ -730,7 +782,7 @@ def windows(
     per_segment: int = 10,
     split: str | None = "train",
     include: Collection[str] = ("trace",),
-    sorting: str | Mapping | Callable | None = None,
+    sorting: str | Mapping | Sequence | Callable | None = None,
     max_spikes: int = 64,
     mask_bad_channels: bool = True,
     batch_size: int,
@@ -787,7 +839,8 @@ def windows(
             - None for the ground truth
             - a store path or name (``"sortings/live.zarr"``, ``"live"``)
             - a mapping of :class:`livn.data.rsf.Sorting` fields to match
-            - a callable ``f(recording) -> path | Sorting | None``.
+            - a list of these, one per store, merged into one
+            - a callable ``f(recording) -> path | Sorting | list | None``.
         max_spikes: Capacity of a unit's row in a window
         mask_bad_channels: Zero the recording's bad channels and exclude them from ``CMR``;
             ``channel_mask`` says which are good
