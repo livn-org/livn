@@ -6,6 +6,7 @@ NEURON {
 	USEION k READ ek WRITE ik
         USEION ca READ cai
 	RANGE gmax, g
+	RANGE chid : carried between steps, so a saved state must see it
 }
 
 UNITS {

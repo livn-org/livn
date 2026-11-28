@@ -483,6 +483,55 @@ class DistributedEnv(EnvProtocol):
         self._broadcast_to_workers("set_params", (params,))
         return self
 
+    def save_state(self) -> WorkerSnapshot:
+        if self.controller is None:
+            raise RuntimeError("save_state() runs on the controller after init()")
+        token = self._next_snapshot = getattr(self, "_next_snapshot", 0) + 1
+        self._broadcast_checked(_env_save_state, (token,))
+        return WorkerSnapshot(self, token)
+
+    def restore_state(
+        self, snapshot: WorkerSnapshot, noise_stream: int | None = None
+    ) -> Self:
+        if not isinstance(snapshot, WorkerSnapshot) or snapshot._env() is not self:
+            raise ValueError(
+                "restore_state() takes a snapshot this DistributedEnv saved"
+            )
+        if self.controller is None:
+            raise RuntimeError("restore_state() runs on the controller after init()")
+        self._broadcast_checked(_env_restore_state, (snapshot.token, noise_stream))
+        return self
+
+    def release_state(self, snapshot: WorkerSnapshot) -> Self:
+        if self.controller is not None:
+            self._broadcast_checked(_env_release_state, (snapshot.token,))
+        return self
+
+    def _broadcast_checked(self, fn, args: tuple) -> None:
+        n_workers = self.controller.comm.size - 1
+        expected = set(
+            self.controller.submit_multiple(fn, args_list=[args] * n_workers)
+        )
+        failures, ranks = [], []
+        while expected:
+            task_id, response = self.controller.get_next_result()
+            if task_id not in expected:
+                self._result_buffer[task_id] = response
+                continue
+            expected.remove(task_id)
+            for item in response or ():
+                if isinstance(item, _WorkerError):
+                    failures.append(item)
+                elif item is not None:
+                    ranks.append(item)
+        if failures:
+            failures[0].reraise()
+        if len(set(ranks)) != len(ranks):
+            raise RuntimeError(
+                "a worker took the call twice while another was busy; wait for "
+                "outstanding calls before saving or restoring a state"
+            )
+
     @property
     def cells(self) -> _RemoteCells:
         return _RemoteCells(self)
@@ -1040,6 +1089,7 @@ def _env_rebuild(system, model, io, seed, select):
     import gc
 
     old = _state.get("env")
+    _state["snapshots"] = {}  # they belong to the env being replaced
     if old is not None:
         _state["env"] = None
         with contextlib.suppress(Exception):
@@ -1053,6 +1103,45 @@ def _env_rebuild(system, model, io, seed, select):
         env.selection(chosen, method=method, bounds=bounds)
     env.init()
     _state["env"] = env
+
+
+class WorkerSnapshot:
+    __slots__ = ("_env", "token")
+
+    def __init__(self, env: DistributedEnv, token: int):
+        import weakref
+
+        self._env = weakref.ref(env)
+        self.token = int(token)
+
+    def __repr__(self) -> str:
+        return f"WorkerSnapshot({self.token})"
+
+
+def _world_rank() -> int:
+    from mpi4py import MPI
+
+    return MPI.COMM_WORLD.rank
+
+
+def _env_save_state(token: int):
+    _state.setdefault("snapshots", {})[token] = _state["env"].save_state()
+    return _world_rank()
+
+
+def _env_restore_state(token: int, noise_stream):
+    snapshot = _state.get("snapshots", {}).get(token)
+    if snapshot is None:
+        raise ValueError(f"this worker holds no snapshot {token}")
+    _state["env"].restore_state(snapshot, noise_stream=noise_stream)
+    return _world_rank()
+
+
+def _env_release_state(token: int):
+    snapshot = _state.get("snapshots", {}).pop(token, None)
+    if snapshot is not None:
+        snapshot.release()
+    return _world_rank()
 
 
 def _env_config_call(method_name: str, args: tuple, kwargs: dict | None = None):

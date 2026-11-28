@@ -27,6 +27,7 @@ NEURON {
 	SUFFIX Nas
 	USEION na READ ena WRITE ina
 	RANGE gmax, ina, g, vhalf, slope
+	RANGE minf : carried between steps, so a saved state must see it
 	RANGE s_on, s_floor, s_speed
 }
 

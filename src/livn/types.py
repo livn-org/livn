@@ -320,6 +320,47 @@ class Capability(StrEnum):
     PARALLEL_RUNS = "parallel_runs"
     """``run_many()`` solves its replicates together rather than one by one."""
 
+    SNAPSHOT = "snapshot"
+    """``save_state()``/``restore_state()`` fork a run at any point in time."""
+
+
+class Snapshot:
+    """A running :class:`Env`'s simulation state, from :meth:`Env.save_state`.
+
+    Opaque and in memory. It restores only into the env that saved it, any
+    number of times, and holds that env's resources until it is garbage
+    collected or the env is closed.
+    """
+
+    __slots__ = ("__weakref__", "_env", "_release", "_state", "noise_stream", "t")
+
+    def __init__(self, env, t: float, noise_stream: int, state, release=None):
+        import weakref
+
+        self._env = weakref.ref(env)
+        self.t = float(t)
+        """Simulation time (ms) the state was saved at"""
+        self.noise_stream = int(noise_stream)
+        """The noise stream the run was on when it was saved"""
+        self._state = state
+        self._release = release
+        registry = env.__dict__.setdefault("_snapshots", weakref.WeakSet())
+        registry.add(self)
+
+    def release(self) -> None:
+        """Free what the snapshot holds; it cannot be restored afterwards."""
+        state, self._state = self._state, None
+        if state is not None and self._release is not None:
+            self._release(state)
+
+    def __del__(self):
+        with contextlib.suppress(Exception):
+            self.release()
+
+    def __repr__(self) -> str:
+        held = "released" if self._state is None else f"t={self.t:g} ms"
+        return f"Snapshot({held}, noise_stream={self.noise_stream})"
+
 
 def place_rows(owners, names, gids, sections=None):
     owners = [int(g) for g in owners]
@@ -1570,6 +1611,68 @@ class Env(Protocol):
     def reseed_noise(self, stream: int | None = None) -> Self:
         """Move every stochastic stream onto a fresh, reproducible realisation."""
         return self
+
+    def save_state(self) -> Snapshot:
+        """Save the simulation state, to fork the run from this point.
+
+        The snapshot covers everything the next step depends on: membrane,
+        channel, synapse and opsin states, plastic weights, the noise
+        streams' positions, spikes still in flight and the stimulus already
+        scheduled past the current time. After :meth:`restore_state`,
+        ``run()`` continues from :attr:`Snapshot.t` and reproduces the
+        uninterrupted run to the bit, noise included.
+
+        Set up recording before saving: the recorders at restore must be
+        the ones the snapshot was taken with. A restore puts back synapses
+        and noise sources but not membrane parameters, so give a branch its
+        parameters after restoring.
+        """
+        raise NotImplementedError(
+            f"{type(self).__module__} cannot save its simulation state; "
+            f"use a backend that declares Capability.SNAPSHOT"
+        )
+
+    def restore_state(
+        self, snapshot: Snapshot, noise_stream: int | None = None
+    ) -> Self:
+        """Return the simulation to a :meth:`save_state` snapshot.
+
+        ``noise_stream`` picks how the noise continues: ``None`` or the
+        snapshot's own stream continues it exactly, any other value moves
+        every source onto that stream from here on, as :meth:`reseed_noise`
+        does. So ``snapshot.noise_stream + m`` for ``m`` in ``range(M)``
+        gives M replicates of which the first is the uninterrupted run, the
+        way :meth:`run_many` numbers its replicates from ``noise_stream``.
+        """
+        raise NotImplementedError(
+            f"{type(self).__module__} cannot restore a simulation state; "
+            f"use a backend that declares Capability.SNAPSHOT"
+        )
+
+    def _snapshot_state(self, snapshot: Snapshot):
+        """The backend's part of a snapshot this env saved."""
+        if not isinstance(snapshot, Snapshot):
+            raise TypeError(
+                f"restore_state() takes what save_state() returned, not "
+                f"{type(snapshot).__name__}"
+            )
+        if snapshot._env() is not self:
+            raise ValueError(
+                "this snapshot was saved by another env; a snapshot restores "
+                "only into the env that saved it"
+            )
+        if snapshot._state is None:
+            raise ValueError("this snapshot has been released")
+        return snapshot._state
+
+    def _release_snapshots(self) -> None:
+        for snapshot in list(self.__dict__.get("_snapshots", ())):
+            snapshot.release()
+
+    def _continue_noise(self, snapshot: Snapshot, noise_stream: int | None) -> None:
+        if noise_stream is None or int(noise_stream) == snapshot.noise_stream:
+            return
+        self.reseed_noise(stream=int(noise_stream))
 
     def close(self) -> Self:
         """Deconstructor to clean up resources"""

@@ -5,6 +5,7 @@ NEURON {
 	SUFFIX Na_PR
 	USEION na READ ena WRITE ina
 	RANGE gmax, g
+	RANGE m_inf : carried between steps, so a saved state must see it
         GLOBAL ahk, ahs, ahd, bhk, bhs, bhd
         GLOBAL amk, ams, amd, bmk, bms, bmd
 }

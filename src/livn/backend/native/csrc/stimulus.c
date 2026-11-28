@@ -5,8 +5,9 @@
  * voltage update, so the field sampled at step s drives step s + 1; a
  * photon flux (or, for ChR2H134R, irradiance) set by the same callback enters
  * the opsin kinetics of step s;
- * a current-clamp amplitude is what Vector.play interpolates at the step
- * midpoint; a current density is held over its own sample.
+ * a current-clamp amplitude is the sample under the step midpoint, held over
+ * the step, so a continued run sees what one run would; a current density is
+ * held over its own sample.
  */
 #include <math.h>
 #include <stdlib.h>
@@ -303,8 +304,7 @@ static int apply_or_check(RCSDSim* sim, long step, int check, int* need, int* ne
         }
         switch (m) {
         case RCSD_STIM_CURRENT:
-            i0 = index_at(s, t_mid);
-            i1 = i0 + 1;
+            i0 = i1 = index_at(s, t_mid);
             break;
         case RCSD_STIM_CURRENT_DENSITY:
             i0 = i1 = index_at(s, t);
@@ -328,19 +328,16 @@ static int apply_or_check(RCSDSim* sim, long step, int check, int* need, int* ne
          * is an offset into the values, -1 for none (zero) */
         if (m == RCSD_STIM_CURRENT) {
             const double* a = sample(s, i0);
-            const double* b = sample(s, i1);
-            long oa = a ? (long) (a - s->values) : -1, ob = b ? (long) (b - s->values) : -1;
-            double x = t_mid / s->stim_dt - (double) i0;
+            long oa = a ? (long) (a - s->values) : -1;
             int n_rows = s->n_rows, r;
-            RCSD_ACC_LOOP(sim)
-            for (r = 0; r < n_rows; ++r) {
-                const Stimulus* st = &sim->stim[RCSD_STIM_CURRENT];
-                double va = oa >= 0 ? st->values[oa + r] : 0.0;
-                double vb = ob >= 0 ? st->values[ob + r] : 0.0;
-                double amp = (1.0 - x) * va + x * vb;
-                int node = st->node[r];
-                RCSD_ACC_ATOMIC_UPDATE
-                sim->stim_rhs[node] += amp * 1e2 / sim->area[node];
+            if (a) {
+                RCSD_ACC_LOOP(sim)
+                for (r = 0; r < n_rows; ++r) {
+                    const Stimulus* st = &sim->stim[RCSD_STIM_CURRENT];
+                    int node = st->node[r];
+                    RCSD_ACC_ATOMIC_UPDATE
+                    sim->stim_rhs[node] += st->values[oa + r] * 1e2 / sim->area[node];
+                }
             }
         } else if (m == RCSD_STIM_CURRENT_DENSITY) {
             const double* a = sample(s, i0);
@@ -358,15 +355,12 @@ static int apply_or_check(RCSDSim* sim, long step, int check, int* need, int* ne
 #else
         if (m == RCSD_STIM_CURRENT) {
             const double* a = sample(s, i0);
-            const double* b = sample(s, i1);
-            double x = t_mid / s->stim_dt - (double) i0;
             int r;
-            for (r = 0; r < s->n_rows; ++r) {
-                double va = a ? a[r] : 0.0;
-                double vb = b ? b[r] : 0.0;
-                double amp = (1.0 - x) * va + x * vb;
-                int node = s->node[r];
-                sim->stim_rhs[node] += amp * 1e2 / sim->area[node];
+            if (a) {
+                for (r = 0; r < s->n_rows; ++r) {
+                    int node = s->node[r];
+                    sim->stim_rhs[node] += a[r] * 1e2 / sim->area[node];
+                }
             }
         } else if (m == RCSD_STIM_CURRENT_DENSITY) {
             const double* a = sample(s, i0);

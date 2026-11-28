@@ -20,6 +20,7 @@ SOURCES = (
     "stimulus.c",
     "random123.c",
     "thread.c",
+    "state.c",
 )
 CACHE_DIR_ENV = "LIVN_CACHE_DIR"
 # the flags are part of the contract, see csrc/Makefile

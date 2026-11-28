@@ -52,6 +52,7 @@ export default defineConfig({
                     text: "Advanced",
                     items: [
                         { text: "Plasticity", link: "/guide/advanced/plasticity" },
+                        { text: "Snapshots", link: "/guide/advanced/snapshots" },
                         { text: "Optical Stimulation", link: "/guide/advanced/optical-stimulation" },
                         { text: "Decoding pipelines", link: "/guide/advanced/decoding-pipelines" },
                         { text: "Recording sessions", link: "/guide/advanced/recording-sessions" },

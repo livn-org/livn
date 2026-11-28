@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import inspect
 import logging
 import math
@@ -22,7 +23,7 @@ from livn.backend.native.synapses import SynapseBuilder
 from livn.cells import CellRegistry
 from livn.run import Run
 from livn.stimulus import Stimulus, check_bounds, chunk_bytes
-from livn.types import Capability
+from livn.types import Capability, Snapshot
 from livn.types import Env as EnvProtocol
 from livn.utils import NOISE_STREAM_STRIDE, P
 
@@ -186,6 +187,16 @@ class _ModeState:
         self.dirty = True
         self.window = None
 
+    def snapshot(self) -> _ModeState:
+        state = copy.copy(self)
+        state.rows = dict(self.rows)
+        state.row_cells = list(self.row_cells)
+        state.row_sections = list(self.row_sections)
+        state.streams = [dict(stream) for stream in self.streams]
+        state.dirty = True
+        state.window = None
+        return state
+
     def row(self, cell: int, section: int, gid: int) -> int:
         key = (int(gid), int(section))
         found = self.rows.get(key)
@@ -222,6 +233,7 @@ class Env(EnvProtocol):
             Capability.PER_GID_VOLTAGE,
             Capability.EXTRACELLULAR_STIMULUS,
             Capability.THREADS,
+            Capability.SNAPSHOT,
         }
     )
 
@@ -1761,6 +1773,56 @@ class Env(EnvProtocol):
             )
         return self
 
+    def save_state(self) -> Snapshot:
+        if self._sim is None or self.t == 0.0 or self._dt is None:
+            raise RuntimeError(
+                "nothing to save before the first run(); a snapshot at t=0 is "
+                "what clear() already gives"
+            )
+        lib = self._lib
+        handle = lib.rcsd_state_save(self._sim)
+        if not handle:
+            raise L.NativeError(lib.rcsd_last_error().decode())
+        state = {
+            "handle": handle,
+            "lib": lib,
+            "t": self.t,
+            "dt": self._dt,
+            "noise_stream": self._noise_stream,
+            "plasticity": self._plasticity_enabled,
+            "noise_state": copy.deepcopy(self._noise_state),
+            "stimulus": {name: mode.snapshot() for name, mode in self._stim.items()},
+            "weight_samples": {key: len(v) for key, v in self.w_recs.items()},
+            "weight_times": (
+                None if self._w_rec_times is None else len(self._w_rec_times)
+            ),
+        }
+        return Snapshot(self, self.t, self._noise_stream, state, release=_free_state)
+
+    def restore_state(
+        self, snapshot: Snapshot, noise_stream: int | None = None
+    ) -> Self:
+        state = self._snapshot_state(snapshot)
+        if self._sim is None:
+            raise RuntimeError("the env is closed")
+        lib = self._lib
+        for mode in self._stim.values():
+            # what a later run installed must not drive the restored one
+            L.check(lib.rcsd_clear_stimulus(self._sim, mode.mode), lib)
+        L.check(lib.rcsd_state_restore(self._sim, state["handle"]), lib)
+        self.t = state["t"]
+        self._dt = state["dt"]
+        self._noise_stream = state["noise_stream"]
+        self._plasticity_enabled = state["plasticity"]
+        self._noise_state = copy.deepcopy(state["noise_state"])
+        self._stim = {name: mode.snapshot() for name, mode in state["stimulus"].items()}
+        for key, samples in self.w_recs.items():
+            del samples[state["weight_samples"].get(key, 0) :]
+        if self._w_rec_times is not None:
+            del self._w_rec_times[state["weight_times"] or 0 :]
+        self._continue_noise(snapshot, noise_stream)
+        return self
+
     # -- external inputs -------------------------------------------------------------
 
     @property
@@ -1846,6 +1908,7 @@ class Env(EnvProtocol):
         if self._closed:
             return self
         self._closed = True
+        self._release_snapshots()
         if self._sim:
             self._lib.rcsd_destroy(self._sim)
             self._sim = None
@@ -1873,6 +1936,10 @@ class Env(EnvProtocol):
         self.w_recs.clear()
         self._weight_rows.clear()
         return self
+
+
+def _free_state(state: dict) -> None:
+    state["lib"].rcsd_state_free(state["handle"])
 
 
 def _open_h5(filepath: str):

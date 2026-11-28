@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import contextlib
+import copy
+import gc
 import logging
 import math
 import os
@@ -22,7 +24,7 @@ from livn.backend.neuron.synapses import SynapseBuilder
 from livn.cells import CellRegistry
 from livn.run import Run
 from livn.stimulus import Stimulus
-from livn.types import Capability
+from livn.types import Capability, Snapshot
 from livn.types import Env as EnvProtocol
 from livn.utils import NOISE_STREAM_STRIDE, P
 
@@ -75,6 +77,81 @@ def _held_column(block, start, idx):
     if at < 0:
         return np.zeros(block.shape[0], dtype=block.dtype)
     return block[:, at]
+
+
+_SNAPSHOT = (
+    "t",
+    "_dt",
+    "_noise_stream",
+    "_plasticity_enabled",
+    "_stim_rows",
+    "_stim_backed_rows",
+    "_stim_unbacked_warned",
+    "_stim_clamps",
+    "_stim_clamp_rows",
+    "_stim_driven",
+    "_stim_junctions",
+    "_stim_j_row_a",
+    "_stim_j_row_b",
+    "_stim_j_clamp_a",
+    "_stim_j_clamp_b",
+    "_stim_j_inv_r",
+    "_stim_mode",
+    "_stim_plays",
+    "_stim_play_times",
+    "_stim_sources",
+    "_stim_block",
+    "_stim_block_start",
+    "_stim_bounds",
+    "_stim_streams",
+    "_stim_idle",
+    "_stim_dt",
+    "_stim_step",
+    "_stim_last_key",
+    "_opsin_rows",
+    "_opsin_pps",
+    "_opsin_block",
+    "_opsin_block_start",
+    "_opsin_dt",
+    "_opsin_step",
+    "_iclamp_rows",
+    "_iclamp_pps",
+    "_iclamp_block",
+    "_iclamp_block_start",
+    "_iclamp_dt",
+    "_iclamp_step",
+)
+
+
+def _snapshot_copy(value):
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, set):
+        return set(value)
+    if isinstance(value, list):
+        return [dict(v) if isinstance(v, dict) else v for v in value]
+    return value
+
+
+def _mechanism_names(h, kind: int) -> list[str]:
+    kinds = h.MechanismType(kind)
+    names = []
+    for index in range(int(kinds.count())):
+        kinds.select(index)
+        name = h.ref("")
+        kinds.selected(name)
+        names.append(name[0])
+    return names
+
+
+def _assigned_names(h, mechanism: str) -> list[str]:
+    standard = h.MechanismStandard(mechanism, 2)
+    names = []
+    for index in range(int(standard.count())):
+        name = h.ref("")
+        standard.name(name, index)
+        names.append(name[0])
+    return names
 
 
 class _EnvCallback:
@@ -192,6 +269,7 @@ class Env(EnvProtocol):
             Capability.REPLAYABLE_NOISE,
             Capability.PLASTICITY,
             Capability.EXTRACELLULAR_STIMULUS,
+            Capability.SNAPSHOT,
         }
     )
 
@@ -246,6 +324,7 @@ class Env(EnvProtocol):
         # graph state
         self.cells = CellRegistry(self, comm=self.comm)
         self._noise_stream = 0
+        self._noise_epoch = 0  # counts reseeds, so a restore knows to re-key
         self._detectors: dict[int, dict] = {}  # gid -> {filter,in_nc,out_nc}
         self._detector_gid_base = 0
         self.syn = None
@@ -353,11 +432,15 @@ class Env(EnvProtocol):
 
         # current-clamp (IClamp) stimulus block with one IClamp on the soma per gid,
         # amplitude (nA) updated per step like the extracellular block
+        # gid -> block row; _iclamp_pps holds the clamps in row order
+        self._iclamp_rows: dict[int, int] = {}
         self._iclamp_pps: list = []
         self._iclamp_block: np.ndarray | None = None
+        self._iclamp_block_start = 0
         self._iclamp_dt: float | None = None
         self._iclamp_step = 0
         self._iclamp_registered = False
+        self._iclamp_cb = _EnvCallback(self, "_update_iclamp", "_iclamp_registered")
 
     def selection(self, select, method: str = "first", bounds=None) -> Self:
         if self.cells:
@@ -723,6 +806,7 @@ class Env(EnvProtocol):
         self._stim_step = round(current_time / self._dt)
         self._opsin_step = round(current_time / self._dt)
         self._iclamp_step = round(current_time / self._dt)
+        self._apply_iclamp()  # the callback sets each later step's
 
         self.clear_recordings()
 
@@ -1262,6 +1346,11 @@ class Env(EnvProtocol):
             self._opsin_block, self._opsin_block_start = _prune_block(
                 self._opsin_block, self._opsin_block_start, idx
             )
+        if self._iclamp_dt:
+            idx = int(current_time / self._iclamp_dt)
+            self._iclamp_block, self._iclamp_block_start = _prune_block(
+                self._iclamp_block, self._iclamp_block_start, idx
+            )
 
     def _update_extracellular(self) -> None:
         if self._closed or not self._stim_clamps:
@@ -1348,32 +1437,75 @@ class Env(EnvProtocol):
         return cell.sections[0](0.5)
 
     def _setup_iclamp(self, stimulus: Stimulus, current_time: float) -> None:
-        """Attach an IClamp on each stimulated cell's soma and play its amplitude
-        (nA) time series into ``IClamp.amp`` via ``Vector.play``.
+        """Give each stimulated cell one soma IClamp and write its amplitude (nA)
+        into a block that `_update_iclamp` applies every step.
 
-        ``Vector.play`` handles the stimulus->sim time mapping natively (re-armed
-        by ``finitialize`` at each run start), so the step timing is exact without
-        a manual per-step callback."""
+        Not `Vector.play`: a continuous play is armed by `finitialize`, so one
+        installed in a continued run (t > 0) barely drives the cell."""
         if stimulus.gids is None:
             stimulus.gids = self.active_gids()
+        if self._iclamp_dt is None:
+            self._iclamp_dt = stimulus.dt
+        elif not math.isclose(self._iclamp_dt, stimulus.dt, rel_tol=0.0, abs_tol=1e-12):
+            raise ValueError("Stimulus dt mismatch; call clear() before rerunning")
         h = self._h
+        start_step = round(current_time / stimulus.dt)
 
+        pending: list[tuple[int, np.ndarray]] = []
         for gid, _section_id, series in stimulus:
             gid = int(gid)
             if not self.pc.gid_exists(gid):
                 continue
-            cell = self._find_cell(gid)
-            if cell is None:
-                continue
-            series = np.asarray(series, dtype=np.float64)
-            ic = h.IClamp(self._soma_seg(cell))
-            ic.delay = 0.0
-            ic.dur = 1e9  # amp is driven by the played vector
-            amp_vec = h.Vector(series)
-            t_vec = h.Vector(current_time + np.arange(series.size) * stimulus.dt)
-            amp_vec.play(ic._ref_amp, t_vec, True)  # continuous (interpolated)
-            # keep ic + vectors alive for the run
-            self._iclamp_pps.append((ic, amp_vec, t_vec))
+            row = self._iclamp_rows.get(gid)
+            if row is None:
+                cell = self._find_cell(gid)
+                if cell is None:
+                    continue
+                ic = h.IClamp(self._soma_seg(cell))
+                ic.delay = 0.0
+                ic.dur = 1e9  # amp is driven per step
+                ic.amp = 0.0
+                row = len(self._iclamp_pps)
+                self._iclamp_rows[gid] = row
+                self._iclamp_pps.append(ic)
+            pending.append((row, np.asarray(series, dtype=np.float64)))
+
+        if not pending:
+            return
+
+        block, lo = _widen_block(
+            self._iclamp_block,
+            self._iclamp_block_start,
+            len(self._iclamp_pps),
+            start_step,
+            start_step + max(len(v) for _row, v in pending),
+            np.float64,
+        )
+        at = start_step - lo
+        for row, values in pending:
+            block[row, at : at + len(values)] += values
+        self._iclamp_block = block
+        self._iclamp_block_start = lo
+
+        if not self._iclamp_registered:
+            _register_callback(h.cvode, self._iclamp_cb)
+            self._iclamp_registered = True
+
+    def _update_iclamp(self) -> None:
+        # runs after step s, so it sets what step s + 1 holds
+        self._iclamp_step += 1
+        self._apply_iclamp()
+
+    def _apply_iclamp(self) -> None:
+        """Hold the sample under step `_iclamp_step`'s midpoint, 0 past the end."""
+        block = self._iclamp_block
+        if block is None or self._closed or not self._iclamp_pps:
+            return
+        idx = int((self._iclamp_step + 0.5) * self._dt / self._iclamp_dt)
+        at = idx - self._iclamp_block_start
+        col = block[:, at] if 0 <= at < block.shape[1] else np.zeros(block.shape[0])
+        for i, clamp in enumerate(self._iclamp_pps):
+            clamp.amp = float(col[i])
 
     def _setup_opsin_stimulus(self, stimulus: Stimulus, current_time: float) -> None:
         if not self._opsin_refs:
@@ -2052,11 +2184,14 @@ class Env(EnvProtocol):
         if self._opsin_registered:
             _unregister_callback(self._h.cvode, self._opsin_cb)
             self._opsin_registered = False
-        # IClamp uses Vector.play (no cvode callback); nothing to unregister
+        if self._iclamp_registered:
+            _unregister_callback(self._h.cvode, self._iclamp_cb)
+            self._iclamp_registered = False
 
     def reseed_noise(self, stream: int | None = None) -> Self:
         if not self._flucts:
             return self
+        self._noise_epoch += 1
 
         if stream is None:
             self._noise_stream += 1
@@ -2078,6 +2213,195 @@ class Env(EnvProtocol):
             )
 
         return self
+
+    def save_state(self) -> Snapshot:
+        h = self._h
+        if mechanisms.coreneuron_requested():
+            raise NotImplementedError(
+                "CoreNEURON runs the solve in its own memory, so the NEURON "
+                "backend cannot save its state there; unset LIVN_CORENEURON"
+            )
+        if self.t == 0.0 or self._dt is None:
+            raise RuntimeError(
+                "nothing to save before the first run(); a snapshot at t=0 is "
+                "what clear() already gives"
+            )
+        self._refresh_topology()
+        saved = h.SaveState()
+        saved.save()
+        refs = self._assigned_refs()
+        state = {
+            "savestate": saved,
+            "h_t": float(h.t),
+            "refs": refs,
+            "assigned": [ref[0] for ref in refs],
+            "noise": [(fluct, position) for fluct, position in self._noise_positions()],
+            "python": {name: _snapshot_copy(getattr(self, name)) for name in _SNAPSHOT},
+            "noise_state": copy.deepcopy(self._noise_state),
+            "noise_epoch": self._noise_epoch,
+            "recorders": (tuple(self.v_recs), tuple(self.i_recs)),
+            "weight_samples": {
+                key: int(vec.size()) for key, vec in self.w_recs.items()
+            },
+            "weight_times": (
+                None if self._w_rec_times is None else int(self._w_rec_times.size())
+            ),
+            "callbacks": (
+                self._stim_registered,
+                self._opsin_registered,
+                self._iclamp_registered,
+            ),
+            # the field the last step computed drives the next one
+            "clamp_amps": [float(clamp.amp) for clamp in self._stim_clamps],
+            "iclamp_amps": [float(clamp.amp) for clamp in self._iclamp_pps],
+            "delays": [float(netcon.delay) for netcon in self._netcons()],
+        }
+        return Snapshot(self, self.t, self._noise_stream, state)
+
+    def restore_state(
+        self, snapshot: Snapshot, noise_stream: int | None = None
+    ) -> Self:
+        state = self._snapshot_state(snapshot)
+        if self._closed:
+            raise RuntimeError("the env is closed")
+        if state["recorders"] != (tuple(self.v_recs), tuple(self.i_recs)):
+            raise ValueError(
+                "the voltage or membrane-current recordings changed since the "
+                "snapshot was saved; set up recording before save_state()"
+            )
+        h = self._h
+
+        # drop what later runs built (stimulus clamps and plays) before NEURON
+        # compares the structure against the saved one
+        for name, value in state["python"].items():
+            setattr(self, name, _snapshot_copy(value))
+        self._noise_state = copy.deepcopy(state["noise_state"])
+        self._refresh_topology()
+        for clamp, amp in zip(self._stim_clamps, state["clamp_amps"], strict=True):
+            clamp.amp = amp
+            clamp.dur = 1e9
+        for clamp, amp in zip(self._iclamp_pps, state["iclamp_amps"], strict=True):
+            clamp.amp = amp
+            clamp.dur = 1e9
+
+        try:
+            state["savestate"].restore()
+        except RuntimeError as error:
+            raise RuntimeError(
+                "NEURON refused the snapshot because the network changed since "
+                "it was saved (cells, synapses, connections or point processes "
+                "were added or removed)"
+            ) from error
+        for ref, value in zip(state["refs"], state["assigned"], strict=True):
+            ref[0] = value
+        if self._noise_epoch != state["noise_epoch"]:
+            self.reseed_noise(stream=snapshot.noise_stream)
+        for source, position in state["noise"]:
+            if hasattr(source, "setNoiseSequence"):
+                source.setNoiseSequence(position)
+            else:
+                source.seq(position)
+
+        h.t = state["h_t"]
+        h.dt = self._dt
+        h.secondorder = 2
+        h.celsius = self._celsius
+        # SaveState keeps NetCon weights but not delays
+        for netcon, delay in zip(self._netcons(), state["delays"], strict=True):
+            netcon.delay = delay
+        self._delay_floor_dt = self._dt
+
+        stim, opsin, iclamp = state["callbacks"]
+        if stim != self._stim_registered:
+            if stim:
+                _register_callback(h.cvode, self._stim_cb)
+            else:
+                _unregister_callback(h.cvode, self._stim_cb)
+            self._stim_registered = stim
+        if opsin != self._opsin_registered:
+            if opsin:
+                _register_callback(h.cvode, self._opsin_cb)
+            else:
+                _unregister_callback(h.cvode, self._opsin_cb)
+            self._opsin_registered = opsin
+        if iclamp != self._iclamp_registered:
+            if iclamp:
+                _register_callback(h.cvode, self._iclamp_cb)
+            else:
+                _unregister_callback(h.cvode, self._iclamp_cb)
+            self._iclamp_registered = iclamp
+
+        self.clear_recordings()
+        for key, vec in self.w_recs.items():
+            vec.resize(min(int(vec.size()), state["weight_samples"].get(key, 0)))
+        if self._w_rec_times is not None:
+            kept = state["weight_times"] or 0
+            self._w_rec_times.resize(min(int(self._w_rec_times.size()), kept))
+
+        self._continue_noise(snapshot, noise_stream)
+        return self
+
+    def _refresh_topology(self) -> None:
+        self._h.define_shape()
+
+    def _netcons(self):
+        if self.conn is None or not self.conn.size:
+            return []
+        store = self.conn.store
+        return [store.get(index) for index in self.conn.netcons()[0].tolist()]
+
+    def _noise_positions(self):
+        for key, (fluct, extra) in self._flucts.items():
+            position = getattr(fluct, "noiseSequence", None)
+            if position is not None:
+                yield fluct, float(position())
+            elif extra is not None and hasattr(extra, "seq"):
+                yield extra, float(extra.seq())
+            else:
+                raise NotImplementedError(
+                    f"the noise mechanism at {key} does not say where its "
+                    "random stream is, so its state cannot be saved; give it "
+                    "noiseSequence() and setNoiseSequence()"
+                )
+
+    def _assigned_refs(self) -> list:
+        h = self._h
+        sections = [
+            sec
+            for cells in self.cells.values()
+            for cell in cells.values()
+            for sec in getattr(cell, "sections", ())
+        ]
+        layout = (len(sections), sum(int(sec.nseg) for sec in sections))
+        cached = getattr(self, "_assigned_cache", None)
+        if cached is not None and cached[0] == layout:
+            refs = cached[1]
+        else:
+            refs = []
+            names = _mechanism_names(h, 0)
+            variables = {name: _assigned_names(h, name) for name in names}
+            for sec in sections:
+                present = [
+                    variables[name]
+                    for name in names
+                    if variables[name] and sec.has_membrane(name)
+                ]
+                for seg in sec:
+                    for assigned in present:
+                        refs.extend(getattr(seg, f"_ref_{var}") for var in assigned)
+            self._assigned_cache = (layout, refs)
+        point = []
+        kinds = h.MechanismType(1)
+        for index, name in enumerate(_mechanism_names(h, 1)):
+            if kinds.has_net_event(index):
+                continue  # SaveState keeps all of these
+            variables = _assigned_names(h, name)
+            if not variables:
+                continue
+            for process in h.List(name):
+                if process.has_loc():  # not one a closed env left behind
+                    point.extend(getattr(process, f"_ref_{var}") for var in variables)
+        return refs + point
 
     @staticmethod
     def _reseed_mechanism(mechanism, *, gid: int, index: int, seed: int, stream: int):
@@ -2103,6 +2427,13 @@ class Env(EnvProtocol):
         if self._w_rec_times is not None:
             self._w_rec_times.resize(0)
         self._unregister_stim_callback()
+        # a snapshot may keep these alive past the clear
+        for clamp in self._stim_clamps:
+            clamp.amp = 0.0
+            clamp.dur = 0.0
+        for clamp in self._iclamp_pps:
+            clamp.amp = 0.0
+            clamp.dur = 0.0
         self.t = 0.0
         self._dt = None
         self._stim_rows = {}
@@ -2136,8 +2467,10 @@ class Env(EnvProtocol):
         self._opsin_block_start = 0
         self._opsin_dt = None
         self._opsin_step = 0
+        self._iclamp_rows = {}
         self._iclamp_pps = []
         self._iclamp_block = None
+        self._iclamp_block_start = 0
         self._iclamp_dt = None
         self._iclamp_step = 0
         return self
@@ -2146,7 +2479,7 @@ class Env(EnvProtocol):
         if self._closed:
             return self
         self._closed = True
-        import gc
+        self._release_snapshots()
 
         # Detach the cvode callbacks before any section they reference is freed.
         self._unregister_stim_callback()
@@ -2172,8 +2505,10 @@ class Env(EnvProtocol):
         self._opsin_block = None
         self._opsin_block_start = 0
         self._opsin_refs.clear()
+        self._iclamp_rows = {}
         self._iclamp_pps = []
         self._iclamp_block = None
+        self._iclamp_block_start = 0
 
         # Drop every NEURON reference that points at this env's sections, so
         # deleting the cells does not leave dangling recorders / point

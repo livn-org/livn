@@ -321,6 +321,34 @@ VERBATIM
 ENDVERBATIM
 }
 
+: The Random123 stream position as 4 * seq + which, or -1 without one
+FUNCTION noiseSequence() {
+VERBATIM
+	_lnoiseSequence = -1;
+#if !NRNBBCORE
+	if (_p_donotuse && _ran_compat == 2) {
+		uint32_t seq;
+		char which;
+		nrnran123_getseq((nrnran123_State*)_p_donotuse, &seq, &which);
+		_lnoiseSequence = 4.0 * (double)seq + (double)which;
+	}
+#endif
+ENDVERBATIM
+}
+
+: Move the Random123 stream back to a position noiseSequence() returned
+PROCEDURE setNoiseSequence(position) {
+VERBATIM
+#if !NRNBBCORE
+	if (_p_donotuse && _ran_compat == 2 && _lposition >= 0) {
+		uint32_t seq = (uint32_t)(_lposition / 4.0);
+		char which = (char)(_lposition - 4.0 * (double)seq);
+		nrnran123_setseq((nrnran123_State*)_p_donotuse, seq, which);
+	}
+#endif
+ENDVERBATIM
+}
+
 : Kept so the mechanism is still a valid NetCon target; the conductances are
 : advanced by BEFORE BREAKPOINT, not by an event.
 NET_RECEIVE (w) {

@@ -332,6 +332,10 @@ _SIGNATURES = {
     "rcsd_step": (c_long, [c_void_p]),
     "rcsd_time": (c_double, [c_void_p]),
     "rcsd_initialized": (c_int, [c_void_p]),
+    "rcsd_state_save": (c_void_p, [c_void_p]),
+    "rcsd_state_restore": (c_int, [c_void_p, c_void_p]),
+    "rcsd_state_free": (None, [c_void_p]),
+    "rcsd_state_time": (c_double, [c_void_p]),
 }
 
 _loaded: ctypes.CDLL | None = None

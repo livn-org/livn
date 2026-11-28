@@ -25,6 +25,7 @@ extern "C" {
 #define RCSD_VERSION "0.1.0"
 
 typedef struct RCSDSim RCSDSim;
+typedef struct RCSDState RCSDState;
 
 /* --- section kinds (informational; the mechanism mask decides the physics) */
 enum { RCSD_SEC_SOMA = 0, RCSD_SEC_DEND = 1, RCSD_SEC_AXON = 2 };
@@ -386,6 +387,14 @@ RCSD_API int rcsd_run(RCSDSim* sim, long n_steps, long* done);
 RCSD_API long rcsd_step(RCSDSim* sim);
 RCSD_API double rcsd_time(RCSDSim* sim);
 RCSD_API int rcsd_initialized(RCSDSim* sim);
+
+/* --- saving and restoring the state, to fork a run --------------------- */
+/* A copy of everything the next step depends on; NULL on failure. It
+ * restores only into the network it was saved from, any number of times. */
+RCSD_API RCSDState* rcsd_state_save(RCSDSim* sim);
+RCSD_API int rcsd_state_restore(RCSDSim* sim, const RCSDState* state);
+RCSD_API void rcsd_state_free(RCSDState* state);
+RCSD_API double rcsd_state_time(const RCSDState* state);
 
 #ifdef __cplusplus
 }
